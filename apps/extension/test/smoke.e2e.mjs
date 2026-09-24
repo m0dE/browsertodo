@@ -10,7 +10,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const dist = join(root, "dist");
+// Output to the repo root so Chrome's "Load unpacked" points at <repo>/dist.
+const dist = join(root, "..", "..", "dist");
 const expectedId = readFileSync(join(root, "extension-id.txt"), "utf8").trim();
 const headed = process.argv.includes("--headed");
 

@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 
 const root = dirname(fileURLToPath(import.meta.url));
-const dist = join(root, "dist");
+// Output to the repo root so Chrome's "Load unpacked" points at <repo>/dist.
+const dist = join(root, "..", "..", "dist");
 const iconDir = join(root, "static", "icons");
 
 rmSync(dist, { recursive: true, force: true });

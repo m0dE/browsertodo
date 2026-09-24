@@ -54,9 +54,9 @@ and the task is retried later.
    ```
 
 2. **Load the extension.** Open `chrome://extensions`, turn on Developer mode,
-   click "Load unpacked", and pick `apps/extension/dist`. The extension ID is
-   fixed by the key in its manifest, and is listed in
-   `apps/extension/extension-id.txt`.
+   click "Load unpacked", and pick the `dist` folder at the root of this
+   repository. The extension ID is fixed by the key in its manifest, and is
+   listed in `apps/extension/extension-id.txt`.
 
 3. **Register the helper with Chrome.**
 

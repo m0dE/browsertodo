@@ -1,24 +1,23 @@
 /**
- * Runs Claude Code headless (`claude -p`) for one task. Claude only gets the
- * browsertodo MCP tools: no shell, file or web access.
+ * Runs Claude Code headless for one task, with stream-json in and out. The
+ * task prompt is the first stdin message; stdin stays open so the human can
+ * add messages while it runs, and is closed after a task_* tool call (or
+ * when Claude ends its turn without one). Claude only gets the browsertodo
+ * MCP tools: no shell, file or web access.
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { clipEventText, type AgentEvent } from "@browsertodo/shared";
 import type { Brain, BrainContext } from "./brain.js";
 
-export function buildClaudeArgs(opts: {
-  prompt: string;
-  systemPrompt: string;
-  mcpConfigPath: string;
-  allowedTools: string[];
-  model: string;
-}): string[] {
+export function buildClaudeArgs(opts: { systemPrompt: string; mcpConfigPath: string; allowedTools: string[]; model: string }): string[] {
   return [
     "-p",
-    opts.prompt,
+    "--input-format",
+    "stream-json",
     "--output-format",
     "stream-json",
     "--verbose",
@@ -37,6 +36,11 @@ export function buildClaudeArgs(opts: {
     "--model",
     opts.model,
   ];
+}
+
+/** One stream-json input line carrying a user message. */
+export function userMessageLine(text: string): string {
+  return JSON.stringify({ type: "user", message: { role: "user", content: text } }) + "\n";
 }
 
 /** BROWSERTODO_CLAUDE_PATH, else `where claude`, else %USERPROFILE%\.local\bin\claude.exe. */
@@ -72,26 +76,60 @@ export function resolveClaudePath(
   return exists(fallback) ? fallback : null;
 }
 
-export function killTree(child: ChildProcess): void {
-  if (child.exitCode !== null || child.pid === undefined) return;
+export function killPid(pid: number | undefined): void {
+  if (pid === undefined || pid <= 0) return;
   if (process.platform === "win32") {
     try {
-      spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }).on("error", () => {});
+      spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }).on("error", () => {});
     } catch {
-      child.kill();
+      /* ignore */
     }
   } else {
-    child.kill("SIGKILL");
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* already gone */
+    }
   }
 }
 
-/** Environment for the Claude process: drop variables that make it think it is nested. */
+export function killTree(child: ChildProcess): void {
+  if (child.exitCode !== null || child.pid === undefined) return;
+  killPid(child.pid);
+}
+
+/**
+ * Environment for a Claude process: drop variables that make it think it is
+ * nested (an inherited CLAUDE_CODE_CHILD_SESSION, for one, turns off
+ * transcript saving).
+ */
 export function claudeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out = { ...env };
   for (const k of Object.keys(out)) {
     if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_") || k === "BROWSERTODO_BRAIN") delete out[k];
   }
   return out;
+}
+
+/**
+ * AgentEvents for one Claude Code stream-json event. Tool calls and results
+ * are not mapped: the helper's tool executor already emits them.
+ */
+export function mapStreamEvent(ev: any): AgentEvent[] {
+  if (!ev || typeof ev !== "object") return [];
+  if (ev.type === "assistant" && Array.isArray(ev.message?.content)) {
+    return ev.message.content
+      .filter((b: any) => b?.type === "text" && typeof b.text === "string" && b.text.trim())
+      .map((b: any) => ({ type: "assistant_text", text: clipEventText(b.text) }));
+  }
+  if (ev.type === "result" && (ev.is_error === true || (typeof ev.subtype === "string" && ev.subtype !== "success"))) {
+    const detail = typeof ev.result === "string" && ev.result.trim() ? ev.result : (ev.subtype ?? "error");
+    return [{ type: "error", text: clipEventText(`Claude Code: ${detail}`) }];
+  }
+  if (ev.type === "system" && ev.subtype === "init") {
+    return [{ type: "status", text: `Claude Code started${ev.model ? ` (${ev.model})` : ""}` }];
+  }
+  return [];
 }
 
 export class ClaudeCodeBrain implements Brain {
@@ -106,7 +144,6 @@ export class ClaudeCodeBrain implements Brain {
 
   run(ctx: BrainContext): Promise<void> {
     const args = buildClaudeArgs({
-      prompt: ctx.prompt,
       systemPrompt: ctx.systemPrompt,
       mcpConfigPath: ctx.mcpConfigPath,
       allowedTools: ctx.allowedTools,
@@ -121,12 +158,33 @@ export class ClaudeCodeBrain implements Brain {
           cwd: dirname(ctx.mcpConfigPath),
           windowsHide: true,
           shell: false,
-          stdio: ["ignore", "pipe", "pipe"],
+          stdio: ["pipe", "pipe", "pipe"],
           env: claudeEnv(),
         });
       } catch (e) {
         return reject(e);
       }
+      const stdin = child.stdin!;
+      stdin.on("error", (e) => ctx.log({ type: "claude_stdin_error", message: e.message }));
+
+      // Every user message gets one result event; when all are answered and
+      // no task_* was called, Claude has stopped: close stdin so it exits.
+      let sent = 0;
+      let results = 0;
+      const send = (text: string) => {
+        if (stdin.destroyed || stdin.writableEnded) return;
+        sent++;
+        stdin.write(userMessageLine(text));
+      };
+      send(ctx.prompt);
+      ctx.input.onMessage((text) => {
+        ctx.log({ type: "claude_user_message", chars: text.length });
+        send(`Message from the human (they are watching this run): ${text}`);
+      });
+      ctx.input.onClose(() => {
+        if (!stdin.destroyed && !stdin.writableEnded) stdin.end();
+      });
+
       const onAbort = () => {
         ctx.log({ type: "claude_kill", reason: String(ctx.signal.reason ?? "aborted") });
         killTree(child);
@@ -136,14 +194,13 @@ export class ClaudeCodeBrain implements Brain {
       const text = new StringDecoder("utf8");
       let rest = "";
       child.stdout!.on("data", (chunk: Buffer) => {
-        // stream-json: one JSON event per line; tolerate the odd non-JSON line.
         rest += text.write(chunk);
         let nl: number;
         while ((nl = rest.indexOf("\n")) >= 0) {
           const line = rest.slice(0, nl).trim();
           rest = rest.slice(nl + 1);
           if (!line) continue;
-          let event: unknown;
+          let event: any;
           try {
             event = JSON.parse(line);
           } catch {
@@ -151,6 +208,14 @@ export class ClaudeCodeBrain implements Brain {
             continue;
           }
           ctx.log({ type: "claude", event });
+          for (const e of mapStreamEvent(event)) ctx.emit(e);
+          if (event?.type === "result") {
+            results++;
+            if (results >= sent && !ctx.input.closed) {
+              ctx.log({ type: "claude_turns_done", sent, results });
+              ctx.input.close();
+            }
+          }
         }
       });
       child.stderr!.on("data", (chunk: Buffer) => ctx.log({ type: "claude_stderr", text: chunk.toString("utf8").slice(0, 2000) }));

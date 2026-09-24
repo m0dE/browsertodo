@@ -1,54 +1,69 @@
 /**
- * Orchestrates one task: run folder, media, MCP config, prompts, the brain,
- * limits, and the final TaskRunResult. One task at a time.
+ * Orchestrates one task run: run folder, MCP config, prompts, the tool
+ * executor, the brain, limits, user messages, events, and the final
+ * TaskRunResult. One task at a time.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   MCP_SERVER_NAME,
   TOOL_NAMES,
+  toolsFor,
   mcpToolName,
-  type ClaimResponse,
+  type AgentEvent,
+  type AgentTask,
   type RunConfig,
-  type Screenshot,
   type TaskRunResult,
   type ToolName,
 } from "@browsertodo/shared";
+import { buildSystemPrompt, buildTaskPrompt, createToolExecutor, type BrowserCaller, type JevLike } from "@browsertodo/core";
 import { RunLog, type LiveLog } from "./logger.js";
-import type { Brain } from "./brains/brain.js";
-import type { TaskFinish, ToolSession } from "./tool-router.js";
-import { downloadMedia } from "./media.js";
-import { buildSystemPrompt, buildTaskPrompt } from "./system-prompt.js";
+import { UserInput, type Brain } from "./brains/brain.js";
+import { INTERACTIVE_TASK_ID, type ToolSession } from "./tool-router.js";
+
+export interface RunTaskParams {
+  sessionId: string;
+  task: AgentTask;
+  mediaPaths: string[];
+  config: RunConfig;
+}
 
 export interface TaskRunnerDeps {
   runsDir: string;
   mcpServerPath: string;
   pipePath: string;
-  /** True when a Jev key is configured. */
-  jevAvailable: boolean;
+  browser: BrowserCaller;
+  /** Jev key from the helper environment (TYPESAFE_API_KEY), used when the run config has none. */
+  envJevKey: string | null;
+  makeJev: (apiKey: string) => JevLike;
   makeBrain: () => Brain;
+  /** helper.event notifications. */
+  notify: (sessionId: string, event: AgentEvent) => void;
   live?: LiveLog | null;
-  download?: typeof downloadMedia;
   /** Time the agent gets to exit after its first task_* call. Default 20 s. */
   finishGraceMs?: number;
   /** Time a brain gets to return after an abort before we stop waiting. Default 15 s. */
   abortWaitMs?: number;
   nodePath?: string;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 interface RunState {
-  taskId: string;
+  sessionId: string;
   controller: AbortController;
   log: RunLog;
   runDir: string;
   config: RunConfig;
   allowed: Set<ToolName>;
-  finish: TaskFinish | null;
+  input: UserInput;
+  finish: TaskRunResult | null;
   forcedPause: string | null;
   abortReason: string | null;
   timedOut: boolean;
+  lastError: string | null;
   toolCalls: number;
   screenshots: number;
+  session: ToolSession;
   graceTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -69,72 +84,89 @@ export class TaskRunner {
     return this.current !== null;
   }
 
-  get currentTaskId(): string | null {
-    return this.current?.taskId ?? null;
+  get currentSessionId(): string | null {
+    return this.current?.sessionId ?? null;
   }
 
   /** The ToolSession for the running task, for the ToolRouter. */
   session(): ToolSession | null {
-    const s = this.current;
-    if (!s) return null;
-    return {
-      taskId: s.taskId,
-      allowedTools: s.allowed,
-      jevThreshold: s.config.jevThreshold,
-      beforeCall: (name) => this.beforeCall(s, name),
-      finish: (r) => this.recordFinish(s, r),
-      log: (e) => s.log.event(e),
-      saveScreenshot: (shot) => this.saveScreenshot(s, shot),
-    };
+    return this.current?.session ?? null;
   }
 
-  forcePause(taskId: string, reason: string): boolean {
+  forcePause(sessionId: string, reason: string): boolean {
     const s = this.current;
-    if (!s || s.taskId !== taskId) return false;
+    if (!s || s.sessionId !== sessionId) return false;
     s.log.event({ type: "force_pause", reason });
     if (s.forcedPause === null) s.forcedPause = reason;
     s.controller.abort(new Error(`paused: ${reason}`));
     return true;
   }
 
-  abort(taskId: string, reason: string): boolean {
+  abort(sessionId: string, reason: string): boolean {
     const s = this.current;
-    if (!s || s.taskId !== taskId) return false;
+    if (!s || s.sessionId !== sessionId) return false;
     s.log.event({ type: "abort", reason });
     if (s.abortReason === null) s.abortReason = reason;
     s.controller.abort(new Error(reason));
     return true;
   }
 
-  /** Abort whatever is running (used when Chrome closes the port). */
-  shutdown(reason: string): void {
-    if (this.current) this.abort(this.current.taskId, reason);
+  /** Types a message into the running task. False when there is no such task or it already ended. */
+  sendUserMessage(sessionId: string, text: string): boolean {
+    const s = this.current;
+    if (!s || s.sessionId !== sessionId || s.finish || s.controller.signal.aborted || !text.trim()) return false;
+    if (!s.input.push(text)) return false;
+    this.emit(s, { type: "user_message", text });
+    return true;
   }
 
-  async run(claim: ClaimResponse, config: RunConfig): Promise<TaskRunResult> {
+  /** Abort whatever is running (used when Chrome closes the port). */
+  shutdown(reason: string): void {
+    if (this.current) this.abort(this.current.sessionId, reason);
+  }
+
+  async run(params: RunTaskParams): Promise<TaskRunResult> {
     if (this.current) throw new Error("busy");
-    const task = claim.task;
-    const runDir = join(this.deps.runsDir, `${safeId(task.id)}-${runStamp()}`);
-    const mediaDir = join(runDir, "media");
-    mkdirSync(mediaDir, { recursive: true });
-    const log = new RunLog(join(runDir, "log.jsonl"), this.deps.live ?? null, task.id);
-    const jevOn = config.jevEnabled && this.deps.jevAvailable;
-    const allowed = new Set<ToolName>(TOOL_NAMES.filter((n) => n !== "act" || jevOn));
-    const s: RunState = {
-      taskId: task.id,
-      controller: new AbortController(),
+    const { sessionId, task, mediaPaths, config } = params;
+    if (sessionId === INTERACTIVE_TASK_ID) throw new Error(`sessionId "${INTERACTIVE_TASK_ID}" is reserved`);
+    const runDir = join(this.deps.runsDir, `${safeId(sessionId)}-${runStamp()}`);
+    mkdirSync(runDir, { recursive: true });
+    const log = new RunLog(join(runDir, "log.jsonl"), this.deps.live ?? null, sessionId);
+    const jevKey = config.jevApiKey?.trim() || this.deps.envJevKey;
+    const jev = config.jevEnabled && jevKey ? this.deps.makeJev(jevKey) : null;
+    // With Jev, act replaces click and type (steps can still name an exact element index).
+    const allowed = new Set<ToolName>(toolsFor({ jev: jev !== null }));
+    const controller = new AbortController();
+
+    const s = {
+      sessionId,
+      controller,
       log,
       runDir,
       config,
       allowed,
+      input: new UserInput(),
       finish: null,
       forcedPause: null,
       abortReason: null,
       timedOut: false,
+      lastError: null,
       toolCalls: 0,
       screenshots: 0,
-    };
+    } as Omit<RunState, "session"> as RunState;
+
+    const executor = createToolExecutor({
+      browser: this.screenshotSaver(s),
+      jev,
+      jevThreshold: config.jevThreshold,
+      onEvent: (e) => this.emit(s, e),
+      onTaskEnd: (r) => this.recordFinish(s, r),
+      mediaPaths,
+      ...(this.deps.sleep ? { sleep: this.deps.sleep } : {}),
+    });
+    s.session = { taskId: sessionId, allowedTools: allowed, beforeCall: (name) => this.beforeCall(s, name), executor };
     this.current = s;
+
     const minutes = config.maxTaskMinutes;
     const timeLimit = setTimeout(() => {
       s.timedOut = true;
@@ -144,62 +176,87 @@ export class TaskRunner {
 
     log.event({
       type: "task_start",
-      attempts: task.attempts,
+      taskId: task.id,
       account: task.account,
-      media: claim.media.length,
-      jev: jevOn,
+      media: mediaPaths,
+      jev: jev !== null,
+      isRetry: config.isRetry,
       maxToolCalls: config.maxToolCalls,
       maxTaskMinutes: minutes,
     });
 
-    let setupError: string | null = null;
     let brainError: string | null = null;
     try {
-      let mediaPaths: string[] = [];
-      try {
-        mediaPaths = await (this.deps.download ?? downloadMedia)({
-          apiBase: config.apiBase,
-          runnerKey: config.runnerKey,
-          media: claim.media,
-          dir: mediaDir,
-          signal: s.controller.signal,
-        });
-        if (mediaPaths.length) log.event({ type: "media", paths: mediaPaths });
-      } catch (e) {
-        setupError = `media download failed: ${e instanceof Error ? e.message : String(e)}`;
-      }
-
-      if (!setupError && !s.controller.signal.aborted) {
-        const toolNames = TOOL_NAMES.filter((n) => allowed.has(n));
-        const mcpConfigPath = join(runDir, "mcp-config.json");
-        writeFileSync(mcpConfigPath, JSON.stringify(this.mcpConfig(task.id, toolNames), null, 2));
-        const brain = this.deps.makeBrain();
-        const ctx = {
-          taskId: task.id,
-          prompt: buildTaskPrompt(task, mediaPaths),
-          systemPrompt: buildSystemPrompt({ allowedTools: toolNames }),
+      const toolNames = TOOL_NAMES.filter((n) => allowed.has(n));
+      const mcpConfigPath = join(runDir, "mcp-config.json");
+      writeFileSync(mcpConfigPath, JSON.stringify(this.mcpConfig(sessionId, toolNames), null, 2));
+      const brain = this.deps.makeBrain();
+      const brainDone = brain
+        .run({
+          taskId: sessionId,
+          prompt: buildTaskPrompt(task, mediaPaths, { isRetry: config.isRetry }),
+          systemPrompt: buildSystemPrompt({ tools: toolNames, jev: jev !== null }),
           mcpConfigPath,
           allowedTools: toolNames.map(mcpToolName),
-          signal: s.controller.signal,
-          log: (e: Record<string, unknown>) => log.event(e),
+          signal: controller.signal,
+          log: (e) => log.event(e),
+          emit: (e) => this.emit(s, e),
+          input: s.input,
           task: { instructions: task.instructions, account: task.account, mediaPaths },
-        };
-        const brainDone = brain.run(ctx).catch((e: unknown) => {
+        })
+        .catch((e: unknown) => {
           brainError = e instanceof Error ? e.message : String(e);
           log.event({ type: "brain_error", message: brainError });
         });
-        await this.waitForBrain(s, brainDone);
-      }
+      await this.waitForBrain(s, brainDone);
+    } catch (e) {
+      brainError = e instanceof Error ? e.message : String(e);
     } finally {
       clearTimeout(timeLimit);
       if (s.graceTimer) clearTimeout(s.graceTimer);
+      s.input.close();
       this.current = null;
     }
 
-    const result = this.resultFor(s, setupError, brainError);
+    const result = this.resultFor(s, brainError);
+    const end: AgentEvent = { type: "task_end", outcome: result.outcome };
+    if (result.summary !== undefined) end.summary = result.summary;
+    if (result.url !== undefined) end.url = result.url;
+    if (result.reason !== undefined) end.reason = result.reason;
+    this.emit(s, end);
     result.logPath = log.path;
-    log.event({ type: "task_end", ...result });
     return result;
+  }
+
+  private emit(s: RunState, e: AgentEvent): void {
+    if (e.type === "error") s.lastError = e.text;
+    s.log.event({ ...e });
+    try {
+      this.deps.notify(s.sessionId, e);
+    } catch {
+      /* the extension may be gone */
+    }
+  }
+
+  /** Browser calls with screenshots also saved into the run folder. */
+  private screenshotSaver(s: RunState): BrowserCaller {
+    const browser = this.deps.browser;
+    return {
+      call: async (method, params) => {
+        const r = await browser.call(method, params);
+        if (method === "browser.screenshot") {
+          const shot = r as { base64: string; mimeType: string };
+          s.screenshots++;
+          const ext = shot.mimeType === "image/png" ? "png" : "jpg";
+          try {
+            writeFileSync(join(s.runDir, `screenshot-${String(s.screenshots).padStart(3, "0")}.${ext}`), Buffer.from(shot.base64, "base64"));
+          } catch {
+            /* best effort */
+          }
+        }
+        return r;
+      },
+    };
   }
 
   private mcpConfig(taskId: string, toolNames: ToolName[]) {
@@ -234,19 +291,14 @@ export class TaskRunner {
     if (r === "timeout") s.log.event({ type: "brain_stuck", waitMs });
   }
 
-  private resultFor(s: RunState, setupError: string | null, brainError: string | null): TaskRunResult {
+  private resultFor(s: RunState, brainError: string | null): TaskRunResult {
     if (s.forcedPause !== null) return { outcome: "paused", reason: s.forcedPause };
-    if (s.finish) {
-      const r: TaskRunResult = { outcome: s.finish.outcome };
-      if (s.finish.summary !== undefined) r.summary = s.finish.summary;
-      if (s.finish.url !== undefined) r.url = s.finish.url;
-      if (s.finish.reason !== undefined) r.reason = s.finish.reason;
-      return r;
-    }
-    if (setupError) return { outcome: "failed", reason: setupError };
+    if (s.finish) return { ...s.finish };
     if (s.abortReason !== null) return { outcome: "failed", reason: s.abortReason };
-    if (s.timedOut) return { outcome: "failed", reason: `timed out after ${s.config.maxTaskMinutes} minutes` };
+    if (s.timedOut) return { outcome: "failed", reason: `task time limit of ${s.config.maxTaskMinutes} minutes reached` };
     if (brainError) return { outcome: "failed", reason: `agent error: ${brainError}` };
+    // e.g. "Claude Code: Claude AI usage limit reached" (the extension classifies it as temporary)
+    if (s.lastError) return { outcome: "failed", reason: s.lastError };
     return { outcome: "failed", reason: "agent exited without reporting a result" };
   }
 
@@ -254,37 +306,28 @@ export class TaskRunner {
     if (s.controller.signal.aborted) return "The task was stopped. Stop now.";
     const isFinish = name.startsWith("task_");
     if (s.finish) return isFinish ? "The task result was already recorded. Stop now." : "The task is finished. Stop now.";
+    if (isFinish) return null;
     s.toolCalls++;
     const max = s.config.maxToolCalls;
-    if (s.toolCalls >= max + 5 && !isFinish) {
+    if (s.toolCalls >= max + 5) {
       if (s.abortReason === null) s.abortReason = `tool call limit exceeded (${max} calls)`;
       s.controller.abort(new Error("tool call limit"));
       return "Tool call limit exceeded. The task was stopped.";
     }
-    if (s.toolCalls > max && !isFinish) {
-      return `Tool call limit of ${max} reached. Call task_fail now with a short reason.`;
-    }
+    if (s.toolCalls > max) return `Tool call limit of ${max} reached. Call task_fail now with a short reason.`;
     return null;
   }
 
-  private recordFinish(s: RunState, r: TaskFinish): void {
+  private recordFinish(s: RunState, r: TaskRunResult): void {
     if (s.finish || s.forcedPause !== null) return;
     s.finish = r;
     s.log.event({ type: "task_result", ...r });
+    // Claude Code exits once its stdin is closed and the turn ends.
+    s.input.close();
     const grace = this.deps.finishGraceMs ?? 20_000;
     s.graceTimer = setTimeout(() => {
       s.log.event({ type: "grace_expired", ms: grace });
       s.controller.abort(new Error("finished"));
     }, grace);
-  }
-
-  private saveScreenshot(s: RunState, shot: Screenshot): void {
-    s.screenshots++;
-    const ext = shot.mimeType === "image/png" ? "png" : "jpg";
-    try {
-      writeFileSync(join(s.runDir, `screenshot-${String(s.screenshots).padStart(3, "0")}.${ext}`), Buffer.from(shot.base64, "base64"));
-    } catch {
-      /* best effort */
-    }
   }
 }

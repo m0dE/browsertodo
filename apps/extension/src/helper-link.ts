@@ -4,6 +4,7 @@ import {
   type BrowserMethods,
   type HelperInfo,
   type HelperMethods,
+  type HelperNotifications,
   type RpcMessage,
 } from "@browsertodo/shared";
 
@@ -20,6 +21,11 @@ export interface HelperLinkOptions {
   hostName?: string;
 }
 
+/** helper.hello may run the Claude Code self-test (up to 60 s) before answering. */
+export const HELLO_TIMEOUT_MS = 75_000;
+
+type NotificationName = keyof HelperNotifications & string;
+
 /**
  * The native messaging connection to the local helper. One RpcPeer per port;
  * connect() opens a new port when the previous one is gone.
@@ -30,6 +36,9 @@ export class HelperLink {
   private helperInfo: HelperInfo | null = null;
   private connecting: Promise<HelperInfo> | null = null;
   private readonly listeners = new Set<(reason: string) => void>();
+  private readonly infoListeners = new Set<(info: HelperInfo | null) => void>();
+  private readonly notificationListeners = new Map<string, Set<(params: any) => void>>();
+  private lastErrorText: string | null = null;
 
   constructor(private readonly opts: HelperLinkOptions) {}
 
@@ -41,15 +50,39 @@ export class HelperLink {
     return this.helperInfo;
   }
 
-  /** Opens the port if needed and says hello. Resolves with the helper info. */
-  connect(timeoutMs = 10_000): Promise<HelperInfo> {
-    if (this.connected) return Promise.resolve(this.helperInfo!);
+  /** Why the last connect failed or the port closed; null while connected. */
+  get lastError(): string | null {
+    return this.lastErrorText;
+  }
+
+  /**
+   * Opens the port if needed and says hello. Resolves with the helper info.
+   * selfTest: ask the helper to (re-)run its Claude Code self-test, also on
+   * an existing connection.
+   */
+  connect(timeoutMs = HELLO_TIMEOUT_MS, opts: { selfTest?: boolean } = {}): Promise<HelperInfo> {
+    if (this.connected && !opts.selfTest) return Promise.resolve(this.helperInfo!);
+    if (this.connected && opts.selfTest) return this.rehello(timeoutMs);
     if (!this.connecting) {
-      this.connecting = this.open(timeoutMs).finally(() => {
+      this.connecting = this.open(timeoutMs, !!opts.selfTest).finally(() => {
         this.connecting = null;
       });
     }
     return this.connecting;
+  }
+
+  /** Subscribe to a helper notification (survives reconnects). Returns an unsubscribe function. */
+  onNotification<N extends NotificationName>(method: N, fn: (params: HelperNotifications[N]) => void): () => void {
+    let set = this.notificationListeners.get(method);
+    if (!set) this.notificationListeners.set(method, (set = new Set()));
+    set.add(fn);
+    return () => set.delete(fn);
+  }
+
+  /** Called with the new info after every hello and with null on disconnect. */
+  onInfo(fn: (info: HelperInfo | null) => void): () => void {
+    this.infoListeners.add(fn);
+    return () => this.infoListeners.delete(fn);
   }
 
   call<M extends keyof HelperMethods & string>(
@@ -77,16 +110,46 @@ export class HelperLink {
     }
   }
 
-  private async open(timeoutMs: number): Promise<HelperInfo> {
+  private async rehello(timeoutMs: number): Promise<HelperInfo> {
+    const peer = this.peer!;
+    const info = await peer.call("helper.hello", { selfTest: true }, { timeoutMs });
+    if (this.peer === peer) this.setInfo(info);
+    return info;
+  }
+
+  private setInfo(info: HelperInfo | null): void {
+    this.helperInfo = info;
+    for (const fn of this.infoListeners) {
+      try {
+        fn(info);
+      } catch {
+        /* listener errors are not the link's problem */
+      }
+    }
+  }
+
+  private async open(timeoutMs: number, selfTest: boolean): Promise<HelperInfo> {
     const hostName = this.opts.hostName ?? NATIVE_HOST_NAME;
     let port: chrome.runtime.Port;
     try {
       port = chrome.runtime.connectNative(hostName);
     } catch (err) {
-      throw new Error(`Cannot start helper: ${err instanceof Error ? err.message : String(err)}`);
+      this.lastErrorText = `Cannot start helper: ${err instanceof Error ? err.message : String(err)}`;
+      throw new Error(this.lastErrorText);
     }
     const peer: HelperPeer = new RpcPeer<Methods<HelperMethods>, Methods<BrowserMethods>>((msg) => port.postMessage(msg), "e");
     this.opts.registerHandlers(peer);
+    for (const method of ["helper.event", "helper.terminal.data", "helper.terminal.exit"] as const) {
+      peer.onNotification(method, (params) => {
+        for (const fn of this.notificationListeners.get(method) ?? []) {
+          try {
+            fn(params);
+          } catch {
+            /* keep delivering to the others */
+          }
+        }
+      });
+    }
     this.port = port;
     this.peer = peer;
     port.onMessage.addListener((m: unknown) => {
@@ -98,12 +161,15 @@ export class HelperLink {
       else peer.close(reason);
     });
     try {
-      const info = await peer.call("helper.hello", {}, { timeoutMs });
-      if (this.port !== port) throw new Error("Helper disconnected");
-      this.helperInfo = info;
+      const info = await peer.call("helper.hello", selfTest ? { selfTest: true } : {}, { timeoutMs });
+      if (this.port !== port) throw new Error(this.lastErrorText ?? "Helper disconnected");
+      this.lastErrorText = null;
+      this.setInfo(info);
       return info;
     } catch (err) {
-      if (this.port === port) this.disconnect(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      if (this.port === port) this.disconnect(msg);
+      this.lastErrorText = msg;
       throw err;
     }
   }
@@ -114,7 +180,9 @@ export class HelperLink {
     this.peer?.close(reason);
     this.port = null;
     this.peer = null;
-    this.helperInfo = null;
+    this.lastErrorText = reason;
+    if (wasConnected) this.setInfo(null);
+    else this.helperInfo = null;
     if (hadPeer && wasConnected) for (const fn of this.listeners) fn(reason);
   }
 }

@@ -25,6 +25,7 @@ export class RpcPeer<Outgoing extends MethodMap, Incoming extends MethodMap> {
     { resolve: (v: unknown) => void; reject: (e: Error) => void; timer?: ReturnType<typeof setTimeout> }
   >();
   private readonly handlers = new Map<string, Handler>();
+  private readonly notificationHandlers = new Map<string, (params: any) => void>();
   private closed = false;
 
   constructor(
@@ -68,8 +69,29 @@ export class RpcPeer<Outgoing extends MethodMap, Incoming extends MethodMap> {
     });
   }
 
+  /** Send a one-way message (no id, no reply). Silently dropped when closed. */
+  notify(method: string, params: unknown): void {
+    this.safeSend({ method, params });
+  }
+
+  /** Handle one-way messages from the other side. */
+  onNotification<P = unknown>(method: string, fn: (params: P) => void): void {
+    this.notificationHandlers.set(method, fn as (params: any) => void);
+  }
+
   /** Feed an incoming message from the transport. */
   async receive(msg: RpcMessage): Promise<void> {
+    if (msg.method !== undefined && msg.id === undefined) {
+      const fn = this.notificationHandlers.get(msg.method);
+      if (fn) {
+        try {
+          fn(msg.params ?? {});
+        } catch {
+          /* a notification handler must not break the transport */
+        }
+      }
+      return;
+    }
     if (msg.method !== undefined && msg.id !== undefined) {
       const handler = this.handlers.get(msg.method);
       if (!handler) {

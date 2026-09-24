@@ -11,7 +11,21 @@ export const ToolArgs = {
   read_page: z.object({}),
   screenshot: z.object({}),
   act: z.object({
-    goal: z.string().describe("One small step in plain words, e.g. 'open the post composer'"),
+    steps: z
+      .array(
+        z.object({
+          goal: z.string().describe("One small step in plain words, e.g. 'open the post composer'"),
+          text: z.string().optional().describe("Text to enter when this step types into a field"),
+          index: z
+            .number()
+            .int()
+            .optional()
+            .describe("Element index from read_page. When given, the step runs directly on it (types text if given, else clicks) without asking the fast model"),
+        }),
+      )
+      .min(1)
+      .max(8)
+      .describe("Steps done in order by the fast model; stops at the first step it is not confident about"),
   }),
   click: z.object({ index: z.number().int().describe("Element index from read_page") }),
   type: z.object({
@@ -49,7 +63,7 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   navigate: "Open a URL in the agent tab and wait for it to load.",
   read_page: "Get the page URL, title, visible text and an indexed list of interactive elements.",
   screenshot: "Capture the visible part of the page as an image.",
-  act: "Perform one small step described in plain words. A fast model picks the element. Returns what it did, or 'not confident' so you can use click/type yourself.",
+  act: "Do up to 8 small steps in order, in one call. For each step either describe it in plain words (a fast model picks the element) or give the element index you already know (runs directly). Give text for steps that type. Stops at the first step the fast model is not confident about and returns the page's element list, so you can retry that step with an index.",
   click: "Click an element by index from read_page.",
   type: "Focus an element by index and insert text into it.",
   paste: "Insert text at the current keyboard focus.",
@@ -78,4 +92,22 @@ export interface ToolResult {
 export type PipeMethods = {
   "tool.call": { params: { taskId: string; name: ToolName; args: unknown }; result: ToolResult };
   "tool.list": { params: { taskId: string }; result: { names: ToolName[] } };
+}
+
+/** Tools that end a task. Not offered in the interactive terminal. */
+export const TASK_END_TOOLS: readonly ToolName[] = ["task_complete", "task_fail", "task_pause"];
+
+/** Tools offered to the interactive Claude Code terminal (no task to end). */
+export const INTERACTIVE_TOOL_NAMES: ToolName[] = TOOL_NAMES.filter((n) => !TASK_END_TOOLS.includes(n));
+
+/**
+ * Tools offered to the model. act (batched steps) always replaces click and
+ * type: steps that name an element index run directly; with Jev, steps may
+ * instead describe the element in words. The jev flag is kept for callers.
+ */
+export function toolsFor(opts: { jev: boolean; interactive?: boolean }): ToolName[] {
+  return TOOL_NAMES.filter((n) => {
+    if (opts.interactive && TASK_END_TOOLS.includes(n)) return false;
+    return n !== "click" && n !== "type";
+  });
 }

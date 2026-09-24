@@ -1,69 +1,164 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AgentEvent } from "@browsertodo/shared";
 import { ClaudeCodeBrain, buildClaudeArgs } from "../src/brains/claude-code.js";
-import type { BrainContext } from "../src/brains/brain.js";
+import { UserInput, type BrainContext } from "../src/brains/brain.js";
+import { SelfTestCache, parseSelfTestOutput, runSelfTest, selfTestArgs } from "../src/self-test.js";
 
-const FAKE = join(dirname(fileURLToPath(import.meta.url)), "support", "fake-claude.mjs");
+const SUPPORT = join(dirname(fileURLToPath(import.meta.url)), "support");
+const FAKE = join(SUPPORT, "fake-claude.mjs");
 
 let dir: string;
-const savedClaudeCode = process.env.CLAUDECODE;
+const saved = { CLAUDECODE: process.env.CLAUDECODE, CHILD: process.env.CLAUDE_CODE_CHILD_SESSION };
 beforeEach(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "bt-claude-")));
 });
 afterEach(() => {
   delete process.env.FAKE_CLAUDE_HANG;
-  if (savedClaudeCode === undefined) delete process.env.CLAUDECODE;
-  else process.env.CLAUDECODE = savedClaudeCode;
+  delete process.env.FAKE_CLAUDE_SLOW_MS;
+  for (const [k, v] of [["CLAUDECODE", saved.CLAUDECODE], ["CLAUDE_CODE_CHILD_SESSION", saved.CHILD]] as const) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
   rmSync(dir, { recursive: true, force: true });
 });
 
-function ctx(signal: AbortSignal, events: Record<string, any>[]): BrainContext {
+function ctx(signal: AbortSignal, log: Record<string, any>[], events: AgentEvent[], input = new UserInput()): BrainContext {
   return {
-    taskId: "T1",
+    taskId: "S1",
     prompt: 'Line one\nLine "two" with \\ backslash and trailing \\',
     systemPrompt: "rules & <stuff> | %PATH%",
     mcpConfigPath: join(dir, "mcp-config.json"),
     allowedTools: ["mcp__browsertodo__read_page", "mcp__browsertodo__task_complete"],
     signal,
-    log: (e) => events.push(e),
+    log: (e) => log.push(e),
+    emit: (e) => events.push(e),
+    input,
   };
 }
 
+const brain = () => new ClaudeCodeBrain({ claudePath: process.execPath, model: "sonnet", prefixArgs: [FAKE] });
+
 describe("ClaudeCodeBrain process handling (fake claude)", () => {
-  it("passes the exact args (including empty ones), runs in the run dir, and logs JSONL events", async () => {
+  it("passes the exact args, sends the prompt as the first stream-json message, maps events, and exits when all turns are done", async () => {
     process.env.CLAUDECODE = "1"; // must not leak into the child
-    const events: Record<string, any>[] = [];
-    const c = ctx(new AbortController().signal, events);
-    await new ClaudeCodeBrain({ claudePath: process.execPath, model: "sonnet", prefixArgs: [FAKE] }).run(c);
-    const init = events.find((e) => e.type === "claude" && e.event.type === "system")!.event;
+    process.env.CLAUDE_CODE_CHILD_SESSION = "1";
+    const log: Record<string, any>[] = [];
+    const events: AgentEvent[] = [];
+    const c = ctx(new AbortController().signal, log, events);
+    await brain().run(c);
+    const init = log.find((e) => e.type === "claude" && e.event.type === "system")!.event;
     expect(init.args).toEqual(buildClaudeArgs({ ...c, model: "sonnet" }));
     expect(init.cwd).toBe(dir);
     expect(init.nested).toBeNull();
-    expect(events.find((e) => e.type === "claude_stdout")).toEqual({ type: "claude_stdout", text: "not json" });
-    expect(events.some((e) => e.type === "claude" && e.event.text === "✓ done")).toBe(true);
-    expect(events.at(-1)).toMatchObject({ type: "claude_exit", code: 0 });
+    expect(init.child).toBeNull();
+    expect(log.find((e) => e.type === "claude_stdout")).toEqual({ type: "claude_stdout", text: "not json" });
+    expect(events).toEqual([
+      { type: "status", text: "Claude Code started (fake)" },
+      { type: "assistant_text", text: `got: ${c.prompt}` },
+    ]);
+    expect(c.input.closed).toBe(true);
+    expect(log.at(-1)).toMatchObject({ type: "claude_exit", code: 0 });
+  });
+
+  it("injects user messages mid-turn into the same session", async () => {
+    process.env.FAKE_CLAUDE_SLOW_MS = "150";
+    const log: Record<string, any>[] = [];
+    const events: AgentEvent[] = [];
+    const input = new UserInput();
+    const run = brain().run(ctx(new AbortController().signal, log, events, input));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(input.push("also add a hashtag")).toBe(true);
+    await run;
+    const texts = events.filter((e) => e.type === "assistant_text").map((e) => (e as { text: string }).text);
+    expect(texts).toHaveLength(2);
+    expect(texts[1]).toBe("got: Message from the human (they are watching this run): also add a hashtag");
+  });
+
+  it("closing the input (task_* called) ends stdin so claude exits", async () => {
+    process.env.FAKE_CLAUDE_SLOW_MS = "300";
+    const log: Record<string, any>[] = [];
+    const input = new UserInput();
+    const run = brain().run(ctx(new AbortController().signal, log, [], input));
+    setTimeout(() => input.close(), 20);
+    await run;
+    expect(log.at(-1)).toMatchObject({ type: "claude_exit", code: 0 });
   });
 
   it("kills the process tree on abort", async () => {
     process.env.FAKE_CLAUDE_HANG = "1";
-    const events: Record<string, any>[] = [];
+    const log: Record<string, any>[] = [];
     const ac = new AbortController();
-    const run = new ClaudeCodeBrain({ claudePath: process.execPath, model: "sonnet", prefixArgs: [FAKE] }).run(ctx(ac.signal, events));
+    const run = brain().run(ctx(ac.signal, log, []));
     const started = Date.now();
-    while (!events.some((e) => e.type === "claude") && Date.now() - started < 10_000) await new Promise((r) => setTimeout(r, 50));
+    while (!log.some((e) => e.type === "claude") && Date.now() - started < 10_000) await new Promise((r) => setTimeout(r, 50));
     ac.abort(new Error("time limit"));
     await run;
-    expect(events.some((e) => e.type === "claude_kill")).toBe(true);
-    expect(events.at(-1)?.type).toBe("claude_exit");
+    expect(log.some((e) => e.type === "claude_kill")).toBe(true);
+    expect(log.at(-1)?.type).toBe("claude_exit");
   });
 
   it("rejects when claude cannot be started", async () => {
-    const events: Record<string, any>[] = [];
-    await expect(new ClaudeCodeBrain({ claudePath: join(dir, "missing.exe"), model: "sonnet" }).run(ctx(new AbortController().signal, events))).rejects.toThrow(
-      /ENOENT/,
-    );
+    await expect(
+      new ClaudeCodeBrain({ claudePath: join(dir, "missing.exe"), model: "sonnet" }).run(ctx(new AbortController().signal, [], [])),
+    ).rejects.toThrow(/ENOENT/);
+  });
+});
+
+describe("self-test", () => {
+  const script = (body: string) => {
+    const p = join(dir, `fake-${Math.random().toString(36).slice(2)}.mjs`);
+    writeFileSync(p, body);
+    return p;
+  };
+
+  it("uses a one-turn headless call with no tools or settings", () => {
+    expect(selfTestArgs()).toEqual(["-p", "Reply with exactly: OK", "--tools", "", "--setting-sources", "", "--no-session-persistence", "--output-format", "json", "--model", "haiku"]);
+  });
+
+  it("parses json output", () => {
+    expect(parseSelfTestOutput('{"type":"result","subtype":"success","is_error":false,"result":"OK"}', "", 0)).toEqual({ ok: true });
+    expect(parseSelfTestOutput('{"type":"result","is_error":true,"result":"Invalid API key · Please run /login"}', "", 1)).toEqual({
+      ok: false,
+      error: "Claude Code error: Invalid API key · Please run /login",
+    });
+    expect(parseSelfTestOutput("", "boom", 3)).toEqual({ ok: false, error: "claude exited with code 3: boom" });
+  });
+
+  it("runs a fake claude: ok, error, and timeout", async () => {
+    const ok = script(`process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "OK", args: process.argv.slice(2) }))`);
+    const r = await runSelfTest({ claudePath: process.execPath, prefixArgs: [ok] });
+    expect(r.ok).toBe(true);
+    expect(typeof r.ms).toBe("number");
+    const bad = script(`process.stdout.write(JSON.stringify({ type: "result", is_error: true, result: "Not logged in" })); process.exit(1)`);
+    expect(await runSelfTest({ claudePath: process.execPath, prefixArgs: [bad] })).toMatchObject({ ok: false, error: "Claude Code error: Not logged in" });
+    const hang = script(`setInterval(() => {}, 1000)`);
+    expect(await runSelfTest({ claudePath: process.execPath, prefixArgs: [hang], timeoutMs: 300 })).toMatchObject({
+      ok: false,
+      error: "self-test timed out after 0 s",
+    });
+  });
+
+  it("caches in memory and on disk; scripted is always ok; missing claude fails", async () => {
+    let runs = 0;
+    const cacheFile = join(dir, "selftest.json");
+    const run = async () => (runs++, { ok: true, ms: 5, at: new Date().toISOString() });
+    const a = new SelfTestCache({ claudePath: "C:\\claude.exe", cacheFile, run });
+    await a.get();
+    await a.get();
+    expect(runs).toBe(1);
+    const b = new SelfTestCache({ claudePath: "C:\\claude.exe", cacheFile, run });
+    expect(b.cached?.ok).toBe(true);
+    await b.get();
+    expect(runs).toBe(1);
+    await b.get(true);
+    expect(runs).toBe(2);
+    // a different claude path does not reuse the cache
+    expect(new SelfTestCache({ claudePath: "D:\\other.exe", cacheFile, run }).cached).toBeUndefined();
+    expect((await new SelfTestCache({ claudePath: "scripted", cacheFile: null }).get()).ok).toBe(true);
+    expect(await new SelfTestCache({ claudePath: null, cacheFile: null }).get()).toMatchObject({ ok: false, error: expect.stringMatching(/not found/) });
   });
 });

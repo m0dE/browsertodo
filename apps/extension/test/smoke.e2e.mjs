@@ -3,7 +3,7 @@
 // The helper is not needed; the status must show it as not connected.
 import { chromium } from "@playwright/test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -73,7 +73,7 @@ try {
   await step("extension loads with the pinned ID", async () => {
     assert.equal(extensionId, expectedId);
     const hook = await sw.evaluate(() => Object.keys(globalThis.__browsertodo ?? {}));
-    assert.ok(hook.includes("driver") && hook.includes("coordinator"));
+    for (const k of ["driver", "runner", "localStore", "sessions", "helper", "settings"]) assert.ok(hook.includes(k), `hook has ${k}`);
     return extensionId;
   });
 
@@ -83,64 +83,95 @@ try {
     return `period ${alarm.periodInMinutes} min`;
   });
 
-  const options = await context.newPage();
-  await options.goto(`chrome-extension://${extensionId}/options.html`);
+  // UI protocol requests, sent from an extension page like the side panel does.
+  const page = await context.newPage();
+  await page.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  const ui = async (msg) => {
+    const res = await page.evaluate((m) => chrome.runtime.sendMessage(m), msg);
+    if (!res?.ok) throw new Error(`${msg.type}: ${res?.error ?? "no response"}`);
+    return res.data;
+  };
 
-  await step("options page renders with helper not connected", async () => {
-    await options.getByRole("heading", { name: "browsertodo" }).waitFor();
-    await options.waitForFunction(() => document.getElementById("st-helper")?.textContent !== "…");
-    const helper = await options.locator("#st-helper").textContent();
-    assert.match(helper, /not connected/);
-    const cmd = await options.locator("#install-cmd").textContent();
-    assert.ok(cmd.includes(`--extension-id ${extensionId}`));
-    return helper;
+  await step("state.get without helper or key: no brain, helper error shown", async () => {
+    const state = await ui({ type: "state.get" });
+    assert.equal(state.brain.effective, null);
+    assert.equal(state.settings.brain, "auto");
+    assert.ok(state.brain.note, "has a note");
+    return state.brain.note.slice(0, 120);
   });
 
-  await step("options page saves settings and reschedules the alarm", async () => {
-    await options.locator("#f-apiBase").fill("http://127.0.0.1:9/");
-    await options.locator("#f-runnerKey").fill("bt_smoke");
-    await options.locator("#f-intervalMinutes").fill("30");
-    await options.locator("#f-delayMinSec").fill("0");
-    await options.locator("#f-delayMaxSec").fill("1");
-    await options.getByRole("button", { name: "Save settings" }).click();
-    await options.locator("#save-msg", { hasText: "Saved." }).waitFor();
+  await step("settings.save: partial update, secrets redacted, alarm rescheduled", async () => {
+    const state = await ui({ type: "settings.save", settings: { anthropicApiKey: "sk-smoke", intervalMinutes: 30, delayMinSec: 0, delayMaxSec: 1 } });
+    assert.equal(state.settings.anthropicApiKey, "set");
+    assert.equal(state.brain.effective, "claude-api");
     const stored = await sw.evaluate(() => chrome.storage.local.get("settings"));
-    assert.equal(stored.settings.apiBase, "http://127.0.0.1:9");
-    assert.equal(stored.settings.intervalMinutes, 30);
-    assert.equal(stored.settings.runnerKey, "bt_smoke");
-    await options.waitForTimeout(200);
+    assert.equal(stored.settings.anthropicApiKey, "sk-smoke");
+    await page.waitForTimeout(200);
     const alarm = await sw.evaluate(() => chrome.alarms.get("browsertodo-run"));
     assert.equal(alarm?.periodInMinutes, 30);
-    return "apiBase trimmed, interval 30";
+    await ui({ type: "settings.save", settings: { anthropicApiKey: "" } });
+    return "key set then cleared, interval 30";
   });
 
-  await step("Test API connection reports an unreachable API", async () => {
-    await options.getByRole("button", { name: "Test API connection" }).click();
-    await options.locator("#action-msg", { hasText: "failed" }).waitFor({ timeout: 15_000 });
-    return (await options.locator("#action-msg").textContent()).slice(0, 120);
+  await step("settings.testCloud reports missing configuration", async () => {
+    const r = await ui({ type: "settings.testCloud" });
+    assert.equal(r.ok, false);
+    return r.detail;
   });
 
-  await step("Run now without a helper records 'Helper not connected'", async () => {
-    await options.getByRole("button", { name: "Run now" }).click();
-    await options.locator("#st-error", { hasText: "Helper not connected" }).waitFor({ timeout: 15_000 });
-    const running = await options.locator("#st-run").textContent();
-    return `${(await options.locator("#st-error").textContent()).slice(0, 120)} (run: ${running})`;
+  await step("tasks.add / tasks.list with a file stored in IndexedDB", async () => {
+    const { task } = await ui({
+      type: "tasks.add",
+      instructions: "smoke task",
+      notBefore: new Date(Date.now() + 3600_000).toISOString(),
+      media: [{ name: "note.txt", type: "text/plain", dataBase64: Buffer.from("hello media").toString("base64") }],
+    });
+    const { tasks } = await ui({ type: "tasks.list" });
+    const t = tasks.find((x) => x.id === task.id);
+    assert.deepEqual(t.media.map((m) => [m.name, m.size]), [["note.txt", 11]]);
+    const due = await sw.evaluate(() => chrome.alarms.get("browsertodo-due"));
+    assert.ok(due, "due alarm scheduled for the task's time");
+    return `${tasks.length} task(s), due alarm at ${new Date(due.scheduledTime).toISOString()}`;
   });
 
-  await step("vault unlock, add, list, getCredential", async () => {
-    await options.locator("#vault-pass").fill("smoke passphrase");
-    await options.getByRole("button", { name: "Unlock" }).click();
-    await options.locator("#vault-state", { hasText: "unlocked" }).waitFor();
-    await options.locator("#va-site").fill("example.com");
-    await options.locator("#va-user").fill("alice");
-    await options.locator("#va-pass").fill("pw1");
-    await options.getByRole("button", { name: "Add or replace" }).click();
-    await options.locator("#vault-sites li", { hasText: "example.com" }).waitFor();
+  await step("run.due with no brain records lastError and does not run", async () => {
+    // Claude API mode without a key: no brain, whatever helper is installed on this machine.
+    await ui({ type: "settings.save", settings: { brain: "claude-api" } });
+    await ui({ type: "tasks.add", instructions: "due now" });
+    const r = await ui({ type: "run.due" });
+    assert.equal(r.started, true);
+    await sw.evaluate(() => globalThis.__browsertodo.runner.idle());
+    const state = await ui({ type: "state.get" });
+    assert.ok(state.lastError, "lastError set");
+    const { tasks } = await ui({ type: "tasks.list" });
+    assert.equal(tasks.find((t) => t.instructions === "due now").status, "pending");
+    return state.lastError.slice(0, 120);
+  });
+
+  await step("vault via background requests, getCredential", async () => {
+    const send = (m) => sw.evaluate((x) => globalThis.__browsertodo.router.handle(x), m);
+    assert.deepEqual(await send({ type: "vault.unlock", passphrase: "smoke passphrase" }), { ok: true, data: { ok: true } });
+    await send({ type: "vault.set", site: "example.com", username: "alice", password: "pw1" });
     const cred = await sw.evaluate(() => globalThis.__browsertodo.vault.getCredential("login.example.com"));
     assert.deepEqual(cred, { found: true, username: "alice", password: "pw1" });
-    await options.getByRole("button", { name: "Lock", exact: true }).click();
-    await options.locator("#vault-state", { hasText: /^locked$/ }).waitFor();
+    await send({ type: "vault.lock" });
     return "parent-domain match ok, lock ok";
+  });
+
+  let materializedPath = null;
+  await step("media materialization writes a real file with chrome.downloads", async () => {
+    const out = await sw.evaluate(async () => {
+      const m = await globalThis.__browsertodo.media.materialize("smoke-session", [
+        { kind: "blob", name: "upload-me.txt", blob: new Blob(["hello upload"], { type: "text/plain" }) },
+      ]);
+      globalThis.__smokeMedia = m;
+      return m.paths;
+    });
+    assert.equal(out.length, 1);
+    assert.ok(existsSync(out[0]), `file exists: ${out[0]}`);
+    assert.equal(readFileSync(out[0], "utf8"), "hello upload");
+    materializedPath = out[0];
+    return out[0];
   });
 
   // Driver against the fixture page, in the agent window.
@@ -229,6 +260,17 @@ try {
     const err = await call("upload", { index: findIndex(snap, (e) => e.role === "link"), paths: [uploadFile] }).catch((e) => e.message);
     assert.match(String(err), /not a file input/);
     return "upload-me.txt:12";
+  });
+
+  await step("upload works with a materialized path, which cleanup removes", async () => {
+    if (!materializedPath) throw new Error("no materialized file");
+    snap = await call("readPage");
+    await call("upload", { index: findIndex(snap, (e) => e.type === "file"), paths: [materializedPath] });
+    const s = await call("readPage");
+    assert.match(s.text, /Files: \S*:12/);
+    await sw.evaluate(() => globalThis.__smokeMedia.cleanup());
+    assert.ok(!existsSync(materializedPath), "file removed");
+    return /Files: (\S*)/.exec(s.text)?.[1];
   });
 
   await step("click on a stale index errors clearly", async () => {

@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>browsertodo</title>
+    <link rel="stylesheet" href="xterm.css" />
+    <link rel="stylesheet" href="ui.css" />
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body class="panel">
+    <header class="top">
+      <div id="status" class="status" data-tone="muted" role="status">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="status-text" class="status-text">Connecting…</span>
+        <span id="status-meta" class="status-meta"></span>
+        <button id="status-action" type="button" class="link" hidden></button>
+        <button id="open-settings" type="button" class="icon" title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 4.5h7M13 4.5h1M2 11.5h1M7 11.5h7"/><circle cx="11" cy="4.5" r="1.9"/><circle cx="5" cy="11.5" r="1.9"/></svg>
+        </button>
+      </div>
+      <nav class="tabs" role="tablist">
+        <button type="button" role="tab" id="tab-btn-tasks" data-tab="tasks" aria-selected="true">Tasks</button>
+        <button type="button" role="tab" id="tab-btn-activity" data-tab="activity" aria-selected="false">Activity <span id="live-dot" class="live-dot" hidden></span></button>
+        <button type="button" role="tab" id="tab-btn-terminal" data-tab="terminal" aria-selected="false">Terminal</button>
+      </nav>
+    </header>
+
+    <main>
+      <!-- Tasks -->
+      <section id="tab-tasks" class="tab scroll" role="tabpanel">
+        <form id="now-form" class="card now">
+          <textarea id="now-text" rows="3" placeholder="Do this now, e.g. “Post ‘good morning’ on X”" required></textarea>
+          <div class="row">
+            <input id="now-account" class="grow" placeholder="Account (optional)" autocomplete="off" />
+            <label class="btn ghost file-btn" title="Attach files">
+              <input id="now-files" type="file" multiple hidden />Attach
+            </label>
+            <button type="submit" class="primary">Run</button>
+          </div>
+          <ul id="now-files-list" class="files"></ul>
+          <p id="now-msg" class="msg"></p>
+        </form>
+
+        <div class="section-head">
+          <h2>Todo</h2>
+          <span id="todo-count" class="count"></span>
+          <span class="spacer"></span>
+          <button id="run-due" type="button" class="ghost small" title="Run everything that is due now">Run due</button>
+          <button id="add-toggle" type="button" class="ghost small" aria-expanded="false">Add task</button>
+        </div>
+        <p id="tasks-msg" class="msg"></p>
+
+        <form id="add-form" class="card add" hidden>
+          <label class="field"><span>Instructions</span>
+            <textarea id="add-text" rows="3" required></textarea>
+          </label>
+          <div class="grid2">
+            <label class="field"><span>Account</span>
+              <input id="add-account" placeholder="optional" autocomplete="off" />
+            </label>
+            <label class="field"><span>Not before</span>
+              <input id="add-time" type="datetime-local" />
+            </label>
+          </div>
+          <label class="field"><span>Repeat daily at</span>
+            <input id="add-repeat" placeholder="e.g. 09:00, 18:30" autocomplete="off" />
+          </label>
+          <div class="row">
+            <label class="btn ghost small file-btn"><input id="add-files" type="file" multiple hidden />Attach files</label>
+            <ul id="add-files-list" class="files inline"></ul>
+          </div>
+          <p id="add-msg" class="msg"></p>
+          <div class="row end">
+            <button id="add-cancel" type="button" class="ghost">Cancel</button>
+            <button type="submit" class="primary">Add</button>
+          </div>
+        </form>
+
+        <ul id="task-list" class="tasks"></ul>
+        <p id="tasks-empty" class="empty" hidden>Nothing to do. Add a task or use “Do this now”.</p>
+        <details id="finished" class="finished" hidden>
+          <summary>Finished <span id="finished-count" class="count"></span></summary>
+          <ul id="finished-list" class="tasks"></ul>
+        </details>
+      </section>
+
+      <!-- Activity -->
+      <section id="tab-activity" class="tab activity" role="tabpanel" hidden>
+        <div class="act-head">
+          <button id="act-back" type="button" class="ghost small" hidden>← Back</button>
+          <div class="act-title">
+            <div id="act-title" class="title">Nothing running</div>
+            <div id="act-meta" class="meta"></div>
+          </div>
+          <button id="act-stop" type="button" class="danger small" hidden>Stop</button>
+          <button id="act-history" type="button" class="ghost small">History</button>
+        </div>
+        <div id="act-log" class="log scroll" aria-live="polite"></div>
+        <div id="act-list" class="scroll history" hidden>
+          <ul id="history-list" class="sessions"></ul>
+          <p id="history-empty" class="empty" hidden>No runs yet.</p>
+        </div>
+        <form id="say-form" class="say" hidden>
+          <input id="say-text" placeholder="Tell the agent something…" autocomplete="off" />
+          <button type="submit" class="primary small">Send</button>
+        </form>
+      </section>
+
+      <!-- Terminal -->
+      <section id="tab-terminal" class="tab terminal" role="tabpanel" hidden>
+        <div class="term-bar">
+          <span id="term-status" class="meta">Claude Code in the browsertodo workspace</span>
+          <span class="spacer"></span>
+          <button id="term-start" type="button" class="primary small">Start</button>
+          <button id="term-stop" type="button" class="ghost small" hidden>Stop</button>
+        </div>
+        <div id="term" class="term"></div>
+        <div id="term-missing" class="card missing" hidden>
+          <p id="term-missing-text">The terminal needs the browsertodo helper on this computer. Install it once:</p>
+          <div class="cmd-row">
+            <code id="install-cmd" class="cmd"></code>
+            <button id="copy-cmd" type="button" class="ghost small">Copy</button>
+          </div>
+          <div class="row">
+            <button id="term-connect" type="button" class="ghost small">Connect helper</button>
+            <span id="term-msg" class="msg"></span>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

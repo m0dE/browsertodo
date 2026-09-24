@@ -42,6 +42,7 @@ export class ApiClient {
     return (await res.json()) as { leaseExpiresAt: string };
   }
 
+  /** Reports how a claimed task ended. outcome "retry" sends it back to pending after retryAfterMinutes. */
   async result(taskId: string, body: ResultInput): Promise<void> {
     await this.request("POST", `/v1/runner/tasks/${encodeURIComponent(taskId)}/result`, body);
   }
@@ -51,6 +52,15 @@ export class ApiClient {
     form.append("file", blob, filename);
     const res = await this.request("POST", "/v1/media", form);
     return MediaInfo.parse(await res.json());
+  }
+
+  /** Download URL of a media file; fetch it with authHeaders(). */
+  mediaUrl(mediaId: string): string {
+    return `${this.base}/v1/media/${encodeURIComponent(mediaId)}`;
+  }
+
+  authHeaders(): { name: string; value: string }[] {
+    return [{ name: "Authorization", value: `Bearer ${this.key}` }];
   }
 
   /** Checks that the API is reachable and accepts the runner key. */

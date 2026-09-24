@@ -55,7 +55,8 @@ receive the same task, and must hold a lease on it until `leaseExpiresAt`.
 
 A task is due when:
 
-- it is `pending` and `notBefore` is empty or in the past, or
+- it is `pending`, `notBefore` is empty or in the past, and `retryAfter` is
+  empty or in the past, or
 - it is `paused` and `retryAfter` is in the past, or
 - it is `running` and its lease has expired.
 
@@ -86,10 +87,16 @@ while a task runs.
 }
 ```
 
-- `outcome` is `done`, `failed` or `paused`.
-- `reason` explains a `failed` or `paused` outcome.
-- `retryAfterMinutes` applies to `paused` only. The task becomes due again
-  after that many minutes.
+- `outcome` is one of:
+  - `done`: finished.
+  - `failed`: will not be retried.
+  - `paused`: needs a human, like a login or CAPTCHA. It becomes due again
+    after `retryAfterMinutes`.
+  - `retry`: a temporary problem, like a usage limit, network error or
+    crash. It goes back to pending after `retryAfterMinutes`, and the server
+    fails it once it has been attempted too many times (5 on the hosted
+    service).
+- `reason` explains a `failed`, `paused` or `retry` outcome.
 - **409** when the task is not running or the lease belongs to another runner.
 
 ## Media

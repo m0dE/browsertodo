@@ -88,8 +88,13 @@ export type ClaimResponse = z.infer<typeof ClaimResponse>;
 export const HeartbeatInput = z.object({ runnerId: z.string().min(1) });
 export type HeartbeatInput = z.infer<typeof HeartbeatInput>;
 
-/** How a task run ended. Shared by the API, the extension and the helper. */
-export const TaskOutcome = z.enum(["done", "failed", "paused"]);
+/**
+ * done: finished. failed: will not be retried. paused: needs a human; retried
+ * after retryAfterMinutes. retry: temporary problem (usage limit, network,
+ * crash); goes back to pending after retryAfterMinutes, and fails once the
+ * attempt limit is reached.
+ */
+export const TaskOutcome = z.enum(["done", "failed", "paused", "retry"]);
 export type TaskOutcome = z.infer<typeof TaskOutcome>;
 
 /** Body of POST /v1/runner/tasks/:id/result. */
@@ -100,7 +105,7 @@ export const ResultInput = z.object({
   url: z.string().max(2000).optional(),
   reason: z.string().max(4000).optional(),
   screenshotId: z.string().optional(),
-  /** Paused tasks become claimable again after this many minutes. Default 15. */
+  /** Paused and retry tasks become claimable again after this many minutes. Default 15. */
   retryAfterMinutes: z.number().int().min(1).max(24 * 60).optional(),
 });
 export type ResultInput = z.infer<typeof ResultInput>;
@@ -117,3 +122,24 @@ export type CreateKeyInput = z.infer<typeof CreateKeyInput>;
 /** Standard error body for every non-2xx API response. */
 export const ApiError = z.object({ error: z.string(), details: z.unknown().optional() });
 export type ApiError = z.infer<typeof ApiError>;
+
+/** Repeat rule for local tasks: run again every day at these local times. */
+export const RepeatRule = z.object({
+  dailyAt: z.array(z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)).min(1).max(24),
+});
+export type RepeatRule = z.infer<typeof RepeatRule>;
+
+/**
+ * A task stored in the extension (no cloud needed). Same shape as a cloud
+ * Task plus a repeat rule. mediaIds refer to files stored in the extension.
+ * When a repeating task finishes, the extension creates the next occurrence
+ * as a new pending task and keeps the finished one as history.
+ */
+export const LocalTask = Task.extend({
+  repeat: RepeatRule.nullable(),
+});
+export type LocalTask = z.infer<typeof LocalTask>;
+
+/** Where a task came from. "adhoc" is a one-off "do this now" request. */
+export const TaskSource = z.enum(["local", "cloud", "adhoc"]);
+export type TaskSource = z.infer<typeof TaskSource>;

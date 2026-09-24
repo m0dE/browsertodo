@@ -1,6 +1,7 @@
 /**
- * Compact text form of a PageSnapshot, as returned to Claude by read_page,
- * and a parser for it (used by the ScriptedBrain, which only sees tool text).
+ * Compact text form of a PageSnapshot, as returned to the model by read_page,
+ * and a parser for it (used by the helper's scripted brain, which only sees
+ * tool text).
  */
 import type { ElementInfo, PageSnapshot } from "@browsertodo/shared";
 
@@ -22,6 +23,7 @@ export function formatElements(elements: ElementInfo[], truncated = false): stri
   return lines.join("\n");
 }
 
+/** Compact text form of a snapshot, as returned by read_page. */
 export function formatSnapshot(snap: PageSnapshot): string {
   return [
     `URL: ${snap.url}`,
@@ -32,7 +34,12 @@ export function formatSnapshot(snap: PageSnapshot): string {
   ].join("\n");
 }
 
-/** What the ScriptedBrain can recover from read_page text. */
+/** URL, title and the element list, without the page text (used when act stops). */
+export function formatCompact(snap: PageSnapshot): string {
+  return [`URL: ${snap.url}`, `Title: ${snap.title}`, formatElements(snap.elements, snap.truncated)].join("\n");
+}
+
+/** What a scripted brain can recover from read_page text. */
 export interface ParsedPage {
   url: string;
   title: string;
@@ -45,8 +52,7 @@ const ELEMENT_LINE = /^\[(\d+)\] (\S+) ("(?:[^"\\]|\\.)*") \((.*)\)$/;
 export function parseSnapshotText(text: string): ParsedPage {
   const page: ParsedPage = { url: "", title: "", text: "", elements: [] };
   const lines = text.split("\n");
-  let i = 0;
-  for (; i < lines.length; i++) {
+  for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     if (line === "--- visible text ---") {
       page.text = lines.slice(i + 1).join("\n");

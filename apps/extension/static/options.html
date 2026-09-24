@@ -3,83 +3,140 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>browsertodo options</title>
+    <title>browsertodo settings</title>
+    <link rel="stylesheet" href="ui.css" />
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
-    <header>
-      <h1>browsertodo</h1>
-      <p class="sub">Claims tasks from your task API and runs them in a separate Chrome window.</p>
-    </header>
+    <form id="form" class="page" autocomplete="off" novalidate>
+      <header class="head">
+        <h1>browsertodo</h1>
+        <p id="now-using" class="muted">Loading…</p>
+      </header>
 
-    <main>
-      <section id="status-section">
-        <h2>Status</h2>
-        <dl id="status" class="kv">
-          <dt>Run</dt><dd id="st-run">…</dd>
-          <dt>Current task</dt><dd id="st-task">—</dd>
-          <dt>Last run</dt><dd id="st-last">—</dd>
-          <dt>Last error</dt><dd id="st-error">—</dd>
-          <dt>Helper</dt><dd id="st-helper">…</dd>
-        </dl>
+      <section class="card" aria-labelledby="h-brain">
+        <h2 id="h-brain">Brain</h2>
+        <p class="hint">Which Claude runs your tasks.</p>
+        <div class="choices" role="radiogroup" aria-labelledby="h-brain">
+          <label class="choice"><input type="radio" name="brain" value="auto" />
+            <span><b>Auto</b><small>Local Claude Code when the helper works, otherwise the API key.</small></span></label>
+          <label class="choice"><input type="radio" name="brain" value="claude-code" />
+            <span><b>Local Claude Code</b><small>Uses your Claude subscription through the helper.</small></span></label>
+          <label class="choice"><input type="radio" name="brain" value="claude-api" />
+            <span><b>Claude API</b><small>Runs inside Chrome with your Anthropic API key. Nothing to install.</small></span></label>
+        </div>
+
+        <div class="fields">
+          <div class="field secret" data-secret="anthropicApiKey">
+            <span>Anthropic API key</span>
+          </div>
+          <label class="field"><span>Model</span>
+            <input id="f-anthropicModel" type="text" spellcheck="false" />
+          </label>
+        </div>
         <div class="row">
-          <button id="run-now" type="button">Run now</button>
-          <button id="test-api" type="button">Test API connection</button>
-          <button id="connect-helper" type="button">Connect helper</button>
-          <span id="action-msg" class="msg" role="status"></span>
+          <button id="test-claude" type="button" class="small">Test Claude key</button>
+          <span id="test-claude-msg" class="msg"></span>
+        </div>
+
+        <div class="helper">
+          <div class="helper-head">
+            <span id="helper-dot" class="dot"></span>
+            <b id="helper-headline">Helper</b>
+            <span class="spacer"></span>
+            <button id="helper-connect" type="button" class="small">Connect</button>
+          </div>
+          <ul id="helper-details" class="helper-details"></ul>
+          <p id="helper-msg" class="msg"></p>
+          <p id="helper-install" class="hint" hidden>
+            Install once: <code>node &lt;repo&gt;\apps\helper\dist\install.js</code>
+          </p>
         </div>
       </section>
 
-      <section>
-        <h2>Settings</h2>
-        <form id="settings-form">
-          <div id="fields" class="grid"></div>
-          <div class="row">
-            <button type="submit">Save settings</button>
-            <span id="save-msg" class="msg" role="status"></span>
+      <section class="card" aria-labelledby="h-jev">
+        <div class="section-title">
+          <h2 id="h-jev">Jev</h2>
+          <label class="switch" title="Use Jev"><input id="f-jevEnabled" type="checkbox" aria-label="Use Jev" /></label>
+        </div>
+        <p class="hint">Optional. Handles simple clicks and typing faster than Claude. Without a key Claude does every step.</p>
+        <div class="fields">
+          <div class="field secret" data-secret="jevApiKey"><span>Jev API key</span></div>
+          <label class="field narrow"><span>Confidence threshold</span>
+            <input id="f-jevThreshold" type="number" min="0" max="1" step="0.05" />
+          </label>
+        </div>
+        <div class="row">
+          <button id="test-jev" type="button" class="small">Test Jev</button>
+          <span id="test-jev-msg" class="msg"></span>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="h-cloud">
+        <div class="section-title">
+          <h2 id="h-cloud">Cloud sync</h2>
+          <label class="switch" title="Take tasks from a server"><input id="f-cloudEnabled" type="checkbox" aria-label="Enable cloud sync" /></label>
+        </div>
+        <p class="hint">Also take tasks from a browsertodo task server. Local tasks work without it.</p>
+        <div id="cloud-fields">
+          <div class="fields">
+            <label class="field"><span>Server URL</span>
+              <input id="f-apiBase" type="url" placeholder="https://tasks.example.com" spellcheck="false" />
+            </label>
+            <div class="field secret" data-secret="runnerKey"><span>Runner key</span></div>
           </div>
-        </form>
+          <div class="row">
+            <button id="test-cloud" type="button" class="small">Test connection</button>
+            <span id="test-cloud-msg" class="msg"></span>
+          </div>
+        </div>
       </section>
 
-      <section>
-        <h2>Vault</h2>
-        <p class="hint">
-          Usernames and passwords for sites other than X, encrypted with your passphrase. The key stays
-          unlocked until Chrome restarts. The first unlock creates the vault.
-        </p>
-        <p>State: <strong id="vault-state">…</strong></p>
-        <form id="unlock-form" class="row">
-          <input id="vault-pass" type="password" placeholder="Passphrase" autocomplete="current-password" />
-          <button type="submit">Unlock</button>
-          <button id="vault-lock" type="button">Lock</button>
-        </form>
-        <ul id="vault-sites" class="sites"></ul>
-        <form id="vault-add" class="row">
-          <input id="va-site" placeholder="example.com" required />
-          <input id="va-user" placeholder="Username" autocomplete="off" required />
-          <input id="va-pass" type="password" placeholder="Password" autocomplete="new-password" required />
-          <button type="submit">Add or replace</button>
-        </form>
-        <span id="vault-msg" class="msg" role="status"></span>
-      </section>
+      <details class="card advanced" id="vault-card">
+        <summary><h2>Site logins</h2></summary>
+        <div class="vault-body">
+        <p class="hint">Usernames and passwords the agent may use to sign in to other sites, encrypted with a passphrase you enter once per browser session. Never used for X: sign in to X yourself.</p>
+        <div id="vault-locked" class="row">
+          <input id="vault-pass" type="password" placeholder="Passphrase" aria-label="Vault passphrase" autocomplete="off" />
+          <button id="vault-unlock" type="button" class="small">Unlock</button>
+        </div>
+        <div id="vault-open" hidden>
+          <ul id="vault-sites" class="vault-sites"></ul>
+          <div class="fields grid">
+            <label class="field"><span>Site</span><input id="vault-site" type="text" placeholder="example.com" spellcheck="false" /></label>
+            <label class="field"><span>Username</span><input id="vault-user" type="text" autocomplete="off" spellcheck="false" /></label>
+            <label class="field"><span>Password</span><input id="vault-pw" type="password" autocomplete="off" /></label>
+          </div>
+          <div class="row">
+            <button id="vault-add" type="button" class="small">Save login</button>
+            <button id="vault-lock" type="button" class="small">Lock</button>
+          </div>
+        </div>
+        <span id="vault-msg" class="msg"></span>
+        </div>
+      </details>
 
-      <section>
-        <h2>Live log</h2>
-        <pre id="log" class="log">Connect the helper to see its log.</pre>
-      </section>
+      <details class="card advanced">
+        <summary><h2>Advanced</h2></summary>
+        <div class="fields grid">
+          <label class="field"><span>Check for due tasks every (min)</span><input id="f-intervalMinutes" type="number" min="1" step="1" /></label>
+          <label class="field"><span>Pause between tasks, min (s)</span><input id="f-delayMinSec" type="number" min="0" step="1" /></label>
+          <label class="field"><span>Pause between tasks, max (s)</span><input id="f-delayMaxSec" type="number" min="0" step="1" /></label>
+          <label class="field"><span>Max tool calls per task</span><input id="f-maxToolCalls" type="number" min="5" step="1" /></label>
+          <label class="field"><span>Max minutes per task</span><input id="f-maxTaskMinutes" type="number" min="1" step="1" /></label>
+          <label class="field"><span>Retry temporary failures after (min)</span><input id="f-retryAfterMinutes" type="number" min="1" step="1" /></label>
+          <label class="field"><span>Retry tasks that needed you after (min)</span><input id="f-pauseRetryMinutes" type="number" min="1" step="1" /></label>
+          <label class="field"><span>Pause runs after N failures in a row (0 = never)</span><input id="f-maxConsecutiveFailures" type="number" min="0" step="1" /></label>
+        </div>
+      </details>
 
-      <section>
-        <h2>Setup</h2>
-        <ol>
-          <li>Build the helper: <code>pnpm --filter @browsertodo/helper build</code></li>
-          <li>Register it for this extension:
-            <pre class="cmd" id="install-cmd"></pre>
-          </li>
-          <li>Enter the API base URL and a runner key above, then use <em>Test API connection</em>.</li>
-        </ol>
-        <p>Extension ID: <code id="ext-id"></code></p>
-      </section>
-    </main>
+      <div class="savebar">
+        <span id="save-msg" class="msg"></span>
+        <span class="spacer"></span>
+        <button id="revert" type="button" class="ghost" disabled>Revert</button>
+        <button id="save" type="submit" class="primary" disabled>Save</button>
+      </div>
+    </form>
     <script type="module" src="options.js"></script>
   </body>
 </html>

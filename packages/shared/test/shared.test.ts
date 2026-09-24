@@ -105,6 +105,16 @@ describe("RpcPeer", () => {
     const { a } = pair();
     await expect(a.call("b.echo", { v: 1 })).rejects.toThrow("Unknown method");
   });
+  it("delivers notifications without replies", async () => {
+    const { a, b } = pair();
+    const got: unknown[] = [];
+    b.onNotification<{ n: number }>("tick", (p) => got.push(p.n));
+    a.notify("tick", { n: 1 });
+    a.notify("unhandled", {});
+    await new Promise((r) => setTimeout(r, 0));
+    expect(got).toEqual([1]);
+    expect(a.pendingCount).toBe(0);
+  });
   it("times out and rejects pending calls on close", async () => {
     const silent = new RpcPeer<A, B>(() => {});
     await expect(silent.call("b.echo", { v: 1 }, { timeoutMs: 10 })).rejects.toThrow("timed out");

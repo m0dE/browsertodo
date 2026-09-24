@@ -81,6 +81,17 @@ export interface FakeTab {
   active: boolean;
 }
 
+export interface FakeDownload {
+  id: number;
+  url: string;
+  filename: string;
+  headers?: { name: string; value: string }[];
+  state: "in_progress" | "complete" | "interrupted";
+  error?: string;
+  removed: boolean;
+  erased: boolean;
+}
+
 export function installChromeFake() {
   const onChanged = new FakeEvent<[Changes, string]>();
   let nextTabId = 100;
@@ -93,6 +104,12 @@ export function installChromeFake() {
       getURL: (p: string) => `chrome-extension://testextensionid/${p.replace(/^\//, "")}`,
       ports: [] as FakePort[],
       onMessage: new FakeEvent<unknown[]>(),
+      onConnect: new FakeEvent<unknown[]>(),
+      platformInfoCalls: 0,
+      async getPlatformInfo() {
+        fake.runtime.platformInfoCalls++;
+        return { os: "win", arch: "x86-64", nacl_arch: "x86-64" };
+      },
       onInstalled: new FakeEvent<unknown[]>(),
       onStartup: new FakeEvent<unknown[]>(),
       /** Called for every new native port; tests use it to script the host. */
@@ -130,11 +147,11 @@ export function installChromeFake() {
     },
     alarms: {
       all: new Map<string, FakeAlarm>(),
-      async create(name: string, info: { periodInMinutes?: number; delayInMinutes?: number }) {
+      async create(name: string, info: { periodInMinutes?: number; delayInMinutes?: number; when?: number }) {
         fake.alarms.all.set(name, {
           name,
           periodInMinutes: info.periodInMinutes,
-          scheduledTime: Date.now() + (info.delayInMinutes ?? info.periodInMinutes ?? 0) * 60_000,
+          scheduledTime: info.when ?? Date.now() + (info.delayInMinutes ?? info.periodInMinutes ?? 0) * 60_000,
         });
       },
       async get(name: string) {
@@ -214,6 +231,60 @@ export function installChromeFake() {
       onEvent: new FakeEvent<unknown[]>(),
     },
     action: { onClicked: new FakeEvent<unknown[]>() },
+    sidePanel: {
+      behavior: null as unknown,
+      async setPanelBehavior(b: unknown) {
+        fake.sidePanel.behavior = b;
+      },
+    },
+    downloads: {
+      items: [] as FakeDownload[],
+      uiEnabled: true,
+      /** Every setUiOptions call, in order. */
+      uiCalls: [] as boolean[],
+      /** Download directory used for absolute paths. */
+      dir: "C:\\Users\\me\\Downloads",
+      /** Test hook: how a new download ends. Default: completes on the next tick. */
+      behavior: ((_d: FakeDownload): "complete" | "interrupted" | "hang" => "complete") as (d: FakeDownload) => "complete" | "interrupted" | "hang",
+      onChanged: new FakeEvent<[{ id: number; state?: { current?: string }; error?: { current?: string } }]>(),
+      async download(opts: { url: string; filename?: string; headers?: { name: string; value: string }[] }) {
+        const id = fake.downloads.items.length + 1;
+        const rel = (opts.filename ?? "download").replace(/\//g, "\\");
+        const d: FakeDownload = { id, url: opts.url, filename: "", headers: opts.headers, state: "in_progress", removed: false, erased: false };
+        fake.downloads.items.push(d);
+        const how = fake.downloads.behavior(d);
+        if (how !== "hang") {
+          setTimeout(() => {
+            if (how === "complete") {
+              d.state = "complete";
+              d.filename = `${fake.downloads.dir}\\${rel}`;
+            } else {
+              d.state = "interrupted";
+              d.error = "SERVER_FORBIDDEN";
+            }
+            fake.downloads.onChanged.emit({ id, state: { current: d.state } });
+          }, 0);
+        }
+        return id;
+      },
+      async search(q: { id: number }) {
+        const d = fake.downloads.items.find((x) => x.id === q.id && !x.erased);
+        return d ? [{ id: d.id, state: d.state, filename: d.filename, error: d.error }] : [];
+      },
+      async setUiOptions(o: { enabled: boolean }) {
+        fake.downloads.uiEnabled = o.enabled;
+        fake.downloads.uiCalls.push(o.enabled);
+      },
+      async removeFile(id: number) {
+        const d = fake.downloads.items.find((x) => x.id === id);
+        if (d) d.removed = true;
+      },
+      async erase(q: { id: number }) {
+        const d = fake.downloads.items.find((x) => x.id === q.id);
+        if (d) d.erased = true;
+        return d ? [d.id] : [];
+      },
+    },
   };
   (globalThis as unknown as { chrome: unknown }).chrome = fake;
   return fake;

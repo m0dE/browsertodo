@@ -1,9 +1,27 @@
 import { z } from "zod";
 
+export const BrainMode = z.enum(["auto", "claude-code", "claude-api"]);
+export type BrainMode = z.infer<typeof BrainMode>;
+
 /** Extension settings stored in chrome.storage.local under "settings". */
 export const ExtensionSettings = z.object({
+  /**
+   * Which agent runs tasks. auto: local Claude Code when the helper is
+   * connected and Claude Code was found, otherwise the Claude API key.
+   */
+  brain: BrainMode.default("auto"),
+  anthropicApiKey: z.string().default(""),
+  anthropicModel: z.string().default("claude-sonnet-5"),
+  /** Jev speeds up single steps. Used only when a key is set and jevEnabled. */
+  jevApiKey: z.string().default(""),
+  /** Cloud task queue. Off by default; local tasks always work. */
+  cloudEnabled: z.boolean().default(false),
   apiBase: z.string().default(""),
   runnerKey: z.string().default(""),
+  /** Pause scheduled runs after this many failed tasks in a row. 0 disables. */
+  maxConsecutiveFailures: z.number().int().min(0).max(100).default(3),
+  /** Minutes before a task that hit a temporary problem is retried. */
+  retryAfterMinutes: z.number().int().min(1).max(24 * 60).default(10),
   intervalMinutes: z.number().min(1).max(24 * 60).default(15),
   delayMinSec: z.number().min(0).max(3600).default(60),
   delayMaxSec: z.number().min(0).max(3600).default(180),
@@ -40,4 +58,10 @@ export function pickDelayMs(s: Pick<ExtensionSettings, "delayMinSec" | "delayMax
   const min = Math.min(s.delayMinSec, s.delayMaxSec);
   const max = Math.max(s.delayMinSec, s.delayMaxSec);
   return Math.round((min + rand() * (max - min)) * 1000);
+}
+
+/** Settings with secrets replaced by "set"/"" markers, safe to show or log. */
+export function redactSettings(s: ExtensionSettings): ExtensionSettings {
+  const mark = (v: string) => (v ? "set" : "");
+  return { ...s, anthropicApiKey: mark(s.anthropicApiKey), jevApiKey: mark(s.jevApiKey), runnerKey: mark(s.runnerKey) };
 }

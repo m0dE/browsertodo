@@ -13,6 +13,10 @@ export interface HelperConfig {
   logDir: string;
   runsDir: string;
   hostDir: string;
+  /** Working directory of the interactive terminal. */
+  workspaceDir: string;
+  /** helper.json: pipe name and pid of the running helper, for `mcp-server.js --attach`. */
+  helperFilePath: string;
   /** apps/helper */
   helperRoot: string;
   /** Absolute path of the bundled MCP server that Claude Code spawns. */
@@ -82,6 +86,8 @@ export function loadConfig(
     logDir: join(baseDir, "logs"),
     runsDir: join(baseDir, "runs"),
     hostDir: join(baseDir, "host"),
+    workspaceDir: join(baseDir, "workspace"),
+    helperFilePath: join(baseDir, "helper.json"),
     helperRoot: root,
     mcpServerPath: join(root, "dist", "mcp-server.js"),
     typesafeApiKey: key ? key : null,

@@ -1,4 +1,4 @@
-import { parseSettings, type ExtensionSettings } from "@browsertodo/shared";
+import { ExtensionSettings, parseSettings } from "@browsertodo/shared";
 
 export const ALARM_NAME = "browsertodo-run";
 const SETTINGS_KEY = "settings";
@@ -12,6 +12,35 @@ export async function loadSettings(): Promise<ExtensionSettings> {
 export async function saveSettings(patch: Partial<ExtensionSettings>): Promise<ExtensionSettings> {
   const current = await loadSettings();
   const next = parseSettings({ ...current, ...patch });
+  await chrome.storage.local.set({ [SETTINGS_KEY]: next });
+  return next;
+}
+
+export const SECRET_FIELDS = ["anthropicApiKey", "jevApiKey", "runnerKey"] as const;
+
+/**
+ * Applies a partial update from the UI. Secret fields: omitted (or the
+ * redaction marker "set") keeps the stored value, "" clears it, anything
+ * else replaces it. Unknown keys are ignored; invalid values keep the old value.
+ */
+export function applySettingsPatch(current: ExtensionSettings, patch: Partial<ExtensionSettings>): ExtensionSettings {
+  const next: Record<string, unknown> = { ...current };
+  for (const [key, value] of Object.entries(patch ?? {})) {
+    if (!(key in current) || value === undefined) continue;
+    if ((SECRET_FIELDS as readonly string[]).includes(key)) {
+      if (typeof value !== "string" || value === "set") continue;
+      next[key] = value.trim();
+      continue;
+    }
+    const field = ExtensionSettings.shape[key as keyof ExtensionSettings];
+    if (field.safeParse(value).success) next[key] = value;
+  }
+  return parseSettings(next);
+}
+
+/** settings.save from the UI: partial update with the secret rules above. */
+export async function saveSettingsPatch(patch: Partial<ExtensionSettings>): Promise<ExtensionSettings> {
+  const next = applySettingsPatch(await loadSettings(), patch);
   await chrome.storage.local.set({ [SETTINGS_KEY]: next });
   return next;
 }

@@ -45,6 +45,39 @@ describe("AgentWindow", () => {
     expect(await agent.isAgentTab(999)).toBe(false);
   });
 
+  it("puts the agent tab in a tab group titled browsertodo, once", async () => {
+    const groups = new Map<number, { title?: string; color?: string }>();
+    const tabGroup = new Map<number, number>();
+    const c = chrome as unknown as Record<string, any>;
+    const realGet = c.tabs.get;
+    c.tabs.get = async (id: number) => ({ ...(await realGet(id)), groupId: tabGroup.get(id) ?? -1 });
+    c.tabs.group = vi.fn(async ({ tabIds }: { tabIds: number[] }) => {
+      const gid = 77;
+      groups.set(gid, {});
+      tabIds.forEach((t) => tabGroup.set(t, gid));
+      return gid;
+    });
+    c.tabGroups = {
+      get: async (gid: number) => ({ id: gid, ...groups.get(gid) }),
+      update: vi.fn(async (gid: number, props: { title: string; color: string }) => void groups.set(gid, props)),
+    };
+    const tab = await agent.ensureTab();
+    await agent.ensureTab();
+    expect(tabGroup.get(tab)).toBe(77);
+    expect(groups.get(77)).toEqual({ title: "browsertodo", color: "blue" });
+    expect(c.tabs.group).toHaveBeenCalledTimes(1);
+    expect(c.tabGroups.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("still works when tab groups are unavailable", async () => {
+    const c = chrome as unknown as Record<string, any>;
+    c.tabs.group = async () => {
+      throw new Error("no groups");
+    };
+    c.tabGroups = { get: async () => ({}), update: async () => {} };
+    expect(typeof (await agent.ensureTab())).toBe("number");
+  });
+
   it("recreates the window when it was closed", async () => {
     const first = await agent.ensureTab();
     await chrome.windows.remove(chrome.storage.session.data.agentWindowId as number);

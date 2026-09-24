@@ -1,4 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -90,6 +93,49 @@ describe("mcp-server.js over stdio", () => {
       expect((await withAct.listTools()).tools.map((t) => t.name).sort()).toEqual(["act", "read_page"]);
     } finally {
       await withAct.close();
+    }
+  });
+});
+
+describe("mcp-server.js --attach", () => {
+  it("finds the helper through helper.json and serves the interactive tools", async () => {
+    const home = mkdtempSync(join(tmpdir(), "bt-attach-"));
+    try {
+      writeFileSync(join(home, "helper.json"), JSON.stringify({ pipe: pipePath, pid: process.pid, startedAt: new Date().toISOString() }));
+      const transport = new StdioClientTransport({
+        command: process.execPath,
+        args: [MCP_JS, "--attach"],
+        env: { ...getDefaultEnvironment(), BROWSERTODO_HOME: home },
+        stderr: "pipe",
+      });
+      const client = new Client({ name: "test", version: "1.0.0" });
+      await client.connect(transport);
+      try {
+        // tool.list from the helper answers ["read_page"]; the interactive list is narrowed to it
+        expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["read_page"]);
+        await client.callTool({ name: "read_page", arguments: {} });
+        expect(received.at(-1)).toEqual({ taskId: "interactive", name: "read_page", args: {} });
+      } finally {
+        await client.close();
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("explains that the helper is not running", () => {
+    const home = mkdtempSync(join(tmpdir(), "bt-attach-"));
+    try {
+      const r = spawnSync(process.execPath, [MCP_JS, "--attach"], { env: { ...process.env, BROWSERTODO_HOME: home }, encoding: "utf8", timeout: 20_000 });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/helper is not running: open Chrome with the browsertodo extension/);
+      // a stale helper.json (dead pid) is treated the same
+      writeFileSync(join(home, "helper.json"), JSON.stringify({ pipe: "\\.\pipe\nope", pid: 999_999_99, startedAt: "" }));
+      const r2 = spawnSync(process.execPath, [MCP_JS, "--attach"], { env: { ...process.env, BROWSERTODO_HOME: home }, encoding: "utf8", timeout: 20_000 });
+      expect(r2.status).toBe(1);
+      expect(r2.stderr).toMatch(/open Chrome with the browsertodo extension/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });

@@ -7,3 +7,4 @@ test-results/
 playwright-report/
 .dev.vars
 *.pem
+apps/extension/test/ui/screenshots/

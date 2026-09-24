@@ -1,50 +1,49 @@
 # browsertodo
 
-browsertodo works through a todo list in your own Chrome. On a timer, it takes
-the next task from a task server and hands it to an AI agent that uses your
-real, logged-in browser: it navigates, reads the page, clicks, types, pastes,
-scrolls, takes screenshots and uploads images or video. It was built to catch
-up on social posting, like three posts a day on each of three X accounts,
-without launching a separate automation browser.
+browsertodo is like Claude Code, for your browser. Give it a todo list and it
+works through each task in your own logged-in Chrome: it navigates, reads the
+page, clicks, types, scrolls, takes screenshots and uploads images or video,
+then reports back. It was built to catch up on social posting, like three
+posts a day on each of three X accounts, and it works for anything else you
+do in Chrome.
 
-The agent is [Claude Code](https://claude.com/claude-code) running headless on
-your machine. [Jev](https://typesafe.ai) can optionally pick elements for
-simple steps, which makes them faster and cheaper.
+It runs entirely on your machine. A cloud task queue is optional.
 
-## How it works
+## What you get
 
-```
-Task server  <── claim / heartbeat / result ──  Chrome extension (timer, browser control)
-                                                        │ native messaging
-                                                        ▼
-                                                  Local helper ── runs `claude -p` per task
-                                                        ▲               │
-                                                        └── MCP tools ──┘
-```
+- **A side panel** (click the toolbar icon) with three tabs:
+  - **Tasks:** "Do this now", plus a todo list with times, daily repeats and
+    attached files.
+  - **Activity:** every step of the running task, live. You can type to the
+    agent mid-task or stop it.
+  - **Terminal:** your real Claude Code, running in the panel with
+    browsertodo's browser tools attached.
+- **A settings page** for choosing the brain, adding keys, cloud sync, and
+  site logins.
+- **Careful defaults:**
+  - It pauses at login pages, 2FA, CAPTCHAs and account warnings.
+  - It never types your X password.
+  - It checks each post exists before calling the task done.
+  - A retry after a crash checks for an existing post before posting again.
+  - It stops running tasks after repeated failures.
 
-1. **The timer fires**, every 15 minutes by default.
-2. **The extension claims the next due task** from your task server.
-3. **The helper starts Claude Code** for that task. Claude Code can only use
-   the browser tools: no shell and no file access.
-4. **Each browser tool call runs in a dedicated Chrome window** through the
-   Chrome debugger, so your own tabs are left alone.
-5. **The result is reported** to the task server: done with the post URL,
-   failed with a reason, or paused because it needs you.
+## Choose a brain
 
-Tasks pause instead of guessing when they reach a login page, 2FA, a CAPTCHA,
-a locked account, or anything else unexpected. Chrome shows a notification,
-and the task is retried later.
+| Option | You need | Notes |
+|---|---|---|
+| **Claude API** | An Anthropic API key | Runs inside the extension. Nothing else to install. |
+| **Local Claude Code** | Claude Code installed and signed in, plus the helper below | Uses your Claude subscription. Also powers the Terminal tab. |
+| **Auto** (default) | Either of the above | Uses local Claude Code when the helper works, otherwise the API key. |
 
-## Requirements
-
-- Windows 10 or 11. The helper's installer uses the Windows registry.
-- Google Chrome.
-- Node.js 22 or newer, and pnpm 10.
-- Claude Code, installed and signed in. Check that `claude --version` works.
-- Optional: a Jev API key from TypeSafe.
-- A task server that implements [the protocol](docs/PROTOCOL.md).
+**Jev is optional with either brain.** With a Jev key, steps can be described
+in plain words ("click the Post button") and a small, fast model finds the
+element. Without it, Claude names the element itself. Either way, Claude does
+several steps per turn, which is where most of the speed comes from.
 
 ## Setup
+
+Requirements: Windows 10 or 11 for the helper, Google Chrome, Node.js 22+ and
+pnpm 10.
 
 1. **Build it.**
 
@@ -55,91 +54,84 @@ and the task is retried later.
 
 2. **Load the extension.** Open `chrome://extensions`, turn on Developer mode,
    click "Load unpacked", and pick the `dist` folder at the root of this
-   repository. The extension ID is fixed by the key in its manifest, and is
-   listed in `apps/extension/extension-id.txt`.
+   repository.
 
-3. **Register the helper with Chrome.**
+3. **Pick a brain** in the extension's settings: paste an Anthropic API key,
+   or register the helper for local Claude Code:
 
    ```
    node apps/helper/dist/install.js
    ```
 
-   This registers the native messaging host `com.browsertodo.helper` for the
-   extension ID above. Run it again with `--uninstall` to remove it.
+   Then click "Re-check" under the helper status. `--uninstall` removes the
+   registration.
 
-4. **Optional: add your Jev key.** Copy `.env.example` to `.env` and fill in
-   `TYPESAFE_API_KEY`. Without it, Claude does every step itself.
+4. **Optional:** add a Jev key in settings.
 
 5. **Sign in to your accounts by hand** in Chrome. For several X accounts, use
-   X's "Add an existing account" so all of them show in X's account switcher.
-   browsertodo never types an X password. It switches between accounts that
-   are already signed in.
+   X's "Add an existing account" so they all appear in X's account switcher.
 
-6. **Configure the extension.** Open its options page. Enter your task
-   server's URL and runner key, then click "Test API connection" and "Connect
-   helper". The options page also shows a live log of what the agent is doing.
+6. **Add a task** in the side panel and click Run.
 
-## Writing tasks
+## Use the browser tools from your own terminal
 
-A task is plain-language instructions, plus an optional account, media files
-and an earliest start time:
+With the helper registered and Chrome open, your regular Claude Code can drive
+the browser too:
 
-```json
-{
-  "instructions": "Post this on X: Good morning! Today's tip: ...",
-  "account": "@myhandle",
-  "mediaIds": ["<id of an uploaded image>"],
-  "notBefore": "2026-09-24T09:00:00Z"
-}
 ```
+claude mcp add browsertodo -- node <path-to-repo>/apps/helper/dist/mcp-server.js --attach
+```
+
+Then ask Claude Code something like "post this on X from @me".
+
+## Cloud task queue (optional)
+
+Turn on Cloud sync in settings and enter a task server URL and runner key.
+The extension then also takes tasks from that server, so another app can
+queue work while your computer is off. Any server that implements
+[the protocol](docs/PROTOCOL.md) works.
 
 ## Settings
 
 | Setting | Default |
 |---|---|
-| Run interval | 15 minutes |
+| Check for due tasks | every 15 minutes |
 | Random pause between tasks | 60–180 seconds |
 | Maximum tool calls per task | 60 |
 | Maximum time per task | 10 minutes |
-| Jev confidence threshold | 0.8 |
-| Retry a paused task after | 15 minutes |
+| Retry a temporary failure after | 10 minutes |
+| Pause runs after failures in a row | 3 |
 
-The helper reads these environment variables, from the environment or a `.env`
-file in the repository root:
-
-| Variable | Purpose |
-|---|---|
-| `TYPESAFE_API_KEY` | Jev key. Leave empty to turn Jev off. |
-| `BROWSERTODO_MODEL` | Claude model alias for tasks. Default `sonnet`. |
-| `BROWSERTODO_CLAUDE_PATH` | Path to `claude.exe` if it isn't found automatically. |
-| `BROWSERTODO_HOME` | Where logs and run folders go. Default `%LOCALAPPDATA%\browsertodo`. |
-
-Each task's full log, including every tool call, Jev decision and Claude
-message, is written to `%LOCALAPPDATA%\browsertodo\runs\<task>\log.jsonl`.
+Logs of every run are in `%LOCALAPPDATA%\browsertodo\runs\` when the helper is
+used, and in the Activity tab for both brains.
 
 ## Things to know
 
 - **Chrome shows an "is debugging this browser" bar** while a task runs. That
-  bar is how the extension sends real clicks and keystrokes, and it can't be
-  hidden.
-- **Sites can change their pages.** Account switching on X relies on X's
-  current markup. If it breaks, Claude falls back to finding the menu itself.
+  is how the extension sends real clicks and keystrokes.
+- **Tasks run in their own window,** in a tab group named "browsertodo", so
+  your tabs are left alone.
+- **Sites change their pages.** Account switching on X relies on X's current
+  markup. If it breaks, Claude falls back to finding the menu itself.
 - **Automation may break a site's rules.** Check the terms of any site you
-  automate. Pacing between tasks is on by default.
-- **Page content is untrusted.** The agent is told to follow only your task's
-  instructions, never instructions it finds on a web page.
+  automate.
+- **Page content is untrusted.** The agent follows your instructions, not text
+  it finds on a page.
 
 ## Development
 
 ```
-pnpm test        # unit and integration tests
+pnpm test
 pnpm typecheck
-node apps/extension/test/smoke.e2e.mjs   # loads the built extension in Playwright's Chromium
+node apps/extension/test/smoke.e2e.mjs   # the built extension in Playwright's Chromium
 ```
 
 `test/fixtures/fake-x` is a small fake X site, with an account switcher, a
-composer, image upload and a lock page, for testing the whole pipeline without
-touching the real site.
+composer, image upload and a lock page, for testing without touching the
+real site.
+
+Not affiliated with Anthropic, X or TypeSafe. Claude and Claude Code are
+trademarks of Anthropic.
 
 ## License
 

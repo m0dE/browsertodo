@@ -8,6 +8,7 @@ import {
   handleStorageChange,
   loadSettings,
   saveSettings,
+  saveSettingsPatch,
 } from "../src/settings-store.js";
 
 let chrome: ChromeFake;
@@ -43,6 +44,27 @@ describe("settings store", () => {
     const b = await getRunnerId();
     expect(a).toMatch(/^[0-9a-f-]{36}$/);
     expect(b).toBe(a);
+  });
+});
+
+describe("settings.save patches", () => {
+  it("keeps omitted secrets and the 'set' marker, clears with '', sets new values", async () => {
+    await saveSettings({ anthropicApiKey: "sk-1", jevApiKey: "jk-1", runnerKey: "bt-1" });
+    await saveSettingsPatch({ anthropicApiKey: "set", jevApiKey: "", runnerKey: " bt-2 ", brain: "claude-api", maxConsecutiveFailures: 5 });
+    const s = await loadSettings();
+    expect(s).toMatchObject({ anthropicApiKey: "sk-1", jevApiKey: "", runnerKey: "bt-2", brain: "claude-api", maxConsecutiveFailures: 5 });
+  });
+
+  it("ignores unknown keys and keeps old values for invalid ones", async () => {
+    await saveSettingsPatch({ retryAfterMinutes: 20 });
+    await saveSettingsPatch({ retryAfterMinutes: -1, bogus: 1 } as never);
+    const s = await loadSettings();
+    expect(s.retryAfterMinutes).toBe(20);
+    expect((chrome.storage.local.data.settings as Record<string, unknown>).bogus).toBeUndefined();
+  });
+
+  it("has defaults for the v2 fields", async () => {
+    expect(await loadSettings()).toMatchObject({ brain: "auto", cloudEnabled: false, maxConsecutiveFailures: 3, retryAfterMinutes: 10 });
   });
 });
 

@@ -31,6 +31,9 @@ const common = {
 };
 await build({ ...common, entryPoints: [join(root, "src/background.ts")], outfile: join(dist, "background.js") });
 await build({ ...common, entryPoints: [join(root, "src/options/options.ts")], outfile: join(dist, "options.js") });
+await build({ ...common, entryPoints: [join(root, "src/sidepanel/sidepanel.ts")], outfile: join(dist, "sidepanel.js") });
+// xterm's stylesheet for the Terminal tab.
+cpSync(join(root, "node_modules/@xterm/xterm/css/xterm.css"), join(dist, "xterm.css"));
 cpSync(join(root, "static"), dist, { recursive: true });
 
 /** Solid rounded-ish square icon: indigo with a white check-box stripe. */

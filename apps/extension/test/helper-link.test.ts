@@ -83,6 +83,49 @@ describe("HelperLink", () => {
     expect(link.connected).toBe(true);
   });
 
+  it("delivers helper notifications to subscribers across reconnects", async () => {
+    chrome.runtime.onConnectNative = answerHello;
+    const link = new HelperLink({ registerHandlers: () => {} });
+    const events: unknown[] = [];
+    const data: unknown[] = [];
+    link.onNotification("helper.event", (p) => events.push(p));
+    link.onNotification("helper.terminal.data", (p) => data.push(p));
+    await link.connect();
+    chrome.runtime.ports[0]!.deliver({ method: "helper.event", params: { sessionId: "s1", event: { type: "status", text: "hi" } } });
+    chrome.runtime.ports[0]!.deliver({ method: "helper.terminal.data", params: { terminalId: "T", data: "x" } });
+    chrome.runtime.ports[0]!.hostDisconnect("bye");
+    await link.connect();
+    chrome.runtime.ports[1]!.deliver({ method: "helper.event", params: { sessionId: "s2", event: { type: "status", text: "again" } } });
+    expect(events).toEqual([
+      { sessionId: "s1", event: { type: "status", text: "hi" } },
+      { sessionId: "s2", event: { type: "status", text: "again" } },
+    ]);
+    expect(data).toEqual([{ terminalId: "T", data: "x" }]);
+  });
+
+  it("hello asks for the self-test when requested, also on an open connection", async () => {
+    chrome.runtime.onConnectNative = answerHello;
+    const link = new HelperLink({ registerHandlers: () => {} });
+    const infos: unknown[] = [];
+    link.onInfo((i) => infos.push(i));
+    await link.connect(undefined, { selfTest: true });
+    await link.connect(undefined, { selfTest: true });
+    const hellos = chrome.runtime.ports[0]!.posted.filter((m) => (m as RpcMessage).method === "helper.hello") as RpcMessage[];
+    expect(hellos.map((m) => m.params)).toEqual([{ selfTest: true }, { selfTest: true }]);
+    expect(chrome.runtime.ports).toHaveLength(1);
+    expect(infos).toEqual([INFO, INFO]);
+    chrome.runtime.ports[0]!.hostDisconnect("gone");
+    expect(infos.at(-1)).toBeNull();
+    expect(link.lastError).toBe("gone");
+  });
+
+  it("remembers why connecting failed", async () => {
+    chrome.runtime.onConnectNative = (port) => queueMicrotask(() => port.hostDisconnect("Specified native messaging host not found."));
+    const link = new HelperLink({ registerHandlers: () => {} });
+    await link.connect().catch(() => {});
+    expect(link.lastError).toBe("Specified native messaging host not found.");
+  });
+
   it("call() fails fast when not connected", async () => {
     const link = new HelperLink({ registerHandlers: () => {} });
     await expect(link.call("helper.getLog", { lines: 10 })).rejects.toThrow(/not connected/i);

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>browsertodo options</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <header>
+      <h1>browsertodo</h1>
+      <p class="sub">Claims tasks from your task API and runs them in a separate Chrome window.</p>
+    </header>
+
+    <main>
+      <section id="status-section">
+        <h2>Status</h2>
+        <dl id="status" class="kv">
+          <dt>Run</dt><dd id="st-run">…</dd>
+          <dt>Current task</dt><dd id="st-task">—</dd>
+          <dt>Last run</dt><dd id="st-last">—</dd>
+          <dt>Last error</dt><dd id="st-error">—</dd>
+          <dt>Helper</dt><dd id="st-helper">…</dd>
+        </dl>
+        <div class="row">
+          <button id="run-now" type="button">Run now</button>
+          <button id="test-api" type="button">Test API connection</button>
+          <button id="connect-helper" type="button">Connect helper</button>
+          <span id="action-msg" class="msg" role="status"></span>
+        </div>
+      </section>
+
+      <section>
+        <h2>Settings</h2>
+        <form id="settings-form">
+          <div id="fields" class="grid"></div>
+          <div class="row">
+            <button type="submit">Save settings</button>
+            <span id="save-msg" class="msg" role="status"></span>
+          </div>
+        </form>
+      </section>
+
+      <section>
+        <h2>Vault</h2>
+        <p class="hint">
+          Usernames and passwords for sites other than X, encrypted with your passphrase. The key stays
+          unlocked until Chrome restarts. The first unlock creates the vault.
+        </p>
+        <p>State: <strong id="vault-state">…</strong></p>
+        <form id="unlock-form" class="row">
+          <input id="vault-pass" type="password" placeholder="Passphrase" autocomplete="current-password" />
+          <button type="submit">Unlock</button>
+          <button id="vault-lock" type="button">Lock</button>
+        </form>
+        <ul id="vault-sites" class="sites"></ul>
+        <form id="vault-add" class="row">
+          <input id="va-site" placeholder="example.com" required />
+          <input id="va-user" placeholder="Username" autocomplete="off" required />
+          <input id="va-pass" type="password" placeholder="Password" autocomplete="new-password" required />
+          <button type="submit">Add or replace</button>
+        </form>
+        <span id="vault-msg" class="msg" role="status"></span>
+      </section>
+
+      <section>
+        <h2>Live log</h2>
+        <pre id="log" class="log">Connect the helper to see its log.</pre>
+      </section>
+
+      <section>
+        <h2>Setup</h2>
+        <ol>
+          <li>Build the helper: <code>pnpm --filter @browsertodo/helper build</code></li>
+          <li>Register it for this extension:
+            <pre class="cmd" id="install-cmd"></pre>
+          </li>
+          <li>Enter the API base URL and a runner key above, then use <em>Test API connection</em>.</li>
+        </ol>
+        <p>Extension ID: <code id="ext-id"></code></p>
+      </section>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

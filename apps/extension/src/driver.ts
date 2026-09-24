@@ -1,5 +1,5 @@
 import type { BrowserMethods, PageSnapshot, Screenshot } from "@browsertodo/shared";
-import type { AgentWindow } from "./agent-window.js";
+import type { AgentTab } from "./agent-tab.js";
 import type { Cdp } from "./cdp.js";
 import { keyEvents } from "./keys.js";
 import { indexSelector, snapshotExpression } from "./page-snapshot.js";
@@ -21,7 +21,7 @@ export class Driver {
 
   constructor(
     private readonly cdp: Cdp,
-    private readonly agent: AgentWindow,
+    private readonly agent: AgentTab,
     opts: { sleep?: (ms: number) => Promise<void> } = {},
   ) {
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));

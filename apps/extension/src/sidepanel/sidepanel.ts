@@ -1,6 +1,7 @@
 /** Side panel entry: status line, tabs, and the push port to the background. */
 import { UI_PORT_NAME, uiRequest, type UiPush, type UiState } from "../ui-protocol.js";
 import { initActivity } from "./activity.js";
+import { initComposer } from "./composer.js";
 import { $, busy, errorText } from "./dom.js";
 import { clip, clockLabel, statusLine } from "./format.js";
 import { initTasks } from "./tasks.js";
@@ -11,6 +12,7 @@ type TabName = "tasks" | "activity" | "terminal";
 let state: UiState | null = null;
 
 const tasks = initTasks({ onStarted: () => showTab("activity") });
+const composer = initComposer({ onStarted: () => showTab("activity") });
 const activity = initActivity();
 const terminal = initTerminal();
 
@@ -25,6 +27,8 @@ function showTab(name: TabName): void {
   } catch {
     // Storage may be unavailable; the tab just is not remembered.
   }
+  // The terminal has its own input; the composer serves Tasks and Activity.
+  composer.setVisible(name !== "terminal");
   if (name === "terminal") terminal.onShow();
   if (name === "tasks") void tasks.refresh();
 }
@@ -75,6 +79,7 @@ function applyState(s: UiState): void {
   state = s;
   renderStatus(s);
   activity.setRunning(s.running);
+  composer.setRunning(!!s.running);
   terminal.onState(s);
 }
 

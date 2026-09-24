@@ -73,8 +73,13 @@ export interface RunnerDeps {
   core: Pick<CoreApi, "verifyXPost" | "classifyFailure">;
   /** Direct driver access, used for post verification. */
   browser: BrowserCaller;
-  /** Ensure the agent window and tab exist and the debugger is attached. */
-  prepareTab(): Promise<void>;
+  /**
+   * Pick the run's agent tab and attach the debugger to it.
+   * mode "current-tab": the tab the user is looking at (one-off runs);
+   * "own-tab": the reusable agent tab (scheduled runs).
+   * show: bring the agent tab to the front (one-off runs the user is watching).
+   */
+  prepareTab(opts?: { show?: boolean; mode?: "current-tab" | "own-tab" }): Promise<void>;
   isAgentTab(tabId: number): Promise<boolean>;
   screenshot(): Promise<Screenshot>;
   notify(title: string, message: string): void | Promise<void>;
@@ -410,7 +415,7 @@ export class Runner {
 
     let result: TaskRunResult;
     try {
-      await this.deps.prepareTab();
+      await this.deps.prepareTab({ show: job.source === "adhoc", mode: job.source === "adhoc" ? "current-tab" : "own-tab" });
       const sources = await this.mediaSources(job);
       if (sources.length) this.emit(active, { type: "status", text: `Preparing ${sources.length} file(s)` });
       const media = await this.deps.media.materialize(sessionId, sources);

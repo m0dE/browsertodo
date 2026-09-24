@@ -152,6 +152,16 @@ function renderState(state: UiState): void {
   $("helper-details").replaceChildren(...hs.details.map((d) => h("li", null, d)));
   $("helper-install").hidden = !!b.helper;
   $("helper-connect").textContent = b.helper ? "Re-check" : "Connect";
+
+  // Say where Jev's key comes from when it is not set here.
+  const jevSource = $("jev-source");
+  const fromHelper = !state.settings.jevApiKey && !!b.helper?.jevAvailable;
+  jevSource.hidden = !fromHelper;
+  jevSource.textContent = fromHelper
+    ? state.settings.jevEnabled
+      ? "In use with local Claude Code: the helper has its own Jev key (TYPESAFE_API_KEY in its .env file). A key entered here takes priority and also works with the Claude API."
+      : "The helper has its own Jev key (TYPESAFE_API_KEY in its .env file), but Jev is switched off."
+    : "";
 }
 
 /** Apply a saved state; keeps unsaved edits only when asked. */

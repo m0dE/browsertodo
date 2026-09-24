@@ -69,6 +69,8 @@ export type UiRequest =
   /** Run everything that is due now (local, then cloud if enabled). */
   | { type: "run.due" }
   | { type: "run.stop" }
+  /** Bring the agent's window to the front. */
+  | { type: "agent.show" }
   /** Type into the running agent session. */
   | { type: "run.say"; text: string }
   | { type: "schedule.pause" }
@@ -111,6 +113,7 @@ export interface UiResults {
   "run.adhoc": { sessionId: string };
   "run.due": { started: boolean; detail?: string };
   "run.stop": { ok: boolean };
+  "agent.show": { ok: boolean };
   "run.say": { ok: boolean };
   "schedule.pause": UiState;
   "schedule.resume": UiState;

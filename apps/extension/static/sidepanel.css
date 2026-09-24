@@ -49,11 +49,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 /* Tasks tab */
 #tab-tasks { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-.now textarea { border: 0; padding: 2px; background: transparent; min-height: 54px; }
-.now textarea:focus { outline: none; }
-.now:focus-within { border-color: color-mix(in srgb, var(--accent) 60%, var(--border)); }
-.now .row { flex-wrap: nowrap; }
-.now .grow { flex: 1 1 auto; }
 .file-btn { cursor: pointer; }
 .files { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
 .files:empty { display: none; }
@@ -67,7 +62,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .files li button { border: 0; background: none; padding: 0 3px; color: inherit; font-size: 13px; line-height: 1; }
 .files.inline { flex: 1; }
 
-.section-head { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.section-head { display: flex; align-items: center; gap: 6px; min-height: 26px; }
 .section-head h2 { font-size: 13px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 @media (max-width: 380px) { .grid2 { grid-template-columns: 1fr; } }
@@ -90,6 +85,9 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .task-meta a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .task-reason { color: var(--bad); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { color: var(--muted); text-align: center; margin: 12px 0; font-size: 12px; }
+.empty-state { text-align: center; color: var(--muted); font-size: 12px; padding: 28px 16px 20px; border: 1px dashed var(--border); border-radius: var(--radius); }
+.empty-state p { margin: 0 auto; max-width: 250px; text-wrap: balance; }
+.empty-state .empty-title { color: var(--text); font-weight: 500; font-size: 13px; margin-bottom: 2px; }
 .finished summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 4px 0; list-style-position: inside; }
 .finished[open] summary { margin-bottom: 2px; }
 .finished .task { opacity: 0.85; }
@@ -172,8 +170,49 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .sessions .chip { margin-top: 1px; }
 .recent-head { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
 
-.say { display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.say input { flex: 1; }
+/* Composer pinned under the Tasks and Activity tabs: textarea on top, a compact control row below. */
+.composer { flex: none; position: relative; padding: 6px 10px 10px; background: var(--bg); display: flex; flex-direction: column; gap: 6px; }
+/* Content scrolling under the composer fades out instead of being cut off. */
+.composer::before {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 100%; height: 14px; pointer-events: none;
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--bg) 0%, transparent), var(--bg));
+}
+.composer > .msg { padding: 0 4px; }
+.now {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 6px 6px 6px 10px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 16px rgb(0 0 0 / 0.05);
+  cursor: text;
+}
+.now:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.now .files { padding: 2px 0 4px; }
+.now textarea {
+  border: 0; background: transparent; resize: none; padding: 4px 4px 4px 0;
+  line-height: 20px; min-height: 28px; overflow-y: hidden; scrollbar-width: thin;
+}
+.now textarea:focus-visible { outline: none; }
+.now-bar { display: flex; align-items: center; gap: 4px; margin-left: -4px; cursor: default; }
+.now-bar button { height: 28px; padding: 0 12px; }
+.now.blank #now-submit { opacity: 0.45; }
+.now-tool {
+  flex: none; width: 28px; height: 28px; display: grid; place-items: center;
+  border-radius: 7px; color: var(--muted); cursor: pointer;
+}
+.now-tool:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+.now-tool:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 0; }
+.now-account {
+  flex: 0 1 150px; min-width: 0; height: 28px; display: flex; align-items: center; gap: 5px;
+  padding: 0 10px 0 8px; border-radius: 14px; color: var(--faint); cursor: text;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.now-account svg { flex: none; }
+.now-account:focus-within { color: var(--muted); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
+#now-account { border: 0; background: transparent; padding: 0; height: 26px; font-size: 12px; }
+#now-account:focus-visible { outline: none; }
+@media (prefers-color-scheme: dark) {
+  .now { box-shadow: 0 4px 16px rgb(0 0 0 / 0.35); }
+}
 
 /* Terminal tab */
 .terminal { display: flex; flex-direction: column; background: var(--bg); }

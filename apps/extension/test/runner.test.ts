@@ -81,6 +81,7 @@ interface Harness {
   uploads: string[];
   verify: ReturnType<typeof vi.fn>;
   noBrain: boolean;
+  prepared: Parameters<RunnerDeps["prepareTab"]>[0][];
 }
 
 let chrome: ChromeFake;
@@ -107,6 +108,7 @@ function harness(overrides: Partial<ExtensionSettings> = {}): Harness {
     uploads: [],
     verify: vi.fn(async () => ({ ok: true, detail: "found" })),
     noBrain: false,
+    prepared: [],
   } as unknown as Harness;
   let sid = 0;
   h.deps = {
@@ -143,7 +145,7 @@ function harness(overrides: Partial<ExtensionSettings> = {}): Harness {
       classifyFailure: (reason: string) => (/limit|network|timeout/i.test(reason) ? "transient" : "permanent"),
     },
     browser: { call: async () => ({}) as never },
-    prepareTab: async () => {},
+    prepareTab: async (opts) => void h.prepared.push(opts),
     isAgentTab: async (tabId) => tabId === 7,
     screenshot: async () => ({ base64: btoa("JPG"), mimeType: "image/jpeg" }),
     notify: (title, message) => void h.notifications.push({ title, message }),
@@ -187,6 +189,8 @@ describe("Runner: local tasks", () => {
     const start = h.brain.starts[0]!;
     expect(start.task).toEqual({ id: t.id, instructions: "Post hello", account: "@me" });
     expect(start.mediaPaths).toEqual(["C:\\dl\\a.png"]);
+    // Scheduled runs use the agent's own tab, in the background.
+    expect(h.prepared).toEqual([{ show: false, mode: "own-tab" }]);
     expect(start.config).toMatchObject({ isRetry: false, maxToolCalls: 60, jevEnabled: true });
     expect(h.materialized[0]!.sources[0]).toMatchObject({ kind: "blob", name: "a.png" });
     expect(h.cleanups).toBe(1);
@@ -500,6 +504,8 @@ describe("Runner: adhoc sessions", () => {
     expect(events.at(-1)).toMatchObject({ type: "task_end", outcome: "done", summary: "did it" });
     expect(h.brain.starts[0]!.task).toEqual({ id: sessionId, instructions: "Like the top post", account: "@me" });
     expect(h.brain.starts[0]!.mediaPaths).toEqual(["C:\\dl\\x.png"]);
+    // One-off runs act on the tab the user is looking at.
+    expect(h.prepared).toEqual([{ show: true, mode: "current-tab" }]);
     expect(await h.store.list()).toEqual([]);
     expect(await h.runner.say("late")).toBe(false);
   });

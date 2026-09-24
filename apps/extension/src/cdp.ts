@@ -28,7 +28,7 @@ export class Cdp {
     }
     this.tabId = tabId;
     this.attached = true;
-    // Let pages behave as focused even though the agent window is in the background.
+    // Let pages behave as focused even when the agent tab is in the background.
     await chrome.debugger.sendCommand({ tabId }, "Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
   }
 

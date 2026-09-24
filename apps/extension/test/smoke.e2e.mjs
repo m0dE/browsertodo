@@ -174,7 +174,7 @@ try {
     return out[0];
   });
 
-  // Driver against the fixture page, in the agent window.
+  // Driver against the fixture page, in the agent tab.
   const call = (method, params = {}) =>
     sw.evaluate(async ([m, p]) => globalThis.__browsertodo.driver[m](p), [method, params]);
   const findIndex = (snap, pred) => {
@@ -183,18 +183,40 @@ try {
     return el.index;
   };
 
-  await step("navigate opens the agent window", async () => {
-    const before = await sw.evaluate(async () => (await chrome.windows.getAll()).length);
+  const counts = () =>
+    sw.evaluate(async () => ({ windows: (await chrome.windows.getAll()).length, tabs: (await chrome.tabs.query({})).length }));
+
+  await step("one-off run on an extension page opens a grouped tab next to it, same window", async () => {
+    await page.bringToFront();
+    const before = await counts();
+    const out = await sw.evaluate(async () => {
+      const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      const tabId = await globalThis.__browsertodo.agentTab.prepare("current-tab");
+      const tab = await chrome.tabs.get(tabId);
+      const group = tab.groupId !== -1 ? await chrome.tabGroups.get(tab.groupId) : null;
+      return { activeUrl: active.url, activeIndex: active.index, activeWindow: active.windowId, tab, group };
+    });
+    const after = await counts();
+    assert.match(out.activeUrl, /^chrome-extension:\/\//);
+    assert.equal(out.tab.windowId, out.activeWindow, "same window");
+    assert.equal(out.tab.index, out.activeIndex + 1, "right after the active tab");
+    assert.equal(out.tab.active, true);
+    assert.equal(out.group?.title, "browsertodo");
+    assert.equal(out.group?.color, "blue");
+    assert.equal(after.windows, before.windows, "no new window");
+    assert.equal(after.tabs, before.tabs + 1);
+    return `tab ${out.tab.id} at index ${out.tab.index} in group "${out.group.title}"`;
+  });
+
+  await step("navigate runs in the agent tab", async () => {
+    const before = await counts();
     const nav = await call("navigate", { url: `${base}/` });
     assert.equal(nav.title, "Smoke fixture");
-    const after = await sw.evaluate(async () => (await chrome.windows.getAll()).length);
-    const win = await sw.evaluate(async () => {
-      const { agentWindowId } = await chrome.storage.session.get("agentWindowId");
-      const w = await chrome.windows.get(agentWindowId);
-      return { width: w.width, height: w.height, type: w.type };
-    });
-    assert.equal(after, before + 1);
-    return `${nav.url} in ${win.type} window ${win.width}x${win.height}`;
+    const after = await counts();
+    assert.deepEqual(after, before, "no new window or tab");
+    const attached = await sw.evaluate(async () => [globalThis.__browsertodo.cdp.attachedTabId, await globalThis.__browsertodo.agentTab.tabId()]);
+    assert.equal(attached[0], attached[1], "debugger attached to the agent tab");
+    return nav.url;
   });
 
   let snap;
@@ -298,11 +320,32 @@ try {
     return url;
   });
 
-  await step("agent window is reused", async () => {
-    const before = await sw.evaluate(async () => (await chrome.windows.getAll()).length);
+  await step("scheduled runs reuse the agent tab", async () => {
+    const before = await counts();
+    const [a, b] = await sw.evaluate(async () => [await globalThis.__browsertodo.agentTab.tabId(), await globalThis.__browsertodo.agentTab.prepare("own-tab")]);
+    assert.equal(b, a);
     await call("navigate", { url: `${base}/` });
-    const after = await sw.evaluate(async () => (await chrome.windows.getAll()).length);
-    assert.equal(after, before);
+    assert.deepEqual(await counts(), before);
+  });
+
+  await step("one-off run on the user's page acts on that tab; closing it fails the next call", async () => {
+    const userPage = await context.newPage();
+    await userPage.goto(`${base}/other`);
+    await userPage.bringToFront();
+    const out = await sw.evaluate(async () => {
+      const tabId = await globalThis.__browsertodo.agentTab.prepare("current-tab");
+      await globalThis.__browsertodo.driver.ready();
+      const tab = await chrome.tabs.get(tabId);
+      return { url: tab.url, group: tab.groupId !== -1 ? (await chrome.tabGroups.get(tab.groupId)).title : null, groups: (await chrome.tabGroups.query({ title: "browsertodo" })).length };
+    });
+    assert.equal(out.url, `${base}/other`);
+    assert.equal(out.group, "browsertodo");
+    assert.equal(out.groups, 1, "reuses the existing browsertodo group");
+    const snap = await call("readPage");
+    assert.ok(snap.text.includes("other page"), snap.text);
+    await userPage.close();
+    await assert.rejects(call("readPage"), /the agent tab was closed/);
+    return "user tab driven, closed-tab error readable";
   });
 } finally {
   await context.close();

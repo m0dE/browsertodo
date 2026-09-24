@@ -50,6 +50,8 @@ export interface UiRouterDeps {
   /** settings.save semantics (secrets: omitted keep, "" clear). */
   saveSettingsPatch(patch: Partial<ExtensionSettings>): Promise<ExtensionSettings>;
   runner: RouterRunner;
+  /** Brings the agent window to the front. Optional so older wiring and tests keep working. */
+  showAgent?(): Promise<boolean>;
   localStore: LocalStore;
   sessions: SessionStore;
   terminal: RouterTerminal;
@@ -138,6 +140,8 @@ export class UiRouter {
         return d.runner.runDue("manual");
       case "run.stop":
         return { ok: d.runner.stop() } satisfies UiResults["run.stop"];
+      case "agent.show":
+        return { ok: d.showAgent ? await d.showAgent() : false } satisfies UiResults["agent.show"];
       case "run.say":
         return { ok: await d.runner.say(String(msg.text ?? "")) } satisfies UiResults["run.say"];
       case "schedule.pause":

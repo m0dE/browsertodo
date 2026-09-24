@@ -79,6 +79,21 @@ export interface FakeTab {
   windowId: number;
   url: string;
   active: boolean;
+  groupId: number;
+}
+
+export interface FakeWindow {
+  id: number;
+  type: string;
+  state: string;
+  tabs: FakeTab[];
+}
+
+export interface FakeTabGroup {
+  id: number;
+  windowId: number;
+  title: string;
+  color: string;
 }
 
 export interface FakeDownload {
@@ -96,6 +111,15 @@ export function installChromeFake() {
   const onChanged = new FakeEvent<[Changes, string]>();
   let nextTabId = 100;
   let nextWindowId = 10;
+  let nextGroupId = 500;
+
+  const tabView = (t: FakeTab) => {
+    const w = fake.windows.byId.get(t.windowId);
+    return { ...t, index: w ? w.tabs.indexOf(t) : 0 };
+  };
+  const activate = (t: FakeTab) => {
+    for (const other of fake.windows.byId.get(t.windowId)?.tabs ?? []) other.active = other === t;
+  };
 
   const fake = {
     runtime: {
@@ -175,34 +199,126 @@ export function installChromeFake() {
     },
     tabs: {
       byId: new Map<number, FakeTab>(),
+      createCalls: [] as Record<string, unknown>[],
+      updateCalls: [] as { id: number; props: Record<string, unknown> }[],
       async get(id: number) {
         const t = fake.tabs.byId.get(id);
         if (!t) throw new Error(`No tab with id: ${id}.`);
-        return { ...t };
+        return tabView(t);
+      },
+      async query(q: { active?: boolean; lastFocusedWindow?: boolean; windowId?: number; windowType?: string }) {
+        const out = [];
+        for (const w of fake.windows.byId.values()) {
+          if (q.windowId !== undefined && w.id !== q.windowId) continue;
+          if (q.lastFocusedWindow && w.id !== fake.windows.focusOrder.at(-1)) continue;
+          if (q.windowType && w.type !== q.windowType) continue;
+          for (const t of w.tabs) if (q.active === undefined || t.active === q.active) out.push(tabView(t));
+        }
+        return out;
+      },
+      async create(opts: { windowId?: number; index?: number; active?: boolean; url?: string }) {
+        fake.tabs.createCalls.push({ ...opts });
+        const windowId = opts.windowId ?? fake.windows.focusOrder.at(-1);
+        const w = windowId === undefined ? undefined : fake.windows.byId.get(windowId);
+        if (!w) throw new Error(`No window with id: ${windowId}.`);
+        const tab: FakeTab = { id: nextTabId++, windowId: w.id, url: opts.url ?? "chrome://newtab/", active: false, groupId: -1 };
+        w.tabs.splice(opts.index ?? w.tabs.length, 0, tab);
+        fake.tabs.byId.set(tab.id, tab);
+        if (opts.active !== false) activate(tab);
+        return tabView(tab);
+      },
+      async update(id: number, props: { active?: boolean }) {
+        fake.tabs.updateCalls.push({ id, props: { ...props } });
+        const t = fake.tabs.byId.get(id);
+        if (!t) throw new Error(`No tab with id: ${id}.`);
+        if (props.active) activate(t);
+        return tabView(t);
+      },
+      async remove(id: number) {
+        const t = fake.tabs.byId.get(id);
+        if (!t) throw new Error(`No tab with id: ${id}.`);
+        const w = fake.windows.byId.get(t.windowId)!;
+        w.tabs.splice(w.tabs.indexOf(t), 1);
+        fake.tabs.byId.delete(id);
+      },
+      async group(opts: { tabIds: number[]; groupId?: number; createProperties?: { windowId?: number } }) {
+        let groupId = opts.groupId;
+        if (groupId === undefined) {
+          groupId = nextGroupId++;
+          const windowId = opts.createProperties?.windowId ?? fake.tabs.byId.get(opts.tabIds[0]!)!.windowId;
+          fake.tabGroups.byId.set(groupId, { id: groupId, windowId, title: "", color: "grey" });
+        }
+        if (!fake.tabGroups.byId.has(groupId)) throw new Error(`No group with id: ${groupId}.`);
+        for (const id of opts.tabIds) fake.tabs.byId.get(id)!.groupId = groupId;
+        return groupId;
       },
       onUpdated: new FakeEvent<unknown[]>(),
     },
+    tabGroups: {
+      byId: new Map<number, FakeTabGroup>(),
+      async get(id: number) {
+        const g = fake.tabGroups.byId.get(id);
+        if (!g) throw new Error(`No group with id: ${id}.`);
+        return { ...g };
+      },
+      async query(q: { windowId?: number; title?: string }) {
+        return [...fake.tabGroups.byId.values()]
+          .filter((g) => (q.windowId === undefined || g.windowId === q.windowId) && (q.title === undefined || g.title === q.title))
+          .map((g) => ({ ...g }));
+      },
+      async update(id: number, props: { title?: string; color?: string }) {
+        const g = fake.tabGroups.byId.get(id);
+        if (!g) throw new Error(`No group with id: ${id}.`);
+        Object.assign(g, props);
+        return { ...g };
+      },
+    },
     windows: {
-      byId: new Map<number, { id: number; tabs: FakeTab[] }>(),
+      byId: new Map<number, FakeWindow>(),
+      /** Window ids in focus order; the last one is the last focused. */
+      focusOrder: [] as number[],
       createCalls: [] as Record<string, unknown>[],
+      updateCalls: [] as { id: number; props: Record<string, unknown> }[],
       async create(opts: Record<string, unknown>) {
         fake.windows.createCalls.push(opts);
         const id = nextWindowId++;
-        const tab: FakeTab = { id: nextTabId++, windowId: id, url: String(opts.url ?? "about:blank"), active: true };
+        const tab: FakeTab = { id: nextTabId++, windowId: id, url: String(opts.url ?? "chrome://newtab/"), active: true, groupId: -1 };
         fake.tabs.byId.set(tab.id, tab);
-        fake.windows.byId.set(id, { id, tabs: [tab] });
-        return { id, tabs: [{ ...tab }] };
+        fake.windows.byId.set(id, { id, type: String(opts.type ?? "normal"), state: "normal", tabs: [tab] });
+        if (opts.focused !== false) fake.windows.focusOrder.push(id);
+        else fake.windows.focusOrder.unshift(id);
+        return { id, tabs: [tabView(tab)] };
       },
       async get(id: number, _opts?: unknown) {
         const w = fake.windows.byId.get(id);
         if (!w) throw new Error(`No window with id: ${id}.`);
-        return { id: w.id, tabs: w.tabs.map((t) => ({ ...t })) };
+        return { id: w.id, type: w.type, state: w.state, tabs: w.tabs.map(tabView) };
+      },
+      async getLastFocused(opts?: { windowTypes?: string[] }) {
+        const id = [...fake.windows.focusOrder].reverse().find((wid) => {
+          const w = fake.windows.byId.get(wid);
+          return w && (!opts?.windowTypes || opts.windowTypes.includes(w.type));
+        });
+        if (id === undefined) throw new Error("No last-focused window");
+        return fake.windows.get(id);
+      },
+      async update(id: number, props: { focused?: boolean; state?: string }) {
+        fake.windows.updateCalls.push({ id, props: { ...props } });
+        const w = fake.windows.byId.get(id);
+        if (!w) throw new Error(`No window with id: ${id}.`);
+        if (props.state) w.state = props.state;
+        if (props.focused) {
+          fake.windows.focusOrder = fake.windows.focusOrder.filter((x) => x !== id);
+          fake.windows.focusOrder.push(id);
+        }
+        return fake.windows.get(id);
       },
       async remove(id: number) {
         const w = fake.windows.byId.get(id);
         if (!w) throw new Error(`No window with id: ${id}.`);
         for (const t of w.tabs) fake.tabs.byId.delete(t.id);
         fake.windows.byId.delete(id);
+        fake.windows.focusOrder = fake.windows.focusOrder.filter((x) => x !== id);
       },
       onRemoved: new FakeEvent<unknown[]>(),
     },

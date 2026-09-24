@@ -5,7 +5,7 @@
 import { z } from "zod";
 import * as core from "@browsertodo/core";
 import type { ExtensionSettings } from "@browsertodo/shared";
-import { AgentWindow } from "./agent-window.js";
+import { AgentTab } from "./agent-tab.js";
 import { ApiClient } from "./api-client.js";
 import { Cdp } from "./cdp.js";
 import { Driver } from "./driver.js";
@@ -35,8 +35,8 @@ const DUE_ALARM = "browsertodo-due";
 const HELPER_AUTOCONNECT_MS = 60_000;
 
 const cdp = new Cdp();
-const agentWindow = new AgentWindow();
-const driver = new Driver(cdp, agentWindow);
+const agentTab = new AgentTab();
+const driver = new Driver(cdp, agentTab);
 const vault = new Vault();
 const db = new IdbKvDb();
 const localStore = new LocalStore({ db });
@@ -73,11 +73,14 @@ const runner = new Runner({
   resolveBrain: resolveForRun,
   core,
   browser,
-  prepareTab: async () => {
+  prepareTab: async (opts) => {
     cdp.reset();
+    // Pick the run's tab once; the driver keeps using it for the whole run.
+    await agentTab.prepare(opts?.mode ?? "own-tab");
     await driver.ready();
+    if (opts?.show) await agentTab.show().catch(() => false);
   },
-  isAgentTab: (tabId) => agentWindow.isAgentTab(tabId),
+  isAgentTab: (tabId) => agentTab.isAgentTab(tabId),
   screenshot: () => driver.screenshot(),
   notify,
   keepAlive: () => chrome.runtime.getPlatformInfo(),
@@ -116,6 +119,7 @@ const router = new UiRouter({
   loadSettings,
   saveSettingsPatch,
   runner,
+  showAgent: () => agentTab.show(),
   localStore,
   sessions,
   terminal,
@@ -192,6 +196,8 @@ onStart();
   media: mediaFiles,
   vault,
   cdp,
-  agentWindow,
+  agentTab,
+  /** Old name kept for the e2e suite. */
+  agentWindow: agentTab,
   scheduleDueAlarm,
 };

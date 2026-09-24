@@ -1,4 +1,4 @@
-/** Tasks tab: "Do this now", the todo list and the add form. */
+/** Tasks tab: the todo list and the add form ("Do this now" lives in the composer). */
 import type { LocalTask } from "@browsertodo/shared";
 import { uiRequest, type LocalMediaInfo } from "../ui-protocol.js";
 import { $, busy, errorText, flash, h } from "./dom.js";
@@ -26,41 +26,6 @@ export interface TasksView {
 
 export function initTasks(opts: { onStarted: () => void }): TasksView {
   let tasks: Row[] = [];
-
-  // "Do this now"
-  const nowForm = $<HTMLFormElement>("now-form");
-  const nowText = $<HTMLTextAreaElement>("now-text");
-  const nowAccount = $<HTMLInputElement>("now-account");
-  const nowMsg = $("now-msg");
-  const nowFiles = filePicker($<HTMLInputElement>("now-files"), $("now-files-list"));
-  nowText.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) nowForm.requestSubmit();
-  });
-  nowForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const submit = nowForm.querySelector<HTMLButtonElement>("button[type=submit]")!;
-    void busy(submit, async () => {
-      const instructions = nowText.value.trim();
-      if (!instructions) return;
-      flash(nowMsg, "Starting…");
-      try {
-        const media = await filesToUploads(nowFiles.files());
-        const account = nowAccount.value.trim();
-        await uiRequest({
-          type: "run.adhoc",
-          instructions,
-          ...(account ? { account } : {}),
-          ...(media.length ? { media } : {}),
-        });
-        nowText.value = "";
-        nowFiles.clear();
-        flash(nowMsg, "");
-        opts.onStarted();
-      } catch (err) {
-        flash(nowMsg, errorText(err), "bad");
-      }
-    });
-  });
 
   // Add form
   const addForm = $<HTMLFormElement>("add-form");

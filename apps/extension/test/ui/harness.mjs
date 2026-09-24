@@ -2,7 +2,9 @@
 // Bundles only the UI entry points, serves them from a local static server, injects
 // a `chrome` stub with canned data, and takes screenshots in light and dark mode.
 //
-// Usage: node apps/extension/test/ui/harness.mjs [--headed] [--only=<name-substring>]
+// Usage: node apps/extension/test/ui/harness.mjs [--headed] [--only=<substring>]
+// --only matches the screenshot file name, e.g. --only=panel-tasks-480-dark or --only=composer.
+// Exits non-zero on page errors or layout problems (composer not flush, overlap, clipping).
 import { chromium } from "@playwright/test";
 import { build } from "esbuild";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -89,6 +91,7 @@ function scenario(kind) {
     lastRunAt: iso(-3),
     terminal: null,
   };
+  if (kind === "idle" || kind === "empty") state.running = null;
   if (kind === "nobrain") {
     state.brain = { effective: null, note: "No brain available: add a Claude API key, or install the helper for Claude Code.", helper: null, helperError: "Specified native messaging host not found.", hasApiKey: false, jevActive: false };
     state.running = null;
@@ -139,6 +142,8 @@ function scenario(kind) {
     { sessionId: "s-3", source: "adhoc", title: "Find the cheapest flight to Lisbon next weekend", brain: "claude-api", jev: true, startedAt: iso(-400), endedAt: iso(-390), outcome: "paused", reason: "Needs you to pick dates" },
     { sessionId: "s-4", source: "local", taskId: "t7", title: "Share yesterday's blog post on LinkedIn", brain: "claude-api", jev: true, startedAt: iso(-1502), endedAt: iso(-1500), outcome: "failed", reason: "LinkedIn asked for a captcha" },
   ];
+  if (kind === "idle") tasks[0] = { ...tasks[0], status: "pending", notBefore: iso(40) };
+  if (kind === "empty") tasks.splice(0, tasks.length);
   return { state, tasks, events, sessions, pastEvents: events.slice(0, 6).map((e) => ({ ...e, sessionId: "s-2" })) };
 }
 
@@ -161,6 +166,7 @@ function installChromeStub(data) {
     "run.due": () => ({ started: false, detail: "Nothing is due right now." }),
     "run.stop": () => ({ ok: true }),
     "run.say": () => ({ ok: true }),
+    "agent.show": () => ({ ok: true }),
     "schedule.pause": () => ({ ...data.state, paused: true }),
     "schedule.resume": () => ({ ...data.state, paused: false }),
     "tasks.list": () => ({ tasks: data.tasks }),
@@ -225,14 +231,20 @@ const SCHEMES = ["light", "dark"];
 mkdirSync(shots, { recursive: true });
 const taken = [];
 
+/** True when --only is unset or matches the screenshot file name for this size and scheme. */
+const want = (name, size, scheme) => !only || `${name}-${size.w}-${scheme}`.includes(only);
+const wantAny = (names, size, scheme) => names.some((n) => want(n, size, scheme));
+let failures = 0;
+
 async function shoot(page, name, size, scheme) {
+  if (!want(name, size, scheme)) return;
   const file = join(shots, `${name}-${size.w}-${scheme}.png`);
   await page.waitForTimeout(150);
   await page.screenshot({ path: file });
   taken.push(file);
 }
 
-async function openPanel(ctx, kind) {
+async function openPanel(ctx, kind, waitFor = ".task") {
   const page = await ctx.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -241,69 +253,168 @@ async function openPanel(ctx, kind) {
   await page.goto(`${base}/sidepanel.html`);
   await page.evaluate(() => localStorage.clear());
   await page.reload();
-  await page.waitForSelector(".task");
+  await page.waitForSelector(waitFor);
   page.errors = errors;
   return page;
 }
 
-const want = (name) => !only || name.includes(only);
+function reportErrors(page, label) {
+  if (!page.errors.length) return;
+  console.error(`page errors (${label}):`, page.errors);
+  failures++;
+}
+
+/** The composer sits flush at the bottom, nothing overlaps it, nothing in it is clipped. */
+async function checkLayout(page, label) {
+  const problems = await page.evaluate(() => {
+    const out = [];
+    const comp = document.getElementById("composer");
+    const main = document.querySelector("main");
+    if (document.documentElement.scrollWidth > window.innerWidth) out.push("horizontal page scroll");
+    if (comp.hidden) return out;
+    const c = comp.getBoundingClientRect();
+    if (Math.abs(c.bottom - window.innerHeight) > 1) out.push(`composer bottom ${c.bottom} != viewport ${window.innerHeight}`);
+    if (main.getBoundingClientRect().bottom > c.top + 1) out.push("main overlaps the composer");
+    for (const el of comp.querySelectorAll("button, input:not([type=file]), label, textarea")) {
+      const r = el.getBoundingClientRect();
+      if (!r.width) continue;
+      if (r.right > c.right + 0.5 || r.left < c.left - 0.5) out.push(`#${el.id} clipped horizontally`);
+    }
+    return out;
+  });
+  if (!problems.length) return;
+  console.error(`layout (${label}):`, problems);
+  failures++;
+}
+
+const LONG_TEXT = [
+  "Post the launch thread on X from @browsertodo:",
+  "1. We just shipped browsertodo 0.2",
+  "2. It runs your todo list in the browser, on a schedule",
+  "3. Try it: add a task, close the laptop lid, and it still posts on time.",
+  "4. Link to the blog post",
+  "5. Thank the beta testers",
+  "6. Pin the thread",
+  "7. Reply to the first comment",
+  "8. Like the replies from people we follow",
+  "9. Tell me when it is done",
+].join("\n");
 
 for (const size of SIZES) {
   for (const scheme of SCHEMES) {
     const ctx = await browser.newContext({ viewport: { width: size.w, height: size.h }, colorScheme: scheme, deviceScaleFactor: 1 });
+    const label = `${size.w} ${scheme}`;
 
-    // Side panel, normal state with a running session.
-    const page = await openPanel(ctx, "ok");
-    if (want("tasks")) await shoot(page, "panel-tasks", size, scheme);
-    if (want("add")) {
-      await page.click("#add-toggle");
-      await page.fill("#add-text", "Post the weekly recap");
-      await page.fill("#add-repeat", "9:00, 18:30");
-      await shoot(page, "panel-add-form", size, scheme);
-      await page.click("#add-cancel");
+    // Idle: nothing running, the composer starts a one-off task.
+    if (wantAny(["panel-tasks-idle", "panel-composer-long", "panel-composer-files"], size, scheme)) {
+      const p = await openPanel(ctx, "idle");
+      await checkLayout(p, `idle ${label}`);
+      await shoot(p, "panel-tasks-idle", size, scheme);
+      if (want("panel-composer-long", size, scheme)) {
+        await p.click("#now-text");
+        await p.keyboard.insertText(LONG_TEXT);
+        await p.fill("#now-account", "browsertodo");
+        await checkLayout(p, `composer-long ${label}`);
+        await shoot(p, "panel-composer-long", size, scheme);
+        await p.fill("#now-text", "");
+      }
+      if (want("panel-composer-files", size, scheme)) {
+        await p.setInputFiles("#now-files", [
+          { name: "week38-photo-of-the-week-final.jpg", mimeType: "image/jpeg", buffer: Buffer.from("x") },
+          { name: "caption.txt", mimeType: "text/plain", buffer: Buffer.from("x") },
+        ]);
+        await p.click("#now-text");
+        await p.keyboard.insertText("Post the photo of the week with this caption");
+        await checkLayout(p, `composer-files ${label}`);
+        await shoot(p, "panel-composer-files", size, scheme);
+      }
+      reportErrors(p, `idle ${label}`);
+      await p.close();
     }
-    if (want("menu")) {
-      await page.locator("#finished > summary").click();
-      await page.locator("#finished-list .menu summary").first().click();
-      await shoot(page, "panel-finished-menu", size, scheme);
-      await page.mouse.click(5, size.h - 5);
+
+    // Empty todo list.
+    if (want("panel-tasks-empty", size, scheme)) {
+      const p = await openPanel(ctx, "empty", "#tasks-empty:not([hidden])");
+      await checkLayout(p, `empty ${label}`);
+      await shoot(p, "panel-tasks-empty", size, scheme);
+      reportErrors(p, `empty ${label}`);
+      await p.close();
     }
-    if (want("activity")) {
-      await page.click("#tab-btn-activity");
-      await page.waitForSelector(".ev-tool");
-      await page.locator("details.ev-result").first().evaluate((d) => (d.open = true));
-      await shoot(page, "panel-activity", size, scheme);
-      await page.click("#act-history");
-      await page.waitForSelector(".sessions li");
-      await shoot(page, "panel-history", size, scheme);
-      await page.locator(".sessions li button").nth(1).click();
-      await page.waitForSelector(".ev-text");
-      await shoot(page, "panel-past-session", size, scheme);
+
+    // A running session: the composer talks to the agent (Send + Stop).
+    const runningShots = ["panel-tasks", "panel-add-form", "panel-finished-menu", "panel-activity", "panel-history", "panel-past-session", "panel-terminal"];
+    if (wantAny(runningShots, size, scheme)) {
+      const page = await openPanel(ctx, "ok");
+      await checkLayout(page, `tasks ${label}`);
+      await shoot(page, "panel-tasks", size, scheme);
+      if (want("panel-add-form", size, scheme)) {
+        await page.click("#add-toggle");
+        await page.fill("#add-text", "Post the weekly recap");
+        await page.fill("#add-repeat", "9:00, 18:30");
+        await checkLayout(page, `add ${label}`);
+        await shoot(page, "panel-add-form", size, scheme);
+        await page.click("#add-cancel");
+      }
+      if (want("panel-finished-menu", size, scheme)) {
+        await page.locator("#finished > summary").click();
+        await page.locator("#finished-list .menu summary").first().click();
+        await page.locator("#finished-list .menu[open] .menu-pop").scrollIntoViewIfNeeded();
+        await shoot(page, "panel-finished-menu", size, scheme);
+        await page.locator("#tab-tasks .section-head h2").click();
+      }
+      if (wantAny(["panel-activity", "panel-history", "panel-past-session"], size, scheme)) {
+        await page.click("#tab-btn-activity");
+        await page.waitForSelector(".ev-tool");
+        await page.locator("details.ev-result").first().evaluate((d) => (d.open = true));
+        await page.locator("#act-log").evaluate((l) => (l.scrollTop = l.scrollHeight));
+        await checkLayout(page, `activity ${label}`);
+        await shoot(page, "panel-activity", size, scheme);
+        await page.click("#act-show");
+        if (!(await page.evaluate(() => window.__requests.some((r) => r.type === "agent.show")))) {
+          console.error(`Show tab did not send agent.show (${label})`);
+          failures++;
+        }
+        await page.click("#act-history");
+        await page.waitForSelector(".sessions li");
+        await checkLayout(page, `history ${label}`);
+        await shoot(page, "panel-history", size, scheme);
+        await page.locator(".sessions li button").nth(1).click();
+        await page.waitForSelector(".ev-text");
+        await shoot(page, "panel-past-session", size, scheme);
+      }
+      if (want("panel-terminal", size, scheme)) {
+        await page.click("#tab-btn-terminal");
+        if (!(await page.locator("#composer").isHidden())) {
+          console.error(`composer visible on the Terminal tab (${label})`);
+          failures++;
+        }
+        await page.click("#term-start");
+        await page.waitForTimeout(100);
+        for (const d of TERM_DATA) await page.evaluate((data) => window.__push({ type: "terminal.data", terminalId: "term-1", data }), d);
+        await shoot(page, "panel-terminal", size, scheme);
+      }
+      reportErrors(page, `running ${label}`);
+      await page.close();
     }
-    if (want("terminal")) {
-      await page.click("#tab-btn-terminal");
-      await page.click("#term-start");
-      await page.waitForTimeout(100);
-      for (const d of TERM_DATA) await page.evaluate((data) => window.__push({ type: "terminal.data", terminalId: "term-1", data }), d);
-      await shoot(page, "panel-terminal", size, scheme);
-    }
-    if (page.errors.length) console.error(`page errors (${size.w} ${scheme}):`, page.errors);
-    await page.close();
 
     // Warning states.
-    if (want("nobrain")) {
-      const p2 = await openPanel(ctx, "nobrain");
-      await shoot(p2, "panel-nobrain-tasks", size, scheme);
-      await p2.click("#tab-btn-terminal");
-      await shoot(p2, "panel-nobrain-terminal", size, scheme);
-      await p2.close();
+    if (wantAny(["panel-nobrain-tasks", "panel-nobrain-terminal"], size, scheme)) {
+      const p = await openPanel(ctx, "nobrain");
+      await checkLayout(p, `nobrain ${label}`);
+      await shoot(p, "panel-nobrain-tasks", size, scheme);
+      await p.click("#tab-btn-terminal");
+      await shoot(p, "panel-nobrain-terminal", size, scheme);
+      reportErrors(p, `nobrain ${label}`);
+      await p.close();
     }
-    if (want("paused")) {
-      const p3 = await openPanel(ctx, "paused");
-      await p3.click("#tab-btn-activity");
-      await p3.waitForSelector(".sessions li");
-      await shoot(p3, "panel-paused-idle-activity", size, scheme);
-      await p3.close();
+    if (want("panel-paused-idle-activity", size, scheme)) {
+      const p = await openPanel(ctx, "paused");
+      await p.click("#tab-btn-activity");
+      await p.waitForSelector(".sessions li");
+      await checkLayout(p, `paused ${label}`);
+      await shoot(p, "panel-paused-idle-activity", size, scheme);
+      reportErrors(p, `paused ${label}`);
+      await p.close();
     }
     await ctx.close();
   }
@@ -312,7 +423,7 @@ for (const size of SIZES) {
 // Options page: a wider viewport too, since it opens in a tab.
 for (const scheme of SCHEMES) {
   for (const size of [{ w: 480, h: 900 }, { w: 1000, h: 1400 }]) {
-    if (!want("options")) continue;
+    if (!want("options", size, scheme)) continue;
     const ctx = await browser.newContext({ viewport: { width: size.w, height: size.h }, colorScheme: scheme });
     const page = await ctx.newPage();
     page.on("pageerror", (e) => console.error("options error:", String(e)));
@@ -322,6 +433,7 @@ for (const scheme of SCHEMES) {
     await page.locator("[data-secret=jevApiKey] input").fill("jev-123");
     await page.check("#f-cloudEnabled");
     await page.locator("details.advanced").evaluateAll((els) => els.forEach((d) => (d.open = true)));
+    await page.waitForTimeout(250); // let the switch transition finish
     await page.screenshot({ path: join(shots, `options-${size.w}-${scheme}.png`), fullPage: true });
     taken.push(join(shots, `options-${size.w}-${scheme}.png`));
     await ctx.close();
@@ -330,7 +442,7 @@ for (const scheme of SCHEMES) {
 
 // Options with nothing usable and a key marked for removal.
 for (const scheme of SCHEMES) {
-  if (!want("options")) continue;
+  if (!want("options-nobrain", { w: 480 }, scheme)) continue;
   const ctx = await browser.newContext({ viewport: { width: 480, height: 900 }, colorScheme: scheme });
   const page = await ctx.newPage();
   page.on("pageerror", (e) => console.error("options error:", String(e)));
@@ -354,3 +466,7 @@ await browser.close();
 server.close();
 rmSync(out, { recursive: true, force: true });
 console.log(`${taken.length} screenshots in ${shots}`);
+if (failures) {
+  console.error(`${failures} problem(s) found, see above`);
+  process.exitCode = 1;
+}

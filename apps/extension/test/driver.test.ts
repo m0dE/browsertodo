@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installChromeFake, type ChromeFake } from "./chrome-fake.js";
-import { AgentWindow } from "../src/agent-window.js";
+import { AgentTab } from "../src/agent-tab.js";
 import { Cdp } from "../src/cdp.js";
 import { Driver } from "../src/driver.js";
 import { snapshotExpression } from "../src/page-snapshot.js";
 
 let chrome: ChromeFake;
 let cdp: Cdp;
-let agent: AgentWindow;
+let agent: AgentTab;
 let driver: Driver;
 /** Values returned by Runtime.evaluate, matched by a substring of the expression. */
 let evalResults: [string, unknown][];
@@ -15,7 +15,7 @@ let evalResults: [string, unknown][];
 beforeEach(() => {
   chrome = installChromeFake();
   cdp = new Cdp();
-  agent = new AgentWindow();
+  agent = new AgentTab();
   driver = new Driver(cdp, agent, { sleep: async () => {} });
   evalResults = [];
   chrome.debugger.respond = (method, params) => {
@@ -34,56 +34,165 @@ beforeEach(() => {
 
 const inputCommands = () => chrome.debugger.commands.filter((c) => c.method.startsWith("Input."));
 
-describe("AgentWindow", () => {
-  it("creates one unfocused window and reuses it", async () => {
-    const a = await agent.ensureTab();
-    const b = await agent.ensureTab();
-    expect(a).toBe(b);
-    expect(chrome.windows.createCalls).toEqual([{ url: "about:blank", focused: false, type: "normal", width: 1280, height: 900 }]);
-    expect(typeof chrome.storage.session.data.agentWindowId).toBe("number");
-    expect(await agent.isAgentTab(a)).toBe(true);
+/** A focused normal window whose active tab shows `url`. */
+async function userWindow(url: string) {
+  const win = await chrome.windows.create({ url, focused: true, type: "normal" });
+  return { windowId: win.id, tabId: win.tabs[0]!.id };
+}
+
+describe("AgentTab", () => {
+  it("one-off runs act on the tab the user is looking at, in a browsertodo group", async () => {
+    const { windowId, tabId } = await userWindow("https://example.com/");
+    await chrome.windows.create({ url: "https://popup.test/", focused: false, type: "popup" });
+    expect(await agent.prepare("current-tab")).toBe(tabId);
+    expect(chrome.tabs.createCalls).toEqual([]);
+    expect(chrome.windows.createCalls).toHaveLength(2);
+    expect(chrome.storage.session.data.agentTabId).toBe(tabId);
+    expect(await agent.isAgentTab(tabId)).toBe(true);
     expect(await agent.isAgentTab(999)).toBe(false);
+    expect(await agent.windowId()).toBe(windowId);
+    const group = chrome.tabGroups.byId.get(chrome.tabs.byId.get(tabId)!.groupId)!;
+    expect(group).toMatchObject({ windowId, title: "browsertodo", color: "blue" });
   });
 
-  it("puts the agent tab in a tab group titled browsertodo, once", async () => {
-    const groups = new Map<number, { title?: string; color?: string }>();
-    const tabGroup = new Map<number, number>();
-    const c = chrome as unknown as Record<string, any>;
-    const realGet = c.tabs.get;
-    c.tabs.get = async (id: number) => ({ ...(await realGet(id)), groupId: tabGroup.get(id) ?? -1 });
-    c.tabs.group = vi.fn(async ({ tabIds }: { tabIds: number[] }) => {
-      const gid = 77;
-      groups.set(gid, {});
-      tabIds.forEach((t) => tabGroup.set(t, gid));
-      return gid;
-    });
-    c.tabGroups = {
-      get: async (gid: number) => ({ id: gid, ...groups.get(gid) }),
-      update: vi.fn(async (gid: number, props: { title: string; color: string }) => void groups.set(gid, props)),
-    };
-    const tab = await agent.ensureTab();
-    await agent.ensureTab();
-    expect(tabGroup.get(tab)).toBe(77);
-    expect(groups.get(77)).toEqual({ title: "browsertodo", color: "blue" });
-    expect(c.tabs.group).toHaveBeenCalledTimes(1);
-    expect(c.tabGroups.update).toHaveBeenCalledTimes(1);
+  it.each([
+    "chrome://newtab/",
+    "chrome-extension://abc/page.html",
+    "https://chromewebstore.google.com/detail/x",
+    "https://chrome.google.com/webstore/x",
+    "about:version",
+    "edge://settings",
+    "devtools://devtools/x",
+    "view-source:https://a.test/",
+    "",
+  ])("one-off run on %j opens a new active tab right after it", async (url) => {
+    const { windowId, tabId } = await userWindow("https://first.test/");
+    const second = await chrome.tabs.create({ windowId, url, active: true });
+    await chrome.tabs.create({ windowId, url: "https://third.test/", active: false });
+    chrome.tabs.createCalls.length = 0;
+    const agentTab = await agent.prepare("current-tab");
+    expect(agentTab).not.toBe(tabId);
+    expect(agentTab).not.toBe(second.id);
+    expect(chrome.tabs.createCalls).toEqual([{ windowId, index: 2, active: true, url: "about:blank" }]);
+    expect((await chrome.tabs.get(agentTab)).active).toBe(true);
+  });
+
+  it("about:blank is controllable", async () => {
+    const { tabId } = await userWindow("about:blank");
+    expect(await agent.prepare("current-tab")).toBe(tabId);
+  });
+
+  it("opens a focused window when there is no normal window", async () => {
+    const tabId = await agent.prepare("current-tab");
+    expect(chrome.windows.createCalls).toEqual([{ url: "about:blank", focused: true, type: "normal" }]);
+    expect(chrome.tabs.byId.get(tabId)!.url).toBe("about:blank");
+  });
+
+  it("scheduled runs open an active tab in the last focused window, then reuse it", async () => {
+    const { windowId, tabId: userTab } = await userWindow("https://example.com/");
+    const first = await agent.prepare("own-tab");
+    expect(first).not.toBe(userTab);
+    expect(chrome.tabs.createCalls).toEqual([{ windowId, active: true, url: "about:blank" }]);
+    expect(chrome.windows.createCalls).toHaveLength(1);
+    // The user moves on; the next scheduled run reuses the same tab.
+    await chrome.tabs.update(userTab, { active: true });
+    expect(await agent.prepare("own-tab")).toBe(first);
+    expect(chrome.tabs.createCalls).toHaveLength(1);
+    // Gone: a new one is opened.
+    await chrome.tabs.remove(first);
+    const third = await agent.prepare("own-tab");
+    expect(third).not.toBe(first);
+    expect(chrome.tabs.createCalls).toHaveLength(2);
+    expect(chrome.storage.session.data.agentTabId).toBe(third);
+  });
+
+  it("scheduled runs open a focused window when there is none", async () => {
+    await agent.prepare("own-tab");
+    expect(chrome.windows.createCalls).toEqual([{ url: "about:blank", focused: true, type: "normal" }]);
+  });
+
+  it("joins an existing browsertodo group in the same window and creates only one", async () => {
+    const { windowId, tabId } = await userWindow("https://example.com/");
+    const other = await chrome.windows.create({ url: "https://b.test/", focused: false, type: "normal" });
+    const elsewhere = await chrome.tabs.group({ tabIds: [other.tabs[0]!.id], createProperties: { windowId: other.id } });
+    await chrome.tabGroups.update(elsewhere, { title: "browsertodo", color: "blue" });
+    const loose = await chrome.tabs.create({ windowId, url: "https://c.test/", active: false });
+    const existing = await chrome.tabs.group({ tabIds: [loose.id], createProperties: { windowId } });
+    await chrome.tabGroups.update(existing, { title: "browsertodo", color: "blue" });
+    await agent.prepare("current-tab");
+    expect(chrome.tabs.byId.get(tabId)!.groupId).toBe(existing);
+    await agent.prepare("own-tab");
+    await agent.prepare("current-tab");
+    expect(chrome.tabGroups.byId.size).toBe(2);
+  });
+
+  it("does not rename a group of the user's own", async () => {
+    const { windowId, tabId } = await userWindow("https://example.com/");
+    const mine = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
+    await chrome.tabGroups.update(mine, { title: "Work", color: "red" });
+    await agent.prepare("current-tab");
+    expect(chrome.tabGroups.byId.get(mine)).toMatchObject({ title: "Work", color: "red" });
+    expect(chrome.tabGroups.byId.get(chrome.tabs.byId.get(tabId)!.groupId)!.title).toBe("browsertodo");
   });
 
   it("still works when tab groups are unavailable", async () => {
+    await userWindow("https://example.com/");
     const c = chrome as unknown as Record<string, any>;
     c.tabs.group = async () => {
       throw new Error("no groups");
     };
-    c.tabGroups = { get: async () => ({}), update: async () => {} };
-    expect(typeof (await agent.ensureTab())).toBe("number");
+    expect(typeof (await agent.prepare("current-tab"))).toBe("number");
   });
 
-  it("recreates the window when it was closed", async () => {
-    const first = await agent.ensureTab();
-    await chrome.windows.remove(chrome.storage.session.data.agentWindowId as number);
-    const second = await agent.ensureTab();
-    expect(second).not.toBe(first);
-    expect(chrome.windows.createCalls).toHaveLength(2);
+  it("the driver keeps using the run's tab after the user switches tabs", async () => {
+    const { windowId, tabId } = await userWindow("https://example.com/");
+    await agent.prepare("current-tab");
+    const other = await chrome.tabs.create({ windowId, url: "https://other.test/", active: true });
+    await driver.readPage();
+    expect(chrome.debugger.commands.at(-1)!.tabId).toBe(tabId);
+    expect(chrome.debugger.attached.has(other.id)).toBe(false);
+  });
+
+  it("switching the agent to a different tab detaches the old one", async () => {
+    const { windowId, tabId } = await userWindow("https://example.com/");
+    await agent.prepare("current-tab");
+    await driver.ready();
+    const next = await chrome.tabs.create({ windowId, url: "https://other.test/", active: true });
+    await agent.prepare("current-tab");
+    await driver.ready();
+    expect([...chrome.debugger.attached]).toEqual([next.id]);
+    expect(chrome.debugger.attached.has(tabId)).toBe(false);
+  });
+
+  it("fails the next browser call readably when the user closed the agent tab", async () => {
+    const { tabId } = await userWindow("https://example.com/");
+    await agent.prepare("current-tab");
+    await driver.readPage();
+    await chrome.tabs.remove(tabId);
+    await expect(driver.readPage()).rejects.toThrow("the agent tab was closed");
+  });
+
+  it("show() focuses the agent tab's window and activates the tab", async () => {
+    expect(await agent.show()).toBe(false);
+    const { windowId } = await userWindow("https://example.com/");
+    const agentTab = await agent.prepare("own-tab");
+    const { windowId: later } = await userWindow("https://later.test/");
+    expect(later).not.toBe(windowId);
+    await chrome.tabs.update((await chrome.tabs.query({ windowId }))[0]!.id, { active: true });
+    chrome.tabs.updateCalls.length = 0;
+    expect(await agent.show()).toBe(true);
+    expect(chrome.windows.updateCalls).toEqual([{ id: windowId, props: { focused: true } }]);
+    expect(chrome.tabs.updateCalls).toEqual([{ id: agentTab, props: { active: true } }]);
+    expect(chrome.windows.focusOrder.at(-1)).toBe(windowId);
+    expect((await chrome.tabs.get(agentTab)).active).toBe(true);
+  });
+
+  it("show() restores a minimized window", async () => {
+    const { windowId } = await userWindow("https://example.com/");
+    await agent.prepare("current-tab");
+    chrome.windows.byId.get(windowId)!.state = "minimized";
+    await agent.show();
+    expect(chrome.windows.updateCalls.at(-1)).toEqual({ id: windowId, props: { focused: true, state: "normal" } });
   });
 });
 

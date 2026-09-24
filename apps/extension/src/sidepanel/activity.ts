@@ -67,11 +67,9 @@ export function initActivity(): ActivityView {
   const list = $("act-list");
   const title = $("act-title");
   const meta = $("act-meta");
-  const stop = $<HTMLButtonElement>("act-stop");
   const back = $<HTMLButtonElement>("act-back");
   const historyBtn = $<HTMLButtonElement>("act-history");
-  const sayForm = $<HTMLFormElement>("say-form");
-  const sayText = $<HTMLInputElement>("say-text");
+  const showBtn = $<HTMLButtonElement>("act-show");
 
   let mode: Mode = { kind: "live" };
   /** The session the live view follows: the running one, or the last one that just ended. */
@@ -84,8 +82,6 @@ export function initActivity(): ActivityView {
     if (!s) {
       title.textContent = "Nothing running";
       meta.textContent = "Recent runs";
-      stop.hidden = true;
-      sayForm.hidden = true;
       return;
     }
     title.textContent = s.title;
@@ -93,9 +89,6 @@ export function initActivity(): ActivityView {
     const parts = [brainLabel(s.brain, s.jev), s.endedAt ? clockLabel(s.startedAt) : `started ${relativeTime(s.startedAt)}`];
     if (s.endedAt) parts.push(outcomeChip(s.outcome).label);
     meta.textContent = parts.join(" · ");
-    const running = !s.endedAt && !readOnly;
-    stop.hidden = !running;
-    sayForm.hidden = !running;
   }
 
   function renderLog(events: StampedAgentEvent[], emptyText: string): void {
@@ -111,6 +104,8 @@ export function initActivity(): ActivityView {
     list.hidden = !listMode;
     back.hidden = mode.kind === "live" || (mode.kind === "history" && !live);
     historyBtn.hidden = listMode || mode.kind === "past";
+    // Only meaningful while there is an agent session to look at.
+    showBtn.hidden = !live || mode.kind !== "live";
     if (mode.kind === "past") {
       header(mode.session, true);
     } else if (mode.kind === "history") {
@@ -202,10 +197,10 @@ export function initActivity(): ActivityView {
     if (follow) log.scrollTop = log.scrollHeight;
   }
 
-  stop.addEventListener("click", () =>
-    void busy(stop, async () => {
+  showBtn.addEventListener("click", () =>
+    void busy(showBtn, async () => {
       try {
-        await uiRequest({ type: "run.stop" });
+        await uiRequest({ type: "agent.show" });
       } catch (err) {
         append({ type: "error", text: errorText(err), ts: new Date().toISOString(), sessionId: live?.sessionId ?? "" });
       }
@@ -220,17 +215,6 @@ export function initActivity(): ActivityView {
     if (mode.kind === "history" && live) mode = { kind: "live" };
     show();
   });
-  sayForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const text = sayText.value.trim();
-    if (!text) return;
-    sayText.value = "";
-    uiRequest({ type: "run.say", text }).catch((err: unknown) => {
-      sayText.value = text;
-      append({ type: "error", text: errorText(err), ts: new Date().toISOString(), sessionId: live?.sessionId ?? "" });
-    });
-  });
-
   show();
 
   return {

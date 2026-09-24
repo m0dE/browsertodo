@@ -53,6 +53,8 @@ export interface BrainContext {
   taskId: string;
   prompt: string;
   systemPrompt: string;
+  /** Model chosen in the extension for this run; the brain's own default when absent. */
+  model?: string;
   mcpConfigPath: string;
   /** Fully qualified MCP tool names, e.g. mcp__browsertodo__click. */
   allowedTools: string[];

@@ -57,11 +57,22 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     expect(init.child).toBeNull();
     expect(log.find((e) => e.type === "claude_stdout")).toEqual({ type: "claude_stdout", text: "not json" });
     expect(events).toEqual([
-      { type: "status", text: "Claude Code started (fake)" },
+      { type: "status", text: "Claude Code started (sonnet)" },
       { type: "assistant_text", text: `got: ${c.prompt}` },
     ]);
     expect(c.input.closed).toBe(true);
     expect(log.at(-1)).toMatchObject({ type: "claude_exit", code: 0 });
+  });
+
+  it("runs the model chosen in the extension (ctx.model) instead of its default", async () => {
+    const log: Record<string, any>[] = [];
+    const events: AgentEvent[] = [];
+    const c = { ...ctx(new AbortController().signal, log, events), model: "claude-opus-5-5" };
+    await brain().run(c);
+    const init = log.find((e) => e.type === "claude" && e.event.type === "system")!.event;
+    expect(init.args).toEqual(buildClaudeArgs({ ...c, model: "claude-opus-5-5" }));
+    expect(log.find((e) => e.type === "claude_start")).toMatchObject({ model: "claude-opus-5-5" });
+    expect(events[0]).toEqual({ type: "status", text: "Claude Code started (claude-opus-5-5)" });
   });
 
   it("injects user messages mid-turn into the same session", async () => {

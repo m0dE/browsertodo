@@ -191,7 +191,7 @@ describe("Runner: local tasks", () => {
     expect(start.mediaPaths).toEqual(["C:\\dl\\a.png"]);
     // Scheduled runs use the agent's own tab, in the background.
     expect(h.prepared).toEqual([{ show: false, mode: "own-tab" }]);
-    expect(start.config).toMatchObject({ isRetry: false, maxToolCalls: 60, jevEnabled: true });
+    expect(start.config).toMatchObject({ isRetry: false, maxToolCalls: 60, jevEnabled: true, model: "claude-sonnet-5" });
     expect(h.materialized[0]!.sources[0]).toMatchObject({ kind: "blob", name: "a.png" });
     expect(h.cleanups).toBe(1);
     expect(await h.store.get(t.id)).toMatchObject({ status: "done", resultSummary: "posted" });

@@ -143,13 +143,15 @@ export class ClaudeCodeBrain implements Brain {
   ) {}
 
   run(ctx: BrainContext): Promise<void> {
+    // The extension's model setting wins over BROWSERTODO_MODEL / "sonnet".
+    const model = ctx.model?.trim() || this.opts.model;
     const args = buildClaudeArgs({
       systemPrompt: ctx.systemPrompt,
       mcpConfigPath: ctx.mcpConfigPath,
       allowedTools: ctx.allowedTools,
-      model: this.opts.model,
+      model,
     });
-    ctx.log({ type: "claude_start", claudePath: this.opts.claudePath, model: this.opts.model, allowedTools: ctx.allowedTools });
+    ctx.log({ type: "claude_start", claudePath: this.opts.claudePath, model, allowedTools: ctx.allowedTools });
     return new Promise<void>((resolve, reject) => {
       if (ctx.signal.aborted) return resolve();
       let child: ChildProcess;

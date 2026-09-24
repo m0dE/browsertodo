@@ -6,7 +6,9 @@ import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
-out({ type: "system", subtype: "init", model: "fake", args, cwd: process.cwd(), nested: process.env.CLAUDECODE ?? null, child: process.env.CLAUDE_CODE_CHILD_SESSION ?? null });
+// Like real Claude Code, the init event names the model it runs.
+const modelAt = args.indexOf("--model");
+out({ type: "system", subtype: "init", model: modelAt >= 0 ? args[modelAt + 1] : "fake", args, cwd: process.cwd(), nested: process.env.CLAUDECODE ?? null, child: process.env.CLAUDE_CODE_CHILD_SESSION ?? null });
 process.stdout.write("not json\n");
 const slow = Number(process.env.FAKE_CLAUDE_SLOW_MS || 0);
 const rl = createInterface({ input: process.stdin });

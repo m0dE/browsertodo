@@ -154,6 +154,14 @@ describe("prompts", () => {
     expect(noJev).not.toMatch(/a fast model finds it/);
   });
 
+  it("task prompt covers every website, information tasks and greetings", () => {
+    const p = buildSystemPrompt({ tools: TOOL_NAMES, jev: false });
+    expect(p).toMatch(/any website the user can: Gmail, LinkedIn, X/);
+    expect(p).toMatch(/Never refuse or fail a task because it is on a site other than X/);
+    expect(p).toMatch(/find something out/);
+    expect(p).toMatch(/only a greeting/);
+  });
+
   it("interactive prompt has no task_* tools and mentions the human in a terminal", () => {
     const p = buildSystemPrompt({ tools: INTERACTIVE_TOOL_NAMES, jev: true, interactive: true });
     expect(p).toMatch(/chatting with you in a terminal/);

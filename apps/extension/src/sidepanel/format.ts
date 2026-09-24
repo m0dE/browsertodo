@@ -199,3 +199,41 @@ export function accountLabel(account: string | null | undefined): string {
   if (!a) return "";
   return /^[A-Za-z0-9_]+$/.test(a) ? `@${a}` : a;
 }
+
+/** Models offered in the side panel's model menu. Other ids still work (set on the options page). */
+export const KNOWN_MODELS: readonly { id: string; label: string }[] = [
+  { id: "claude-sonnet-5", label: "Sonnet 5" },
+  { id: "claude-opus-5-5", label: "Opus 5.5" },
+  { id: "claude-fable-5-1", label: "Fable 5.1" },
+  { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+];
+
+/** "claude-sonnet-5" -> "Sonnet 5"; unknown ids are shown as typed. */
+export function modelLabel(id: string | null | undefined): string {
+  const m = id?.trim() ?? "";
+  if (!m) return "Default model";
+  return KNOWN_MODELS.find((k) => k.id === m)?.label ?? m;
+}
+
+export interface ModelChipInfo {
+  /** "Sonnet 5 · Jev" or "Sonnet 5". */
+  label: string;
+  model: string;
+  jevActive: boolean;
+  /** Whether Jev can be switched on at all (a key here, or the helper has its own). */
+  jevPossible: boolean;
+  jevEnabled: boolean;
+}
+
+/** What the composer's model chip shows: the model that will run, and whether Jev helps. */
+export function modelChip(state: Pick<UiState, "settings" | "brain">): ModelChipInfo {
+  const model = state.settings.anthropicModel;
+  const jevActive = !!state.brain.effective && state.brain.jevActive;
+  return {
+    label: modelLabel(model) + (jevActive ? " · Jev" : ""),
+    model,
+    jevActive,
+    jevPossible: state.brain.jevActive || !!state.settings.jevApiKey || !!state.brain.helper?.jevAvailable,
+    jevEnabled: state.settings.jevEnabled,
+  };
+}

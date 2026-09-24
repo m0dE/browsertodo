@@ -121,6 +121,14 @@ describe("TaskRunner with ScriptedBrain", () => {
     expect(keys).toEqual(["env-key", "cfg-key"]);
   });
 
+  it("passes the extension's model (config.model) to the brain, none when unset", async () => {
+    const seen: (string | undefined)[] = [];
+    const brain = () => customBrain(async (ctx) => void seen.push(ctx.model));
+    await setup(new FakeX(), { brain }).runner.run(params({}, { config: { ...CONFIG, model: " claude-opus-5-5 " } }));
+    await setup(new FakeX(), { brain }).runner.run(params());
+    expect(seen).toEqual(["claude-opus-5-5", undefined]);
+  });
+
   it("uses the retry prompt when isRetry", async () => {
     let seen: BrainContext | undefined;
     await setup(new FakeX(), { brain: () => customBrain(async (ctx) => void (seen = ctx)) }).runner.run(

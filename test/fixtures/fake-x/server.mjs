@@ -137,6 +137,18 @@ export function createFakeX() {
       const location = to === "@locked" ? "/account/access" : "/home";
       return send(302, "", "text/plain", { location, "set-cookie": cookie });
     }
+    if (req.method === "GET" && url.pathname === "/mail") {
+      // A tiny webmail inbox for "find something out" tasks.
+      const mails = [
+        { id: 1, from: "Paul Lee", subject: "T2 return ready for review", body: "Hi, the 2025 T2 return is ready. Please sign the engagement letter and send the Q3 bank statements by Friday." },
+        { id: 2, from: "Suzie", subject: "Lunch?", body: "Are you free Thursday?" },
+        { id: 3, from: "Paul Lee", subject: "Invoice 1042", body: "Invoice 1042 for $1,200 is due at the end of the month." },
+      ];
+      const open = url.searchParams.get("open");
+      const mail = mails.find((m) => String(m.id) === open);
+      const list = mails.map((m) => `<li><a href="/mail?open=${m.id}">${esc(m.from)}: ${esc(m.subject)}</a></li>`).join("");
+      return send(200, page("Inbox - Mail", `<main><h1>Inbox</h1><ul>${list}</ul>${mail ? `<article><h2>${esc(mail.subject)}</h2><p>From: ${esc(mail.from)}</p><p>${esc(mail.body)}</p></article>` : ""}</main>`));
+    }
     if (req.method === "GET" && url.pathname === "/account/access") {
       return send(200, page("Your account is locked / X", `<main><h1>Your account has been locked</h1><p>Verify your identity.</p></main>`));
     }

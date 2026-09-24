@@ -25,6 +25,7 @@ body { font-size: 14px; }
 .fields.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px 14px; margin-top: 12px; }
 .field > span { font-size: 13px; }
 .field.narrow { max-width: 200px; }
+.field-hint { color: var(--muted); font-size: 12px; }
 
 /* Masked key field: either an input, or a "set" line with Replace / Clear. */
 .secret-row { display: flex; gap: 6px; align-items: center; }

@@ -12,7 +12,7 @@ type TabName = "tasks" | "activity" | "terminal";
 let state: UiState | null = null;
 
 const tasks = initTasks({ onStarted: () => showTab("activity") });
-const composer = initComposer({ onStarted: () => showTab("activity") });
+const composer = initComposer({ onStarted: () => showTab("activity"), onState: (s) => applyState(s) });
 const activity = initActivity();
 const terminal = initTerminal();
 
@@ -80,6 +80,7 @@ function applyState(s: UiState): void {
   renderStatus(s);
   activity.setRunning(s.running);
   composer.setRunning(!!s.running);
+  composer.setState(s);
   terminal.onState(s);
 }
 

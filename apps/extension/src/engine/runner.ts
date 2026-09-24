@@ -428,6 +428,8 @@ export class Runner {
         isRetry,
       };
       if (settings.jevApiKey) config.jevApiKey = settings.jevApiKey;
+      // One model setting for both brains (the API brain also reads it from settings).
+      if (settings.anthropicModel.trim()) config.model = settings.anthropicModel.trim();
       if (active.forced) throw new Error(active.forced.reason);
       const run = brain.start({ sessionId, task, mediaPaths: media.paths, config, settings, onEvent: (e) => this.onBrainEvent(active, e) });
       active.run = run;

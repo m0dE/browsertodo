@@ -1,11 +1,15 @@
 import type { BrowserMethods, PageSnapshot, Screenshot } from "@browsertodo/shared";
 import type { AgentTab } from "./agent-tab.js";
 import type { Cdp } from "./cdp.js";
+import { FALLBACK_NOTE, FallbackDriver, isDebuggerBlocked } from "./fallback-driver.js";
 import { keyEvents } from "./keys.js";
 import { indexSelector, snapshotExpression } from "./page-snapshot.js";
 
 type P<M extends keyof BrowserMethods> = BrowserMethods[M]["params"];
 type R<M extends keyof BrowserMethods> = BrowserMethods[M]["result"];
+
+/** A result that may carry FALLBACK_NOTE, once, for the caller to show. */
+export type WithNote<T> = T & { note?: string };
 
 interface EvaluateResult<T> {
   result?: { value?: T };
@@ -15,33 +19,190 @@ interface EvaluateResult<T> {
 const NAV_TIMEOUT_MS = 30_000;
 const POLL_MS = 200;
 
-/** Implements the browser.* methods on the agent tab through the debugger. */
+/**
+ * Implements the browser.* methods on the agent tab through the debugger.
+ *
+ * Chrome refuses chrome.debugger for a whole tab once it contains a frame of
+ * another extension (e.g. Streak inside Gmail): attach and every command fail
+ * with "Cannot access a chrome-extension:// URL of different extension", and a
+ * live session is detached ("target_closed") when such a frame appears. That
+ * tab then switches to FallbackDriver (chrome.scripting + captureVisibleTab,
+ * simulated input). The first result in fallback mode for a tab carries
+ * `note: FALLBACK_NOTE`. After a navigation the debugger is tried again.
+ */
 export class Driver {
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly fallback: FallbackDriver;
+  /** The tab currently driven without the debugger, if any. */
+  private fallbackTab: number | null = null;
+  /** Tabs whose fallback note was already handed out. */
+  private readonly noted = new Set<number>();
+  private pendingNote = false;
 
   constructor(
     private readonly cdp: Cdp,
     private readonly agent: AgentTab,
-    opts: { sleep?: (ms: number) => Promise<void> } = {},
+    opts: { sleep?: (ms: number) => Promise<void>; fallback?: FallbackDriver } = {},
   ) {
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.fallback = opts.fallback ?? new FallbackDriver({ sleep: this.sleep });
   }
 
-  /** Ensure the agent tab exists and the debugger is attached to it. */
+  /** True when the agent tab is currently driven without the debugger. */
+  get inFallback(): boolean {
+    return this.fallbackTab !== null;
+  }
+
+  /**
+   * Ensure the agent tab exists and the debugger is attached to it, or that
+   * the tab is in fallback mode because Chrome refuses the debugger there.
+   */
   async ready(): Promise<number> {
     const tabId = await this.agent.ensureTab();
-    await this.cdp.attach(tabId);
+    if (this.fallbackTab === tabId) return tabId;
+    this.fallbackTab = null;
+    try {
+      await this.cdp.attach(tabId);
+    } catch (err) {
+      if (!isDebuggerBlocked(err)) throw err;
+      this.enterFallback(tabId);
+    }
     return tabId;
   }
 
-  async navigate({ url }: P<"browser.navigate">): Promise<R<"browser.navigate">> {
-    if (!/^(https?:\/\/|about:blank$)/i.test(url)) throw new Error(`Only http(s) URLs can be opened, got "${url}"`);
-    await this.ready();
+  navigate({ url }: P<"browser.navigate">): Promise<WithNote<R<"browser.navigate">>> {
+    if (!/^(https?:\/\/|about:blank$)/i.test(url)) return Promise.reject(new Error(`Only http(s) URLs can be opened, got "${url}"`));
+    let started = false;
+    return this.use(
+      () => this.cdpNavigate(url, () => (started = true)),
+      async (tabId) => {
+        // If Page.navigate went through before the debugger was refused, only wait for the load.
+        const r = started ? await this.fallback.waitForLoad(tabId, url) : await this.fallback.navigate(tabId, { url });
+        // The new page may not contain the other extension's frame: try the debugger again next call.
+        if (this.fallbackTab === tabId) this.fallbackTab = null;
+        return r;
+      },
+    );
+  }
+
+  readPage(): Promise<WithNote<PageSnapshot>> {
+    return this.use(
+      () => this.evaluate<PageSnapshot>(snapshotExpression()),
+      (tabId) => this.fallback.readPage(tabId),
+    );
+  }
+
+  screenshot(): Promise<WithNote<Screenshot>> {
+    return this.use(
+      async () => {
+        const shot = await this.cdp.send<{ data: string }>("Page.captureScreenshot", { format: "jpeg", quality: 70 });
+        return { base64: shot.data, mimeType: "image/jpeg" as const };
+      },
+      (tabId) => this.fallback.screenshot(tabId),
+    );
+  }
+
+  click(p: P<"browser.click">): Promise<WithNote<R<"browser.click">>> {
+    return this.use(
+      () => this.cdpClick(p.index),
+      (tabId) => this.fallback.click(tabId, p),
+    );
+  }
+
+  type(p: P<"browser.type">): Promise<WithNote<R<"browser.type">>> {
+    return this.use(
+      () => this.cdpType(p),
+      (tabId) => this.fallback.type(tabId, p),
+    );
+  }
+
+  paste(p: P<"browser.paste">): Promise<WithNote<R<"browser.paste">>> {
+    return this.use(
+      async () => {
+        await this.cdp.send("Input.insertText", { text: p.text });
+        return { ok: true as const };
+      },
+      (tabId) => this.fallback.paste(tabId, p),
+    );
+  }
+
+  pressKey(p: P<"browser.pressKey">): Promise<WithNote<R<"browser.pressKey">>> {
+    let events: ReturnType<typeof keyEvents>;
+    try {
+      events = keyEvents(p.key);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    const [down, up] = events;
+    return this.use(
+      async () => {
+        await this.cdp.send("Input.dispatchKeyEvent", down);
+        await this.cdp.send("Input.dispatchKeyEvent", up);
+        return { ok: true as const };
+      },
+      (tabId) => this.fallback.pressKey(tabId, p),
+    );
+  }
+
+  scroll(p: P<"browser.scroll">): Promise<WithNote<R<"browser.scroll">>> {
+    return this.use(
+      () => this.cdpScroll(p),
+      (tabId) => this.fallback.scroll(tabId, p),
+    );
+  }
+
+  upload(p: P<"browser.upload">): Promise<WithNote<R<"browser.upload">>> {
+    return this.use(
+      () => this.cdpUpload(p),
+      () => this.fallback.upload(),
+    );
+  }
+
+  async currentUrl(): Promise<R<"browser.currentUrl">> {
+    const tabId = await this.agent.ensureTab();
+    const tab = await chrome.tabs.get(tabId);
+    return { url: tab.url ?? tab.pendingUrl ?? "" };
+  }
+
+  /** Runs `viaCdp`, or `viaFallback` when the tab refuses the debugger (switching on the first such error). */
+  private async use<T extends object>(viaCdp: () => Promise<T>, viaFallback: (tabId: number) => Promise<T>): Promise<WithNote<T>> {
+    const tabId = await this.ready();
+    if (this.fallbackTab !== tabId) {
+      try {
+        return await viaCdp();
+      } catch (err) {
+        if (!isDebuggerBlocked(err)) throw err;
+        this.enterFallback(tabId);
+      }
+    }
+    const result: WithNote<T> = await viaFallback(tabId);
+    if (this.pendingNote) {
+      this.pendingNote = false;
+      result.note = FALLBACK_NOTE;
+    }
+    return result;
+  }
+
+  private enterFallback(tabId: number): void {
+    this.fallbackTab = tabId;
+    // Chrome already dropped (or never gave) the session; forget it.
+    void this.cdp.detach().catch(() => {});
+    if (!this.noted.has(tabId)) {
+      this.noted.add(tabId);
+      this.pendingNote = true;
+    }
+  }
+
+  private async cdpNavigate(url: string, onStarted: () => void): Promise<R<"browser.navigate">> {
     const nav = await this.cdp.send<{ errorText?: string }>("Page.navigate", { url });
     if (nav.errorText) throw new Error(`Navigation to ${url} failed: ${nav.errorText}`);
+    onStarted();
     const deadline = Date.now() + NAV_TIMEOUT_MS;
     for (;;) {
-      const state = await this.evaluate<string>("document.readyState").catch(() => "loading");
+      const state = await this.evaluate<string>("document.readyState").catch((err: unknown) => {
+        if (isDebuggerBlocked(err)) throw err;
+        return "loading";
+      });
       if (state === "complete" || Date.now() >= deadline) break;
       await this.sleep(POLL_MS);
     }
@@ -49,19 +210,7 @@ export class Driver {
     return this.evaluate<{ url: string; title: string }>("({ url: location.href, title: document.title })");
   }
 
-  async readPage(): Promise<PageSnapshot> {
-    await this.ready();
-    return this.evaluate<PageSnapshot>(snapshotExpression());
-  }
-
-  async screenshot(): Promise<Screenshot> {
-    await this.ready();
-    const shot = await this.cdp.send<{ data: string }>("Page.captureScreenshot", { format: "jpeg", quality: 70 });
-    return { base64: shot.data, mimeType: "image/jpeg" };
-  }
-
-  async click({ index }: P<"browser.click">): Promise<R<"browser.click">> {
-    await this.ready();
+  private async cdpClick(index: number): Promise<R<"browser.click">> {
     const { x, y } = await this.centerOf(index);
     await this.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" });
     await this.cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
@@ -69,8 +218,8 @@ export class Driver {
     return { ok: true };
   }
 
-  async type({ index, text }: P<"browser.type">): Promise<R<"browser.type">> {
-    await this.click({ index });
+  private async cdpType({ index, text }: P<"browser.type">): Promise<R<"browser.type">> {
+    await this.cdpClick(index);
     // Put the caret at the end so text is appended rather than inserted mid-way.
     await this.evaluate(
       `(() => { const el = document.querySelector(${JSON.stringify(indexSelector(index))}); if (!el) return false;
@@ -80,27 +229,15 @@ export class Driver {
           const sel = getSelection(); if (sel && !(sel.anchorNode && el.contains(sel.anchorNode) && !sel.isCollapsed)) {
             const r = document.createRange(); r.selectNodeContents(el); r.collapse(false); sel.removeAllRanges(); sel.addRange(r); } }
         return true; })()`,
-    ).catch(() => undefined);
+    ).catch((err: unknown) => {
+      if (isDebuggerBlocked(err)) throw err;
+      return undefined;
+    });
     await this.cdp.send("Input.insertText", { text });
     return { ok: true };
   }
 
-  async paste({ text }: P<"browser.paste">): Promise<R<"browser.paste">> {
-    await this.ready();
-    await this.cdp.send("Input.insertText", { text });
-    return { ok: true };
-  }
-
-  async pressKey({ key }: P<"browser.pressKey">): Promise<R<"browser.pressKey">> {
-    const [down, up] = keyEvents(key);
-    await this.ready();
-    await this.cdp.send("Input.dispatchKeyEvent", down);
-    await this.cdp.send("Input.dispatchKeyEvent", up);
-    return { ok: true };
-  }
-
-  async scroll({ direction, amount = 1, index }: P<"browser.scroll">): Promise<R<"browser.scroll">> {
-    await this.ready();
+  private async cdpScroll({ direction, amount = 1, index }: P<"browser.scroll">): Promise<R<"browser.scroll">> {
     const view = await this.evaluate<{ w: number; h: number }>("({ w: window.innerWidth, h: window.innerHeight })");
     const at = index === undefined ? { x: view.w / 2, y: view.h / 2 } : await this.centerOf(index);
     const dy = Math.round(amount * 0.8 * view.h);
@@ -112,8 +249,7 @@ export class Driver {
     return { ok: true };
   }
 
-  async upload({ index, paths }: P<"browser.upload">): Promise<R<"browser.upload">> {
-    await this.ready();
+  private async cdpUpload({ index, paths }: P<"browser.upload">): Promise<R<"browser.upload">> {
     const selector = indexSelector(index);
     const kind = await this.evaluate<string>(
       `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return "missing";
@@ -126,12 +262,6 @@ export class Driver {
     if (!found.nodeId) throw notFound(index);
     await this.cdp.send("DOM.setFileInputFiles", { files: paths, nodeId: found.nodeId });
     return { ok: true };
-  }
-
-  async currentUrl(): Promise<R<"browser.currentUrl">> {
-    const tabId = await this.agent.ensureTab();
-    const tab = await chrome.tabs.get(tabId);
-    return { url: tab.url ?? tab.pendingUrl ?? "" };
   }
 
   private async centerOf(index: number): Promise<{ x: number; y: number }> {

@@ -3,12 +3,15 @@
  * starts a one-off task ("Do this now"). While a task runs, the same box sends
  * messages to the agent, and Stop ends the task.
  */
-import { uiRequest } from "../ui-protocol.js";
+import { uiRequest, type UiState } from "../ui-protocol.js";
 import { $, busy, errorText, flash } from "./dom.js";
 import { filePicker, filesToUploads } from "./files.js";
+import { initModelPicker } from "./model-menu.js";
 
 export interface ComposerView {
   setRunning(running: boolean): void;
+  /** Keeps the model chip in step with the settings and brain status. */
+  setState(state: UiState): void;
   setVisible(visible: boolean): void;
 }
 
@@ -16,19 +19,18 @@ const IDLE_PLACEHOLDER = "Do this now, e.g. “Post ‘good morning’ on X”";
 const RUNNING_PLACEHOLDER = "Tell the agent something…";
 const MAX_ROWS = 8;
 
-export function initComposer(opts: { onStarted: () => void }): ComposerView {
+export function initComposer(opts: { onStarted: () => void; onState: (state: UiState) => void }): ComposerView {
   const root = $("composer");
   const form = $<HTMLFormElement>("now-form");
   const text = $<HTMLTextAreaElement>("now-text");
-  const account = $<HTMLInputElement>("now-account");
   const attach = $("now-attach");
-  const accountField = $("now-account-field");
   const submit = $<HTMLButtonElement>("now-submit");
   const stop = $<HTMLButtonElement>("now-stop");
   const msg = $("now-msg");
   const fileInput = $<HTMLInputElement>("now-files");
   const filesList = $("now-files-list");
   const files = filePicker(fileInput, filesList);
+  const model = initModelPicker({ onState: opts.onState, onError: (text) => flash(msg, text, "bad") });
   // The attach control is a label around a hidden input; make it keyboard-operable.
   attach.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
@@ -89,11 +91,10 @@ export function initComposer(opts: { onStarted: () => void }): ComposerView {
       flash(msg, "Starting…");
       try {
         const media = await filesToUploads(files.files());
-        const acct = account.value.trim();
+        // No account field here: the agent picks up accounts named in the text ("post this from @beta").
         await uiRequest({
           type: "run.adhoc",
           instructions: value,
-          ...(acct ? { account: acct } : {}),
           ...(media.length ? { media } : {}),
         });
         clearInput();
@@ -124,10 +125,13 @@ export function initComposer(opts: { onStarted: () => void }): ComposerView {
       text.setAttribute("aria-label", running ? "Message to the agent" : "Task to do now");
       submit.textContent = running ? "Send" : "Run";
       stop.hidden = !running;
-      accountField.hidden = running;
+      model.setRunning(running);
       attach.hidden = running;
       filesList.hidden = running;
       form.classList.toggle("running", running);
+    },
+    setState(state) {
+      model.setState(state);
     },
     setVisible(visible) {
       root.hidden = !visible;

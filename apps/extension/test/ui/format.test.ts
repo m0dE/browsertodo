@@ -8,6 +8,8 @@ import {
   firstLine,
   isoToLocalInput,
   localInputToIso,
+  modelChip,
+  modelLabel,
   parseRepeatTimes,
   relativeTime,
   repeatLabel,
@@ -136,4 +138,30 @@ it("bytesToBase64 round-trips large input", () => {
   const decoded = Uint8Array.from(atob(bytesToBase64(bytes)), (c) => c.charCodeAt(0));
   expect(decoded).toEqual(bytes);
   expect(bytesToBase64(new TextEncoder().encode("hi!"))).toBe("aGkh");
+});
+
+describe("model chip", () => {
+  it("names known models and keeps other ids as typed", () => {
+    expect(modelLabel("claude-sonnet-5")).toBe("Sonnet 5");
+    expect(modelLabel("claude-opus-5-5")).toBe("Opus 5.5");
+    expect(modelLabel("claude-fable-5-1")).toBe("Fable 5.1");
+    expect(modelLabel("claude-haiku-4-5-20251001")).toBe("Haiku 4.5");
+    expect(modelLabel(" claude-custom-9 ")).toBe("claude-custom-9");
+    expect(modelLabel("")).toBe("Default model");
+  });
+  it("adds Jev when it is active for the brain in use", () => {
+    expect(modelChip(state()).label).toBe("Sonnet 5");
+    expect(modelChip(state({}, { jevActive: true })).label).toBe("Sonnet 5 · Jev");
+    expect(modelChip(state({}, { effective: null, jevActive: true })).label).toBe("Sonnet 5");
+    const opus = state({ settings: { ...DEFAULT_SETTINGS, anthropicModel: "claude-opus-5-5" } }, { jevActive: true });
+    expect(modelChip(opus)).toMatchObject({ label: "Opus 5.5 · Jev", model: "claude-opus-5-5", jevActive: true });
+  });
+  it("offers the Jev switch only when a key exists somewhere", () => {
+    expect(modelChip(state()).jevPossible).toBe(false);
+    expect(modelChip(state({ settings: { ...DEFAULT_SETTINGS, jevApiKey: "set" } })).jevPossible).toBe(true);
+    const helper = { version: "1", jevAvailable: true, claudePath: "c", logDir: "l", ptyAvailable: true };
+    expect(modelChip(state({}, { helper })).jevPossible).toBe(true);
+    expect(modelChip(state({}, { jevActive: true })).jevPossible).toBe(true);
+    expect(modelChip(state({ settings: { ...DEFAULT_SETTINGS, jevEnabled: false } })).jevEnabled).toBe(false);
+  });
 });

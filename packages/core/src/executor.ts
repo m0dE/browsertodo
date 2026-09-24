@@ -48,7 +48,14 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
       /* a listener must not break tool execution */
     }
   };
-  const browser = <M extends BrowserMethod>(method: M, params: BrowserMethods[M]["params"]) => opts.browser.call(method, params);
+  /** Notes the browser attaches to results (e.g. "Using fallback mode…"), shown once with the next tool result. */
+  const notes: string[] = [];
+  const browser = async <M extends BrowserMethod>(method: M, params: BrowserMethods[M]["params"]) => {
+    const r = await opts.browser.call(method, params);
+    const note = r && typeof r === "object" ? (r as { note?: unknown }).note : undefined;
+    if (typeof note === "string" && note && !notes.includes(note)) notes.push(note);
+    return r;
+  };
   const readPage = () => browser("browser.readPage", {});
 
   const endTask = (r: TaskRunResult, reply: string): ToolResult => {
@@ -261,6 +268,11 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
         }
       } catch (e) {
         result = err(`${name} failed: ${errorMessage(e)}`);
+      }
+      if (notes.length) {
+        // Both the model and the Activity log see why the page behaves differently.
+        const prefix = notes.splice(0).join("\n");
+        result = { ...result, text: result.text ? `${prefix}\n${result.text}` : prefix };
       }
       const ev: Extract<AgentEvent, { type: "tool_result" }> = { type: "tool_result", id, name };
       const text = name === "get_credential" && !result.isError ? "[credential redacted]" : (result.text ?? (result.image ? "[screenshot]" : undefined));

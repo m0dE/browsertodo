@@ -245,3 +245,30 @@ describe("createToolExecutor: act", () => {
     expect(r.isError).toBe(true);
   });
 });
+
+describe("browser notes", () => {
+  it("puts a note from the browser in front of that tool's result, once", async () => {
+    let first = true;
+    const browser = {
+      call: async (method: string) => {
+        if (method === "browser.readPage") {
+          const r = { url: "https://mail.example.com/", title: "Mail", text: "inbox", elements: [], truncated: false };
+          if (first) {
+            first = false;
+            return { ...r, note: "(Using fallback mode: another extension's frame on this page blocks Chrome's debugger.)" };
+          }
+          return r;
+        }
+        return { ok: true };
+      },
+    };
+    const events: any[] = [];
+    const { createToolExecutor } = await import("../src/executor.js");
+    const exec = createToolExecutor({ browser: browser as never, jev: null, jevThreshold: 0.8, onEvent: (e) => events.push(e), mediaPaths: [] });
+    const r1 = await exec.call("read_page", {});
+    expect(r1.text?.startsWith("(Using fallback mode")).toBe(true);
+    expect(events.find((e) => e.type === "tool_result")!.text).toMatch(/^\(Using fallback mode/);
+    const r2 = await exec.call("read_page", {});
+    expect(r2.text).not.toMatch(/fallback/);
+  });
+});

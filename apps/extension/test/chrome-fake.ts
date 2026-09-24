@@ -80,6 +80,8 @@ export interface FakeTab {
   url: string;
   active: boolean;
   groupId: number;
+  status?: string;
+  title?: string;
 }
 
 export interface FakeWindow {
@@ -107,6 +109,9 @@ export interface FakeDownload {
   erased: boolean;
 }
 
+/** Chrome's error for chrome.debugger on a tab with another extension's frame. */
+export const FOREIGN_FRAME_ERROR = "Cannot access a chrome-extension:// URL of different extension";
+
 export function installChromeFake() {
   const onChanged = new FakeEvent<[Changes, string]>();
   let nextTabId = 100;
@@ -115,7 +120,7 @@ export function installChromeFake() {
 
   const tabView = (t: FakeTab) => {
     const w = fake.windows.byId.get(t.windowId);
-    return { ...t, index: w ? w.tabs.indexOf(t) : 0 };
+    return { ...t, status: t.status ?? "complete", index: w ? w.tabs.indexOf(t) : 0 };
   };
   const activate = (t: FakeTab) => {
     for (const other of fake.windows.byId.get(t.windowId)?.tabs ?? []) other.active = other === t;
@@ -227,11 +232,15 @@ export function installChromeFake() {
         if (opts.active !== false) activate(tab);
         return tabView(tab);
       },
-      async update(id: number, props: { active?: boolean }) {
+      async update(id: number, props: { active?: boolean; url?: string }) {
         fake.tabs.updateCalls.push({ id, props: { ...props } });
         const t = fake.tabs.byId.get(id);
         if (!t) throw new Error(`No tab with id: ${id}.`);
         if (props.active) activate(t);
+        if (props.url !== undefined) {
+          t.url = props.url;
+          t.status = "complete";
+        }
         return tabView(t);
       },
       async remove(id: number) {
@@ -252,7 +261,26 @@ export function installChromeFake() {
         for (const id of opts.tabIds) fake.tabs.byId.get(id)!.groupId = groupId;
         return groupId;
       },
+      captureCalls: [] as { windowId: number; opts: Record<string, unknown> }[],
+      async captureVisibleTab(windowId: number, opts: Record<string, unknown>) {
+        fake.tabs.captureCalls.push({ windowId, opts });
+        return "data:image/jpeg;base64,RkFLRQ==";
+      },
       onUpdated: new FakeEvent<unknown[]>(),
+    },
+    scripting: {
+      calls: [] as { tabId: number; frameIds?: number[]; func: (...a: any[]) => unknown; args: unknown[] }[],
+      /** Test hook deciding each injection's result (the page function's return value). */
+      respond: ((_func: (...a: any[]) => unknown, _args: unknown[]): unknown => ({ ok: true, value: true })) as (
+        func: (...a: any[]) => unknown,
+        args: unknown[],
+      ) => unknown,
+      async executeScript(inj: { target: { tabId: number; frameIds?: number[] }; func: (...a: any[]) => unknown; args?: unknown[] }) {
+        if (!fake.tabs.byId.has(inj.target.tabId)) throw new Error(`No tab with id: ${inj.target.tabId}.`);
+        const args = inj.args ?? [];
+        fake.scripting.calls.push({ tabId: inj.target.tabId, frameIds: inj.target.frameIds, func: inj.func, args });
+        return [{ frameId: 0, documentId: "doc", result: fake.scripting.respond(inj.func, args) }];
+      },
     },
     tabGroups: {
       byId: new Map<number, FakeTabGroup>(),
@@ -324,10 +352,13 @@ export function installChromeFake() {
     },
     debugger: {
       attached: new Set<number>(),
+      /** Tabs showing another extension's frame: Chrome refuses the debugger there. */
+      blocked: new Set<number>(),
       commands: [] as { tabId: number; method: string; params?: unknown }[],
       /** Test hook deciding each command's result. */
       respond: ((_method: string, _params: unknown): unknown => ({})) as (method: string, params: any) => unknown,
       async attach(target: { tabId: number }, _version: string) {
+        if (fake.debugger.blocked.has(target.tabId)) throw new Error(FOREIGN_FRAME_ERROR);
         if (fake.debugger.attached.has(target.tabId)) {
           throw new Error(`Another debugger is already attached to the tab with id: ${target.tabId}.`);
         }
@@ -337,6 +368,7 @@ export function installChromeFake() {
         fake.debugger.attached.delete(target.tabId);
       },
       async sendCommand(target: { tabId: number }, method: string, params?: unknown) {
+        if (fake.debugger.blocked.has(target.tabId)) throw new Error(FOREIGN_FRAME_ERROR);
         if (!fake.debugger.attached.has(target.tabId)) {
           throw new Error(`Debugger is not attached to the tab with id: ${target.tabId}.`);
         }

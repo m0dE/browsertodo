@@ -13,6 +13,11 @@ export interface RunConfig {
   /** Jev key from the extension settings. The helper falls back to TYPESAFE_API_KEY. */
   jevApiKey?: string;
   /**
+   * Claude model from the extension settings (e.g. "claude-sonnet-5"), so both
+   * brains run the same model. The helper falls back to BROWSERTODO_MODEL, then "sonnet".
+   */
+  model?: string;
+  /**
    * True when an earlier attempt of this task may have crashed after acting.
    * The agent must first check whether the work was already done (for posts:
    * look for it on the profile) instead of repeating it.

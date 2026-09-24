@@ -196,6 +196,7 @@ export class TaskRunner {
           taskId: sessionId,
           prompt: buildTaskPrompt(task, mediaPaths, { isRetry: config.isRetry }),
           systemPrompt: buildSystemPrompt({ tools: toolNames, jev: jev !== null }),
+          ...(config.model?.trim() ? { model: config.model.trim() } : {}),
           mcpConfigPath,
           allowedTools: toolNames.map(mcpToolName),
           signal: controller.signal,

@@ -280,6 +280,17 @@ async function checkLayout(page, label) {
       if (!r.width) continue;
       if (r.right > c.right + 0.5 || r.left < c.left - 0.5) out.push(`#${el.id} clipped horizontally`);
     }
+    // The model chip sits on one row with the other controls.
+    const bar = comp.querySelector(".now-bar").getBoundingClientRect();
+    for (const el of comp.querySelectorAll(".now-bar > *:not([hidden])")) {
+      const r = el.getBoundingClientRect();
+      if (r.width && (r.top < bar.top - 0.5 || r.bottom > bar.bottom + 0.5)) out.push(`${el.id || el.className} wraps out of the control row`);
+    }
+    const menu = document.getElementById("model-menu");
+    if (!menu.hidden) {
+      const m = menu.getBoundingClientRect();
+      if (m.left < 0 || m.right > window.innerWidth || m.top < 0) out.push("model menu off screen");
+    }
     return out;
   });
   if (!problems.length) return;
@@ -306,17 +317,44 @@ for (const size of SIZES) {
     const label = `${size.w} ${scheme}`;
 
     // Idle: nothing running, the composer starts a one-off task.
-    if (wantAny(["panel-tasks-idle", "panel-composer-long", "panel-composer-files"], size, scheme)) {
+    if (wantAny(["panel-tasks-idle", "panel-composer-long", "panel-model-menu", "panel-composer-files"], size, scheme)) {
       const p = await openPanel(ctx, "idle");
       await checkLayout(p, `idle ${label}`);
       await shoot(p, "panel-tasks-idle", size, scheme);
       if (want("panel-composer-long", size, scheme)) {
         await p.click("#now-text");
         await p.keyboard.insertText(LONG_TEXT);
-        await p.fill("#now-account", "browsertodo");
         await checkLayout(p, `composer-long ${label}`);
         await shoot(p, "panel-composer-long", size, scheme);
         await p.fill("#now-text", "");
+      }
+      if (want("panel-model-menu", size, scheme)) {
+        const chip = p.locator("#now-model");
+        if ((await chip.textContent()).trim() !== "Sonnet 5 · Jev") {
+          console.error(`model chip shows "${(await chip.textContent()).trim()}" (${label})`);
+          failures++;
+        }
+        await chip.click();
+        await p.waitForSelector("#model-menu:not([hidden])");
+        await checkLayout(p, `model-menu ${label}`);
+        await shoot(p, "panel-model-menu", size, scheme);
+        // Keyboard: Escape closes and returns focus to the chip.
+        await p.keyboard.press("Escape");
+        const escaped = await p.evaluate(() => document.getElementById("model-menu").hidden && document.activeElement?.id === "now-model");
+        // Arrow keys open it again; pick Opus with the keyboard.
+        await p.keyboard.press("ArrowDown");
+        await p.keyboard.press("ArrowDown");
+        await p.keyboard.press("Enter");
+        await p.waitForFunction(() => document.getElementById("now-model-label").textContent === "Opus 5.5 · Jev");
+        const saved = await p.evaluate(() => window.__requests.some((r) => r.type === "settings.save" && r.settings.anthropicModel === "claude-opus-5-5"));
+        // Click outside closes.
+        await chip.click();
+        await p.locator("#tab-tasks .section-head h2").click();
+        const outside = await p.evaluate(() => document.getElementById("model-menu").hidden);
+        if (!escaped || !saved || !outside) {
+          console.error(`model menu behaviour (${label}): escape=${escaped} saved=${saved} outside=${outside}`);
+          failures++;
+        }
       }
       if (want("panel-composer-files", size, scheme)) {
         await p.setInputFiles("#now-files", [
@@ -342,11 +380,24 @@ for (const size of SIZES) {
     }
 
     // A running session: the composer talks to the agent (Send + Stop).
-    const runningShots = ["panel-tasks", "panel-add-form", "panel-finished-menu", "panel-activity", "panel-history", "panel-past-session", "panel-terminal"];
+    const runningShots = ["panel-tasks", "panel-model-running", "panel-add-form", "panel-finished-menu", "panel-activity", "panel-history", "panel-past-session", "panel-terminal"];
     if (wantAny(runningShots, size, scheme)) {
       const page = await openPanel(ctx, "ok");
       await checkLayout(page, `tasks ${label}`);
       await shoot(page, "panel-tasks", size, scheme);
+      if (want("panel-model-running", size, scheme)) {
+        // The running task keeps its model: the chip shows it but does not open.
+        const chip = page.locator("#now-model");
+        const disabled = await chip.isDisabled();
+        await chip.click({ force: true });
+        const closed = await page.evaluate(() => document.getElementById("model-menu").hidden);
+        if (!disabled || !closed) {
+          console.error(`model chip usable while running (${label})`);
+          failures++;
+        }
+        await page.locator("#composer").screenshot({ path: join(shots, `panel-model-running-${size.w}-${scheme}.png`) });
+        taken.push(join(shots, `panel-model-running-${size.w}-${scheme}.png`));
+      }
       if (want("panel-add-form", size, scheme)) {
         await page.click("#add-toggle");
         await page.fill("#add-text", "Post the weekly recap");
@@ -398,10 +449,22 @@ for (const size of SIZES) {
     }
 
     // Warning states.
-    if (wantAny(["panel-nobrain-tasks", "panel-nobrain-terminal"], size, scheme)) {
+    if (wantAny(["panel-nobrain-tasks", "panel-model-menu-nojev", "panel-nobrain-terminal"], size, scheme)) {
       const p = await openPanel(ctx, "nobrain");
       await checkLayout(p, `nobrain ${label}`);
       await shoot(p, "panel-nobrain-tasks", size, scheme);
+      if (want("panel-model-menu-nojev", size, scheme)) {
+        // No Jev key anywhere: the Jev row is disabled with a hint.
+        await p.click("#now-model");
+        await p.waitForSelector("#model-menu:not([hidden])");
+        if (!(await p.locator(".mm-jev").isDisabled())) {
+          console.error(`Jev row enabled without a key (${label})`);
+          failures++;
+        }
+        await checkLayout(p, `model-menu-nojev ${label}`);
+        await shoot(p, "panel-model-menu-nojev", size, scheme);
+        await p.keyboard.press("Escape");
+      }
       await p.click("#tab-btn-terminal");
       await shoot(p, "panel-nobrain-terminal", size, scheme);
       reportErrors(p, `nobrain ${label}`);

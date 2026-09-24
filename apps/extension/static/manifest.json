@@ -15,7 +15,8 @@
     "downloads",
     "downloads.ui",
     "unlimitedStorage",
-    "tabGroups"
+    "tabGroups",
+    "scripting"
   ],
   "host_permissions": [
     "<all_urls>"

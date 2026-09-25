@@ -12,7 +12,8 @@ beforeEach(() => {
 describe("vault", () => {
   it("starts locked and empty", async () => {
     expect(await vault.list()).toEqual({ locked: true, sites: [] });
-    expect(await vault.getCredential("example.com")).toEqual({ found: false, locked: true });
+    // Nothing saved yet: "not found", never "locked" (nothing to unlock).
+    expect(await vault.getCredential("example.com")).toEqual({ found: false });
   });
 
   it("round-trips a credential after unlock, stored encrypted", async () => {
@@ -37,6 +38,8 @@ describe("vault", () => {
     await vault.lock();
     await expect(vault.unlock("wrong")).rejects.toThrow(/wrong passphrase/i);
     expect((await vault.list()).locked).toBe(true);
+    // Logins saved and locked: this is the one case that reports "locked".
+    expect(await vault.getCredential("example.com")).toEqual({ found: false, locked: true });
     await vault.unlock("right");
     expect(await vault.getCredential("example.com")).toMatchObject({ found: true, password: "b" });
   });

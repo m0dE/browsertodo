@@ -6,7 +6,15 @@ import type { TaskOutcome, TaskSource } from "./task.js";
  * renders them live.
  */
 export type AgentEvent =
-  | { type: "status"; text: string }
+  | {
+      type: "status";
+      text: string;
+      /**
+       * Set on the status line at the end of a turn with Jev on: who picked
+       * the elements of act's clicks and typing ("Jev chose 9 of 11 ...").
+       */
+      picks?: ElementPicks;
+    }
   /** Text Claude wrote (thinking out loud or talking to the user). */
   | { type: "assistant_text"; text: string }
   | { type: "tool_call"; id: string; name: string; args: unknown }
@@ -33,9 +41,22 @@ export type AgentEvent =
   | { type: "task_end"; outcome: TaskOutcome; summary?: string; url?: string; reason?: string }
   | { type: "error"; text: string };
 
+/** Element picks of act steps (clicks and typing) in a turn: by Jev, or by Claude naming an index. */
+export interface ElementPicks {
+  jev: number;
+  claude: number;
+}
+
+/** "Jev chose 9 of 11 element picks (clicks and typing)". */
+export function picksText(p: ElementPicks): string {
+  const total = p.jev + p.claude;
+  return `Jev chose ${p.jev} of ${total} element pick${total === 1 ? "" : "s"} (clicks and typing)${p.claude ? `; Claude chose ${p.claude}` : ""}`;
+}
+
 export type StampedAgentEvent = AgentEvent & { ts: string; sessionId: string };
 
-export type BrainKind = "claude-code" | "claude-api" | "scripted";
+/** browsertodo: the hosted "browsertodo AI" (Claude through the account's AI credit). */
+export type BrainKind = "claude-code" | "claude-api" | "scripted" | "browsertodo";
 
 /**
  * One conversation with the agent: a queued task or a one-off "do this now"

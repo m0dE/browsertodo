@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { TOOL_NAMES, type PageSnapshot } from "@browsertodo/shared";
 import { buildSystemPrompt, buildTaskPrompt, classifyFailure, createJev, formatSnapshot, verifyXPost } from "../src/index.js";
-import { buildJevState, jevFromClient, type JevClientLike } from "../src/jev.js";
+import { buildJevQuestions, buildJevState, jevFromClient, type JevClientLike } from "../src/jev.js";
 import { mentionsHandle, normalizeHandle, switchXAccount } from "../src/x-account.js";
 import { parseSnapshotText } from "../src/page-format.js";
 import { FakeX } from "./fake-x.js";
@@ -59,12 +59,66 @@ describe("jev", () => {
     })),
   });
 
-  it("builds a trimmed state, capped at 250 and preferring in-viewport elements", () => {
+  it("builds a trimmed state, capped at 250, in-viewport elements first", () => {
     const s = buildJevState("post it", snapshot(400));
     expect(s.elements).toHaveLength(250);
-    expect(s.elements.filter((e) => e.index % 2 === 0)).toHaveLength(200);
-    expect(s.elements.map((e) => e.index)).toEqual([...s.elements.map((e) => e.index)].sort((a, b) => a - b));
-    expect(s.elements[1]).toEqual({ index: 1, role: "button", name: "b1", tag: "button", text: "shown", type: "submit", testId: "t1" });
+    // The 200 in-viewport elements come first (in page order), then offscreen ones.
+    expect(s.elements.slice(0, 200).every((e) => e.inViewport)).toBe(true);
+    expect(s.elements.slice(0, 200).map((e) => e.index)).toEqual(Array.from({ length: 200 }, (_, i) => i * 2));
+    expect(s.elements[200]).toEqual({ index: 1, role: "button", name: "b1", tag: "button", text: "shown", type: "submit", testId: "t1", inViewport: false });
+    expect(s).toMatchObject({ goal: "post it", typesText: false, url: "https://x.com/home", title: "Home" });
+    expect(s.previousStep).toBeUndefined();
+  });
+
+  it("state: occurrence of look-alike elements, short links, page text, the step's text flag and the previous step", () => {
+    const snap: PageSnapshot = {
+      url: "https://x.com/home",
+      title: "Home",
+      text: "a".repeat(5000),
+      truncated: false,
+      elements: [
+        { index: 0, tag: "button", role: "button", name: "Reply", inViewport: true },
+        { index: 1, tag: "a", role: "link", name: "Alpha", href: "https://x.com/alpha/status/1", inViewport: true },
+        { index: 2, tag: "button", role: "button", name: "Reply", inViewport: false },
+      ],
+    };
+    const s = buildJevState("click the second Reply", snap, 250, { typesText: true, previousStep: "step 1: clicked Home" });
+    expect(s.typesText).toBe(true);
+    expect(s.previousStep).toBe("step 1: clicked Home");
+    expect(s.pageText).toHaveLength(1200);
+    expect(s.elements.map((e) => [e.index, e.occurrence])).toEqual([
+      [0, "1 of 2"],
+      [1, undefined],
+      [2, "2 of 2"],
+    ]);
+    expect(s.elements[1]!.href).toBe("/alpha/status/1");
+    const q = buildJevQuestions(s);
+    // Each target option is described: label, occurrence, link and whether it is in view.
+    expect(q.target.criteria["2"]).toBe('button "Reply", 2 of 2 with this label, offscreen');
+    expect(q.target.criteria["1"]).toBe('link "Alpha", links to /alpha/status/1, in view');
+    expect(q.operation.instructions).toMatch(/this step types text/);
+  });
+
+  it("state: an open dialog's elements come first and are marked, so 'the Post button' means the dialog's", () => {
+    const snap: PageSnapshot = {
+      url: "https://x.com/compose/post",
+      title: "Home / X",
+      text: "",
+      truncated: false,
+      elements: [
+        { index: 0, tag: "div", role: "textbox", name: "Post text", testId: "tweetTextarea_0", inViewport: true },
+        { index: 1, tag: "button", role: "button", name: "Post", testId: "tweetButtonInline", inViewport: true },
+        { index: 2, tag: "a", role: "link", name: "Later", inViewport: false },
+        { index: 3, tag: "div", role: "textbox", name: "Post text", testId: "tweetTextarea_0", inViewport: true, inDialog: true },
+        { index: 4, tag: "button", role: "button", name: "Post", testId: "tweetButton", inViewport: true, inDialog: true },
+      ],
+    };
+    const s = buildJevState("click the Post button", snap);
+    expect(s.elements.map((e) => e.index)).toEqual([3, 4, 0, 1, 2]);
+    const q = buildJevQuestions(s);
+    expect(q.target.criteria["4"]).toBe('button "Post", 2 of 2 with this label, testid=tweetButton, in the open dialog, in view');
+    expect(q.target.criteria["1"]).not.toMatch(/dialog/);
+    expect(q.target.instructions).toMatch(/prefer the elements in the open dialog/);
   });
 
   it("asks operation + target choice questions and returns the lower confidence", async () => {
@@ -75,13 +129,15 @@ describe("jev", () => {
         return {
           answers: {
             operation: { type: "choice", choice: "click", confidence: 0.95, probabilities: {} },
-            target: { type: "choice", choice: "3", confidence: 0.85, probabilities: {} },
+            target: { type: "choice", choice: "3", confidence: 0.85, probabilities: { "0": 0.01, "3": 0.85, "4": 0.1, none: 0.04 } },
           },
         };
       },
     };
-    const d = await jevFromClient(client).decide({ goal: "g", snapshot: snapshot(5) });
-    expect(d).toEqual({ operation: "click", index: 3, confidence: 0.85 });
+    const d = await jevFromClient(client).decide({ goal: "g", snapshot: snapshot(5), typesText: false, previousStep: "step 1: waited" });
+    // ranked: the target's probabilities, most likely first ("none" left out), for the candidate list when unsure.
+    expect(d).toEqual({ operation: "click", index: 3, confidence: 0.85, ranked: [3, 4, 0] });
+    expect(requests[0].state.previousStep).toBe("step 1: waited");
     const q = requests[0].questions;
     expect(Object.keys(q.operation.criteria)).toEqual(["click", "type", "scroll", "press_key", "wait", "done", "blocked"]);
     expect(Object.keys(q.target.criteria)).toEqual(["0", "1", "2", "3", "4", "none"]);
@@ -106,7 +162,7 @@ describe("jev", () => {
     }) as unknown as typeof fetch;
     const jev = createJev("test-key", { fetch: fakeFetch, model: "jev-test" });
     const d = await jev.decide({ goal: "write", snapshot: snapshot(3) });
-    expect(d).toEqual({ operation: "type", index: null, confidence: 0.9 });
+    expect(d).toEqual({ operation: "type", index: null, confidence: 0.9, ranked: [] });
     expect(seen[0]!.url).toMatch(/\/v1\/systemone$/);
     expect(seen[0]!.body.model).toBe("jev-test");
     expect(seen[0]!.body.state.goal).toBe("write");
@@ -147,11 +203,17 @@ describe("prompts", () => {
     expect(p).toMatch(/Plan the whole task/);
     expect(p).toMatch(/one act call \(up to 8\)/);
     expect(p).toMatch(/act replaces click and type/);
-    expect(p).toMatch(/a fast model finds it/);
-    expect(p).toContain("If act stops at step N");
+    expect(p).toMatch(/Jev picks the element of every act step from your words/);
+    expect(p).toMatch(/the Reply button under the first post/);
+    expect(p).toMatch(/do not guess or ask for indices/);
+    expect(p).toContain("If act stops at step N as not confident");
+    expect(p).not.toMatch(/each naming the element index/);
+    // The tool list uses the Jev descriptions.
+    expect(p).toMatch(/- read_page: .*no index numbers/);
     const noJev = buildSystemPrompt({ tools: TOOL_NAMES, jev: false });
     expect(noJev).toMatch(/each naming the element index/);
-    expect(noJev).not.toMatch(/a fast model finds it/);
+    expect(noJev).not.toMatch(/Jev picks the element/);
+    expect(noJev).toMatch(/- read_page: .*indexed list/);
   });
 
   it("task prompt covers every website, information tasks and greetings", () => {

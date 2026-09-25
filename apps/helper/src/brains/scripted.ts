@@ -15,6 +15,10 @@
  *   7. task_complete with the post URL (current URL, the "View" link, or
  *      the newest /status/ link on the account's profile)
  *
+ * With Jev on, read_page lists elements in words: steps 4 and 6 go through
+ * act with a description, and when Jev is not confident the brain picks the
+ * element from the candidates act returns (same goal, with its index).
+ *
  * Messages the human sends while it runs are acknowledged with an
  * assistant_text event ("Scripted brain received: ...").
  */
@@ -77,6 +81,20 @@ export class ScriptedBrain implements Brain {
       return r;
     };
     const read = async () => parseSnapshotText((await call("read_page")).text ?? "");
+    type El = ParsedPage["elements"][number];
+    /**
+     * Clicks (or types into) an element: by index when read_page gave one,
+     * else by describing it to Jev, picking from its candidates when it is unsure.
+     */
+    const actOn = async (el: El, goal: string, pick: (e: El) => boolean, text?: string): Promise<ToolResult> => {
+      if (el.index >= 0) return text !== undefined ? call("type", { index: el.index, text }) : call("click", { index: el.index });
+      const step = text !== undefined ? { goal, text } : { goal };
+      const r = await call("act", { steps: [step] });
+      if (r.isError || !(r.text ?? "").includes("not confident")) return r;
+      const candidate = parseSnapshotText(r.text ?? "").elements.filter((e) => e.index >= 0).find(pick);
+      if (!candidate) return { text: `no matching candidate for "${goal}"`, isError: true };
+      return call("act", { steps: [{ ...step, index: candidate.index }] });
+    };
     const finish = async (name: "task_fail" | "task_pause", reason: string) => {
       await call(name, { reason });
     };
@@ -109,7 +127,8 @@ export class ScriptedBrain implements Brain {
       }
       if (!textbox) return await finish("task_fail", `No compose textbox found on ${page.url}`);
       const text = extractPostText(task.instructions);
-      const typed = await call("type", { index: textbox.index, text });
+      const isTextbox = (e: El) => e.role === "textbox" && e.type !== "file" && e.type !== "password";
+      const typed = await actOn(textbox, `type into the ${textbox.name ? `"${textbox.name}" ` : ""}text box`, isTextbox, text);
       if (typed.isError) return await finish("task_fail", typed.text ?? "typing failed");
 
       if (task.mediaPaths.length) {
@@ -125,7 +144,8 @@ export class ScriptedBrain implements Brain {
       const button = candidates.find((e) => e.name.trim().toLowerCase() === "post") ?? candidates[0];
       if (!button) return await finish("task_fail", `No Post button (testid tweetButton/tweetButtonInline) found on ${page.url}`);
       const before = page.url;
-      const clicked = await call("click", { index: button.index });
+      const isPostButton = (e: El) => !!e.testId && POST_BUTTON_TEST_IDS.has(e.testId);
+      const clicked = await actOn(button, `click the "${button.name || "Post"}" button (testid ${button.testId})`, isPostButton);
       if (clicked.isError) return await finish("task_fail", clicked.text ?? "click failed");
 
       // Find the new post's URL the way the system prompt tells Claude to:

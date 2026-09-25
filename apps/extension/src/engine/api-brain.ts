@@ -1,6 +1,11 @@
-/** The Claude API agent loop in the service worker, behind the Brain interface. */
-import type { AgentSession, BrowserCaller } from "@browsertodo/core";
-import type { AgentEvent } from "@browsertodo/shared";
+/**
+ * The Claude API agent loop in the service worker, behind the Brain
+ * interface. The same loop serves two brains, told apart by their backend:
+ * the user's Anthropic API key (claude-api) and the hosted browsertodo AI
+ * (browsertodo, see hosted-brain.ts).
+ */
+import type { AgentSession, ApiAgentOptions, BrowserCaller, JevLike } from "@browsertodo/core";
+import type { AgentEvent, ExtensionSettings } from "@browsertodo/shared";
 import { errText } from "../errors.js";
 import { endedRun, failedRun, type Brain, type BrainContinueOptions, type BrainRun, type BrainStartOptions, type CoreApi } from "./brains.js";
 
@@ -14,13 +19,37 @@ interface ApiConversation {
   lastUsed: number;
 }
 
+/** Where an API brain's requests go and how they authenticate. */
+export interface ApiBackend {
+  readonly kind: "claude-api" | "browsertodo";
+  /** The agent options for a new session. Throws when the backend cannot be used. */
+  connect(
+    settings: ExtensionSettings,
+    sessionId: string,
+  ): { agent: Pick<ApiAgentOptions, "apiKey" | "model" | "baseUrl" | "auth" | "headers" | "label" | "onOutOfCredit">; jev: JevLike | null };
+  /** A turn ended (e.g. refresh the account's credit). */
+  afterTurn?(): void;
+}
+
+/** The user's own Anthropic API key, with Jev when it is on and a Jev key is set. */
+export function claudeApiBackend(core: Pick<CoreApi, "createJev">, fetchFn?: typeof fetch): ApiBackend {
+  return {
+    kind: "claude-api",
+    connect(s) {
+      const jev = s.jevEnabled && s.jevApiKey ? core.createJev(s.jevApiKey, fetchFn ? { fetch: fetchFn } : undefined) : null;
+      return { agent: { apiKey: s.anthropicApiKey, model: s.anthropicModel }, jev };
+    },
+  };
+}
+
 /** Like the helper's kept-open Claude Code sessions: a few, for 30 idle minutes. */
 const API_KEEP_CONVERSATIONS = 3;
 const API_IDLE_MS = 30 * 60_000;
 
-/** The agent loop inside the extension (core.startApiAgent), with Jev when it is on and a Jev key is set. */
+/** The agent loop inside the extension (core.startApiAgent), on the backend's endpoint. */
 export class ApiBrain implements Brain {
-  readonly kind = "claude-api" as const;
+  readonly kind: "claude-api" | "browsertodo";
+  private readonly backend: ApiBackend;
   /** Conversation history lives here only: lost when the service worker restarts. */
   private readonly conversations = new Map<string, ApiConversation>();
 
@@ -31,18 +60,21 @@ export class ApiBrain implements Brain {
       fetch?: typeof fetch;
       now?: () => number;
       onSessionsChanged?: () => void;
+      /** Default: the Anthropic API key in the settings. */
+      backend?: ApiBackend;
     },
-  ) {}
+  ) {
+    this.backend = deps.backend ?? claudeApiBackend(deps.core, deps.fetch);
+    this.kind = this.backend.kind;
+  }
 
   start(opts: BrainStartOptions): BrainRun {
-    const s = opts.settings;
     try {
-      const jev = s.jevEnabled && s.jevApiKey ? this.deps.core.createJev(s.jevApiKey, this.deps.fetch ? { fetch: this.deps.fetch } : undefined) : null;
+      const { agent, jev } = this.backend.connect(opts.settings, opts.sessionId);
       const conv = { sink: opts.onEvent, browser: opts.browser ?? this.deps.browser, lastUsed: this.now() } as ApiConversation;
       conv.agent = this.deps.core.startApiAgent({
+        ...agent,
         sessionId: opts.sessionId,
-        apiKey: s.anthropicApiKey,
-        model: s.anthropicModel,
         task: opts.task,
         mediaPaths: opts.mediaPaths,
         config: opts.config,
@@ -56,7 +88,7 @@ export class ApiBrain implements Brain {
       this.touchWhenDone(conv);
       return this.runOf(conv.agent);
     } catch (err) {
-      return failedRun(`Could not start the Claude API agent: ${errText(err)}`);
+      return failedRun(`Could not start the ${this.kind === "browsertodo" ? "browsertodo AI" : "Claude API"} agent: ${errText(err)}`);
     }
   }
 
@@ -95,6 +127,11 @@ export class ApiBrain implements Brain {
     void agent.done.then(
       () => {
         if (conv.agent === agent) conv.lastUsed = this.now();
+        try {
+          this.backend.afterTurn?.();
+        } catch {
+          /* best effort */
+        }
       },
       () => {},
     );

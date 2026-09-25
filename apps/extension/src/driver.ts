@@ -2,15 +2,21 @@ import type { AgentTabInfo, PageSnapshot, Screenshot } from "@browsertodo/shared
 import type { AgentTab } from "./agent-tab.js";
 import type { Cdp } from "./cdp.js";
 import { CdpActions } from "./cdp-actions.js";
-import { defaultSleep, NAV_TIMEOUT_MS, OPENABLE_URL, POLL_MS, type Params as P, type Result as R, type Sleep } from "./driver-common.js";
+import { BACKGROUND_SHOT_SKIPPED, defaultSleep, NAV_TIMEOUT_MS, OPENABLE_URL, POLL_MS, type Params as P, type Result as R, type Sleep } from "./driver-common.js";
 import { FALLBACK_NOTE, FallbackDriver, isDebuggerBlocked } from "./fallback-driver.js";
 import { keyEvents } from "./keys.js";
 
 /** A result that may carry FALLBACK_NOTE, once, for the caller to show. */
 export type WithNote<T> = T & { note?: string };
 
-/** Time for a tab that was just brought to the front to paint before a screenshot. */
-const SHOW_SETTLE_MS = 300;
+/**
+ * How long a screenshot of a background tab may take. In Chromium 153 (headed,
+ * also without Playwright's anti-backgrounding flags) Page.captureScreenshot
+ * of a background tab, a tab never shown, or a tab of a minimized or unfocused
+ * window returns the real, current page in ~100 ms; this only guards against a
+ * browser that never paints hidden tabs.
+ */
+const BACKGROUND_SHOT_TIMEOUT_MS = 10_000;
 
 /**
  * Implements the browser.* methods on the agent's tabs through the debugger.
@@ -100,11 +106,15 @@ export class Driver {
     return r;
   }
 
-  /** Screenshot of the current tab, which is brought to the front first when it is in the background. */
+  /**
+   * Screenshot of the current tab. The tab is never brought to the front (the
+   * user may be using another tab): a background tab is captured through the
+   * debugger as it is; when that is not possible the call fails with
+   * BACKGROUND_SHOT_SKIPPED.
+   */
   async screenshot(): Promise<WithNote<Screenshot>> {
-    await this.bringToFront(await this.agent.ensureTab());
     return this.use(
-      (tabId) => this.viaCdp.screenshot(tabId),
+      (tabId) => this.cdpScreenshot(tabId),
       (tabId) => this.fallback.screenshot(tabId),
     );
   }
@@ -171,7 +181,7 @@ export class Driver {
   async openTabs({ urls, background }: P<"browser.openTabs">): Promise<R<"browser.openTabs">> {
     const bad = urls.find((u) => !OPENABLE_URL.test(u));
     if (bad !== undefined) throw new Error(`Only http(s) URLs can be opened, got "${bad}"`);
-    const created = await this.agent.open(urls, { active: background === false });
+    const created = await this.agent.open(urls, { current: background === false });
     const current = await this.agent.tabId();
     const tabs = await Promise.all(
       created.map(async (t, i): Promise<AgentTabInfo> => {
@@ -184,16 +194,9 @@ export class Driver {
     return { tabs };
   }
 
-  /**
-   * Makes a tab current and attaches to it. When the agent was visible (its
-   * current tab was the active tab of its window) the new tab is shown too, so
-   * a watching user follows along; otherwise it stays in the background.
-   */
+  /** Makes a tab current and attaches to it. The browser's active tab does not change. */
   async switchTab({ tab }: P<"browser.switchTab">): Promise<R<"browser.switchTab">> {
-    const before = await this.agent.tabId();
-    const wasShown = before === null ? false : await chrome.tabs.get(before).then((t) => t.active, () => false);
-    const tabId = await this.agent.setCurrent(tab);
-    if (wasShown && tabId !== before) await chrome.tabs.update(tabId, { active: true }).catch(() => undefined);
+    await this.agent.setCurrent(tab);
     await this.ready();
     const info = (await this.listTabs()).tabs.find((t) => t.current);
     if (!info) throw new Error(`tab ${tab} was closed`);
@@ -286,12 +289,21 @@ export class Driver {
     for (const t of [...this.fallbackTabs]) if (!known.has(t)) this.fallbackTabs.delete(t);
   }
 
-  /** Brings a background tab to the front of its window (screenshots of hidden tabs can be blank). */
-  private async bringToFront(tabId: number): Promise<void> {
-    const tab = await chrome.tabs.get(tabId);
-    if (tab.active) return;
-    await chrome.tabs.update(tabId, { active: true });
-    await this.sleep(SHOW_SETTLE_MS);
+  /** A debugger screenshot; of a background tab with a time limit, since Chrome may not paint it. */
+  private async cdpScreenshot(tabId: number): Promise<Screenshot> {
+    const visible = await chrome.tabs.get(tabId).then((t) => t.active, () => true);
+    const shot = this.viaCdp.screenshot(tabId);
+    if (visible) return shot;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(BACKGROUND_SHOT_SKIPPED)), BACKGROUND_SHOT_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([shot, timeout]);
+    } finally {
+      clearTimeout(timer);
+      shot.catch(() => undefined);
+    }
   }
 
   /** Waits until a new tab finished loading; `error` when it did not within NAV_TIMEOUT_MS. */

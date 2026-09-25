@@ -214,6 +214,8 @@ export class FakePool implements SlotPool {
   readonly slots = new Map<number, AgentSlot>();
   readonly log: string[] = [];
   readonly owner = new Map<number, string>();
+  /** The tab a prepare picks: the tab asked for, else the slot's own (100 + index). */
+  pick: (index: number, opts: { tabId?: number }) => number = (index, opts) => opts.tabId ?? 100 + index;
   take(index: number, sessionId: string): AgentSlot {
     if (this.owner.has(index)) throw new Error(`slot ${index} is already used by ${this.owner.get(index)}`);
     this.owner.set(index, sessionId);
@@ -223,7 +225,10 @@ export class FakePool implements SlotPool {
     {
       const s: AgentSlot = {
         index,
-        prepare: async (opts) => void this.log.push(`prepare ${index} ${opts.mode}${opts.show ? " show" : ""}`),
+        prepare: async (opts) => {
+          this.log.push(`prepare ${index} ${opts.mode}${opts.tabId !== undefined ? ` tab ${opts.tabId}` : ""}`);
+          return this.pick(index, opts);
+        },
         browser: { call: vi.fn(async () => ({})) as never },
         isAgentTab: async (tabId) => tabId === 100 + index,
         screenshot: async () => ({ base64: btoa("JPG"), mimeType: "image/jpeg" }),

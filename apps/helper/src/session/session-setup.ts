@@ -34,7 +34,7 @@ export function runDirFor(runsDir: string, sessionId: string): string {
 }
 
 /** The --mcp-config for Claude Code: one browsertodo MCP server (dist/mcp-server.js) bound to this session. */
-export function buildMcpConfig(opts: { nodePath: string; mcpServerPath: string; pipePath: string; taskId: string; toolNames: ToolName[] }) {
+export function buildMcpConfig(opts: { nodePath: string; mcpServerPath: string; pipePath: string; taskId: string; toolNames: ToolName[]; jev?: boolean }) {
   return {
     mcpServers: {
       [MCP_SERVER_NAME]: {
@@ -44,6 +44,8 @@ export function buildMcpConfig(opts: { nodePath: string; mcpServerPath: string; 
           BROWSERTODO_PIPE: opts.pipePath,
           BROWSERTODO_TASK: opts.taskId,
           BROWSERTODO_TOOLS: opts.toolNames.join(","),
+          // Jev picks act's elements: the tools are described for that mode.
+          BROWSERTODO_JEV: opts.jev ? "1" : "0",
         },
       },
     },

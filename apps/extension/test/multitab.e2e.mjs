@@ -1,6 +1,6 @@
 // Multi-tab check of the built extension in Playwright's Chromium: opens 5 local
 // pages in parallel tabs, reads them all at once without activating them,
-// switches, screenshots a background tab, closes, and compares the wall time
+// switches, screenshots a background tab (left in the background), closes, and compares the wall time
 // with the one-tab way (navigate + read_page, page after page).
 // Usage: pnpm --filter @browsertodo/extension build && node apps/extension/test/multitab.e2e.mjs [--headed]
 import { chromium } from "@playwright/test";
@@ -132,14 +132,14 @@ try {
     return "clicked Reply in t4";
   });
 
-  await step("screenshot of a background current tab brings it to the front", async () => {
+  await step("screenshot of a background current tab leaves it in the background", async () => {
     await userPage.bringToFront(); // the user looks at the main tab again
     await call("switchTab", { tab: "t5" });
     const before = await evalSw(async () => (await chrome.tabs.get(await globalThis.__browsertodo.agentTab.tabId())).active);
     const shot = await call("screenshot");
     const after = await evalSw(async () => (await chrome.tabs.get(await globalThis.__browsertodo.agentTab.tabId())).active);
     assert.equal(before, false);
-    assert.equal(after, true);
+    assert.equal(after, false, "the agent never brings its tab to the front");
     assert.ok(shot.base64.length > 1000, "non-empty image");
     return `${shot.base64.length} base64 chars`;
   });

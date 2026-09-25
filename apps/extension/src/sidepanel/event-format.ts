@@ -1,15 +1,17 @@
-/** Pure view models for agent events in the Activity tab. */
-import type { AgentEvent } from "@browsertodo/shared";
+/** Pure view models for agent events in Chat and the Activity Log. */
+import { picksText, type AgentEvent, type ElementPicks } from "@browsertodo/shared";
 import { clip, outcomeChip, type Chip } from "./format.js";
 
 export type EventView =
-  | { kind: "status"; text: string }
+  /** picks: the end-of-turn "Jev chose ..." line, shown in the end card instead of on its own. */
+  | { kind: "status"; text: string; picks?: true }
   | { kind: "text"; text: string }
   | { kind: "tool"; id: string; name: string; args: string }
   | { kind: "result"; id: string; name: string; preview: string; full: string; isError: boolean; thumbnail?: string }
   | { kind: "jev"; label: string; ms: number; executed: boolean; title: string }
   | { kind: "user"; text: string }
-  | { kind: "end"; chip: Chip; text: string; url?: string }
+  /** picks: who picked the turn's elements ("Jev chose 9 of 11 element picks ..."). */
+  | { kind: "end"; chip: Chip; text: string; url?: string; picks?: string }
   | { kind: "error"; text: string };
 
 const obj = (v: unknown): Record<string, unknown> =>
@@ -71,10 +73,24 @@ export function toolArgsSummary(name: string, args: unknown, max = 70): string {
   }
 }
 
-export function describeEvent(ev: AgentEvent): EventView {
+/**
+ * The element picks of the turn that `events[endIndex]` (a task_end) closes:
+ * the status line with picks since the previous task_end.
+ */
+export function turnPicks(events: readonly AgentEvent[], endIndex: number): ElementPicks | undefined {
+  for (let i = endIndex - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type === "task_end") return undefined;
+    if (e.type === "status" && e.picks) return e.picks;
+  }
+  return undefined;
+}
+
+/** picks: for a task_end, the turn's element picks (see turnPicks). */
+export function describeEvent(ev: AgentEvent, picks?: ElementPicks): EventView {
   switch (ev.type) {
     case "status":
-      return { kind: "status", text: ev.text };
+      return ev.picks ? { kind: "status", text: ev.text, picks: true } : { kind: "status", text: ev.text };
     case "assistant_text":
       return { kind: "text", text: ev.text.trim() };
     case "tool_call":
@@ -100,14 +116,14 @@ export function describeEvent(ev: AgentEvent): EventView {
         label: ev.executed ? `Jev: ${ev.operation}${target} · ${ev.confidence.toFixed(2)}` : `Jev unsure (${ev.confidence.toFixed(2)}) · Claude decides`,
         ms: ev.ms,
         executed: ev.executed,
-        title: `${ev.goal}${ev.executed ? "" : " (not confident, left to Claude)"}`,
+        title: `Jev (a faster helper for simple clicks and typing): ${ev.goal}${ev.executed ? "" : " (not confident, left to Claude)"}`,
       };
     }
     case "user_message":
       return { kind: "user", text: ev.text };
     case "task_end": {
       const text = ev.summary || ev.reason || "";
-      return { kind: "end", chip: outcomeChip(ev.outcome), text, ...(ev.url ? { url: ev.url } : {}) };
+      return { kind: "end", chip: outcomeChip(ev.outcome), text, ...(ev.url ? { url: ev.url } : {}), ...(picks ? { picks: picksText(picks) } : {}) };
     }
     case "error":
       return { kind: "error", text: ev.text };

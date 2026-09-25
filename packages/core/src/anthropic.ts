@@ -3,7 +3,7 @@
  * https://docs.anthropic.com/en/api/messages, tool use and prompt caching.
  */
 import { z } from "zod";
-import { ToolArgs, TOOL_DESCRIPTIONS, type ToolName, type ToolResult } from "@browsertodo/shared";
+import { toolArgsSchema, toolDescription, type ToolName, type ToolResult } from "@browsertodo/shared";
 import { errorMessage } from "./util.js";
 
 export const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
@@ -64,34 +64,35 @@ export interface MessagesResponse {
   usage?: Record<string, unknown>;
 }
 
-const schemaCache = new Map<ToolName, Record<string, unknown>>();
+const schemaCache = new Map<string, Record<string, unknown>>();
 
-/** JSON schema of a tool's input, from ToolArgs. */
-export function toolInputSchema(name: ToolName): Record<string, unknown> {
-  let s = schemaCache.get(name);
+/** JSON schema of a tool's input, from ToolArgs (ToolArgsJev with Jev on: other field descriptions). */
+export function toolInputSchema(name: ToolName, jev = false): Record<string, unknown> {
+  const key = `${name}:${jev}`;
+  let s = schemaCache.get(key);
   if (!s) {
-    const { $schema: _ignored, ...rest } = z.toJSONSchema(ToolArgs[name], { io: "input" }) as Record<string, unknown>;
+    const { $schema: _ignored, ...rest } = z.toJSONSchema(toolArgsSchema(name, jev), { io: "input" }) as Record<string, unknown>;
     s = rest;
-    schemaCache.set(name, s);
+    schemaCache.set(key, s);
   }
   return s;
 }
 
 /** Tool definitions in the given order; the last one carries the cache breakpoint. */
-export function toolDefinitions(names: ToolName[]): AnthropicTool[] {
+export function toolDefinitions(names: ToolName[], jev = false): AnthropicTool[] {
   return names.map((name, i) => {
-    const t: AnthropicTool = { name, description: TOOL_DESCRIPTIONS[name], input_schema: toolInputSchema(name) };
+    const t: AnthropicTool = { name, description: toolDescription(name, jev), input_schema: toolInputSchema(name, jev) };
     if (i === names.length - 1) t.cache_control = { type: "ephemeral" };
     return t;
   });
 }
 
-export function buildRequest(opts: { model: string; system: string; tools: ToolName[]; messages: MessageParam[] }): MessagesRequest {
+export function buildRequest(opts: { model: string; system: string; tools: ToolName[]; messages: MessageParam[]; jev?: boolean }): MessagesRequest {
   return {
     model: opts.model,
     max_tokens: MAX_TOKENS,
     system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
-    tools: toolDefinitions(opts.tools),
+    tools: toolDefinitions(opts.tools, opts.jev === true),
     messages: opts.messages,
   };
 }
@@ -108,6 +109,8 @@ export function toolResultBlock(toolUseId: string, r: ToolResult): ToolResultBlo
 
 export type PostResult =
   | { kind: "ok"; message: MessagesResponse }
+  /** 402 from the browsertodo API: the account has no AI credit left. */
+  | { kind: "credit"; reason: string; topupUrl?: string }
   /** 429, 529, 5xx, network: worth retrying. */
   | { kind: "transient"; reason: string }
   /** 401/403. */
@@ -116,7 +119,9 @@ export type PostResult =
 
 function apiErrorMessage(body: string): string {
   try {
-    const j = JSON.parse(body) as { error?: { type?: string; message?: string } };
+    const j = JSON.parse(body) as { error?: string | { type?: string; message?: string }; message?: string };
+    // The browsertodo API answers { error: "code or text", message? }.
+    if (typeof j.error === "string") return j.message ? `${j.error}: ${j.message}` : j.error;
     if (j.error?.message) return `${j.error.type ? `${j.error.type}: ` : ""}${j.error.message}`;
   } catch {
     /* not JSON */
@@ -124,49 +129,87 @@ function apiErrorMessage(body: string): string {
   return body.slice(0, 300);
 }
 
+/**
+ * Where Messages requests go and how they authenticate. Default: Anthropic
+ * with x-api-key. The browsertodo hosted AI takes the same body at
+ * `${apiBase}/v1/ai/messages` with the session token as a bearer.
+ */
+export interface MessagesTransport {
+  /** Full URL of the Messages endpoint. Default ANTHROPIC_MESSAGES_URL. */
+  url?: string;
+  /** "x-api-key" (Anthropic, default) or "bearer" (Authorization: Bearer <key>). */
+  auth?: "x-api-key" | "bearer";
+  /** Extra request headers. */
+  headers?: Record<string, string>;
+  /** Name used in error reasons. Default "Claude API". */
+  label?: string;
+}
+
+/** Reads { error, message, topupUrl } from a 402 body. */
+function creditInfo(body: string): { message?: string; topupUrl?: string } {
+  try {
+    const j = JSON.parse(body) as { message?: unknown; topupUrl?: unknown };
+    const out: { message?: string; topupUrl?: string } = {};
+    if (typeof j.message === "string" && j.message) out.message = j.message;
+    if (typeof j.topupUrl === "string" && j.topupUrl) out.topupUrl = j.topupUrl;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export const OUT_OF_CREDIT = "Out of AI credit";
+
 /** One POST /v1/messages. Never throws (an abort comes back as an error result). */
 export async function postMessages(
   doFetch: typeof fetch,
   apiKey: string,
   body: MessagesRequest,
   signal?: AbortSignal,
+  transport: MessagesTransport = {},
 ): Promise<PostResult> {
+  const label = transport.label ?? "Claude API";
   let res: Response;
   try {
-    const init: RequestInit = {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": ANTHROPIC_VERSION,
-        "anthropic-dangerous-direct-browser-access": "true",
-      },
-      body: JSON.stringify(body),
-    };
+    const headers: Record<string, string> = { "content-type": "application/json", ...(transport.headers ?? {}) };
+    if (transport.auth === "bearer") headers.authorization = `Bearer ${apiKey}`;
+    else {
+      headers["x-api-key"] = apiKey;
+      headers["anthropic-version"] = ANTHROPIC_VERSION;
+      headers["anthropic-dangerous-direct-browser-access"] = "true";
+    }
+    const init: RequestInit = { method: "POST", headers, body: JSON.stringify(body) };
     if (signal) init.signal = signal;
-    res = await doFetch(ANTHROPIC_MESSAGES_URL, init);
+    res = await doFetch(transport.url ?? ANTHROPIC_MESSAGES_URL, init);
   } catch (e) {
     if (signal?.aborted) return { kind: "error", reason: "aborted" };
-    return { kind: "transient", reason: `Claude API network error: ${errorMessage(e)}` };
+    return { kind: "transient", reason: `${label} network error: ${errorMessage(e)}` };
   }
   let text = "";
   try {
     text = await res.text();
   } catch (e) {
-    return { kind: "transient", reason: `Claude API network error while reading the response: ${errorMessage(e)}` };
+    return { kind: "transient", reason: `${label} network error while reading the response: ${errorMessage(e)}` };
   }
   const s = res.status;
   if (res.ok) {
     try {
       return { kind: "ok", message: JSON.parse(text) as MessagesResponse };
     } catch {
-      return { kind: "transient", reason: `Claude API returned an unreadable response (HTTP ${s})` };
+      return { kind: "transient", reason: `${label} returned an unreadable response (HTTP ${s})` };
     }
   }
+  if (s === 402) {
+    const c = creditInfo(text);
+    const r: PostResult = { kind: "credit", reason: c.message ? `${OUT_OF_CREDIT}: ${c.message}` : OUT_OF_CREDIT };
+    if (c.topupUrl) r.topupUrl = c.topupUrl;
+    return r;
+  }
   const detail = apiErrorMessage(text);
-  if (s === 401 || s === 403) return { kind: "auth", reason: `Claude API key rejected (HTTP ${s}: ${detail})` };
-  if (s === 429) return { kind: "transient", reason: `Claude API rate limit (HTTP 429: ${detail})` };
-  if (s === 529) return { kind: "transient", reason: `Claude API overloaded (HTTP 529: ${detail})` };
-  if (s >= 500) return { kind: "transient", reason: `Claude API server error (HTTP ${s}: ${detail})` };
-  return { kind: "error", reason: `Claude API error (HTTP ${s}: ${detail})` };
+  const rejected = transport.auth === "bearer" ? `${label} rejected the sign-in` : `${label} key rejected`;
+  if (s === 401 || s === 403) return { kind: "auth", reason: `${rejected} (HTTP ${s}: ${detail})` };
+  if (s === 429) return { kind: "transient", reason: `${label} rate limit (HTTP 429: ${detail})` };
+  if (s === 529) return { kind: "transient", reason: `${label} overloaded (HTTP 529: ${detail})` };
+  if (s >= 500) return { kind: "transient", reason: `${label} server error (HTTP ${s}: ${detail})` };
+  return { kind: "error", reason: `${label} error (HTTP ${s}: ${detail})` };
 }

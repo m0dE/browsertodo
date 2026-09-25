@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installChromeFake, type ChromeFake } from "./chrome-fake.js";
 import { AgentTab } from "../src/agent-tab.js";
 import { Cdp } from "../src/cdp.js";
 import { Driver } from "../src/driver.js";
 import { createBrowserCaller } from "../src/engine/browser-caller.js";
+import { BACKGROUND_SHOT_SKIPPED } from "../src/driver-common.js";
 import { FALLBACK_NOTE } from "../src/fallback-driver.js";
 import { snapshotPage } from "../src/page-snapshot.js";
 
@@ -100,11 +101,12 @@ describe("Driver with several tabs", () => {
     }
   });
 
-  it("background: false shows the first new tab and makes it current", async () => {
+  it("background: false makes the first new tab current without activating it", async () => {
     const r = await driver.openTabs({ urls: urls(2), background: false });
     expect(r.tabs.map((t) => t.current)).toEqual([true, false]);
     const first = await agent.resolve("t2");
-    expect((await chrome.tabs.get(first)).active).toBe(true);
+    expect((await chrome.tabs.get(first)).active).toBe(false);
+    expect(activations()).toEqual([]);
     await driver.click({ index: 1 });
     expect(chrome.debugger.commands.filter((c) => c.method.startsWith("Input.")).every((c) => c.tabId === first)).toBe(true);
   });
@@ -157,13 +159,17 @@ describe("Driver with several tabs", () => {
     expect(chrome.scripting.calls.at(-1)!.tabId).toBe(blocked);
   });
 
-  it("switch_tab makes later calls act on that tab, showing it only when the agent was visible", async () => {
+  it("switch_tab makes later calls act on that tab without activating it", async () => {
     await driver.openTabs({ urls: urls(2) });
     const t2 = await agent.resolve("t2");
+    chrome.tabs.updateCalls.length = 0;
     const info = await driver.switchTab({ tab: "t2" });
     expect(info).toMatchObject({ id: "t2", url: "https://mail.test/m/1", current: true });
-    // The agent's tab was in front, so the new current tab is shown.
-    expect((await chrome.tabs.get(t2)).active).toBe(true);
+    // Even when the agent's tab was in front, the browser's active tab stays.
+    expect((await chrome.tabs.get(t2)).active).toBe(false);
+    expect((await chrome.tabs.get(mainTab)).active).toBe(true);
+    expect(activations()).toEqual([]);
+    expect(chrome.windows.updateCalls).toEqual([]);
     await driver.click({ index: 4 });
     await driver.pressKey({ key: "Enter" });
     const input = chrome.debugger.commands.filter((c) => c.method.startsWith("Input."));
@@ -180,19 +186,36 @@ describe("Driver with several tabs", () => {
     await expect(driver.switchTab({ tab: "t9" })).rejects.toThrow('unknown tab "t9"; call list_tabs');
   });
 
-  it("screenshot of a background current tab activates it first", async () => {
+  it("screenshot of a background current tab captures it through the debugger without activating it", async () => {
     await driver.openTabs({ urls: urls(1) });
     const t2 = await agent.resolve("t2");
     await chrome.tabs.update(mainTab, { active: true });
     await agent.setCurrent("t2");
     chrome.tabs.updateCalls.length = 0;
     expect(await driver.screenshot()).toEqual({ base64: "Q0RQ", mimeType: "image/jpeg" });
-    expect(chrome.tabs.updateCalls).toEqual([{ id: t2, props: { active: true } }]);
     expect(chrome.debugger.commands.at(-1)).toMatchObject({ tabId: t2, method: "Page.captureScreenshot" });
-    // Already in front: no extra activation.
+    expect(activations()).toEqual([]);
+    expect(chrome.windows.updateCalls).toEqual([]);
+    expect((await chrome.tabs.get(mainTab)).active).toBe(true);
+  });
+
+  it("a background screenshot that never answers is skipped instead of switching tabs", async () => {
+    await driver.openTabs({ urls: urls(1) });
+    await agent.setCurrent("t2");
+    await driver.ready();
+    const respond = chrome.debugger.respond;
+    chrome.debugger.respond = (method, params) => (method === "Page.captureScreenshot" ? new Promise(() => {}) : respond(method, params));
     chrome.tabs.updateCalls.length = 0;
-    await driver.screenshot();
-    expect(chrome.tabs.updateCalls).toEqual([]);
+    vi.useFakeTimers();
+    try {
+      const outcome = expect(driver.screenshot()).rejects.toThrow(BACKGROUND_SHOT_SKIPPED);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await outcome;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(activations()).toEqual([]);
+    expect((await chrome.tabs.get(mainTab)).active).toBe(true);
   });
 
   it("lists and closes opened tabs, never the first one", async () => {

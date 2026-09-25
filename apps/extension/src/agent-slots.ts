@@ -15,8 +15,12 @@ import { createBrowserCaller, type VaultLike } from "./engine/browser-caller.js"
 /** What the runner needs of a slot (see RunnerDeps.slots). */
 export interface AgentSlot {
   readonly index: number;
-  /** Picks the slot's main tab for a run and attaches the debugger (see AgentTab.prepare). */
-  prepare(opts: { show?: boolean; mode?: TabMode }): Promise<void>;
+  /**
+   * Picks the slot's main tab for a run and attaches the debugger (see
+   * AgentTab.prepare). tabId: with mode current-tab, the tab the run belongs
+   * to. Returns the tab picked (single-slot mode may return nothing).
+   */
+  prepare(opts: { mode?: TabMode; tabId?: number }): Promise<number | void>;
   /** Browser calls in this slot's tabs (the Claude API brain, post verification). */
   readonly browser: BrowserCaller;
   isAgentTab(tabId: number): Promise<boolean>;
@@ -43,13 +47,16 @@ export class AgentSlots implements SlotPool {
   constructor(
     private readonly cdp: Cdp,
     private readonly vault: VaultLike,
+    /** Tabs that belong to a conversation: scheduled runs do not take them over. */
+    private readonly isChatTab?: (tabId: number) => Promise<boolean>,
   ) {}
 
   /** Slot n, created on first use. Slot 0 is the first agent tab. */
   get(index: number): Slot {
     let s = this.slots.get(index);
     if (s) return s;
-    const tab = new AgentTab(index, { isTaken: (tabId) => this.takenByOther(index, tabId) });
+    const isChatTab = this.isChatTab;
+    const tab = new AgentTab(index, { isTaken: (tabId) => this.takenByOther(index, tabId), ...(isChatTab ? { isChatTab } : {}) });
     const driver = new Driver(this.cdp, tab, { knownTabs: () => this.allTabIds() });
     const cdp = this.cdp;
     s = {
@@ -61,9 +68,10 @@ export class AgentSlots implements SlotPool {
       async prepare(opts) {
         cdp.reset();
         // The run's tab is picked once; the driver keeps using it for the whole turn.
-        await tab.prepare(opts.mode ?? "own-tab");
+        const tabId = await tab.prepare(opts.mode ?? "own-tab", opts.tabId === undefined ? {} : { tabId: opts.tabId });
+        // Never brought to the front: the user may be using another tab (only "Show Tab" does that).
         await driver.ready();
-        if (opts.show) await tab.show().catch(() => false);
+        return tabId;
       },
       isAgentTab: (tabId) => tab.isAgentTab(tabId),
       screenshot: () => driver.screenshot(),
@@ -107,6 +115,11 @@ export class AgentSlots implements SlotPool {
   async show(sessionId?: string): Promise<boolean> {
     const index = (sessionId && this.slotOf(sessionId)) || 0;
     return this.get(index).tab.show();
+  }
+
+  /** The tabs a running session acts in (its main tab first), or none. */
+  async tabsOf(sessionId: string): Promise<number[]> {
+    return (await this.slotUsedBy(sessionId)?.tab.tabIds()) ?? [];
   }
 
   /** Every tab of every slot. */

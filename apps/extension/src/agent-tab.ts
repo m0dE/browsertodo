@@ -35,6 +35,11 @@ export interface AgentTabOptions {
    * gets a new tab instead of the one the user is looking at.
    */
   isTaken?(tabId: number): boolean | Promise<boolean>;
+  /**
+   * True when the tab belongs to a conversation (see TabChats): an own-tab
+   * run (scheduled) then opens a tab of its own instead of reusing it.
+   */
+  isChatTab?(tabId: number): boolean | Promise<boolean>;
 }
 
 /**
@@ -64,9 +69,11 @@ export class AgentTab {
    * Picks the main tab for a run and makes it the current tab. The driver
    * keeps using the current tab until the next prepare() or switch, even if
    * the user switches tabs. Tabs an earlier run opened and left open are closed.
+   * current-tab with `tabId`: that tab (the one the run was started from)
+   * instead of the one the user is looking at now; the same rules apply.
    */
-  async prepare(mode: TabMode): Promise<number> {
-    const tabId = mode === "current-tab" ? await this.pickCurrentTab() : await this.pickOwnTab();
+  async prepare(mode: TabMode, opts: { tabId?: number } = {}): Promise<number> {
+    const tabId = mode === "current-tab" ? await this.pickCurrentTab(opts.tabId) : await this.pickOwnTab();
     const previous = await this.state();
     await removeTabs((previous?.tabs ?? []).filter((t) => t.opened && t.tabId !== tabId).map((t) => t.tabId));
     const state: TabsState = { current: tabId, tabs: [{ id: "t1", tabId, opened: false }], next: 2 };
@@ -132,9 +139,10 @@ export class AgentTab {
   /**
    * Opens each URL in a new background tab of the main tab's window, right
    * after the run's tabs, in the browsertodo group. Returns them in order.
-   * active: show the first one and make it current. Does not wait for loads.
+   * current: make the first one the current tab (it stays in the background).
+   * Does not wait for loads.
    */
-  async open(urls: string[], opts: { active?: boolean } = {}): Promise<RunTab[]> {
+  async open(urls: string[], opts: { current?: boolean } = {}): Promise<RunTab[]> {
     await this.ensureTab();
     const alive = await this.list();
     if (alive.length + urls.length > MAX_AGENT_TABS) {
@@ -156,11 +164,10 @@ export class AgentTab {
     } finally {
       // Remember what was created even if a later create failed, so it is cleaned up.
       state.tabs.push(...created);
-      if (opts.active && created[0]) state.current = created[0].tabId;
+      if (opts.current && created[0]) state.current = created[0].tabId;
       await this.save(state);
     }
     await addToGroup(created.map((t) => t.tabId));
-    if (opts.active && created[0]) await chrome.tabs.update(created[0].tabId, { active: true }).catch(() => undefined);
     return created;
   }
 
@@ -265,8 +272,9 @@ export class AgentTab {
     await chrome.storage.session.set({ [this.tabsKey]: state });
   }
 
-  private async pickCurrentTab(): Promise<number> {
-    let [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true, windowType: "normal" });
+  private async pickCurrentTab(origin?: number): Promise<number> {
+    let tab: chrome.tabs.Tab | undefined = origin === undefined ? undefined : await chrome.tabs.get(origin).catch(() => undefined);
+    if (!tab) [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true, windowType: "normal" });
     if (!tab) {
       const win = await lastNormalWindow();
       if (!win) return createWindowTab();
@@ -274,17 +282,18 @@ export class AgentTab {
     }
     if (tab?.id === undefined) return createWindowTab();
     if (isControllableUrl(tab.url ?? tab.pendingUrl) && !(await this.opts.isTaken?.(tab.id))) return tab.id;
-    const created = await chrome.tabs.create({ windowId: tab.windowId, index: tab.index + 1, active: true, url: "about:blank" });
+    // Shown only in place of the tab the user is looking at.
+    const created = await chrome.tabs.create({ windowId: tab.windowId, index: tab.index + 1, active: !!tab.active, url: "about:blank" });
     return mustId(created);
   }
 
   private async pickOwnTab(): Promise<number> {
     const stored = await this.storedTabId();
-    if (stored !== null && (await tabExists(stored)) && !(await this.opts.isTaken?.(stored))) return stored;
+    if (stored !== null && (await tabExists(stored)) && !(await this.opts.isTaken?.(stored)) && !(await this.opts.isChatTab?.(stored))) return stored;
     const win = await lastNormalWindow();
-    if (!win?.id) return createWindowTab();
-    // Extra slots work in the background, beside the first agent tab.
-    const created = await chrome.tabs.create({ windowId: win.id, active: this.slot === 0, url: "about:blank" });
+    // The agent works in the background: the user keeps the tab they are using.
+    if (!win?.id) return createWindowTab(false);
+    const created = await chrome.tabs.create({ windowId: win.id, active: false, url: "about:blank" });
     return mustId(created);
   }
 }

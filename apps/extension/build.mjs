@@ -1,6 +1,6 @@
 // Bundles the extension into dist/: background.js, options.js, static files and icons.
 import { build } from "esbuild";
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
@@ -17,6 +17,23 @@ for (const size of [16, 48, 128]) {
   if (!existsSync(file)) writeFileSync(file, iconPng(size));
 }
 
+// Build-time config: env BROWSERTODO_GOOGLE_CLIENT_ID, else config.json { "googleClientId": "..." }
+// (gitignored; see config.example.json). Empty = the Log In button explains that sign-in is not set up.
+function readConfig() {
+  const file = join(root, "config.json");
+  let fromFile = {};
+  if (existsSync(file)) {
+    try {
+      fromFile = JSON.parse(readFileSync(file, "utf8"));
+    } catch (err) {
+      throw new Error(`apps/extension/config.json is not valid JSON: ${err.message}`);
+    }
+  }
+  return { googleClientId: String(process.env.BROWSERTODO_GOOGLE_CLIENT_ID ?? fromFile.googleClientId ?? "").trim() };
+}
+const config = readConfig();
+if (!config.googleClientId) console.log("[build] no Google client ID: sign-in is disabled in this build (see apps/extension/README.md)");
+
 const common = {
   bundle: true,
   platform: "browser",
@@ -28,6 +45,7 @@ const common = {
   // function that is serialized with Function.prototype.toString.
   keepNames: false,
   logLevel: "info",
+  define: { __BROWSERTODO_GOOGLE_CLIENT_ID__: JSON.stringify(config.googleClientId) },
 };
 await build({ ...common, entryPoints: [join(root, "src/background.ts")], outfile: join(dist, "background.js") });
 await build({ ...common, entryPoints: [join(root, "src/options/options.ts")], outfile: join(dist, "options.js") });

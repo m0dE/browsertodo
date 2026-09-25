@@ -10,6 +10,28 @@ export const MAX_BATCH_TASKS = 100;
 /** An X-style handle or any account label the agent should switch to. */
 const Account = z.string().trim().min(1).max(100);
 
+/**
+ * Repeat rule: run again every day at these local times ("HH:MM", 24 h).
+ * Local tasks use the browser's time zone; cloud tasks use the task's `tz`.
+ */
+export const RepeatRule = z.object({
+  dailyAt: z.array(z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)).min(1).max(24),
+});
+export type RepeatRule = z.infer<typeof RepeatRule>;
+
+/** True when `tz` is an IANA time zone name this runtime knows (e.g. "America/New_York"). */
+export function isValidTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** An IANA time zone name. */
+export const TimeZone = z.string().min(1).max(64).refine(isValidTimeZone, "unknown IANA time zone");
+
 /** Body of POST /v1/tasks and each item of POST /v1/tasks/batch. */
 export const CreateTaskInput = z.object({
   instructions: z.string().trim().min(1).max(MAX_INSTRUCTIONS_CHARS),
@@ -17,6 +39,10 @@ export const CreateTaskInput = z.object({
   mediaIds: z.array(z.string().min(1)).max(10).optional(),
   notBefore: z.iso.datetime({ offset: true }).optional(),
   priority: z.number().int().min(-1000).max(1000).optional(),
+  /** Cloud only: when the task ends done or failed, the next occurrence is created. null = no repeat. */
+  repeat: RepeatRule.nullable().optional(),
+  /** IANA time zone for `repeat`. Default "UTC". */
+  tz: TimeZone.nullable().optional(),
 });
 export type CreateTaskInput = z.infer<typeof CreateTaskInput>;
 
@@ -25,8 +51,14 @@ export const BatchCreateInput = z.object({
 });
 export type BatchCreateInput = z.infer<typeof BatchCreateInput>;
 
-/** Body of PATCH /v1/tasks/:id. Only allowed while pending or paused. */
-export const UpdateTaskInput = CreateTaskInput.partial();
+/**
+ * Body of PATCH /v1/tasks/:id. Only allowed while pending or paused.
+ * `account: null` and `notBefore: null` clear them (omit a field to keep it).
+ */
+export const UpdateTaskInput = CreateTaskInput.extend({
+  account: Account.nullable(),
+  notBefore: z.iso.datetime({ offset: true }).nullable(),
+}).partial();
 export type UpdateTaskInput = z.infer<typeof UpdateTaskInput>;
 
 /** Metadata for an uploaded media file. */
@@ -58,6 +90,12 @@ export const Task = z.object({
   failReason: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  /** Daily repeat rule (cloud tasks; optional so older producers still validate). */
+  repeat: RepeatRule.nullable().optional(),
+  /** IANA time zone of the repeat rule. */
+  tz: z.string().nullable().optional(),
+  /** Owning user id; null for legacy (admin-owned) cloud tasks. */
+  ownerId: z.string().nullable().optional(),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -119,15 +157,41 @@ export const CreateKeyInput = z.object({
 });
 export type CreateKeyInput = z.infer<typeof CreateKeyInput>;
 
+/** Body of POST /v1/me/keys: a key scoped to the signed-in user's data. */
+export const CreateOwnKeyInput = z.object({
+  name: z.string().trim().min(1).max(100),
+  role: z.enum(["creator", "runner"]),
+});
+export type CreateOwnKeyInput = z.infer<typeof CreateOwnKeyInput>;
+
+/** A signed-in user (Google account). */
+export const User = z.object({
+  id: z.string(),
+  email: z.string(),
+  name: z.string().nullable(),
+  pictureUrl: z.string().nullable(),
+});
+export type User = z.infer<typeof User>;
+
+/** Body of POST /v1/auth/google: a Google ID token (JWT) issued for this server's client id. */
+export const AuthGoogleInput = z.object({
+  idToken: z.string().min(1).max(8192),
+  /** Dashboard (same origin): also set the HttpOnly `bt_session` cookie. */
+  cookie: z.boolean().optional(),
+});
+export type AuthGoogleInput = z.infer<typeof AuthGoogleInput>;
+
+/** 200 response of POST /v1/auth/google. `token` is a session bearer token (bt_s_...). */
+export const AuthResponse = z.object({
+  token: z.string(),
+  user: User,
+  expiresAt: z.string(),
+});
+export type AuthResponse = z.infer<typeof AuthResponse>;
+
 /** Standard error body for every non-2xx API response. */
 export const ApiError = z.object({ error: z.string(), details: z.unknown().optional() });
 export type ApiError = z.infer<typeof ApiError>;
-
-/** Repeat rule for local tasks: run again every day at these local times. */
-export const RepeatRule = z.object({
-  dailyAt: z.array(z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)).min(1).max(24),
-});
-export type RepeatRule = z.infer<typeof RepeatRule>;
 
 /**
  * A task stored in the extension (no cloud needed). Same shape as a cloud

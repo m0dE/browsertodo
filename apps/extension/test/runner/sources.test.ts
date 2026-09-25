@@ -1,6 +1,7 @@
 /** Runner job sources: local tasks, cloud claims, one-off runs. */
 import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent } from "@browsertodo/shared";
+import { Runner } from "../../src/engine/runner.js";
 import { claimFixture } from "../fixtures.js";
 import { env, harness, runAll, setupRunnerTests } from "./harness.js";
 
@@ -23,7 +24,7 @@ describe("Runner: local tasks", () => {
     expect(start.task).toEqual({ id: t.id, instructions: "Post hello", account: "@me" });
     expect(start.mediaPaths).toEqual(["C:\\dl\\a.png"]);
     // Scheduled runs use the agent's own tab, in the background.
-    expect(h.prepared).toEqual([{ show: false, mode: "own-tab" }]);
+    expect(h.prepared).toEqual([{ mode: "own-tab" }]);
     expect(start.config).toMatchObject({ isRetry: false, maxToolCalls: 60, jevEnabled: true, model: "claude-sonnet-5" });
     expect(h.materialized[0]!.sources[0]).toMatchObject({ kind: "blob", name: "a.png" });
     expect(h.cleanups).toBe(1);
@@ -100,6 +101,38 @@ describe("Runner: cloud tasks", () => {
     expect(h.results[0]!.body).toMatchObject({ outcome: "paused", reason: "2FA", retryAfterMinutes: 30 });
   });
 
+  it("signed in: claims from the account (not the runner-key cloud sync) and reports there", async () => {
+    const h = harness({ cloudEnabled: true, apiBase: "https://selfhosted.test", runnerKey: "bt_k" });
+    const runnerKeyClaims = vi.fn(async () => null);
+    const orig = h.deps.createApi;
+    h.deps.createApi = (st) => ({ ...orig(st), claim: runnerKeyClaims });
+    const accountResults: string[] = [];
+    const accountClaims = [claimFixture("a1"), null];
+    h.deps.accountApi = async () => ({
+      claim: async () => accountClaims.shift() ?? null,
+      heartbeat: async () => ({}),
+      result: async (taskId, body) => void accountResults.push(`${taskId} ${body.outcome}`),
+      uploadMedia: async (_b, filename) => ({ id: "shot", filename, contentType: "image/jpeg", size: 1 }),
+      mediaUrl: (id) => `https://account.test/v1/media/${id}`,
+      authHeaders: () => [{ name: "Authorization", value: "Bearer bt_s_session" }],
+    });
+    h.runner = new Runner(h.deps);
+    h.brain.script = () => ({ outcome: "paused", reason: "Out of AI credit" });
+    await runAll(h);
+    expect(accountResults).toEqual(["a1 paused"]);
+    expect(runnerKeyClaims).not.toHaveBeenCalled();
+    expect(h.notifications).toEqual([{ title: "Task paused", message: "Out of AI credit" }]);
+  });
+
+  it("signed in without cloud sync: the account queue is still checked", async () => {
+    const h = harness();
+    const claim = vi.fn(async () => null);
+    h.deps.accountApi = async () => ({ claim, heartbeat: async () => ({}), result: async () => {}, uploadMedia: async () => ({}) as never, mediaUrl: () => "", authHeaders: () => [] });
+    h.runner = new Runner(h.deps);
+    await runAll(h);
+    expect(claim).toHaveBeenCalledWith("runner-1");
+  });
+
   it("cloud sync on but not configured: nothing runs, lastError explains", async () => {
     const h = harness({ cloudEnabled: true });
     await runAll(h);
@@ -132,7 +165,7 @@ describe("Runner: adhoc sessions", () => {
     expect(h.brain.starts[0]!.task).toEqual({ id: sessionId, instructions: "Like the top post", account: "@me" });
     expect(h.brain.starts[0]!.mediaPaths).toEqual(["C:\\dl\\x.png"]);
     // One-off runs act on the tab the user is looking at.
-    expect(h.prepared).toEqual([{ show: true, mode: "current-tab" }]);
+    expect(h.prepared).toEqual([{ mode: "current-tab" }]);
     expect(await h.store.list()).toEqual([]);
     expect(await h.runner.say("late")).toBe(false);
   });

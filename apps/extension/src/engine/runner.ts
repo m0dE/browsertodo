@@ -31,6 +31,7 @@ import type { BrowserCaller } from "@browsertodo/core";
 import type { AgentSlot, SlotPool } from "../agent-slots.js";
 import { lastTurnEvents } from "../continue.js";
 import { errText } from "../errors.js";
+import type { TabChatsLike } from "../tab-chats.js";
 import type { BrainStatus } from "../ui-protocol.js";
 import type { Brain, CoreApi } from "./brains.js";
 import type { StorageLike } from "./kv.js";
@@ -56,6 +57,12 @@ export interface RunnerDeps {
   saveSettings(patch: Partial<ExtensionSettings>): Promise<ExtensionSettings>;
   getRunnerId(): Promise<string>;
   createApi(settings: ExtensionSettings): RunnerApi;
+  /**
+   * The signed-in account's task queue (claim/heartbeat/result with the
+   * session token), or null when signed out. When there is one it replaces
+   * the runner-key cloud sync.
+   */
+  accountApi?(): Promise<RunnerApi | null>;
   localStore: LocalStore;
   sessions: SessionStore;
   media: { materialize(sessionId: string, sources: MediaSource[]): Promise<MaterializedMedia> };
@@ -73,9 +80,14 @@ export interface RunnerDeps {
    * Single-slot mode: pick the run's agent tab and attach the debugger to it.
    * mode "current-tab": the tab the user is looking at (one-off runs);
    * "own-tab": the reusable agent tab (scheduled runs, and the next turns of a conversation).
-   * show: bring the agent tab to the front (runs the user is watching).
+   * The tab is never brought to the front.
    */
-  prepareTab?(opts?: { show?: boolean; mode?: "current-tab" | "own-tab" }): Promise<void>;
+  prepareTab?(opts?: { mode?: "current-tab" | "own-tab"; tabId?: number }): Promise<number | void>;
+  /**
+   * Which browser tab each conversation belongs to (TabChats). A one-off run
+   * started from a tab is bound to it, and a conversation's next turns act there.
+   */
+  tabChats?: TabChatsLike;
   isAgentTab?(tabId: number): Promise<boolean>;
   screenshot?(): Promise<Screenshot>;
   notify(title: string, message: string): void | Promise<void>;
@@ -133,7 +145,14 @@ export class Runner {
     this.pacer = new Pacer(deps.sleep);
     this.keepAlive = new KeepAlive(() => deps.keepAlive());
     this.runnerState = new RunnerStateStore(() => deps.storage ?? (chrome.storage.local as unknown as StorageLike));
-    this.turns = new TurnRunner({ sessions: deps.sessions, localStore: deps.localStore, media: deps.media, core: deps.core, log });
+    this.turns = new TurnRunner({
+      sessions: deps.sessions,
+      localStore: deps.localStore,
+      media: deps.media,
+      core: deps.core,
+      log,
+      ...(deps.tabChats ? { tabChats: deps.tabChats } : {}),
+    });
     this.recorder = new ResultRecorder({
       localStore: deps.localStore,
       sessions: deps.sessions,
@@ -212,12 +231,12 @@ export class Runner {
    * The user's message in a conversation (the side panel's box).
    * - The conversation's turn is running: typed into it ("inject").
    * - It ended: the next turn ("turn"; see run/conversation.ts).
-   * - No conversation: a new one-off conversation ("new").
+   * - No conversation: a new one-off conversation ("new"), in tabId when given.
    */
-  async message(sessionId: string | null | undefined, text: string): Promise<{ sessionId: string; mode: MessageMode }> {
+  async message(sessionId: string | null | undefined, text: string, opts: { tabId?: number } = {}): Promise<{ sessionId: string; mode: MessageMode }> {
     const t = text.trim();
     if (!t) throw new Error("The message is empty");
-    if (!sessionId) return { ...(await this.runAdhoc({ instructions: t })), mode: "new" };
+    if (!sessionId) return { ...(await this.runAdhoc({ instructions: t, ...(opts.tabId === undefined ? {} : { tabId: opts.tabId }) })), mode: "new" };
     if (this.live.has(sessionId)) {
       if (!(await this.say(t, sessionId))) throw new Error("The agent did not take the message");
       return { sessionId, mode: "inject" };
@@ -327,6 +346,15 @@ export class Runner {
     }
   }
 
+  /** The browser tab of a conversation was closed: its running turn stops (paused), the session stays in the Activity Log. */
+  onChatTabClosed(sessionId: string): boolean {
+    const a = this.live.get(sessionId);
+    if (!a || a.forced) return false;
+    this.turns.emit(a, { type: "status", text: "Stopping: the tab was closed" });
+    this.live.force(a, "paused", "the tab was closed");
+    return true;
+  }
+
   /** The user closed the debugger infobar (it ends debugging of every tab): stop every session. */
   onDebuggerCanceled(): void {
     for (const a of this.live.all()) this.live.force(a, "failed", "debugger detached by user");
@@ -398,7 +426,8 @@ export class Runner {
         if (this.stopRequested || halted) break;
         if (started) settings = await this.deps.loadSettings();
         if (settings.paused && !pausedAtStart) break;
-        const cloudOn = settings.cloudEnabled && !!settings.apiBase && !!settings.runnerKey;
+        const accountApi = (await this.deps.accountApi?.().catch(() => null)) ?? null;
+        const cloudOn = !!accountApi || (settings.cloudEnabled && !!settings.apiBase && !!settings.runnerKey);
         const { startable, blocked } = await dueLocal(this.deps.localStore, this.now(), this.live.localRunning, !this.live.xTurn.free);
         const cloudReady = cloudOn && !cloudEmpty && this.live.xTurn.free;
         if (!startable.length && !cloudReady) {
@@ -436,13 +465,13 @@ export class Runner {
         let job: FirstJob | null = null;
         if (startable[0]) job = { source: "local", task: startable[0] };
         else {
-          const api = this.deps.createApi(settings);
+          const api = accountApi ?? this.deps.createApi(settings);
           try {
             const claim = await api.claim(runnerId);
             if (claim) job = { source: "cloud", claim, api, runnerId };
             else cloudEmpty = true;
           } catch (err) {
-            await this.runnerState.patch({ lastError: `Cloud claim failed: ${errText(err)}` });
+            await this.runnerState.patch({ lastError: `${accountApi ? "Account" : "Cloud"} claim failed: ${errText(err)}` });
             cloudEmpty = true;
           }
         }
@@ -543,6 +572,10 @@ export class Runner {
       }
       active = this.live.activate(info, opts.slotIndex, isXTask(task), opts.scheduled, job.source === "local" ? job.task.id : null);
       await this.deps.sessions.create(info);
+      // A one-off run belongs to the tab it was started from, from the start (the side panel shows it there).
+      if (job.source === "adhoc" && job.input.tabId !== undefined && this.deps.tabChats) {
+        await this.deps.tabChats.bind(job.input.tabId, sessionId).catch((err: unknown) => this.log(`binding the chat to its tab failed: ${errText(err)}`));
+      }
     } catch (err) {
       // Nothing ran: give the slot (and the X turn) back.
       if (active) this.live.deactivate(active);

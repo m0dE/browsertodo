@@ -77,10 +77,11 @@ export class Vault {
 
   /** Exact hostname first, then each parent domain. */
   async getCredential(site: string): Promise<CredentialResult> {
+    // No saved logins at all (or none for this site) is "not found", never "locked".
+    const data = await this.read();
+    if (!data || Object.keys(data.entries).length === 0) return { found: false };
     const key = await this.sessionKey();
     if (!key) return { found: false, locked: true };
-    const data = await this.read();
-    if (!data) return { found: false };
     const labels = normalizeSite(site).split(".");
     for (let i = 0; i < labels.length; i++) {
       const entry = data.entries[labels.slice(i).join(".")];

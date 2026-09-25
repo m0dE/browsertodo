@@ -11,16 +11,21 @@ It runs entirely on your machine. A cloud task queue is optional.
 
 ## What you get
 
-- **A side panel** (click the toolbar icon) with two tabs:
-  - **Tasks:** a todo list with times, daily repeats and attached files.
-    "Run due" runs everything that is due now.
-  - **Activity:** the conversation with the agent, live: which brain and
-    model run it, what Claude says, every tool call and result, and Jev's
-    picks. "Show tab" brings up the tab the agent is using, History lists
-    past runs, and when several tasks run at once you can switch between
-    them. Claude Code runs also have a "Raw log" link to the helper's full
-    log of the run.
-- **A message box** under both tabs, like a chat:
+- **A side panel** (click the toolbar icon) with three tabs:
+  - **Chat:** the conversation with the agent, live: which brain and model
+    run it, what Claude says, every tool call and result, and Jev's picks.
+    The bar above it has **New Chat** (start over), **Show Tab** (bring up
+    the tab the agent is using while it works) and **Raw Log** (the helper's
+    full log of a Claude Code run). **Each browser tab has its own chat:**
+    switch tabs and the panel shows that tab's conversation (or an empty new
+    chat). Chats running in other tabs show as chips; click one to go to its
+    tab.
+  - **TODO:** a todo list with times, daily repeats and attached files.
+    "Run now" runs the tasks whose time has come without waiting for the
+    next check. Hover a status chip to see what it means.
+  - **Activity Log:** every past run; open one to read it, and "Open in
+    Chat" to continue it.
+- **A message box** under Chat and TODO:
   - Type a task to start it now.
   - While a task runs, your message goes straight to the agent. Stop pauses
     it.
@@ -28,7 +33,8 @@ It runs entirely on your machine. A cloud task queue is optional.
     agent session is still open (up to 30 idle minutes) it picks the message
     up; otherwise a fresh one starts with a summary of what was done.
   - A run that was stopped, paused or failed shows a **Continue** button.
-  - **New chat** ends the conversation; the next message starts a new one.
+  - **New Chat** ends this tab's conversation; the next message starts a
+    new one. Other tabs keep theirs.
   - The **model chip** shows the model and whether Jev is on, and changes
     either.
 - **A settings page** for the brain, the model, keys, cloud sync, site
@@ -94,9 +100,15 @@ for local Claude Code needs Windows 10 or 11.
 ## How it works in your browser
 
 - **It uses your own tabs.** A task you start from the side panel works in
-  the tab you are looking at (or a new tab next to it, if that tab is a
-  browser page or already in use). Scheduled tasks use their own tab. Agent
-  tabs go in a tab group named "browsertodo".
+  that tab, and keeps working there if you switch to another tab (or in a
+  new tab next to it, if that tab is a browser page or already in use; the
+  chat then moves to the new tab). Two tabs can each run their own chat at
+  the same time. Closing a tab stops its chat's task; the run stays in the
+  Activity Log, where "Open in Chat" puts it in the current tab. Scheduled
+  tasks use their own tab. Agent tabs go in a tab group named "browsertodo".
+- **Scrolling reports what moved:** how many pixels and where the page is
+  now, or that nothing moved (already at the bottom, or that part of the
+  page does not scroll).
 - **Several tasks at once.** Up to 2 due tasks run at the same time by
   default (up to 4, "Tasks at once" in settings), each in its own tab, and
   tasks you start from the side panel run beside them. Tasks on X run one at
@@ -152,7 +164,7 @@ with a passphrase you enter once per browser session. The agent asks for the
 login of the site it is signing in to, and the username and password go to
 Claude. It is never used for X.
 
-Every run is kept in the Activity tab's History, for both brains. With the
+Every run is kept in the side panel's Activity Log, for both brains. With the
 helper, each Claude Code run also has a full log in
 `%LOCALAPPDATA%\browsertodo\runs\`.
 
@@ -174,6 +186,7 @@ pnpm build
 node apps/extension/test/smoke.e2e.mjs [--headed]           # the built extension in Playwright's Chromium
 node apps/extension/test/multitab.e2e.mjs [--headed]        # parallel tabs vs one by one
 node apps/extension/test/foreign-frame.e2e.mjs [--headed]   # the fallback on pages with another extension's frame
+node apps/extension/test/tabs.e2e.mjs [--headed]            # a chat per tab: two tabs running at once, the panel following the tab
 node apps/extension/test/ui/harness.mjs [--headed]          # side panel and settings screenshots, light and dark
 ```
 

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { TaskRunResult } from "@browsertodo/shared";
-import { createToolExecutor } from "../src/index.js";
+import { createToolExecutor, picksEvent } from "../src/index.js";
+import { goalKey, rankCandidates } from "../src/act.js";
+import { formatElementsInWords } from "../src/page-format.js";
 import type { BrowserCaller, JevLike } from "../src/types.js";
 import { FAKE_JPEG_B64, FakeX } from "./fake-x.js";
 import { collect, fakeJev, noSleep, smartJev } from "./helpers.js";
@@ -111,9 +113,9 @@ describe("createToolExecutor: plain tools", () => {
     const ok = await exec.call("get_credential", { site: "https://www.example.com/login" });
     expect(ok.text).toBe("username: u\npassword: p4ss");
     expect(JSON.stringify(events)).not.toContain("p4ss");
-    expect((await exec.call("get_credential", { site: "other.com" })).text).toMatch(/No credential/);
+    expect((await exec.call("get_credential", { site: "other.com" })).text).toMatch(/No login is saved for other.com. First check whether the user is already signed in/);
     x.vaultLocked = true;
-    expect((await exec.call("get_credential", { site: "example.com" })).text).toMatch(/vault is locked/);
+    expect((await exec.call("get_credential", { site: "example.com" })).text).toMatch(/saved site logins are locked/);
   });
 
   it("switch_x_account switches through the account menu", async () => {
@@ -195,13 +197,13 @@ describe("createToolExecutor: act", () => {
     expect(events.filter((e) => e.type === "jev").map((e) => (e as { executed: boolean }).executed)).toEqual([true, false]);
   });
 
-  it("stops when Jev chooses type but the step has no text", async () => {
+  it("the step decides click or type: without text it clicks the element Jev picked, even when Jev said type", async () => {
     const x = new FakeX({ url: "https://x.com/home" });
     const { exec } = setup(x, { jev: smartJev() });
     const r = await exec.call("act", { steps: [{ goal: "type something in the composer" }] });
-    expect(r.text).toMatch(/Jev chose to type into \[2\].*but this step has no text/);
-    expect(r.text).toContain("not confident at step 1");
+    expect(r.text).toMatch(/step 1: clicked \[2\] textbox "Post text"/);
     expect(x.calls.some((c) => c.method === "browser.type")).toBe(false);
+    expect(x.calls.some((c) => c.method === "browser.click")).toBe(true);
   });
 
   it("does not auto-execute press_key, stops on blocked, and survives Jev errors", async () => {
@@ -243,6 +245,145 @@ describe("createToolExecutor: act", () => {
     const { exec } = setup(new FakeX(), { jev: smartJev() });
     const r = await exec.call("act", { steps: Array.from({ length: 9 }, () => ({ goal: "g" })) });
     expect(r.isError).toBe(true);
+  });
+});
+
+describe("createToolExecutor: Jev picks the elements", () => {
+  it("read_page lists elements in words, without index numbers (file inputs keep their upload index)", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    const { exec } = setup(x, { jev: smartJev() });
+    const r = (await exec.call("read_page", {})).text!;
+    expect(r).toContain("URL: https://x.com/home");
+    expect(r).toMatch(/no index numbers: describe the one you want in words in act/);
+    expect(r).toContain('button "Account menu" (testid=SideNav_AccountSwitcher_Button, text="alice @alice")');
+    expect(r).toContain('textbox "Post text" (testid=tweetTextarea_0)');
+    expect(r).toContain('file input "Choose files" (upload index 3)');
+    expect(r).toContain("--- visible text ---");
+    expect(r).not.toMatch(/^\[\d+\]/m);
+    // Without Jev: the numbered list, as before.
+    const plain = (await setup(x).exec.call("read_page", {})).text!;
+    expect(plain).toMatch(/^\[2\] textbox "Post text"/m);
+  });
+
+  it("merges look-alike elements and caps the list", () => {
+    const els = Array.from({ length: 200 }, (_, i) => ({
+      index: i,
+      tag: "button",
+      role: "button",
+      name: i < 5 ? "Reply" : `b${i}`,
+      inViewport: i < 100,
+    }));
+    const list = formatElementsInWords(els, false, 150);
+    const lines = list.split("\n");
+    expect(lines[0]).toBe('button "Reply" ×5');
+    expect(lines).toHaveLength(151);
+    expect(lines.at(-1)).toBe("(46 more elements not listed; scroll, or describe what you need)");
+    expect(list).toContain('button "b100" (offscreen)');
+  });
+
+  it("marks elements of an open dialog and keeps them apart from look-alikes behind it", () => {
+    const list = formatElementsInWords([
+      { index: 0, tag: "button", role: "button", name: "Post", testId: "tweetButton", inViewport: true },
+      { index: 1, tag: "button", role: "button", name: "Post", testId: "tweetButton", inViewport: true, inDialog: true },
+    ]);
+    expect(list.split("\n")).toEqual(['button "Post" (testid=tweetButton)', 'button "Post" (testid=tweetButton, in dialog)']);
+  });
+
+  it("read_page with tabs uses the words list per tab too", async () => {
+    const tabs = new FakeTabs();
+    const { exec } = setup(new FakeX(), { browser: tabs.caller(), jev: smartJev() });
+    await exec.call("open_tabs", { urls: ["https://mail.test/m/1", "https://mail.test/m/2"] });
+    const r = (await exec.call("read_page", { tabs: ["t2", "t3"] })).text!;
+    expect(r).toContain("===== Tab t2 =====");
+    expect(r).toMatch(/no index numbers/);
+    expect(r).not.toMatch(/^\[\d+\]/m);
+    expect(r).toContain("(20 more elements not listed; scroll, or describe what you need)");
+  });
+
+  it("refuses steps that name an index unless Jev just was not confident about them; nothing runs", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    const { exec } = setup(x, { jev: smartJev() });
+    const r = await exec.call("act", { steps: [{ goal: "type the post", text: "gm", index: 2 }, { goal: "click the post button" }] });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("act refused; nothing was run.");
+    expect(r.text).toMatch(/step 1 \("type the post"\) names element \[2\], but Jev was not asked about this step yet/);
+    expect(r.text).toMatch(/describe each element in words instead/);
+    expect(x.calls.filter((c) => c.method !== "browser.readPage")).toEqual([]);
+  });
+
+  it("when Jev is unsure it returns candidates for that step only; the same goal may then name one of them, once", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    const jev = fakeJev((goal, snap) =>
+      goal === "open the menu thing"
+        ? { operation: "click", index: 0, confidence: 0.4, ranked: [0, 1] }
+        : { operation: "click", index: snap.elements.find((e) => e.name === "Home")!.index, confidence: 0.95 },
+    );
+    const { exec, events } = setup(x, { jev });
+    const r1 = await exec.call("act", { steps: [{ goal: "go home" }, { goal: "open the menu thing" }, { goal: "go home" }] });
+    expect(r1.isError).toBeUndefined();
+    expect(r1.text).toContain("not confident at step 2. Steps 3-3 were not run.");
+    expect(r1.text).toContain("Candidates for step 2");
+    expect(r1.text).toMatch(/^\[0\] button "Account menu"/m);
+    expect(r1.text).toContain('e.g. {goal: "open the menu thing", index: <n>}');
+    // Another goal may not name an index; neither may an index that was not offered.
+    const other = await exec.call("act", { steps: [{ goal: "open the menu thing" }, { goal: "something else", index: 0 }] });
+    expect(other.isError).toBe(true);
+    const notOffered = await exec.call("act", { steps: [{ goal: "open the menu thing", index: 99 }] });
+    expect(notOffered.isError).toBe(true);
+    expect(notOffered.text).toMatch(/\[99\] is not one of the candidates listed for it/);
+    // The offer survives refusals and read_page, then works once (goal matched case-insensitively).
+    await exec.call("read_page", {});
+    const r2 = await exec.call("act", { steps: [{ goal: "Open the  menu thing", index: 0 }, { goal: "go home" }] });
+    expect(r2.isError).toBeUndefined();
+    expect(r2.text).toContain("step 1: clicked [0] (picked by Claude)");
+    expect(r2.text).toMatch(/step 2: clicked \[\d+\] link "Home" .*picked by Jev/);
+    // The trailing page is in words too.
+    expect(r2.text).not.toMatch(/^\[\d+\] link "Home"/m);
+    const again = await exec.call("act", { steps: [{ goal: "open the menu thing", index: 0 }] });
+    expect(again.isError).toBe(true);
+    // Picks: Jev 2 (both "go home"), Claude 1; taking them resets the count.
+    expect(exec.takePicks()).toEqual({ jev: 2, claude: 1 });
+    expect(exec.takePicks()).toEqual({ jev: 0, claude: 0 });
+    expect(events.filter((e) => e.type === "jev").map((e) => (e as { executed: boolean }).executed)).toEqual([true, false, true]);
+  });
+
+  it("a page-changing tool closes the offer", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    const { exec } = setup(x, { jev: fakeJev([{ operation: "click", index: 1, confidence: 0.3 }]) });
+    await exec.call("act", { steps: [{ goal: "open it" }] });
+    await exec.call("navigate", { url: "https://x.com/home" });
+    const r = await exec.call("act", { steps: [{ goal: "open it", index: 1 }] });
+    expect(r.isError).toBe(true);
+  });
+
+  it("candidates: at most 40, Jev's own ranking first, then by words shared with the goal", () => {
+    const elements = Array.from({ length: 120 }, (_, i) => ({
+      index: i,
+      tag: "button",
+      role: "button",
+      name: i === 90 ? "Save draft" : i === 110 ? "Delete" : `item ${i}`,
+      inViewport: i < 60,
+    }));
+    const snap = { url: "https://a.test/", title: "A", text: "", truncated: false, elements };
+    const c = rankCandidates(snap, "click the Save draft button", [110]);
+    expect(c).toHaveLength(40);
+    expect(c.map((e) => e.index)).toContain(110);
+    expect(c.map((e) => e.index)).toContain(90);
+    // Page order.
+    expect(c.map((e) => e.index)).toEqual([...c.map((e) => e.index)].sort((a, b) => a - b));
+  });
+
+  it("picksEvent: the end-of-turn status line", () => {
+    expect(picksEvent({ jev: 9, claude: 2 })).toEqual({
+      type: "status",
+      text: "Jev chose 9 of 11 element picks (clicks and typing); Claude chose 2",
+      picks: { jev: 9, claude: 2 },
+    });
+    expect(picksEvent({ jev: 0, claude: 0 })).toBeNull();
+  });
+
+  it("goalKey ignores case and extra spaces", () => {
+    expect(goalKey("  Click  the Post\tbutton ")).toBe("click the post button");
   });
 });
 
@@ -412,5 +553,63 @@ describe("createToolExecutor: several tabs", () => {
     expect(task).toMatch(/open them together with open_tabs .* one read_page call using `tabs`/);
     expect(task).toMatch(/tabs you opened are also closed when the task ends/);
     expect(buildSystemPrompt({ tools: ["navigate", "read_page"], jev: false })).not.toContain("open_tabs");
+  });
+});
+
+describe("scroll reports what moved", () => {
+  const scrollWith = async (result: Record<string, unknown>, args: Record<string, unknown> = { direction: "down" }) => {
+    const x = new FakeX();
+    const browser = {
+      call: async (method: string, params: unknown) => (method === "browser.scroll" ? { ok: true, ...result } : x.caller().call(method as never, params as never)),
+    } as BrowserCaller;
+    const { exec } = setup(x, { browser });
+    return exec.call("scroll", args);
+  };
+
+  it("the page moved: pixels, position and percentage", async () => {
+    const r = await scrollWith({ moved: 640, target: "page", position: 1280, size: 5400, view: 800 });
+    expect(r.text).toBe("Scrolled down 640 px (now 1,280 of 5,400; 28% down).");
+  });
+
+  it("reaching the end says so", async () => {
+    const r = await scrollWith({ moved: 300, target: "page", position: 4600, size: 5400, view: 800 });
+    expect(r.text).toBe("Scrolled down 300 px (now 4,600 of 5,400; 100% down; at the bottom).");
+  });
+
+  it("nothing moved at the bottom, at the top, and where nothing scrolls", async () => {
+    expect((await scrollWith({ moved: 0, target: "page", position: 4600, size: 5400, view: 800, reason: "end" })).text).toBe(
+      "Nothing moved: the page is already at the bottom.",
+    );
+    expect((await scrollWith({ moved: 0, target: "page", position: 0, size: 5400, view: 800, reason: "end" }, { direction: "up" })).text).toBe(
+      "Nothing moved: the page is already at the top.",
+    );
+    expect((await scrollWith({ moved: 0, target: "page", position: 0, size: 800, view: 800, reason: "fixed" })).text).toBe(
+      "Nothing moved: this part of the page doesn't scroll; try scrolling inside an element (give its index).",
+    );
+    expect((await scrollWith({ moved: 0, target: "page", position: 0, size: 800, view: 800, reason: "fixed" }, { direction: "down", index: 4 })).text).toBe(
+      "Nothing moved: [4] and the page around it don't scroll down.",
+    );
+    expect((await scrollWith({ moved: 0, target: "container", containerIndex: 7, position: 900, size: 1200, view: 300, reason: "end" }, { direction: "down", index: 9 })).text).toBe(
+      "Nothing moved: [7] is already at the bottom.",
+    );
+    expect((await scrollWith({ moved: 0, target: "page", position: 100, size: 5400, view: 800, reason: "ignored" })).text).toMatch(
+      /^Nothing moved: the page can scroll down \(now 100 of 5,400\) but did not react to the wheel; try press_key PageDown/,
+    );
+  });
+
+  it("an inner container that scrolled instead of the page, and one given by index", async () => {
+    expect((await scrollWith({ moved: 400, target: "container", position: 400, size: 2000, view: 500 })).text).toBe(
+      "Scrolled down 400 px inside a scrollable area of the page, not the page itself (now 400 of 2,000; 27% down).",
+    );
+    expect((await scrollWith({ moved: 400, target: "container", containerIndex: 12, position: 400, size: 2000, view: 500 })).text).toContain(
+      "inside [12] of the page, not the page itself",
+    );
+    expect((await scrollWith({ moved: 800, target: "container", containerIndex: 3, position: 800, size: 3000, view: 1000 }, { direction: "right", index: 3 })).text).toBe(
+      "Scrolled right 800 px inside [3] (now 800 of 3,000; 40% across).",
+    );
+  });
+
+  it("drivers that do not measure keep the old answer", async () => {
+    expect((await scrollWith({}, { direction: "down", amount: 2 })).text).toBe("Scrolled down 2x.");
   });
 });

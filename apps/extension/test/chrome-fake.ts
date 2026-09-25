@@ -123,7 +123,9 @@ export function installChromeFake() {
     return { ...t, status: t.status ?? "complete", index: w ? w.tabs.indexOf(t) : 0 };
   };
   const activate = (t: FakeTab) => {
+    const was = t.active;
     for (const other of fake.windows.byId.get(t.windowId)?.tabs ?? []) other.active = other === t;
+    if (!was) fake.tabs.onActivated.emit({ tabId: t.id, windowId: t.windowId });
   };
 
   const fake = {
@@ -249,6 +251,7 @@ export function installChromeFake() {
         const w = fake.windows.byId.get(t.windowId)!;
         w.tabs.splice(w.tabs.indexOf(t), 1);
         fake.tabs.byId.delete(id);
+        fake.tabs.onRemoved.emit(id, { windowId: t.windowId, isWindowClosing: false });
       },
       async group(opts: { tabIds: number[]; groupId?: number; createProperties?: { windowId?: number } }) {
         let groupId = opts.groupId;
@@ -267,6 +270,8 @@ export function installChromeFake() {
         return "data:image/jpeg;base64,RkFLRQ==";
       },
       onUpdated: new FakeEvent<unknown[]>(),
+      onRemoved: new FakeEvent<unknown[]>(),
+      onActivated: new FakeEvent<unknown[]>(),
     },
     scripting: {
       calls: [] as { tabId: number; frameIds?: number[]; func: (...a: any[]) => unknown; args: unknown[] }[],

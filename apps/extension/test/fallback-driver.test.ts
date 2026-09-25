@@ -3,14 +3,16 @@ import { FOREIGN_FRAME_ERROR, installChromeFake, type ChromeFake } from "./chrom
 import { AgentTab } from "../src/agent-tab.js";
 import { Cdp } from "../src/cdp.js";
 import { Driver } from "../src/driver.js";
+import { BACKGROUND_SHOT_SKIPPED } from "../src/driver-common.js";
 import {
   FALLBACK_NOTE,
   clickInPage,
   insertTextInPage,
   isDebuggerBlocked,
   pressKeyInPage,
-  scrollInPage,
+  viewportInPage,
 } from "../src/fallback-driver.js";
+import { scrollProbeInPage } from "../src/scroll-probe.js";
 import { snapshotPage } from "../src/page-snapshot.js";
 
 let chrome: ChromeFake;
@@ -36,7 +38,19 @@ beforeEach(async () => {
     if (method === "Page.captureScreenshot") return { data: "Q0RQ" };
     return {};
   };
-  chrome.scripting.respond = (func) => (func === snapshotPage ? snap : { ok: true, value: true });
+  chrome.scripting.respond = (func) =>
+    func === snapshotPage
+      ? snap
+      : func === viewportInPage
+        ? { ok: true, value: { w: 1000, h: 800 } }
+        : func === scrollProbeInPage
+          ? { ok: true, value: { before: probeAt(0), after: probeAt(1280) } }
+          : { ok: true, value: true };
+});
+
+const probeAt = (top: number) => ({
+  entries: [{ page: true, index: null, top, left: 0, sh: 5400, sw: 1000, ch: 800, cw: 1000, oy: true, ox: true }],
+  overFrame: false,
 });
 
 const injected = () => chrome.scripting.calls.map((c) => c.func);
@@ -76,9 +90,9 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
     expect(await driver.type({ index: 4, text: "Ada" })).toEqual({ ok: true });
     expect(await driver.paste({ text: "!" })).toEqual({ ok: true });
     expect(await driver.pressKey({ key: "Control+Enter" })).toEqual({ ok: true });
-    expect(await driver.scroll({ direction: "down", amount: 2, index: 1 })).toEqual({ ok: true });
+    expect(await driver.scroll({ direction: "down", amount: 2, index: 1 })).toEqual({ ok: true, moved: 1280, target: "page", position: 1280, size: 5400, view: 800 });
 
-    expect(injected()).toEqual([snapshotPage, clickInPage, clickInPage, insertTextInPage, insertTextInPage, pressKeyInPage, scrollInPage]);
+    expect(injected()).toEqual([snapshotPage, clickInPage, clickInPage, insertTextInPage, insertTextInPage, pressKeyInPage, viewportInPage, scrollProbeInPage]);
     const args = chrome.scripting.calls.map((c) => c.args);
     expect(args.slice(1)).toEqual([
       [3],
@@ -86,7 +100,8 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
       [4, "Ada"],
       [null, "!"],
       [{ key: "Enter", code: "Enter", keyCode: 13, text: "\r", alt: false, ctrl: true, meta: false, shift: false }],
-      ["down", 2, 1],
+      [],
+      ["scroll", 500, 400, 1, 0, 1280],
     ]);
     expect(chrome.debugger.commands).toEqual([]);
   });
@@ -129,12 +144,18 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
     expect((await driver.readPage()).note).toBe(FALLBACK_NOTE);
   });
 
-  it("screenshot brings a background agent tab to the front first", async () => {
+  it("screenshot of a background agent tab is skipped, never brought to the front", async () => {
     chrome.debugger.blocked.add(tabId);
-    await chrome.tabs.create({ windowId, url: "https://other.test/", active: true });
+    const user = await chrome.tabs.create({ windowId, url: "https://other.test/", active: true });
+    chrome.tabs.updateCalls.length = 0;
+    await expect(driver.screenshot()).rejects.toThrow(BACKGROUND_SHOT_SKIPPED);
+    expect(chrome.tabs.updateCalls.filter((c) => c.props.active)).toEqual([]);
+    expect(chrome.windows.updateCalls.filter((c) => c.props.focused)).toEqual([]);
+    expect((await chrome.tabs.get(user.id)).active).toBe(true);
+    expect(chrome.tabs.captureCalls).toEqual([]);
+    // The visible tab is captured with captureVisibleTab.
+    await chrome.tabs.update(tabId, { active: true });
     expect(await driver.screenshot()).toMatchObject({ base64: "RkFLRQ==", mimeType: "image/jpeg" });
-    expect(chrome.tabs.updateCalls).toContainEqual({ id: tabId, props: { active: true } });
-    expect((await chrome.tabs.get(tabId)).active).toBe(true);
     expect(chrome.tabs.captureCalls).toEqual([{ windowId, opts: { format: "jpeg", quality: 70 } }]);
   });
 
@@ -184,7 +205,7 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
 
 describe("page functions", () => {
   it("are self-contained so chrome.scripting can serialize them", () => {
-    for (const fn of [clickInPage, insertTextInPage, pressKeyInPage, scrollInPage, snapshotPage]) {
+    for (const fn of [clickInPage, insertTextInPage, pressKeyInPage, viewportInPage, scrollProbeInPage, snapshotPage]) {
       const src = fn.toString();
       expect(src).not.toMatch(/__name|__vite|_interop|import\(|\bexports\b|require\(/);
       expect(() => new Function(`return (${src})`)).not.toThrow();

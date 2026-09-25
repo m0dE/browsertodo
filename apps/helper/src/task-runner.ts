@@ -180,6 +180,7 @@ export class TaskRunner {
         pipePath: this.deps.pipePath,
         taskId: sessionId,
         toolNames,
+        jev: jev !== null,
       });
       writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
       const system = buildSystemPrompt({ tools: toolNames, jev: jev !== null });

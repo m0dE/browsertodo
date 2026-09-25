@@ -88,11 +88,12 @@ describe("AgentTab", () => {
     expect(chrome.tabs.byId.get(tabId)!.url).toBe("about:blank");
   });
 
-  it("scheduled runs open an active tab in the last focused window, then reuse it", async () => {
+  it("scheduled runs open a background tab in the last focused window, then reuse it", async () => {
     const { windowId, tabId: userTab } = await userWindow("https://example.com/");
     const first = await agent.prepare("own-tab");
     expect(first).not.toBe(userTab);
-    expect(chrome.tabs.createCalls).toEqual([{ windowId, active: true, url: "about:blank" }]);
+    expect(chrome.tabs.createCalls).toEqual([{ windowId, active: false, url: "about:blank" }]);
+    expect((await chrome.tabs.get(userTab)).active).toBe(true);
     expect(chrome.windows.createCalls).toHaveLength(1);
     // The user moves on; the next scheduled run reuses the same tab.
     await chrome.tabs.update(userTab, { active: true });
@@ -106,9 +107,9 @@ describe("AgentTab", () => {
     expect(chrome.storage.session.data.agentTabId).toBe(third);
   });
 
-  it("scheduled runs open a focused window when there is none", async () => {
+  it("scheduled runs open an unfocused window when there is none", async () => {
     await agent.prepare("own-tab");
-    expect(chrome.windows.createCalls).toEqual([{ url: "about:blank", focused: true, type: "normal" }]);
+    expect(chrome.windows.createCalls).toEqual([{ url: "about:blank", focused: false, type: "normal" }]);
   });
 
   it("joins an existing browsertodo group in the same window and creates only one", async () => {
@@ -271,6 +272,52 @@ describe("Driver", () => {
       { type: "mouseWheel", x: 500, y: 400, deltaX: 0, deltaY: 1280 },
       { type: "mouseWheel", x: 500, y: 400, deltaX: -800, deltaY: 0 },
     ]);
+  });
+
+  describe("scroll measures what moved", () => {
+    const pageEntry = (top: number, sh = 5400) => ({ page: true, index: null, top, left: 0, sh, sw: 1000, ch: 800, cw: 1000, oy: true, ox: true });
+    /** Probe answers: "measure" gives `before`, every "read" the next of `reads` (the last repeats). */
+    function probe(before: unknown, reads: unknown[]) {
+      let n = 0;
+      const base = chrome.debugger.respond;
+      chrome.debugger.respond = (method, params) => {
+        const expr = String((params as { expression?: string })?.expression ?? "");
+        if (expr.includes('("measure"')) return { result: { value: { ok: true, value: before } } };
+        if (expr.includes('("read"')) return { result: { value: { ok: true, value: reads[Math.min(n++, reads.length - 1)] } } };
+        return base!(method, params);
+      };
+    }
+
+    it("the page moved: reports pixels and the new position, after the smooth scroll settled", async () => {
+      evalResults.push(["innerWidth", { w: 1000, h: 800 }]);
+      probe({ entries: [pageEntry(640)], overFrame: false }, [
+        { entries: [pageEntry(900)], overFrame: false },
+        { entries: [pageEntry(1280)], overFrame: false },
+        { entries: [pageEntry(1280)], overFrame: false },
+      ]);
+      expect(await driver.scroll({ direction: "down" })).toEqual({ ok: true, moved: 640, target: "page", position: 1280, size: 5400, view: 800 });
+      expect(inputCommands()).toHaveLength(1);
+    });
+
+    it("at the bottom nothing moved", async () => {
+      evalResults.push(["innerWidth", { w: 1000, h: 800 }]);
+      const bottom = { entries: [pageEntry(4600)], overFrame: false };
+      probe(bottom, [bottom]);
+      expect(await driver.scroll({ direction: "down" })).toEqual({ ok: true, moved: 0, target: "page", position: 4600, size: 5400, view: 800, reason: "end" });
+    });
+
+    it("an inner container scrolled instead of the window", async () => {
+      evalResults.push(["innerWidth", { w: 1000, h: 800 }]);
+      const inner = (top: number) => ({ page: false, index: 7, top, left: 0, sh: 2000, sw: 300, ch: 500, cw: 300, oy: true, ox: false });
+      probe({ entries: [inner(0), pageEntry(0, 800)], overFrame: false }, [{ entries: [inner(640), pageEntry(0, 800)], overFrame: false }]);
+      expect(await driver.scroll({ direction: "down" })).toEqual({ ok: true, moved: 640, target: "container", containerIndex: 7, position: 640, size: 2000, view: 500 });
+    });
+
+    it("a page that cannot be measured still scrolls", async () => {
+      evalResults.push(["innerWidth", { w: 1000, h: 800 }]);
+      expect(await driver.scroll({ direction: "down" })).toEqual({ ok: true });
+      expect(inputCommands()).toHaveLength(1);
+    });
   });
 
   it("upload sets files on a file input and refuses other elements", async () => {

@@ -10,17 +10,19 @@ import {
   clipEventText,
   isXSite,
   siteHost,
+  picksText,
   type AgentEvent,
   type BrowserMethod,
   type BrowserMethods,
+  type ElementPicks,
   type TaskRunResult,
   type ToolArgsOf,
   type ToolName,
   type ToolResult,
 } from "@browsertodo/shared";
 import type { ToolExecutor, ToolExecutorOptions } from "./types.js";
-import { runAct } from "./act.js";
-import { formatSnapshot, formatTabs, formatTabSnapshots } from "./page-format.js";
+import { createActGate, runAct } from "./act.js";
+import { formatScroll, formatSnapshot, formatTabs, formatTabSnapshots } from "./page-format.js";
 import { switchXAccount } from "./x-account.js";
 import { defaultSleep, errorMessage } from "./util.js";
 
@@ -28,6 +30,15 @@ import { defaultSleep, errorMessage } from "./util.js";
 export const NO_TASK_TO_END = "no task to end in an attached session";
 
 const err = (text: string): ToolResult => ({ text, isError: true });
+
+/** Tools that do not change the page: the steps Jev left to the model stay open across them. */
+const KEEPS_PENDING = new Set<string>(["act", "read_page", "screenshot", "list_tabs"]);
+
+/** The status line at the end of a turn with Jev on: who picked act's elements. Null when nothing was picked. */
+export function picksEvent(picks: ElementPicks): AgentEvent | null {
+  if (picks.jev + picks.claude === 0) return null;
+  return { type: "status", text: picksText(picks), picks };
+}
 
 /** Case- and slash-insensitive path key, for comparing upload paths with mediaPaths. */
 function pathKey(p: string): string {
@@ -39,6 +50,9 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
   const allowedMedia = new Set(opts.mediaPaths.map(pathKey));
   let count = 0;
   let nextId = 1;
+  /** Jev on: read_page lists elements in words and act steps name indices only after Jev was unsure. */
+  const jevOn = opts.jev !== null;
+  const gate = createActGate();
 
   const emit = (e: AgentEvent) => {
     try {
@@ -70,7 +84,7 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
       }
       case "read_page": {
         const { tabs } = a as ToolArgsOf<"read_page">;
-        if (!tabs) return { text: formatSnapshot(await browser("browser.readPage", {})) };
+        if (!tabs) return { text: formatSnapshot(await browser("browser.readPage", {}), { words: jevOn }) };
         // Every tab is read at the same time; one failing tab does not hide the others.
         const ids = [...new Set(tabs)];
         const reads = await Promise.all(
@@ -81,7 +95,7 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
             ),
           ),
         );
-        const text = formatTabSnapshots(reads);
+        const text = formatTabSnapshots(reads, { words: jevOn });
         return reads.every((r) => "error" in r) ? err(text) : { text };
       }
       case "open_tabs": {
@@ -133,8 +147,8 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
         const params: BrowserMethods["browser.scroll"]["params"] = { direction };
         if (amount !== undefined) params.amount = amount;
         if (index !== undefined) params.index = index;
-        await browser("browser.scroll", params);
-        return { text: `Scrolled ${direction}${amount ? ` ${amount}x` : ""}${index !== undefined ? ` inside [${index}]` : ""}.` };
+        const r = await browser("browser.scroll", params);
+        return { text: formatScroll({ direction, amount, index }, r ?? {}) };
       }
       case "upload": {
         const { index, paths } = a as ToolArgsOf<"upload">;
@@ -153,15 +167,19 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
         const r = await browser("vault.getCredential", { site: host });
         if (!r.found) {
           return r.locked
-            ? err("The vault is locked. Call task_pause with the reason 'unlock the vault'.")
-            : err(`No credential is stored for ${host}. Call task_pause if a login is required.`);
+            ? err(
+                `The user's saved site logins are locked. If ${host} is asking you to sign in, call task_pause with the reason "Sign in to ${host} in this tab (or unlock saved logins in Settings > Site logins), then press Continue."`,
+              )
+            : err(
+                `No login is saved for ${host}. First check whether the user is already signed in there. Only if it shows a sign-in page, call task_pause with the reason "Please sign in to ${host} in this tab, then press Continue." Never mention a vault.`,
+              );
         }
         return { text: `username: ${r.username}\npassword: ${r.password}` };
       }
       case "switch_x_account":
         return switchXAccount(opts.browser, (a as ToolArgsOf<"switch_x_account">).handle, { sleep });
       case "act":
-        return runAct((a as ToolArgsOf<"act">).steps, { browser, jev: opts.jev, jevThreshold: opts.jevThreshold, sleep, emit });
+        return runAct((a as ToolArgsOf<"act">).steps, { browser, jev: opts.jev, jevThreshold: opts.jevThreshold, sleep, emit, gate });
       case "task_complete": {
         const { summary, url } = a as ToolArgsOf<"task_complete">;
         const r: TaskRunResult = { outcome: "done", summary };
@@ -179,9 +197,16 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
     get callCount() {
       return count;
     },
+    takePicks() {
+      const p = { ...gate.picks };
+      gate.picks = { jev: 0, claude: 0 };
+      return p;
+    },
     async call(name: ToolName, args: unknown): Promise<ToolResult> {
       count++;
       const id = `t${nextId++}`;
+      // Candidates Jev left to the model stay valid only while the page is left alone.
+      if (!KEEPS_PENDING.has(name)) gate.pending.clear();
       emit({ type: "tool_call", id, name, args: args ?? {} });
       let result: ToolResult;
       try {

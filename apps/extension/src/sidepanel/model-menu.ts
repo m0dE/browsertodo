@@ -1,6 +1,7 @@
 /**
  * The model chip in the composer ("Sonnet 5 · Jev") and its popover menu:
- * pick the model, switch Jev, or open the settings. Choices are saved with
+ * pick the model, switch Jev, or open the settings. With the hosted
+ * browsertodo AI it offers the hosted models and shows the credit left. Choices are saved with
  * settings.save; the chip then follows the state the background returns.
  */
 import type { ExtensionSettings } from "@browsertodo/shared";
@@ -36,6 +37,8 @@ function check(): SVGSVGElement {
 export function initModelPicker(opts: {
   onState(state: UiState): void;
   onError(text: string): void;
+  /** Opens the account's top-up page. */
+  onTopup?(): void;
 }): ModelPicker {
   const chip = $<HTMLButtonElement>("now-model");
   const label = $("now-model-label");
@@ -48,8 +51,13 @@ export function initModelPicker(opts: {
   const renderChip = () => {
     if (!info) return;
     label.textContent = info.label;
-    const what = `${info.model}${info.jevActive ? " with Jev" : ""}`;
-    chip.title = running ? `This task runs on ${what}. Changes apply to the next task.` : `Model for new tasks: ${what}`;
+    const what = `${info.hosted ? "browsertodo AI · " : ""}${info.model}${info.jevActive ? " with Jev" : ""}`;
+    chip.title = info.outOfCredit
+      ? "Out of AI credit: top up or subscribe to keep using browsertodo AI"
+      : running
+        ? `This task runs on ${what}. Changes apply to the next task.`
+        : `Model for new tasks: ${what}${info.credit ? ` (${info.credit})` : ""}`;
+    chip.dataset.tone = info.outOfCredit ? "warn" : "";
     chip.setAttribute("aria-label", `Model: ${info.label}`);
   };
 
@@ -65,8 +73,10 @@ export function initModelPicker(opts: {
   const renderMenu = () => {
     if (!info) return;
     const current = info.model;
-    const models = KNOWN_MODELS.some((m) => m.id === current) || !current ? KNOWN_MODELS : [...KNOWN_MODELS, { id: current, label: modelLabel(current) }];
-    const rows: Node[] = [h("div.mm-head", { role: "presentation" }, "Model")];
+    // The hosted AI runs only the models it prices; your own key or Claude Code can run any id.
+    const models =
+      info.hosted || KNOWN_MODELS.some((m) => m.id === current) || !current ? KNOWN_MODELS : [...KNOWN_MODELS, { id: current, label: modelLabel(current) }];
+    const rows: Node[] = [h("div.mm-head", { role: "presentation" }, info.hosted ? "browsertodo AI model" : "Model")];
     for (const m of models) {
       const on = m.id === current;
       rows.push(
@@ -75,6 +85,31 @@ export function initModelPicker(opts: {
           { type: "button", role: "menuitemradio", "aria-checked": String(on), tabindex: "-1", title: m.id, onclick: () => void (on ? close(true) : save({ anthropicModel: m.id })) },
           h("span.mm-label", null, m.label),
           on ? check() : null,
+        ),
+      );
+    }
+    if (info.hosted && (info.credit || info.outOfCredit)) {
+      rows.push(h("div.mm-sep", { role: "separator" }));
+      rows.push(
+        h(
+          "div.mm-credit",
+          { role: "presentation", "data-tone": info.outOfCredit ? "warn" : "" },
+          info.outOfCredit ? "Out of AI credit" : (info.credit ?? ""),
+        ),
+      );
+      rows.push(
+        h(
+          "button.mm-item",
+          {
+            type: "button",
+            role: "menuitem",
+            tabindex: "-1",
+            onclick: () => {
+              close(false);
+              opts.onTopup?.();
+            },
+          },
+          h("span.mm-label", null, "Top up…"),
         ),
       );
     }
@@ -95,7 +130,7 @@ export function initModelPicker(opts: {
           "span.mm-text",
           null,
           h("span.mm-label", null, "Jev"),
-          h("span.mm-hint", null, info.jevPossible ? "Faster clicks and typing" : "Add a Jev key in settings"),
+          h("span.mm-hint", null, info.hosted ? "Faster clicks and typing, included" : info.jevPossible ? "Faster clicks and typing" : "Add a Jev key in settings"),
         ),
         h("span.mm-switch", { "aria-hidden": "true", "data-on": String(jevOn) }),
       ),

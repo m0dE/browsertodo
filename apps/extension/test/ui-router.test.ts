@@ -7,8 +7,10 @@ import { LocalStore } from "../src/engine/local-store.js";
 import type { AdhocInput } from "../src/engine/run/jobs.js";
 import type { RunnerState } from "../src/engine/run/state.js";
 import { SessionStore } from "../src/engine/sessions.js";
+import { LocalTodo } from "../src/account/todo-source.js";
 import { UiHub } from "../src/engine/ui-hub.js";
 import { UiRouter, type RouterRunner, type UiRouterDeps } from "../src/engine/ui-router.js";
+import { TabChats } from "../src/tab-chats.js";
 import { applySettingsPatch } from "../src/settings-store.js";
 import { UI_PORT_NAME, type UiPush, type UiRequest, type UiResponse } from "../src/ui-protocol.js";
 
@@ -190,9 +192,9 @@ describe("UiRouter", () => {
   it("run.message goes to the runner with the conversation (none: a new one); run.newChat too", async () => {
     const t = setup();
     expect(await t.req({ type: "run.message", sessionId: "S1", text: "now like it" })).toEqual({ sessionId: "S1", mode: "turn" });
-    expect(t.runner.message).toHaveBeenLastCalledWith("S1", "now like it");
+    expect(t.runner.message).toHaveBeenLastCalledWith("S1", "now like it", {});
     expect(await t.req({ type: "run.message", text: "post gm" })).toEqual({ sessionId: "new-1", mode: "new" });
-    expect(t.runner.message).toHaveBeenLastCalledWith(undefined, "post gm");
+    expect(t.runner.message).toHaveBeenLastCalledWith(undefined, "post gm", {});
     expect(await t.req({ type: "run.message", sessionId: "", text: "x" })).toMatchObject({ mode: "new" });
     t.runner.message.mockRejectedValueOnce(new Error("The message is empty"));
     expect(await t.router.handle({ type: "run.message", sessionId: "S1", text: " " })).toEqual({ ok: false, error: "The message is empty" });
@@ -258,5 +260,152 @@ describe("UiHub", () => {
     expect(p.posted.map((m) => m.type)).toEqual(["state", "tasks.changed", "event", "state"]);
     p.close();
     expect(hub.size).toBe(0);
+  });
+});
+
+describe("UiRouter: account", () => {
+  function withAccount(signedIn: boolean) {
+    const t = setup();
+    const view = { signedIn, signInConfigured: true, apiBase: "https://api.test", dashboardUrl: "https://api.test/" };
+    const account = {
+      view: vi.fn(async () => view),
+      signIn: vi.fn(async () => void (view.signedIn = true)),
+      signOut: vi.fn(async () => void (view.signedIn = false)),
+      refresh: vi.fn(async (_force?: boolean) => {}),
+      migrateLocalTasks: vi.fn(async () => ({ moved: 2, failed: 0, errors: [] })),
+      dismissMigration: vi.fn(async () => {}),
+      billingLink: vi.fn(async (_r: unknown) => "https://checkout.stripe.test/x"),
+      listKeys: vi.fn(async () => []),
+      createKey: vi.fn(async (name: string, role: string) => ({ id: "k1", name, role, key: "bt_new" })),
+      revokeKey: vi.fn(async (_id: string) => {}),
+    };
+    const accountTodo = {
+      kind: "account" as const,
+      list: vi.fn(async () => []),
+      add: vi.fn(async (i: any) => ({ id: "A1", ...i })),
+      update: vi.fn(),
+      delete: vi.fn(async () => true),
+      retry: vi.fn(),
+      cancel: vi.fn(async (id: string) => ({ id, status: "cancelled" })),
+    };
+    t.deps.account = account;
+    t.deps.todo = async () => (view.signedIn ? (accountTodo as never) : (new LocalTodo(t.localStore) as never));
+    return { ...t, account, accountTodo, view };
+  }
+
+  it("state carries the account; sign-in and sign-out return the new state", async () => {
+    const t = withAccount(false);
+    expect((await t.req({ type: "state.get" })).account).toMatchObject({ signedIn: false, signInConfigured: true });
+    expect((await t.req({ type: "account.signIn" })).account.signedIn).toBe(true);
+    expect((await t.req({ type: "account.signOut" })).account.signedIn).toBe(false);
+    await t.req({ type: "account.refresh", force: true });
+    expect(t.account.refresh).toHaveBeenCalledWith(true);
+  });
+
+  it("the TODO list comes from the account when signed in, from this browser otherwise", async () => {
+    const t = withAccount(true);
+    expect(await t.req({ type: "tasks.list" })).toEqual({ tasks: [], source: "account" });
+    await t.req({ type: "tasks.add", instructions: "x", repeat: { dailyAt: ["09:00"] } });
+    expect(t.accountTodo.add).toHaveBeenCalledWith({ instructions: "x", account: null, notBefore: null, repeat: { dailyAt: ["09:00"] }, media: [] });
+    expect(await t.req({ type: "tasks.cancel", id: "A1" })).toEqual({ task: { id: "A1", status: "cancelled" } });
+    t.view.signedIn = false;
+    await t.localStore.add({ instructions: "local one" });
+    const local = await t.req({ type: "tasks.list" });
+    expect(local.source).toBe("local");
+    expect(local.tasks).toHaveLength(1);
+    expect(await t.router.handle({ type: "tasks.cancel", id: local.tasks[0].id })).toMatchObject({ ok: false, error: expect.stringMatching(/delete it instead/) });
+  });
+
+  it("migrate, billing links and keys", async () => {
+    const t = withAccount(true);
+    const m = await t.req({ type: "account.migrate" });
+    expect(m).toMatchObject({ moved: 2, failed: 0, state: { account: { signedIn: true } } });
+    expect(await t.req({ type: "account.billing", action: "topup", amountCents: 1000, returnUrl: "chrome-extension://x/options.html" })).toEqual({ url: "https://checkout.stripe.test/x" });
+    expect(t.account.billingLink).toHaveBeenCalledWith({ action: "topup", amountCents: 1000, returnUrl: "chrome-extension://x/options.html" });
+    expect(await t.router.handle({ type: "account.billing", action: "steal", returnUrl: "" } as never)).toMatchObject({ ok: false });
+    expect(await t.req({ type: "account.keys.create", name: " cli ", role: "creator" })).toEqual({ id: "k1", name: "cli", role: "creator", key: "bt_new" });
+    expect(await t.router.handle({ type: "account.keys.create", name: "", role: "creator" })).toEqual({ ok: false, error: "Give the key a name" });
+    expect(await t.req({ type: "account.keys.revoke", id: "k1" })).toEqual({ ok: true });
+  });
+
+  it("without accounts wired in, account requests fail plainly", async () => {
+    const t = setup();
+    expect(await t.router.handle({ type: "account.signIn" })).toEqual({ ok: false, error: "Accounts are not available" });
+    expect((await t.req({ type: "tasks.list" })).source).toBe("local");
+  });
+});
+
+describe("UiRouter: a chat per browser tab", () => {
+  async function withTabs() {
+    const t = setup();
+    const tabChats = new TabChats({ exists: async () => true });
+    const focused: number[] = [];
+    t.deps.tabChats = tabChats;
+    t.deps.runningTabs = async () => ({ "S-run": [42, 43] });
+    t.deps.focusTab = async (tabId) => {
+      focused.push(tabId);
+      return true;
+    };
+    const router = new UiRouter(t.deps);
+    const req = async <T = any>(r: { type: string; [k: string]: unknown }): Promise<T> => {
+      const res = (await router.handle(r as UiRequest)) as UiResponse<T>;
+      if (!res.ok) throw new Error(res.error);
+      return res.data;
+    };
+    await t.sessions.create({ sessionId: "S1", source: "adhoc", title: "x", brain: "claude-api", jev: false, startedAt: "2026-09-24T10:00:00Z" });
+    return { ...t, tabChats, req, focused };
+  }
+
+  it("state carries the tab bindings and the tabs of running sessions", async () => {
+    const t = await withTabs();
+    await t.tabChats.bind(7, "S1");
+    const st = await t.req({ type: "state.get" });
+    expect(st.tabChats).toEqual({ "7": "S1" });
+    expect(st.runningTabs).toEqual({ "S-run": [42, 43] });
+  });
+
+  it("run.adhoc and a new run.message start in the tab they came from", async () => {
+    const t = await withTabs();
+    await t.req({ type: "run.adhoc", instructions: "do it", tabId: 7 });
+    expect(t.runner.runAdhoc.mock.calls.at(-1)![0]).toMatchObject({ instructions: "do it", tabId: 7 });
+    await t.req({ type: "run.message", text: "post gm", tabId: 9 });
+    expect(t.runner.message).toHaveBeenLastCalledWith(undefined, "post gm", { tabId: 9 });
+    // Bogus tab ids are ignored.
+    await t.req({ type: "run.adhoc", instructions: "x", tabId: "7" });
+    expect(t.runner.runAdhoc.mock.calls.at(-1)![0].tabId).toBeUndefined();
+  });
+
+  it("a message to a conversation binds it to the tab it was sent from", async () => {
+    const t = await withTabs();
+    await t.req({ type: "run.message", sessionId: "S1", text: "go on", tabId: 5 });
+    expect(await t.tabChats.get(5)).toBe("S1");
+    await t.req({ type: "run.continue", sessionId: "S1", tabId: 6 });
+    expect(await t.tabChats.all()).toEqual({ "6": "S1" });
+  });
+
+  it("New Chat unbinds only that tab", async () => {
+    const t = await withTabs();
+    await t.tabChats.bind(5, "S1");
+    await t.tabChats.bind(6, "S2");
+    await t.req({ type: "run.newChat", sessionId: "S1", tabId: 5 });
+    expect(await t.tabChats.all()).toEqual({ "6": "S2" });
+    expect(t.runner.newChat).toHaveBeenLastCalledWith("S1");
+    // Another tab's New Chat for a conversation that is not its own changes nothing.
+    await t.req({ type: "run.newChat", sessionId: "S1", tabId: 6 });
+    expect(await t.tabChats.all()).toEqual({ "6": "S2" });
+  });
+
+  it("chat.bind (Open in Chat) binds a known session to the tab and returns the state", async () => {
+    const t = await withTabs();
+    await t.tabChats.bind(3, "S1");
+    const st = await t.req({ type: "chat.bind", sessionId: "S1", tabId: 8 });
+    expect(st.tabChats).toEqual({ "8": "S1" });
+    expect(await t.router.handle({ type: "chat.bind", sessionId: "nope", tabId: 8 })).toEqual({ ok: false, error: "No session nope" });
+  });
+
+  it("tab.focus switches to a tab", async () => {
+    const t = await withTabs();
+    expect(await t.req({ type: "tab.focus", tabId: 43 })).toEqual({ ok: true });
+    expect(t.focused).toEqual([43]);
   });
 });

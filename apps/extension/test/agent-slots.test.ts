@@ -34,8 +34,8 @@ describe("AgentSlots", () => {
     expect(a).not.toBe(b);
     expect(groupTitle(a!)).toBe(TAB_GROUP_TITLE);
     expect(groupTitle(b!)).toBe(TAB_GROUP_TITLE);
-    // Extra slots open their tab in the background.
-    expect(chrome.tabs.createCalls.map((c) => c.active)).toEqual([true, false]);
+    // Every slot opens its tab in the background: the user keeps the tab they are using.
+    expect(chrome.tabs.createCalls.map((c) => c.active)).toEqual([false, false]);
     // Slot 0 keeps the storage keys from before slots; slot 1 has its own.
     const stored = await chrome.storage.session.get(["agentTabId", "agentTabId.1"]);
     expect(stored).toEqual({ agentTabId: a, "agentTabId.1": b });
@@ -84,5 +84,37 @@ describe("AgentSlots", () => {
     await slots.take(0, "A2").prepare({ mode: "own-tab" });
     const b = (await slots.get(1).tab.tabId())!;
     expect(chrome.debugger.attached.has(b)).toBe(true);
+  });
+
+  it("a run never takes over the user's screen: turn start, next turns, switch_tab, screenshot; Show Tab does", async () => {
+    const windowId = chrome.tabs.byId.get(userTab)!.windowId;
+    const runTab = (await chrome.tabs.create({ windowId, url: "https://run.test/", active: false })).id;
+    const takeovers = () => [
+      ...chrome.tabs.updateCalls.filter((c) => c.props.active),
+      ...chrome.windows.updateCalls.filter((c) => c.props.focused),
+    ];
+    chrome.tabs.updateCalls.length = 0;
+    chrome.windows.updateCalls.length = 0;
+    const slot = slots.take(0, "S");
+    const prev = chrome.debugger.respond;
+    chrome.debugger.respond = (method, params) => (method === "Page.captureScreenshot" ? { data: "Q0RQ" } : prev(method, params));
+    // Turn start of a one-off in its (background) tab, then the next turns.
+    await slot.prepare({ mode: "current-tab", tabId: runTab });
+    await slot.browser.call("browser.openTabs", { urls: ["https://run.test/2"] });
+    await slot.browser.call("browser.switchTab", { tab: "t2" });
+    await slot.browser.call("browser.switchTab", { tab: "t1" });
+    expect(await slot.screenshot()).toEqual({ base64: "Q0RQ", mimeType: "image/jpeg" });
+    await slot.prepare({ mode: "current-tab", tabId: runTab });
+    // A conversation without a tab continues in the agent's own tab.
+    await slot.prepare({ mode: "own-tab" });
+    await slot.screenshot();
+    expect(takeovers()).toEqual([]);
+    expect((await chrome.tabs.get(userTab)).active).toBe(true);
+    // The user's Show Tab: the run's tab comes to the front.
+    const shown = (await slots.get(0).tab.tabId())!;
+    expect(await slots.show("S")).toBe(true);
+    expect(chrome.windows.updateCalls).toEqual([{ id: windowId, props: { focused: true } }]);
+    expect(chrome.tabs.updateCalls.filter((c) => c.props.active)).toEqual([{ id: shown, props: { active: true } }]);
+    expect((await chrome.tabs.get(shown)).active).toBe(true);
   });
 });

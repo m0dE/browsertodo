@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { describeEvent, isNearBottom, shortUrl, toolArgsSummary } from "../../src/sidepanel/event-format.js";
+import type { AgentEvent } from "@browsertodo/shared";
+import { describeEvent, isNearBottom, shortUrl, toolArgsSummary, turnPicks } from "../../src/sidepanel/event-format.js";
 
 describe("toolArgsSummary", () => {
   it("summarizes the known tools", () => {
@@ -39,7 +40,7 @@ describe("describeEvent", () => {
   });
   it("jev decisions become badges with ms", () => {
     const v = describeEvent({ type: "jev", goal: "click Post", operation: "click", index: 7, confidence: 0.934, executed: true, ms: 182 });
-    expect(v).toEqual({ kind: "jev", label: "Jev: click #7 · 0.93", ms: 182, executed: true, title: "click Post" });
+    expect(v).toEqual({ kind: "jev", label: "Jev: click #7 · 0.93", ms: 182, executed: true, title: "Jev (a faster helper for simple clicks and typing): click Post" });
     const n = describeEvent({ type: "jev", goal: "g", operation: "type", index: null, confidence: 0.4, executed: false, ms: 90 });
     expect(n).toMatchObject({ label: "Jev unsure (0.40) · Claude decides", executed: false });
     if (n.kind === "jev") expect(n.title).toContain("left to Claude");
@@ -52,6 +53,27 @@ describe("describeEvent", () => {
       url: "https://x.com/a/status/1",
     });
     expect(describeEvent({ type: "task_end", outcome: "failed", reason: "no" })).toMatchObject({ text: "no", chip: { tone: "bad" } });
+  });
+  it("the end card shows who picked the turn's elements; the picks status line itself is folded into it", () => {
+    const events: AgentEvent[] = [
+      { type: "status", text: "Jev chose 1 of 1 element pick (clicks and typing)", picks: { jev: 1, claude: 0 } },
+      { type: "task_end", outcome: "done", summary: "first" },
+      { type: "user_message", text: "again" },
+      { type: "status", text: "Jev chose 9 of 11 element picks (clicks and typing); Claude chose 2", picks: { jev: 9, claude: 2 } },
+      { type: "status", text: "Post verified" },
+      { type: "task_end", outcome: "done", summary: "second" },
+      { type: "user_message", text: "no Jev this time" },
+      { type: "task_end", outcome: "done", summary: "third" },
+    ];
+    expect(turnPicks(events, 1)).toEqual({ jev: 1, claude: 0 });
+    expect(turnPicks(events, 5)).toEqual({ jev: 9, claude: 2 });
+    expect(turnPicks(events, 7)).toBeUndefined();
+    expect(describeEvent(events[5]!, turnPicks(events, 5))).toMatchObject({
+      kind: "end",
+      picks: "Jev chose 9 of 11 element picks (clicks and typing); Claude chose 2",
+    });
+    expect(describeEvent(events[7]!, undefined)).not.toHaveProperty("picks");
+    expect(describeEvent(events[3]!)).toEqual({ kind: "status", text: events[3]!.type === "status" ? events[3]!.text : "", picks: true });
   });
   it("other kinds", () => {
     expect(describeEvent({ type: "assistant_text", text: "  hi \n" })).toEqual({ kind: "text", text: "hi" });

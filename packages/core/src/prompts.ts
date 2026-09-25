@@ -1,5 +1,5 @@
 /** System prompt and per-task prompt for both brains. */
-import { TOOL_DESCRIPTIONS, type AgentTask, type ToolName } from "@browsertodo/shared";
+import { toolDescription, type AgentTask, type ToolName } from "@browsertodo/shared";
 
 const POST_URL_RULE =
   'A post URL contains /status/ (https://x.com/<handle>/status/<id>); never report the home page or a profile page as the post URL. After posting, X usually stays on the current page and shows a "Your post was sent" message with a View link: call read_page and use that link\'s href. If there is no such link, open https://x.com/<handle without @> and use the /status/ link of your newest post whose text matches what you posted.';
@@ -7,7 +7,7 @@ const POST_URL_RULE =
 /** System prompt for either brain. */
 export function buildSystemPrompt(opts: { tools: ToolName[]; jev: boolean }): string {
   const { tools, jev } = opts;
-  const list = tools.map((n) => `- ${n}: ${TOOL_DESCRIPTIONS[n]}`).join("\n");
+  const list = tools.map((n) => `- ${n}: ${toolDescription(n, jev)}`).join("\n");
 
   const intro = `You are browsertodo, an agent that carries out one task for the user in their real, logged-in Chrome browser. You can use any website the user can: Gmail, LinkedIn, X, calendars, shops, bank and admin portals, forms, anything. The browser is already signed in to the user's accounts. The tools below control browser tabs; switch_x_account is an extra only for tasks on X.`;
 
@@ -21,13 +21,20 @@ export function buildSystemPrompt(opts: { tools: ToolName[]; jev: boolean }): st
     "If the message is only a greeting or a question you can answer without the browser, answer it briefly in task_complete's summary. Do not call task_fail for that.",
   ];
   if (tools.includes("act")) {
-    rules.push(
-      jev
-        ? "Work fast: every model turn is slow, so do as much as possible per act call. Plan the whole task, then send its steps together in one act call (up to 8), e.g. [{goal: 'open the post composer'}, {goal: 'type the post text into the composer', text: '...'}, {goal: 'click the Post button'}]. A step can describe the element in words (a fast model finds it) or name its index from read_page ({goal, index, text?}) to run directly. Give `text` for every step that types. Each act result lists what happened per step and the page afterwards, so you rarely need an extra read_page."
-        : "Work fast: every model turn is slow, so do as much as possible per act call. Read the page, plan, then send the steps together in one act call (up to 8), each naming the element index from read_page, e.g. [{goal: 'open composer', index: 4}, {goal: 'type the post', index: 9, text: '...'}, {goal: 'click Post', index: 12}]. Give `text` for every step that types. Each act result lists what happened per step and the page afterwards, so you rarely need an extra read_page.",
-      "act replaces click and type. If act stops at step N, send the remaining steps again, giving step N the element index from the list it returned.",
-      "Verify once at the end (for a post: its URL, see below), not after every step.",
-    );
+    if (jev) {
+      rules.push(
+        "Work fast: every model turn is slow, so do as much as possible per act call. Plan the whole task, then send its steps together in one act call (up to 8), e.g. [{goal: 'click the Post link in the side menu'}, {goal: 'type into the Post text box', text: '...'}, {goal: 'click the Post button in the composer'}]. Give `text` for every step that types: a fast picker (Jev) only chooses where, the text is yours. Each act result lists what happened per step and the page afterwards, so you rarely need an extra read_page.",
+        "Jev picks the element of every act step from your words, so describe each one precisely: its visible label and role as read_page lists them, and its position when several look alike ('the Reply button under the first post', 'the second Like button', 'the Save button in the dialog'). read_page has no element index numbers; do not guess or ask for indices.",
+        "act replaces click and type. If act stops at step N as not confident, it lists numbered candidates for that step only: send step N again with the same goal and the index of the right candidate, followed by the remaining steps in words. That is the only time a step may name an index.",
+        "Verify once at the end (for a post: its URL, see below), not after every step.",
+      );
+    } else {
+      rules.push(
+        "Work fast: every model turn is slow, so do as much as possible per act call. Read the page, plan, then send the steps together in one act call (up to 8), each naming the element index from read_page, e.g. [{goal: 'open composer', index: 4}, {goal: 'type the post', index: 9, text: '...'}, {goal: 'click Post', index: 12}]. Give `text` for every step that types. Each act result lists what happened per step and the page afterwards, so you rarely need an extra read_page.",
+        "act replaces click and type. If act stops at step N, send the remaining steps again, giving step N the element index from the list it returned.",
+        "Verify once at the end (for a post: its URL, see below), not after every step.",
+      );
+    }
   }
   if (tools.includes("open_tabs")) {
     rules.push(
@@ -35,8 +42,12 @@ export function buildSystemPrompt(opts: { tools: ToolName[]; jev: boolean }): st
     );
   }
   rules.push(
-    "Use read_page to find element indices. Verify important steps (account switched, text entered, media attached, post published) with read_page or screenshot.",
-    "Attach media with upload, using the exact absolute file paths listed in the task, on an input of type=file from read_page.",
+    jev
+      ? "Use read_page to see the page and its elements. Verify important steps (account switched, text entered, media attached, post published) with read_page or screenshot."
+      : "Use read_page to find element indices. Verify important steps (account switched, text entered, media attached, post published) with read_page or screenshot.",
+    jev
+      ? "Attach media with upload, using the exact absolute file paths listed in the task and the upload index read_page shows for the file input."
+      : "Attach media with upload, using the exact absolute file paths listed in the task, on an input of type=file from read_page.",
     "Do only what the task asks. Do not like, follow, reply or post anything else.",
     `Finish by calling exactly one of task_complete, task_fail or task_pause, then stop. When you create a post, include its URL in task_complete. ${POST_URL_RULE}`,
   );

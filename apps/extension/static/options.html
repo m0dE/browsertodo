@@ -14,12 +14,85 @@
         <p id="now-using" class="muted">Loading…</p>
       </header>
 
+      <section class="card account" id="account-card" aria-labelledby="h-account">
+        <div class="section-title">
+          <h2 id="h-account">Account</h2>
+          <button id="acct-signout" type="button" class="small ghost" hidden>Sign out</button>
+        </div>
+        <div id="acct-out" class="acct-block">
+          <p class="hint">Sign in with Google to keep your TODO list in your account and run it on schedule. Paid plans include browsertodo AI, so you need no Claude or Jev setup.</p>
+          <div class="row">
+            <button id="acct-signin" type="button" class="primary">Log In with Google</button>
+            <span id="acct-signin-msg" class="msg"></span>
+          </div>
+        </div>
+        <div id="acct-in" class="acct-block" hidden>
+          <div class="acct-user">
+            <img id="acct-pic" alt="" referrerpolicy="no-referrer" hidden />
+            <span id="acct-letter" class="acct-letter" aria-hidden="true"></span>
+            <div class="acct-names">
+              <b id="acct-name"></b>
+              <span id="acct-mail" class="muted"></span>
+            </div>
+          </div>
+          <div class="acct-facts">
+            <div class="fact"><span>Plan</span><b id="acct-plan"></b><small id="acct-plan-status"></small></div>
+            <div class="fact"><span>AI credit</span><b id="acct-credit"></b><small id="acct-credit-detail"></small></div>
+          </div>
+          <p id="acct-note" class="note" hidden></p>
+          <div id="acct-billing" class="acct-billing">
+            <div id="acct-plans" class="plan-grid" hidden></div>
+            <div id="acct-manage" class="row" hidden>
+              <button id="acct-change" type="button" class="small">Change plan</button>
+              <button id="acct-portal" type="button" class="small">Manage billing</button>
+            </div>
+            <div class="row"><span id="acct-topup" class="topups"></span></div>
+          </div>
+          <div class="row">
+            <a id="acct-dashboard" href="#" target="_blank" rel="noopener">Usage &amp; billing dashboard</a>
+            <span class="spacer"></span>
+            <button id="acct-reload" type="button" class="small ghost" title="Load plan and credit again">Refresh</button>
+          </div>
+          <p id="acct-msg" class="msg" role="status"></p>
+        </div>
+      </section>
+
+      <section class="card" id="keys-card" aria-labelledby="h-keys" hidden>
+        <h2 id="h-keys">API keys</h2>
+        <p class="hint">For your own scripts (creator: adds tasks) or another browser (runner: works through them). Fair use: 60 requests a minute per key.</p>
+        <div id="keys-locked" class="row" hidden>
+          <span class="muted">API keys come with a paid plan.</span>
+          <button id="keys-subscribe" type="button" class="small primary">Subscribe</button>
+        </div>
+        <div id="keys-body" class="keys-body">
+          <ul id="keys-list" class="keys-list"></ul>
+          <div class="key-new-form">
+            <input id="key-name" type="text" placeholder="Key name, e.g. laptop scheduler" aria-label="Key name" autocomplete="off" spellcheck="false" />
+            <select id="key-role" aria-label="Key role">
+              <option value="creator">creator</option>
+              <option value="runner">runner</option>
+            </select>
+            <button id="key-create" type="button" class="small">Create key</button>
+          </div>
+          <div id="key-new" class="key-new" hidden>
+            <p class="hint">Copy this key now. It is not shown again.</p>
+            <div class="secret-row">
+              <code id="key-value" class="key-value"></code>
+              <button id="key-copy" type="button" class="small">Copy</button>
+            </div>
+          </div>
+        </div>
+        <p id="keys-msg" class="msg"></p>
+      </section>
+
       <section class="card" aria-labelledby="h-brain">
         <h2 id="h-brain">Brain</h2>
         <p class="hint">Which Claude runs your tasks.</p>
         <div class="choices" role="radiogroup" aria-labelledby="h-brain">
           <label class="choice"><input type="radio" name="brain" value="auto" />
-            <span><b>Auto</b><small>Local Claude Code when the helper works, otherwise the API key.</small></span></label>
+            <span><b>Auto</b><small>browsertodo AI when you are signed in with AI credit, else local Claude Code when the helper works, else your API key.</small></span></label>
+          <label class="choice"><input type="radio" name="brain" value="browsertodo" />
+            <span><b>browsertodo AI</b><small>Claude hosted by browsertodo, paid from your account's AI credit. Nothing to set up.</small></span></label>
           <label class="choice"><input type="radio" name="brain" value="claude-code" />
             <span><b>Local Claude Code</b><small>Uses your Claude subscription through the helper.</small></span></label>
           <label class="choice"><input type="radio" name="brain" value="claude-api" />
@@ -75,12 +148,18 @@
         </div>
       </section>
 
-      <section class="card" aria-labelledby="h-cloud">
+      <details class="card advanced" id="cloud-card">
+        <summary><h2 id="h-cloud">Self-hosting</h2></summary>
+        <div class="adv-body">
+        <label class="field"><span>Account server URL</span>
+          <input id="f-accountApiBase" type="url" spellcheck="false" placeholder="https://browsertodo-api.example.com" aria-describedby="acct-base-hint" />
+          <small id="acct-base-hint" class="field-hint">Sign-in, your account's TODO list, billing and browsertodo AI. Changing it signs you out of the current server.</small>
+        </label>
         <div class="section-title">
-          <h2 id="h-cloud">Cloud sync</h2>
+          <b>Cloud sync with a runner key</b>
           <label class="switch" title="Take tasks from a server"><input id="f-cloudEnabled" type="checkbox" aria-label="Enable cloud sync" /></label>
         </div>
-        <p class="hint">Also take tasks from a browsertodo task server. Local tasks work without it.</p>
+        <p class="hint">For your own task server without accounts. When you are signed in, your account's tasks are used instead.</p>
         <div id="cloud-fields">
           <div class="fields">
             <label class="field"><span>Server URL</span>
@@ -93,7 +172,8 @@
             <span id="test-cloud-msg" class="msg"></span>
           </div>
         </div>
-      </section>
+        </div>
+      </details>
 
       <details class="card advanced" id="vault-card">
         <summary><h2>Site logins</h2></summary>

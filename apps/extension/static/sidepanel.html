@@ -14,28 +14,74 @@
         <span id="status-text" class="status-text">Connecting…</span>
         <span id="status-meta" class="status-meta"></span>
         <button id="status-action" type="button" class="link" hidden></button>
+        <details id="acct" class="menu acct" hidden>
+          <summary id="acct-btn" aria-label="Account"><img id="acct-avatar" alt="" referrerpolicy="no-referrer" hidden /><span id="acct-initial" aria-hidden="true"></span></summary>
+          <div class="menu-pop acct-pop">
+            <div class="acct-who">
+              <div id="acct-email" class="acct-email"></div>
+              <div id="acct-plan" class="acct-plan"></div>
+            </div>
+            <button type="button" id="acct-settings">Account &amp; billing</button>
+            <button type="button" id="acct-signout" class="bad">Sign out</button>
+          </div>
+        </details>
         <button id="open-settings" type="button" class="icon" title="Settings" aria-label="Settings">
           <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 4.5h7M13 4.5h1M2 11.5h1M7 11.5h7"/><circle cx="11" cy="4.5" r="1.9"/><circle cx="5" cy="11.5" r="1.9"/></svg>
         </button>
       </div>
       <nav class="tabs" role="tablist">
-        <button type="button" role="tab" id="tab-btn-tasks" data-tab="tasks" aria-selected="true">Tasks</button>
-        <button type="button" role="tab" id="tab-btn-activity" data-tab="activity" aria-selected="false">Activity <span id="live-dot" class="live-dot" hidden></span></button>
+        <button type="button" role="tab" id="tab-btn-chat" data-tab="chat" aria-controls="tab-chat" aria-selected="true">Chat <span id="live-dot" class="live-dot" title="The agent is working" hidden></span></button>
+        <button type="button" role="tab" id="tab-btn-todo" data-tab="todo" aria-controls="tab-todo" aria-selected="false">TODO</button>
+        <button type="button" role="tab" id="tab-btn-history" data-tab="history" aria-controls="tab-history" aria-selected="false">Activity Log</button>
       </nav>
     </header>
 
     <main>
-      <!-- Tasks -->
-      <section id="tab-tasks" class="tab scroll" role="tabpanel">
+      <!-- Chat: the conversation with the agent, live -->
+      <section id="tab-chat" class="tab chat" role="tabpanel" aria-labelledby="tab-btn-chat">
+        <div class="chat-bar" role="toolbar" aria-label="Chat actions">
+          <button id="chat-new" type="button" class="bar-btn">New Chat</button>
+          <span class="bar-sep" aria-hidden="true"></span>
+          <button id="chat-show" type="button" class="bar-btn">Show Tab</button>
+          <span class="bar-sep" aria-hidden="true"></span>
+          <button id="chat-rawlog" type="button" class="bar-btn">Raw Log</button>
+        </div>
+        <div id="chat-head" class="act-head">
+          <div id="chat-titles" class="act-title">
+            <button id="chat-title" type="button" class="title title-btn" aria-haspopup="dialog"></button>
+            <div id="chat-meta" class="meta"></div>
+          </div>
+          <div id="chat-conv" class="act-conv" title="The agent session stays open for a while: the next message continues it with everything it already knows" hidden></div>
+          <div id="chat-switch" class="act-switch" role="group" aria-label="Chats running in other tabs" hidden></div>
+        </div>
+        <div id="chat-log" class="log scroll" aria-live="polite"></div>
+      </section>
+
+      <!-- TODO -->
+      <section id="tab-todo" class="tab scroll" role="tabpanel" aria-labelledby="tab-btn-todo" data-auth="loading" hidden>
+        <!-- Signed out: only this. The list lives in the user's account. -->
+        <div id="todo-login" class="login-cta">
+          <button id="login-btn" type="button" class="primary login-btn">Log In</button>
+          <p class="login-hint">Sign in with Google to keep your TODO list in your account and run it on schedule.</p>
+          <p id="login-msg" class="msg" role="alert"></p>
+        </div>
+        <!-- First sign-in with tasks saved in this browser. -->
+        <div id="migrate" class="card migrate" hidden>
+          <p id="migrate-text" class="migrate-text"></p>
+          <p id="migrate-msg" class="msg"></p>
+          <div class="row end">
+            <button id="migrate-later" type="button" class="ghost small">Not now</button>
+            <button id="migrate-go" type="button" class="primary small">Move tasks</button>
+          </div>
+        </div>
         <div class="section-head">
-          <h2>Todo</h2>
+          <h2>Tasks</h2>
           <span id="todo-count" class="count"></span>
           <span class="spacer"></span>
-          <button id="run-due" type="button" class="ghost small" title="Run everything that is due now">Run due</button>
-          <button id="add-toggle" type="button" class="ghost small" aria-expanded="false">Add task</button>
+          <button id="run-now" type="button" class="ghost small">Run now</button>
+          <button id="add-toggle" type="button" class="ghost small" aria-expanded="false" title="Schedule a task for later, or to repeat daily">Add task</button>
         </div>
         <p id="tasks-msg" class="msg"></p>
-
         <form id="add-form" class="card add" hidden>
           <label class="field"><span>Instructions</span>
             <textarea id="add-text" rows="3" required></textarea>
@@ -73,31 +119,34 @@
         </details>
       </section>
 
-      <!-- Activity -->
-      <section id="tab-activity" class="tab activity" role="tabpanel" hidden>
-        <div class="act-head">
-          <button id="act-back" type="button" class="ghost small" hidden>← Back</button>
-          <div class="act-title">
-            <div id="act-title" class="title">Nothing running</div>
-            <div class="act-sub">
-              <span id="act-meta" class="meta"></span>
-              <button id="act-rawlog" type="button" class="link" title="Every Claude Code event of this session, as the helper logged it" hidden>Raw log</button>
+      <!-- Activity Log: every run, newest first; one opens read-only -->
+      <section id="tab-history" class="tab history-tab" role="tabpanel" aria-labelledby="tab-btn-history" hidden>
+        <div id="hist-list" class="scroll history">
+          <ul id="history-list" class="sessions"></ul>
+          <div id="history-empty" class="empty-state" hidden>
+            <p class="empty-title">No runs yet</p>
+            <p>Every task the agent works on shows up here.</p>
+          </div>
+        </div>
+        <div id="hist-past" class="hist-past" hidden>
+          <div class="act-head">
+            <div class="hist-nav">
+              <button id="hist-back" type="button" class="bar-btn back">← All runs</button>
+              <span class="spacer"></span>
+              <button id="hist-rawlog" type="button" class="bar-btn" title="Every Claude Code event of this run, as the helper logged it" hidden>Raw Log</button>
+              <button id="hist-open" type="button" class="ghost small" title="Show this conversation in Chat, where your next message continues it" hidden>Open in Chat</button>
+            </div>
+            <div class="act-title">
+              <button id="hist-title" type="button" class="title title-btn" aria-haspopup="dialog"></button>
+              <div id="hist-meta" class="meta"></div>
             </div>
           </div>
-          <button id="act-show" type="button" class="ghost small" title="Switch to the tab the agent is using">Show tab</button>
-          <button id="act-history" type="button" class="ghost small">History</button>
-          <div id="act-conv" class="act-conv" hidden></div>
-          <div id="act-switch" class="act-switch" role="group" aria-label="Running sessions" hidden></div>
-        </div>
-        <div id="act-log" class="log scroll" aria-live="polite"></div>
-        <div id="act-list" class="scroll history" hidden>
-          <ul id="history-list" class="sessions"></ul>
-          <p id="history-empty" class="empty" hidden>No runs yet.</p>
+          <div id="hist-log" class="log scroll"></div>
         </div>
       </section>
     </main>
 
-    <!-- One input for the Tasks and Activity tabs: talks to the conversation Activity shows, or starts a new one. -->
+    <!-- One input for the Chat and TODO tabs: talks to the conversation Chat shows, or starts a new one. -->
     <footer id="composer" class="composer">
       <p id="now-msg" class="msg"></p>
       <form id="now-form" class="now">
@@ -108,7 +157,6 @@
             <input id="now-files" type="file" multiple hidden />
             <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 7.5 8 13a3.5 3.5 0 0 1-5-5l5.8-5.8a2.3 2.3 0 0 1 3.3 3.3L6.3 11.3a1.2 1.2 0 0 1-1.7-1.7L10 4.2"/></svg>
           </label>
-          <button id="now-new" type="button" class="now-new" title="End this conversation; the next message starts a new one" hidden>New chat</button>
           <div class="model-pick">
             <button id="now-model" type="button" class="now-model" aria-haspopup="menu" aria-expanded="false" aria-controls="model-menu">
               <span id="now-model-label" class="now-model-label">Model</span>

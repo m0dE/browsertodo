@@ -79,6 +79,27 @@ describe("TaskRunner with ScriptedBrain", () => {
     expect(events.every((e) => e.sessionId === "S1")).toBe(true);
     expect(events.filter((e) => e.event.type === "tool_call").map((e) => (e.event as { name: string }).name)).toContain("upload");
     expect(events.at(-1)!.event).toEqual({ type: "task_end", outcome: "done", summary: "Posted: gm from bob", url: "https://x.com/bob/status/1000" });
+    // Jev (the fake always refuses) left both picks to the brain, which chose from act's candidates; the count comes before task_end.
+    expect(events.at(-2)!.event).toEqual({
+      type: "status",
+      text: "Jev chose 0 of 2 element picks (clicks and typing); Claude chose 2",
+      picks: { jev: 0, claude: 2 },
+    });
+  });
+
+  it("with Jev on: the MCP server describes the tools for Jev, and the router reports it", async () => {
+    const x = new FakeX();
+    let seen: BrainContext | undefined;
+    const { runner, router } = setup(x, { brain: () => customBrain(async (ctx) => void (seen = ctx), "abort") });
+    const done = runner.run(params());
+    await new Promise((r) => setTimeout(r, 20));
+    const cfg = JSON.parse(readFileSync(seen!.mcpConfigPath, "utf8"));
+    expect(cfg.mcpServers.browsertodo.env.BROWSERTODO_JEV).toBe("1");
+    expect(router.jev("S1")).toBe(true);
+    expect(seen!.systemPrompt).toMatch(/Jev picks the element of every act step/);
+    expect(seen!.systemPrompt).not.toMatch(/each naming the element index/);
+    runner.abort("S1", "test over");
+    await done;
   });
 
   it("writes the MCP config; act replaces click and type even when Jev is off", async () => {
@@ -92,7 +113,7 @@ describe("TaskRunner with ScriptedBrain", () => {
         browsertodo: {
           command: process.execPath,
           args: ["C:\\helper\\dist\\mcp-server.js"],
-          env: { BROWSERTODO_PIPE: "\\\\.\\pipe\\browsertodo-test", BROWSERTODO_TASK: "S1", BROWSERTODO_TOOLS: expect.any(String) },
+          env: { BROWSERTODO_PIPE: "\\\\.\\pipe\\browsertodo-test", BROWSERTODO_TASK: "S1", BROWSERTODO_TOOLS: expect.any(String), BROWSERTODO_JEV: "0" },
         },
       },
     });

@@ -14,6 +14,9 @@ import type {
   SessionInfo,
   StampedAgentEvent,
 } from "@browsertodo/shared";
+import type { ApiKeyInfo, CreditInfo, PlanId, PlanInfo } from "./account/types.js";
+
+export type { ApiKeyInfo, CreditInfo, PlanId, PlanInfo };
 
 export const UI_PORT_NAME = "browsertodo-ui";
 
@@ -42,6 +45,30 @@ export interface BrainStatus {
   jevActive: boolean;
 }
 
+/** The browsertodo account (Google sign-in) as the UI shows it. */
+export interface AccountView {
+  signedIn: boolean;
+  /** This build has a Google client ID (else Log In explains that sign-in is not set up). */
+  signInConfigured: boolean;
+  /** The account server (setting accountApiBase). */
+  apiBase: string;
+  /** Usage & billing dashboard (the API origin + "/"). */
+  dashboardUrl: string;
+  user?: { email: string; name: string | null; pictureUrl: string | null };
+  /** Missing while the server has no billing (or it could not be loaded). */
+  plan?: PlanInfo;
+  credit?: CreditInfo;
+  /** false: the server has no Stripe (billing buttons say so instead). undefined: not known yet. */
+  stripeConfigured?: boolean;
+  /** Loading the account failed (offline, server error). */
+  error?: string;
+  fetchedAt?: string;
+  /** The hosted AI refused a request for lack of credit (or the credit is 0). */
+  outOfCredit?: { topupUrl: string };
+  /** Pending or paused local tasks that can be moved into the account (the offer after sign-in). */
+  localTasks?: number;
+}
+
 export interface UiState {
   /** Secrets redacted to "set" / "" (see redactSettings). */
   settings: ExtensionSettings;
@@ -63,6 +90,15 @@ export interface UiState {
    * that gets a summary.
    */
   openConversations: string[];
+  /** Absent from older backgrounds: treated as signed out. */
+  account?: AccountView;
+  /**
+   * Which conversation belongs to which browser tab (tab id -> session id):
+   * the side panel shows the conversation of the tab active in its window.
+   */
+  tabChats?: Record<string, string>;
+  /** The tabs each running session acts in right now (session id -> tab ids, its main tab first). */
+  runningTabs?: Record<string, number[]>;
 }
 
 export type UiRequest =
@@ -73,8 +109,8 @@ export type UiRequest =
   | { type: "settings.testJev" }
   | { type: "settings.testCloud" }
   | { type: "helper.connect" }
-  /** Start a one-off task now ("Do this now"). */
-  | { type: "run.adhoc"; instructions: string; account?: string; media?: UiMediaUpload[] }
+  /** Start a one-off task now ("Do this now"). tabId: the browser tab it is started from (it acts there, the chat belongs to it). */
+  | { type: "run.adhoc"; instructions: string; account?: string; media?: UiMediaUpload[]; tabId?: number }
   /** Run everything that is due now (local, then cloud if enabled). */
   | { type: "run.due" }
   /** Stop one session (its current turn is paused), or everything running and the due run. */
@@ -83,15 +119,24 @@ export type UiRequest =
    * Continue a run that ended paused, failed or retry (e.g. stopped by the
    * user): the next turn of that conversation. text: an optional note.
    */
-  | { type: "run.continue"; sessionId: string; text?: string }
+  | { type: "run.continue"; sessionId: string; text?: string; tabId?: number }
   /**
    * The user's message in a conversation: typed into its turn while one
    * runs, else its next turn (same session when still open, else a fresh one
    * with a summary). No sessionId: starts a new one-off conversation.
+   * tabId: the browser tab the message was sent from; the conversation
+   * belongs to it (and a new one acts there).
    */
-  | { type: "run.message"; sessionId?: string; text: string }
-  /** The conversation is over: close its kept-open agent session (a running turn keeps running). */
-  | { type: "run.newChat"; sessionId?: string }
+  | { type: "run.message"; sessionId?: string; text: string; tabId?: number }
+  /**
+   * The conversation is over: close its kept-open agent session (a running
+   * turn keeps running). tabId: that tab has no conversation any more.
+   */
+  | { type: "run.newChat"; sessionId?: string; tabId?: number }
+  /** "Open in Chat": the conversation now belongs to this browser tab (it leaves any other tab). */
+  | { type: "chat.bind"; sessionId: string; tabId: number }
+  /** Switch to a browser tab (another tab's chat): activates it and focuses its window. */
+  | { type: "tab.focus"; tabId: number }
   /** The helper's raw run log of a Claude Code session's latest turn. */
   | { type: "session.log"; sessionId: string }
   /** Bring the agent's tab to the front: the session's, or the first agent tab. */
@@ -112,6 +157,22 @@ export type UiRequest =
   | { type: "tasks.update"; id: string; patch: { instructions?: string; account?: string | null; notBefore?: string | null; repeat?: RepeatRule | null } }
   | { type: "tasks.delete"; id: string }
   | { type: "tasks.retry"; id: string }
+  /** Account tasks only: pending or paused tasks stop without running. */
+  | { type: "tasks.cancel"; id: string }
+  /** Google sign-in (opens Google's window), then the account's state. */
+  | { type: "account.signIn" }
+  | { type: "account.signOut" }
+  /** Refetch profile, plan and credit (force: even when fetched a moment ago). */
+  | { type: "account.refresh"; force?: boolean }
+  /** Move the pending and paused local tasks (with files) into the account. */
+  | { type: "account.migrate" }
+  /** "Not now" on the offer to move local tasks. */
+  | { type: "account.dismissMigration" }
+  /** A Stripe page to open in a new tab: subscribe/change plan (checkout), buy credit (topup), manage billing (portal). */
+  | { type: "account.billing"; action: "checkout" | "topup" | "portal"; plan?: PlanId; amountCents?: number; returnUrl: string }
+  | { type: "account.keys.list" }
+  | { type: "account.keys.create"; name: string; role: "creator" | "runner" }
+  | { type: "account.keys.revoke"; id: string }
   | { type: "sessions.list"; limit?: number }
   | { type: "sessions.events"; sessionId: string }
   /** Site logins for get_credential (never used for X). Encrypted; unlocked per browser session. */
@@ -139,16 +200,30 @@ export interface UiResults {
   /** mode: "inject" typed into the running turn, "turn" a new turn of the conversation, "new" a new conversation. */
   "run.message": { sessionId: string; mode: "inject" | "turn" | "new" };
   "run.newChat": { ok: boolean };
+  "chat.bind": UiState;
+  "tab.focus": { ok: boolean };
   "session.log": { path: string; text: string; truncated: boolean };
   "agent.show": { ok: boolean };
   "run.say": { ok: boolean };
   "schedule.pause": UiState;
   "schedule.resume": UiState;
-  "tasks.list": { tasks: (LocalTask & { media: LocalMediaInfo[] })[] };
+  /** source: the signed-in account's tasks, or this browser's (signed out). */
+  "tasks.list": { tasks: (LocalTask & { media: LocalMediaInfo[] })[]; source?: "local" | "account" };
   "tasks.add": { task: LocalTask };
   "tasks.update": { task: LocalTask };
   "tasks.delete": { ok: boolean };
   "tasks.retry": { task: LocalTask };
+  "tasks.cancel": { task: LocalTask };
+  "account.signIn": UiState;
+  "account.signOut": UiState;
+  "account.refresh": UiState;
+  "account.migrate": { moved: number; failed: number; errors: string[]; state: UiState };
+  "account.dismissMigration": UiState;
+  "account.billing": { url: string };
+  "account.keys.list": { keys: ApiKeyInfo[] };
+  /** key: the new key, shown once. */
+  "account.keys.create": { id: string; name: string; role: string; key: string };
+  "account.keys.revoke": { ok: boolean };
   "sessions.list": { sessions: SessionInfo[] };
   "sessions.events": { session: SessionInfo; events: StampedAgentEvent[] };
   "vault.list": { locked: boolean; sites: string[] };

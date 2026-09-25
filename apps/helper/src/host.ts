@@ -84,6 +84,7 @@ async function main(): Promise<void> {
   // Tools for the user's own Claude Code (`mcp-server.js --attach`): no task to end, no media.
   const interactive: InteractiveTools = {
     allowedTools: new Set(toolsFor({ jev: envJev !== null, interactive: true })),
+    jev: envJev !== null,
     executor: createToolExecutor({
       browser,
       jev: envJev,
@@ -105,7 +106,7 @@ async function main(): Promise<void> {
       pipePath,
       {
         toolCall: (p) => router.call(p.taskId || INTERACTIVE_TASK_ID, p.name, p.args),
-        toolList: (p) => ({ names: router.allowedTools(p.taskId || INTERACTIVE_TASK_ID) }),
+        toolList: (p) => ({ names: router.allowedTools(p.taskId || INTERACTIVE_TASK_ID), jev: router.jev(p.taskId || INTERACTIVE_TASK_ID) }),
       },
       logLine,
     );

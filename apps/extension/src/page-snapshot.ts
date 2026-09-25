@@ -159,6 +159,7 @@ export function snapshotPage(maxText: number, maxElements: number): PageSnapshot
     var testId = el.getAttribute("data-testid");
     if (testId) info.testId = testId;
     if ((el as HTMLButtonElement).disabled === true || el.getAttribute("aria-disabled") === "true") info.disabled = true;
+    if (el.closest('[role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open]')) info.inDialog = true;
     elements.push(info);
   }
 

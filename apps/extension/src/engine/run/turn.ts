@@ -11,7 +11,11 @@ import { SessionEndedError, type AbortOutcome, type Brain, type BrainRun, type C
 import type { LocalStore } from "../local-store.js";
 import type { MaterializedMedia, MediaSource } from "../media-files.js";
 import type { SessionStore } from "../sessions.js";
+import type { TabChatsLike } from "../../tab-chats.js";
 import { mediaSources, type FirstJob } from "./jobs.js";
+
+/** Said in the thread when a conversation's tab could not be used and it moved to a new one. */
+export const MOVED_TAB_STATUS = "That tab cannot be controlled (a browser page) or another run is using it: working in a new tab next to it";
 
 /** Extra wait after aborting a stuck brain before giving up on it. */
 const ABORT_GRACE_MS = 30_000;
@@ -82,6 +86,8 @@ export function runConfig(settings: ExtensionSettings, isRetry: boolean): RunCon
 
 export interface TurnDeps {
   sessions: SessionStore;
+  /** Which browser tab each conversation belongs to (absent: conversations have no tab). */
+  tabChats?: TabChatsLike;
   localStore: LocalStore;
   media: { materialize(sessionId: string, sources: MediaSource[]): Promise<MaterializedMedia> };
   core: Pick<CoreApi, "verifyXPost" | "classifyFailure">;
@@ -98,8 +104,9 @@ export class TurnRunner {
 
   /**
    * The first turn of a new session: picks its tab, writes its files, starts
-   * the brain and waits for the result. One-off runs act on the tab the user
-   * is looking at; other jobs on the slot's own tab.
+   * the brain and waits for the result. One-off runs act on the tab they were
+   * started from (or, without one, the tab the user is looking at); other
+   * jobs on the slot's own tab.
    */
   async runFirst(
     active: ActiveSession,
@@ -110,7 +117,13 @@ export class TurnRunner {
     cleanups: Cleanup[],
   ): Promise<TaskRunResult> {
     const adhoc = job.source === "adhoc";
-    await active.slot.prepare({ show: adhoc, mode: adhoc ? "current-tab" : "own-tab" });
+    const origin = adhoc ? job.input.tabId : undefined;
+    if (origin === undefined) {
+      await active.slot.prepare({ mode: adhoc ? "current-tab" : "own-tab" });
+    } else {
+      // Not brought to the front: the user may have moved on to another tab already.
+      await this.follow(active, origin, await active.slot.prepare({ mode: "current-tab", tabId: origin }));
+    }
     const sources = await mediaSources(job, this.deps.localStore);
     if (sources.length) this.emit(active, { type: "status", text: `Preparing ${sources.length} file(s)` });
     const mediaPaths = await this.materialize(active, sources, cleanups);
@@ -118,6 +131,18 @@ export class TurnRunner {
     if (active.forced) throw new Error(active.forced.reason);
     const run = this.start(active, brain, { task: opened.task, mediaPaths, config, settings });
     return this.drive(active, run, settings, cleanups);
+  }
+
+  /** The browser tab a conversation belongs to, or null. */
+  async tabOf(sessionId: string): Promise<number | null> {
+    return this.deps.tabChats ? this.deps.tabChats.tabOf(sessionId).catch(() => null) : null;
+  }
+
+  /** The conversation's run went to another tab than its own (e.g. its tab shows a chrome:// page): it now belongs there. */
+  async follow(active: ActiveSession, origin: number, picked: number | void): Promise<void> {
+    if (typeof picked !== "number" || picked === origin || !this.deps.tabChats) return;
+    this.emit(active, { type: "status", text: MOVED_TAB_STATUS });
+    await this.deps.tabChats.bind(picked, active.session.sessionId).catch((err: unknown) => this.deps.log(`binding the chat to its new tab failed: ${errText(err)}`));
   }
 
   /** Writes the files to disk for the brain; they are deleted with the cleanups. */

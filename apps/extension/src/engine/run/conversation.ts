@@ -34,9 +34,9 @@ export function continueRefusal(from: SessionInfo | null, sessionId: string, run
 }
 
 /**
- * Runs the turn's brain in the tab the conversation used: the same agent
- * session when it is open, else a fresh one (also when the brain finds the
- * session gone).
+ * Runs the turn's brain in the conversation's tab (the browser tab it belongs
+ * to, else the tab it used): the same agent session when it is open, else a
+ * fresh one (also when the brain finds the session gone).
  */
 export async function runNextTurn(
   turns: TurnRunner,
@@ -50,7 +50,9 @@ export async function runNextTurn(
 ): Promise<TaskRunResult> {
   const { from, text } = job;
   const sessionId = from.sessionId;
-  await active.slot.prepare({ show: true, mode: "own-tab" });
+  const tab = await turns.tabOf(sessionId);
+  if (tab === null) await active.slot.prepare({ mode: "own-tab" });
+  else await turns.follow(active, tab, await active.slot.prepare({ mode: "current-tab", tabId: tab }));
   if (active.forced) throw new Error(active.forced.reason);
   const same = from.brain === brain.kind && !!brain.continue && brain.isOpen?.(sessionId) !== false;
   if (same) {

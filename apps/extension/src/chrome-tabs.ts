@@ -65,8 +65,9 @@ export async function lastNormalWindow(): Promise<chrome.windows.Window | null> 
   }
 }
 
-export async function createWindowTab(): Promise<number> {
-  const win = await chrome.windows.create({ url: "about:blank", focused: true, type: "normal" });
+/** A new window with a blank tab; focused: false for runs the user did not just start. */
+export async function createWindowTab(focused = true): Promise<number> {
+  const win = await chrome.windows.create({ url: "about:blank", focused, type: "normal" });
   const tabId = win?.tabs?.[0]?.id;
   if (tabId === undefined) throw new Error("Could not open a browser window for the agent");
   return tabId;

@@ -1,12 +1,13 @@
 import { z } from "zod";
 
-export const BrainMode = z.enum(["auto", "claude-code", "claude-api"]);
+export const BrainMode = z.enum(["auto", "claude-code", "claude-api", "browsertodo"]);
 export type BrainMode = z.infer<typeof BrainMode>;
 
 /** Extension settings stored in chrome.storage.local under "settings". */
 export const ExtensionSettings = z.object({
   /**
-   * Which agent runs tasks. auto: local Claude Code when the helper is
+   * Which agent runs tasks. auto: browsertodo AI when signed in with AI
+   * credit or an active paid plan, else local Claude Code when the helper is
    * connected and Claude Code was found, otherwise the Claude API key.
    */
   brain: BrainMode.default("auto"),
@@ -14,7 +15,12 @@ export const ExtensionSettings = z.object({
   anthropicModel: z.string().default("claude-sonnet-5"),
   /** Jev speeds up single steps. Used only when a key is set and jevEnabled. */
   jevApiKey: z.string().default(""),
-  /** Cloud task queue. Off by default; local tasks always work. */
+  /**
+   * The browsertodo account server (Google sign-in, the account's TODO list,
+   * billing and the hosted AI). Self-hosters point it at their own API.
+   */
+  accountApiBase: z.string().default("https://browsertodo-api.jaeyun.workers.dev"),
+  /** Cloud task queue with a runner key (self-hosters). Off by default; local tasks always work. */
   cloudEnabled: z.boolean().default(false),
   apiBase: z.string().default(""),
   runnerKey: z.string().default(""),
@@ -56,6 +62,7 @@ export function parseSettings(raw: unknown): ExtensionSettings {
   const s = out as ExtensionSettings;
   if (s.delayMaxSec < s.delayMinSec) s.delayMaxSec = s.delayMinSec;
   s.apiBase = s.apiBase.replace(/\/+$/, "");
+  s.accountApiBase = s.accountApiBase.trim().replace(/\/+$/, "");
   return s;
 }
 

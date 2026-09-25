@@ -23,6 +23,8 @@ export interface RunnerApi {
 
 export interface AdhocInput {
   instructions: string;
+  /** The browser tab it was started from: it acts there, and the conversation belongs to that tab. */
+  tabId?: number;
   account?: string | null;
   media?: { name: string; blob: Blob }[];
 }

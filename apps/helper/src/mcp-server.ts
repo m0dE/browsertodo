@@ -6,6 +6,7 @@
  *   BROWSERTODO_PIPE   pipe path of the helper
  *   BROWSERTODO_TASK   session id of the task (empty: the attached session's tools)
  *   BROWSERTODO_TOOLS  comma list of tool names to register (default: all)
+ *   BROWSERTODO_JEV    "1": Jev picks act's elements (read_page and act are described for that mode)
  *
  * Or from the user's own Claude Code:
  *   claude mcp add browsertodo -- node <repo>/apps/helper/dist/mcp-server.js --attach
@@ -17,7 +18,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { INTERACTIVE_TOOL_NAMES, MCP_SERVER_NAME, TOOL_DESCRIPTIONS, ToolArgs, type ToolName } from "@browsertodo/shared";
+import { INTERACTIVE_TOOL_NAMES, MCP_SERVER_NAME, toolArgsSchema, toolDescription, type ToolName } from "@browsertodo/shared";
 import { connectPipe, type PipeClient } from "./pipe-server.js";
 import { INTERACTIVE_TASK_ID, TOOL_CALL_TIMEOUT_MS, toMcpResult, toolsFromEnv } from "./mcp-tools.js";
 import { HELPER_VERSION, loadConfig } from "./config.js";
@@ -48,6 +49,7 @@ async function main(): Promise<void> {
   let pipePath: string;
   let taskId: string;
   let tools: ToolName[];
+  let jev = false;
   if (attach) {
     const cfg = loadConfig();
     const info = readHelperFile(cfg.helperFilePath);
@@ -61,6 +63,7 @@ async function main(): Promise<void> {
     pipePath = p;
     taskId = process.env.BROWSERTODO_TASK || INTERACTIVE_TASK_ID;
     tools = toolsFromEnv(process.env.BROWSERTODO_TOOLS);
+    jev = process.env.BROWSERTODO_JEV === "1";
   }
 
   let pipe: PipeClient;
@@ -72,8 +75,9 @@ async function main(): Promise<void> {
   if (attach) {
     // Ask the helper which tools this session allows.
     try {
-      const { names } = await pipe.peer.call("tool.list", { taskId }, { timeoutMs: 5000 });
-      if (names.length) tools = tools.filter((n) => names.includes(n));
+      const list = await pipe.peer.call("tool.list", { taskId }, { timeoutMs: 5000 });
+      if (list.names.length) tools = tools.filter((n) => list.names.includes(n));
+      jev = list.jev === true;
     } catch {
       /* older helper: keep the full interactive list */
     }
@@ -81,7 +85,7 @@ async function main(): Promise<void> {
 
   const server = new McpServer({ name: MCP_SERVER_NAME, version: HELPER_VERSION });
   for (const name of tools) {
-    server.registerTool(name, { description: TOOL_DESCRIPTIONS[name], inputSchema: ToolArgs[name] }, async (args: unknown): Promise<CallToolResult> => {
+    server.registerTool(name, { description: toolDescription(name, jev), inputSchema: toolArgsSchema(name, jev) }, async (args: unknown): Promise<CallToolResult> => {
       try {
         const r = await pipe.peer.call("tool.call", { taskId, name, args: args ?? {} }, { timeoutMs: TOOL_CALL_TIMEOUT_MS });
         return toMcpResult(r);

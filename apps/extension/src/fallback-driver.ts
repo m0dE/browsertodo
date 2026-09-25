@@ -1,8 +1,9 @@
 import { MAX_SNAPSHOT_ELEMENTS, MAX_SNAPSHOT_TEXT, type PageSnapshot, type Screenshot } from "@browsertodo/shared";
-import { defaultSleep, NAV_TIMEOUT_MS, POLL_MS, SCROLL_SETTLE_MS, SETTLE_MS, type Params as P, type Result as R, type Sleep } from "./driver-common.js";
+import { BACKGROUND_SHOT_SKIPPED, defaultSleep, NAV_TIMEOUT_MS, POLL_MS, SCROLL_SETTLE_MS, SETTLE_MS, type Params as P, type Result as R, type Sleep } from "./driver-common.js";
 import { errText } from "./errors.js";
 import { parseKeyCombo } from "./keys.js";
 import { snapshotPage } from "./page-snapshot.js";
+import { scrollProbeInPage, scrollReport, type PageResult, type ScrollProbe } from "./scroll-probe.js";
 
 /**
  * Shown once per tab when the driver switches to this fallback. The runner
@@ -27,8 +28,6 @@ export function isDebuggerBlocked(err: unknown): boolean {
   return /Cannot access a chrome-extension:\/\/ URL of different extension|debugger_access_denied/i.test(msg);
 }
 
-/** Result of a page function: its value, or an error message to throw. */
-type PageResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 /**
  * The browser.* methods without chrome.debugger, for tabs where Chrome refuses
@@ -72,9 +71,9 @@ export class FallbackDriver {
 
   async screenshot(tabId: number): Promise<Screenshot> {
     const tab = await chrome.tabs.get(tabId);
-    if (!tab.active) {
-      throw new Error("screenshot needs the agent tab to be the visible tab of its window on this page (fallback mode); use read_page instead");
-    }
+    // captureVisibleTab only sees the visible tab; the tab is never brought to the front.
+    const minimized = await chrome.windows.get(tab.windowId).then((w) => w.state === "minimized", () => false);
+    if (!tab.active || minimized) throw new Error(BACKGROUND_SHOT_SKIPPED);
     const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 70 });
     return { base64: dataUrl.replace(/^data:[^,]*,/, ""), mimeType: "image/jpeg" };
   }
@@ -102,10 +101,20 @@ export class FallbackDriver {
     return { ok: true };
   }
 
+  /** Scrolls like a wheel at the viewport center (or over element `index`) and reports what moved. */
   async scroll(tabId: number, { direction, amount = 1, index }: P<"browser.scroll">): Promise<R<"browser.scroll">> {
-    await this.exec(tabId, scrollInPage, [direction, amount, index ?? null]);
+    const view = await this.exec(tabId, viewportInPage, []);
+    const dy = Math.round(amount * 0.8 * view.h);
+    const dx = Math.round(amount * 0.8 * view.w);
+    const top = direction === "down" ? dy : direction === "up" ? -dy : 0;
+    const left = direction === "right" ? dx : direction === "left" ? -dx : 0;
+    const r = (await this.exec(tabId, scrollProbeInPage, ["scroll", view.w / 2, view.h / 2, index ?? null, left, top])) as {
+      before: ScrollProbe;
+      after: ScrollProbe;
+    };
     await this.sleep(SCROLL_SETTLE_MS);
-    return { ok: true };
+    if (!r || !Array.isArray(r.before?.entries) || !Array.isArray(r.after?.entries)) return { ok: true };
+    return { ok: true, ...scrollReport(direction, r.before, r.after, index !== undefined) };
   }
 
   async upload(): Promise<R<"browser.upload">> {
@@ -289,27 +298,6 @@ export function pressKeyInPage(k: PageKey): PageResult<true> {
   return { ok: true, value: true };
 }
 
-export function scrollInPage(direction: string, amount: number, index: number | null): PageResult<true> {
-  var dy = Math.round(amount * 0.8 * window.innerHeight);
-  var dx = Math.round(amount * 0.8 * window.innerWidth);
-  var top = direction === "down" ? dy : direction === "up" ? -dy : 0;
-  var left = direction === "right" ? dx : direction === "left" ? -dx : 0;
-  if (index == null) {
-    window.scrollBy({ top: top, left: left, behavior: "instant" as ScrollBehavior });
-    return { ok: true, value: true };
-  }
-  var el = document.querySelector('[data-browsertodo-index="' + Math.trunc(index) + '"]') as HTMLElement | null;
-  if (!el) return { ok: false, error: "element " + index + " not found; call read_page again" };
-  // Like a wheel over the element: scroll the nearest ancestor that can scroll that way.
-  for (var e: HTMLElement | null = el; e; e = e.parentElement) {
-    var style = getComputedStyle(e);
-    var canY = top !== 0 && /(auto|scroll|overlay)/.test(style.overflowY) && e.scrollHeight > e.clientHeight;
-    var canX = left !== 0 && /(auto|scroll|overlay)/.test(style.overflowX) && e.scrollWidth > e.clientWidth;
-    if (canY || canX) {
-      e.scrollBy({ top: top, left: left, behavior: "instant" as ScrollBehavior });
-      return { ok: true, value: true };
-    }
-  }
-  window.scrollBy({ top: top, left: left, behavior: "instant" as ScrollBehavior });
-  return { ok: true, value: true };
+export function viewportInPage(): PageResult<{ w: number; h: number }> {
+  return { ok: true, value: { w: window.innerWidth, h: window.innerHeight } };
 }

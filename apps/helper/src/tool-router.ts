@@ -28,6 +28,8 @@ export function rpcBrowser(peer: RpcBrowser, timeoutMs = BROWSER_RPC_TIMEOUT_MS)
 export interface ToolSession {
   taskId: string;
   allowedTools: ReadonlySet<ToolName>;
+  /** Jev picks act's elements in this session (tool descriptions differ). */
+  jev?: boolean;
   /** Called before each tool. Returns an error text to return instead of running it. */
   beforeCall(name: ToolName): string | null;
   executor: ToolExecutor;
@@ -36,6 +38,7 @@ export interface ToolSession {
 /** The attached session's tools (no task to end, no limits). */
 export interface InteractiveTools {
   allowedTools: ReadonlySet<ToolName>;
+  jev?: boolean;
   executor: ToolExecutor;
 }
 
@@ -55,6 +58,11 @@ export class ToolRouter {
   allowedTools(taskId: string): ToolName[] {
     const target = this.target(taskId);
     return target ? TOOL_NAMES.filter((n) => target.allowedTools.has(n)) : [];
+  }
+
+  /** Whether Jev picks act's elements for the given task (for `tool.list`). */
+  jev(taskId: string): boolean {
+    return this.target(taskId)?.jev === true;
   }
 
   async call(taskId: string, name: ToolName, args: unknown): Promise<ToolResult> {

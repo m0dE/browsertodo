@@ -1,58 +1,203 @@
-/** Side panel entry: status line, tabs, and the push port to the background. */
+/**
+ * Side panel entry: status line and account, tabs (Chat | TODO | Activity
+ * Log), the push port to the background, and which browser tab's chat is
+ * shown (the active tab of the panel's window; see tab-chat.ts).
+ */
 import type { SessionInfo } from "@browsertodo/shared";
 import { UI_PORT_NAME, uiRequest, type UiPush, type UiState } from "../ui-protocol.js";
-import { initActivity } from "./activity.js";
+import { initChat } from "./chat.js";
 import { initComposer } from "./composer.js";
+import { showDetails } from "./details-sheet.js";
 import { $, busy, errorText } from "./dom.js";
-import { clip, clockLabel, conversationNote, statusLine } from "./format.js";
+import { setTopupUrl } from "./event-render.js";
+import { centsLabel, clip, clockLabel, conversationNote, statusLine } from "./format.js";
+import { initHistory } from "./history.js";
+import { chatForTab, isBound, tabOfSession } from "./tab-chat.js";
+import { savedTab, tabHasComposer, type TabName } from "./tabs.js";
 import { initTasks } from "./tasks.js";
 
-type TabName = "tasks" | "activity";
-
 let state: UiState | null = null;
-/** The conversation the Activity tab shows. */
+let currentTab: TabName = "chat";
+/** The conversation the Chat tab shows. */
 let focused: SessionInfo | null = null;
+/** The browser window this panel is in, and its active tab: Chat shows that tab's conversation. */
+let windowId: number | null = null;
+let activeTab: number | null = null;
+/** A conversation just started from a tab, until the state shows it bound there. */
+let pending: { tab: number; sessionId: string } | null = null;
+/** Running sessions the user left with New Chat in a tab they act in (not bound to it). */
+const left = new Map<number, string>();
 
-/** A message or a continue went out: show the conversation it went to. */
-const followLive = (sessionId?: string) => {
-  showTab("activity");
-  activity.followLive(sessionId);
-};
-const tasks = initTasks({ onStarted: () => showTab("activity"), onContinued: followLive });
-const composer = initComposer({ onStarted: followLive, onState: (s) => applyState(s), onTargetChange: () => updateNote() });
-const activity = initActivity({
-  // Continue in an end card: the next message goes to that conversation.
-  onContinue: (sessionId) => composer.focusConversation(sessionId),
+/** Shows the conversation of the active tab (or an empty new chat). */
+function resolveChat(): void {
+  if (pending && state && isBound(pending.sessionId, state)) pending = null;
+  chat.show(chatForTab(activeTab, state ?? {}, { pending, left }));
+}
+
+/** A message, a new task or a continue went out from this tab: its conversation shows here at once. */
+function startedHere(sessionId: string): void {
+  if (activeTab !== null) {
+    pending = { tab: activeTab, sessionId };
+    left.delete(activeTab);
+  }
+  showTab("chat");
+  resolveChat();
+}
+
+/** Switch to the tab another conversation lives in (its chat then shows, since the panel follows the tab). */
+async function switchTo(sessionId: string): Promise<boolean> {
+  const tab = state ? tabOfSession(sessionId, state) : null;
+  try {
+    if (tab !== null) return (await uiRequest({ type: "tab.focus", tabId: tab })).ok;
+    return (await uiRequest({ type: "agent.show", sessionId })).ok;
+  } catch {
+    return false;
+  }
+}
+
+/** "Open in Chat": a conversation of another tab is switched to; any other is bound to this tab. */
+async function openHere(s: SessionInfo): Promise<void> {
+  showTab("chat");
+  const st = state ?? {};
+  if (chatForTab(activeTab, st, { pending, left }) === s.sessionId) return composer.focus();
+  const elsewhere = tabOfSession(s.sessionId, st);
+  if (!s.endedAt && elsewhere !== null && elsewhere !== activeTab && (await switchTo(s.sessionId))) return;
+  if (activeTab === null) return;
+  const tab = activeTab;
+  try {
+    applyState(await uiRequest({ type: "chat.bind", sessionId: s.sessionId, tabId: tab }));
+  } catch {
+    // The background refused (e.g. an older one): show it here anyway.
+  }
+  left.delete(tab);
+  pending = { tab, sessionId: s.sessionId };
+  resolveChat();
+  composer.focus();
+}
+
+/** "Open in TODO" from the details sheet: the TODO tab, scrolled to the task. */
+function openInTodo(taskId: string): void {
+  showTab("todo");
+  void tasks.reveal(taskId);
+}
+
+/** The details sheet of a run's task (Chat, Activity Log): "Open in TODO" when the list has it. */
+const runDetails = (s: SessionInfo, trigger: HTMLElement) => void showDetails({ session: s }, trigger, { onOpenInTodo: openInTodo });
+
+const tasks = initTasks({
+  onStarted: () => showTab("chat"),
+  onContinued: startedHere,
+  onState: (s) => applyState(s),
+  tabId: () => activeTab,
+  onDetails: (task, listSource, trigger) => void showDetails({ task, listSource }, trigger),
+});
+const composer = initComposer({
+  onStarted: startedHere,
+  onState: (s) => applyState(s),
+  onTargetChange: () => updateNote(),
+  onTopup: () => openTopup(),
+  tabId: () => activeTab,
+});
+const chat = initChat({
+  // Continue in an end card: go on now (with the note typed in the box, if any).
+  onContinue: (sessionId) => void composer.continueNow(sessionId),
   onFocus: (s) => {
     focused = s;
     composer.setConversation(s);
     updateNote();
   },
+  // New Chat: this tab has no conversation any more (the session stays in the Activity Log).
+  onLeave: (s) => {
+    if (activeTab !== null) {
+      left.set(activeTab, s.sessionId);
+      if (state?.tabChats?.[String(activeTab)] === s.sessionId) {
+        const rest = { ...state.tabChats };
+        delete rest[String(activeTab)];
+        state = { ...state, tabChats: rest };
+      }
+    }
+    if (pending?.sessionId === s.sessionId) pending = null;
+    composer.leave(s.sessionId);
+    resolveChat();
+  },
+  onSwitch: (s) => void switchTo(s.sessionId),
+  onDetails: runDetails,
 });
+const history = initHistory({ onOpenInChat: (s) => void openHere(s), onDetails: runDetails });
 
-/** "Conversation open · …" under the Activity header while the composer's conversation waits for a message. */
+/** Follows the active tab of this panel's window (each window's panel follows its own). */
+async function trackTabs(): Promise<void> {
+  if (!chrome.tabs?.query) return;
+  const setActive = (id: number | null) => {
+    if (id === activeTab) return;
+    activeTab = id;
+    resolveChat();
+  };
+  const refresh = async () => {
+    try {
+      const [t] = await chrome.tabs.query(windowId === null ? { active: true, currentWindow: true } : { active: true, windowId });
+      setActive(t?.id ?? null);
+    } catch {
+      // The window is closing.
+    }
+  };
+  try {
+    windowId = (await chrome.windows.getCurrent()).id ?? null;
+  } catch {
+    windowId = null;
+  }
+  chrome.tabs.onActivated.addListener((info) => {
+    if (windowId === null || info.windowId === windowId) setActive(info.tabId);
+  });
+  // A tab moved between windows, or the window regained focus: look again.
+  chrome.tabs.onAttached?.addListener(() => void refresh());
+  chrome.tabs.onDetached?.addListener(() => void refresh());
+  chrome.windows.onFocusChanged?.addListener(() => void refresh());
+  await refresh();
+}
+
+/** "Conversation open · …" under the Chat header while the composer's conversation waits for a message. */
 function updateNote(): void {
   const t = composer.target();
   const open = !!t && (state?.openConversations ?? []).includes(t.sessionId);
-  activity.setNote(t && t.source !== "cloud" && composer.mode() === "conversation" ? conversationNote(t, open) : null);
+  chat.setNote(t && t.source !== "cloud" && composer.mode() === "conversation" ? conversationNote(t, open) : null);
 }
 
 function showTab(name: TabName): void {
   for (const btn of document.querySelectorAll<HTMLButtonElement>(".tabs [role=tab]")) {
     const on = btn.dataset.tab === name;
     btn.setAttribute("aria-selected", String(on));
+    btn.tabIndex = on ? 0 : -1;
     $(`tab-${btn.dataset.tab}`).hidden = !on;
   }
+  currentTab = name;
+  updateComposer();
   try {
     localStorage.setItem("tab", name);
   } catch {
     // Storage may be unavailable; the tab just is not remembered.
   }
-  if (name === "tasks") void tasks.refresh();
+  if (name === "todo") void tasks.refresh();
+  if (name === "history") history.refresh();
 }
 
-for (const btn of document.querySelectorAll<HTMLButtonElement>(".tabs [role=tab]")) {
+/** The composer sits under Chat and TODO, but not under the TODO tab's Log In button. */
+function updateComposer(): void {
+  $("composer").hidden = !tabHasComposer(currentTab) || (currentTab === "todo" && tasks.signedOut());
+}
+
+const tabButtons = [...document.querySelectorAll<HTMLButtonElement>(".tabs [role=tab]")];
+for (const btn of tabButtons) {
   btn.addEventListener("click", () => showTab(btn.dataset.tab as TabName));
+  // Arrow keys move between tabs (the tablist pattern).
+  btn.addEventListener("keydown", (e) => {
+    const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+    if (!step) return;
+    e.preventDefault();
+    const next = tabButtons[(tabButtons.indexOf(btn) + step + tabButtons.length) % tabButtons.length]!;
+    next.focus();
+    showTab(next.dataset.tab as TabName);
+  });
 }
 
 const statusEl = $("status");
@@ -78,9 +223,17 @@ function renderStatus(s: UiState): void {
     metaEl.textContent = "";
   }
   statusAction.hidden = false;
-  statusAction.textContent = line.action === "settings" ? "Fix" : line.action === "resume" ? "Resume" : "Pause";
-  statusAction.dataset.action = line.action ?? "pause";
-  statusAction.title = line.action ? "" : "Pause scheduled runs";
+  const labels = { settings: "Fix", resume: "Resume", topup: "Top up", pause: "Pause" } as const;
+  const titles = {
+    settings: "Open the settings",
+    resume: "Run scheduled tasks again",
+    topup: "Buy AI credit (opens the billing page)",
+    pause: "Pause scheduled runs",
+  } as const;
+  const action = line.action ?? "pause";
+  statusAction.textContent = labels[action];
+  statusAction.dataset.action = action;
+  statusAction.title = titles[action];
   $("live-dot").hidden = !s.running;
 }
 
@@ -88,6 +241,7 @@ statusAction.addEventListener("click", () =>
   void busy(statusAction, async () => {
     const action = statusAction.dataset.action;
     if (action === "settings") return void chrome.runtime.openOptionsPage();
+    if (action === "topup") return openTopup();
     try {
       applyState(await uiRequest({ type: action === "resume" ? "schedule.resume" : "schedule.pause" }));
     } catch (err) {
@@ -97,13 +251,83 @@ statusAction.addEventListener("click", () =>
 );
 $("open-settings").addEventListener("click", () => void chrome.runtime.openOptionsPage());
 
+/** The account's top-up page (the link a 402 carried, or the dashboard). */
+function openTopup(): void {
+  const a = state?.account;
+  const url = a?.outOfCredit?.topupUrl || a?.dashboardUrl;
+  if (url) window.open(url, "_blank", "noopener");
+  else chrome.runtime.openOptionsPage();
+}
+
+// The account in the header: avatar, email, plan and credit, sign out.
+const acct = $<HTMLDetailsElement>("acct");
+function renderAccount(s: UiState): void {
+  const a = s.account;
+  acct.hidden = !a?.signedIn;
+  if (!a?.signedIn || !a.user) {
+    acct.open = false;
+    return;
+  }
+  const u = a.user;
+  const avatar = $<HTMLImageElement>("acct-avatar");
+  const initial = $("acct-initial");
+  const who = u.name ? `${u.name} (${u.email})` : u.email;
+  $("acct-btn").title = `Signed in as ${who}`;
+  $("acct-email").textContent = u.email;
+  $("acct-email").title = who;
+  if (u.pictureUrl) {
+    if (avatar.getAttribute("src") !== u.pictureUrl) avatar.src = u.pictureUrl;
+    avatar.hidden = false;
+    initial.textContent = "";
+  } else {
+    avatar.hidden = true;
+    initial.textContent = (u.name || u.email).trim().charAt(0).toUpperCase();
+  }
+  const plan = $("acct-plan");
+  const planName = a.plan ? `${a.plan.id.charAt(0).toUpperCase()}${a.plan.id.slice(1)} plan` : "";
+  const credit = a.credit ? `${centsLabel(a.credit.totalCents)} AI credit` : "";
+  plan.textContent = a.outOfCredit ? `${planName ? `${planName} · ` : ""}Out of AI credit` : [planName, credit].filter(Boolean).join(" · ");
+  plan.dataset.tone = a.outOfCredit ? "warn" : "";
+}
+$("acct-avatar").addEventListener("error", () => {
+  // The picture did not load: show the initial instead.
+  $("acct-avatar").hidden = true;
+  const u = state?.account?.user;
+  if (u) $("acct-initial").textContent = (u.name || u.email).trim().charAt(0).toUpperCase();
+});
+$("acct-settings").addEventListener("click", () => {
+  acct.open = false;
+  void chrome.runtime.openOptionsPage();
+});
+const signOutBtn = $<HTMLButtonElement>("acct-signout");
+signOutBtn.addEventListener("click", () =>
+  void busy(signOutBtn, async () => {
+    try {
+      applyState(await uiRequest({ type: "account.signOut" }));
+      acct.open = false;
+    } catch (err) {
+      $("status-text").textContent = errorText(err);
+    }
+  }),
+);
+document.addEventListener("click", (e) => {
+  if (acct.open && !acct.contains(e.target as Node)) acct.open = false;
+});
+
 function applyState(s: UiState): void {
   state = s;
   renderStatus(s);
+  renderAccount(s);
+  setTopupUrl(s.account?.outOfCredit?.topupUrl || s.account?.dashboardUrl || null);
   const running = s.runningSessions ?? (s.running ? [s.running] : []);
-  activity.setRunning(running);
+  chat.setRunning(running);
   composer.setRunning(running);
   composer.setState(s);
+  tasks.setState(s);
+  // A left running session that ended no longer needs hiding.
+  for (const [tab, id] of [...left]) if (!running.some((r) => r.sessionId === id)) left.delete(tab);
+  resolveChat();
+  updateComposer();
   updateNote();
 }
 
@@ -113,10 +337,11 @@ function onPush(msg: UiPush): void {
       applyState(msg.state);
       break;
     case "event":
-      activity.onEvent(msg.event);
+      chat.onEvent(msg.event);
       break;
     case "session":
-      activity.onSession(msg.session);
+      chat.onSession(msg.session);
+      history.onSession(msg.session);
       if (focused?.sessionId === msg.session.sessionId) composer.setConversation(msg.session);
       if (msg.session.endedAt && msg.session.source === "local") void tasks.refresh();
       break;
@@ -143,6 +368,8 @@ function connect(): void {
 async function loadState(): Promise<void> {
   try {
     applyState(await uiRequest({ type: "state.get" }));
+    // Plan and credit may have changed elsewhere; the fresh state arrives as a push.
+    void uiRequest({ type: "account.refresh" }).then(applyState, () => {});
   } catch (err) {
     statusEl.dataset.tone = "bad";
     $("status-text").textContent = `Background not reachable: ${errorText(err)}`;
@@ -150,13 +377,16 @@ async function loadState(): Promise<void> {
   }
 }
 
-let initial: TabName = "tasks";
+let saved: string | null = null;
 try {
-  if (localStorage.getItem("tab") === "activity") initial = "activity";
+  saved = localStorage.getItem("tab");
 } catch {
   // ignore
 }
-showTab(initial);
+showTab(savedTab(saved));
+// The TODO list also feeds Run now and the task counts, whichever tab opens first.
+void tasks.refresh();
+void trackTabs();
 connect();
 setInterval(() => {
   tasks.tick();

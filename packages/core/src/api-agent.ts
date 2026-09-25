@@ -9,11 +9,14 @@
  */
 import { TASK_END_TOOLS, toolsFor, type AgentEvent, type RunConfig, type TaskRunResult, type ToolName } from "@browsertodo/shared";
 import type { AgentSession, ApiAgentOptions } from "./types.js";
-import { createToolExecutor } from "./executor.js";
+import { createToolExecutor, picksEvent } from "./executor.js";
 import { buildSystemPrompt, buildTaskPrompt } from "./prompts.js";
 import {
+  ANTHROPIC_MESSAGES_URL,
+  OUT_OF_CREDIT,
   buildRequest,
   postMessages,
+  type MessagesTransport,
   toolResultBlock,
   type ContentBlock,
   type MessageParam,
@@ -52,6 +55,13 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
   const sleep = internals.sleep ?? defaultSleep;
   const delays = internals.retryDelaysMs ?? RETRY_DELAYS_MS;
   const jevOn = opts.jev !== null;
+  const label = opts.label ?? "Claude API";
+  const transport: MessagesTransport = {
+    url: opts.baseUrl ? `${opts.baseUrl.replace(/\/+$/, "")}/messages` : ANTHROPIC_MESSAGES_URL,
+    auth: opts.auth ?? "x-api-key",
+    label,
+  };
+  if (opts.headers) transport.headers = opts.headers;
 
   const emit = (e: AgentEvent) => {
     try {
@@ -138,6 +148,9 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
       controller.abort();
       // Messages typed while the turn was ending still reach Claude with the next turn.
       for (const t of pendingUser.splice(0)) addUserText(humanSaid(t));
+      // Who picked this turn's elements: Jev, or Claude after Jev was unsure.
+      const picks = jevOn ? picksEvent(executor.takePicks()) : null;
+      if (picks) emit(picks);
       const ev: AgentEvent = { type: "task_end", outcome: r.outcome };
       if (r.summary !== undefined) ev.summary = r.summary;
       if (r.url !== undefined) ev.url = r.url;
@@ -150,14 +163,24 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
 
     /** One request with retries. null means the turn already ended. */
     const request = async (): Promise<MessagesResponse | null> => {
-      const body = buildRequest({ model: opts.model, system, tools, messages });
+      const body = buildRequest({ model: opts.model, system, tools, messages, jev: jevOn });
       for (let attempt = 0; ; attempt++) {
-        const r = await postMessages(doFetch, opts.apiKey, body, controller.signal);
+        const r = await postMessages(doFetch, opts.apiKey, body, controller.signal, transport);
         if (ended) return null;
         if (r.kind === "ok") return r.message;
+        if (r.kind === "credit") {
+          emit({ type: "error", text: r.reason });
+          try {
+            opts.onOutOfCredit?.(r.topupUrl ? { message: r.reason, topupUrl: r.topupUrl } : { message: r.reason });
+          } catch {
+            /* the listener must not break the loop */
+          }
+          finish({ outcome: "paused", reason: OUT_OF_CREDIT });
+          return null;
+        }
         if (r.kind === "auth") {
           emit({ type: "error", text: r.reason });
-          finish({ outcome: "failed", reason: KEY_REJECTED });
+          finish({ outcome: "failed", reason: transport.auth === "bearer" ? r.reason : KEY_REJECTED });
           return null;
         }
         if (r.kind === "error") {
@@ -279,6 +302,6 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
   }
 
   messages.push({ role: "user", content: [{ type: "text", text: buildTaskPrompt(opts.task, opts.mediaPaths, { isRetry: opts.config.isRetry }) }] });
-  emit({ type: "status", text: `Claude API (${opts.model})${jevOn ? " with Jev" : ""}` });
+  emit({ type: "status", text: `${label} (${opts.model})${jevOn ? " with Jev" : ""}` });
   return runTurn(opts.config);
 }

@@ -8,6 +8,7 @@ const BRAIN_LABELS: Record<BrainKind, string> = {
   "claude-code": "Claude Code",
   "claude-api": "Claude API",
   scripted: "Scripted",
+  browsertodo: "browsertodo AI",
 };
 
 export function brainLabel(kind: BrainKind, jev = false): string {
@@ -20,7 +21,7 @@ export function sessionHeadline(s: { brain: BrainKind; model?: string; jev: bool
 }
 
 /**
- * The note under the Activity header while a conversation waits for the
+ * The note under the Chat header while a conversation waits for the
  * next message: whether it continues in the same agent session.
  */
 export function conversationNote(s: { brain: BrainKind; endedAt?: string }, open: boolean): string | null {
@@ -28,18 +29,31 @@ export function conversationNote(s: { brain: BrainKind; endedAt?: string }, open
   if (!open) return "Conversation open · session ended — the next message starts a fresh session with a summary";
   return s.brain === "claude-code"
     ? "Conversation open · Claude Code session kept 30 min"
-    : "Conversation open · Claude API history kept 30 min";
+    : `Conversation open · ${BRAIN_LABELS[s.brain]} history kept 30 min`;
 }
 
 export interface StatusLine {
   tone: Tone;
   text: string;
-  /** What the banner's button does, when it has one. */
-  action?: "settings" | "resume";
+  /** What the banner's button does, when it has one. topup: open the account's top-up page. */
+  action?: "settings" | "resume" | "topup";
+}
+
+/**
+ * True when the hosted AI is (or would be) the brain and the account has no
+ * credit: the status line and the model chip say "Out of AI credit".
+ */
+export function outOfCredit(state: Pick<UiState, "brain" | "settings" | "account">): boolean {
+  const a = state.account;
+  if (!a?.signedIn || !a.outOfCredit) return false;
+  return state.brain.effective === "browsertodo" || state.settings.brain === "browsertodo" || !state.brain.effective;
 }
 
 /** The slim line at the top of the side panel. */
 export function statusLine(state: UiState): StatusLine {
+  if (outOfCredit(state)) {
+    return { tone: "warn", text: "Out of AI credit", action: "topup" };
+  }
   if (!state.brain.effective) {
     return {
       tone: "bad",
@@ -136,7 +150,48 @@ export function taskChip(task: Timing, now = Date.now()): Chip {
   }
 }
 
-/** The Activity header's meta line: "started 2 min ago · 2 messages", or "today 14:30 · done" once ended. */
+/** Plain-language tooltips for the status chips on tasks and runs. */
+const CHIP_HINTS: Record<string, string> = {
+  due: "Its time has come: it runs at the next check, or right away with Run now",
+  scheduled: "Waits until the time shown, then runs at the next check",
+  retry: "Stopped for a temporary reason; it is tried again by itself later",
+  running: "The agent is working on it now",
+  done: "Finished",
+  failed: "Did not work and will not be tried again by itself; the reason is shown",
+  "needs you": "The agent stopped because it needs you (a login, a code, a choice); the reason is shown",
+  cancelled: "Cancelled; it will not run",
+};
+
+export function chipHint(label: string): string {
+  return CHIP_HINTS[label] ?? "";
+}
+
+/**
+ * The TODO tab's Run now button: enabled when a task is due (or the cloud
+ * queue may have one). account: the list is the signed-in account's.
+ */
+export function runNowButton(
+  tasks: readonly Timing[],
+  settings: { intervalMinutes: number; cloudEnabled: boolean } | null,
+  now = Date.now(),
+  account = false,
+): { disabled: boolean; title: string } {
+  const due = tasks.some((t) => {
+    if (t.status !== "pending") return false;
+    const next = taskNextTime(t);
+    return !next || Date.parse(next) <= now;
+  });
+  const cloud = !account && !!settings?.cloudEnabled;
+  if (!due && !cloud) return { disabled: true, title: "Nothing is waiting to run" };
+  const n = settings?.intervalMinutes;
+  const every = n ? ` (every ${n} ${n === 1 ? "minute" : "minutes"})` : "";
+  return {
+    disabled: false,
+    title: `Run the tasks whose time has come${cloud ? " and check the cloud queue" : ""}, instead of waiting for the next check${every}`,
+  };
+}
+
+/** The Chat header's meta line: "started 2 min ago · 2 messages", or "today 14:30 · done" once ended. */
 export function sessionMeta(
   s: { startedAt: string; endedAt?: string; outcome?: string; turns?: number },
   now = Date.now(),
@@ -218,7 +273,7 @@ export function accountLabel(account: string | null | undefined): string {
   return /^[A-Za-z0-9_]+$/.test(a) ? `@${a}` : a;
 }
 
-/** Models offered in the side panel's model menu. Other ids still work (set on the options page). */
+/** Models offered in the side panel's model menu (the hosted AI offers the same ones). Other ids still work (set on the options page). */
 export const KNOWN_MODELS: readonly { id: string; label: string }[] = [
   { id: "claude-sonnet-5", label: "Sonnet 5" },
   { id: "claude-opus-5-5", label: "Opus 5.5" },
@@ -234,8 +289,13 @@ export function modelLabel(id: string | null | undefined): string {
 }
 
 export interface ModelChipInfo {
-  /** "Sonnet 5 · Jev" or "Sonnet 5". */
+  /** "Sonnet 5 · Jev" or "Sonnet 5"; "Out of AI credit" when the hosted AI has none. */
   label: string;
+  /** The hosted browsertodo AI runs (or would run) the next task: only its models are offered. */
+  hosted: boolean;
+  /** Hosted: the account's credit ("$4.21 left"), when known. */
+  credit?: string;
+  outOfCredit: boolean;
   model: string;
   jevActive: boolean;
   /** Whether Jev can be switched on at all (a key here, or the helper has its own). */
@@ -244,14 +304,28 @@ export interface ModelChipInfo {
 }
 
 /** What the composer's model chip shows: the model that will run, and whether Jev helps. */
-export function modelChip(state: Pick<UiState, "settings" | "brain">): ModelChipInfo {
-  const model = state.settings.anthropicModel;
+export function modelChip(state: Pick<UiState, "settings" | "brain" | "account">): ModelChipInfo {
+  const hosted = state.brain.effective === "browsertodo" || (!state.brain.effective && state.settings.brain === "browsertodo");
+  const setting = state.settings.anthropicModel;
+  const model = hosted && !KNOWN_MODELS.some((m) => m.id === setting) ? KNOWN_MODELS[0]!.id : setting;
   const jevActive = !!state.brain.effective && state.brain.jevActive;
-  return {
-    label: modelLabel(model) + (jevActive ? " · Jev" : ""),
+  const noCredit = outOfCredit(state);
+  const info: ModelChipInfo = {
+    label: noCredit ? "Out of AI credit" : modelLabel(model) + (jevActive ? " · Jev" : ""),
+    hosted,
+    outOfCredit: noCredit,
     model,
     jevActive,
-    jevPossible: state.brain.jevActive || !!state.settings.jevApiKey || !!state.brain.helper?.jevAvailable,
+    jevPossible: hosted || state.brain.jevActive || !!state.settings.jevApiKey || !!state.brain.helper?.jevAvailable,
     jevEnabled: state.settings.jevEnabled,
   };
+  const credit = state.account?.signedIn ? state.account.credit : undefined;
+  if (hosted && credit) info.credit = `${centsLabel(credit.totalCents)} AI credit left`;
+  return info;
+}
+
+/** 421 -> "$4.21" */
+export function centsLabel(cents: number): string {
+  const sign = cents < 0 ? "-" : "";
+  return `${sign}$${(Math.abs(cents) / 100).toFixed(2)}`;
 }

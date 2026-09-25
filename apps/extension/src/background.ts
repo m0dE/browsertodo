@@ -5,10 +5,14 @@
 import { z } from "zod";
 import * as core from "@browsertodo/core";
 import type { ExtensionSettings } from "@browsertodo/shared";
+import { AccountService, browserTimeZone } from "./account/account.js";
+import { AccountTodo, LocalTodo, type TodoSource } from "./account/todo-source.js";
 import { AgentSlots } from "./agent-slots.js";
 import { ApiClient } from "./api-client.js";
 import { Cdp } from "./cdp.js";
+import { GOOGLE_CLIENT_ID } from "./build-config.js";
 import { ApiBrain } from "./engine/api-brain.js";
+import { hostedBackend } from "./engine/hosted-brain.js";
 import { resolveBrain } from "./engine/brain-resolver.js";
 import { registerBrowserHandlers } from "./engine/browser-caller.js";
 import { ClaudeCodeBrain } from "./engine/claude-code-brain.js";
@@ -24,6 +28,7 @@ import { HelperLink } from "./helper-link.js";
 import { notify } from "./notify.js";
 import { ALARM_NAME, ensureAlarm, getRunnerId, handleStorageChange, loadSettings, saveSettings, saveSettingsPatch } from "./settings-store.js";
 import type { UiRequest } from "./ui-protocol.js";
+import { TabChats } from "./tab-chats.js";
 import { Vault } from "./vault.js";
 
 // MV3 forbids eval; stop zod from probing for it.
@@ -36,8 +41,11 @@ const HELPER_AUTOCONNECT_MS = 60_000;
 
 const cdp = new Cdp();
 const vault = new Vault();
+// Each browser tab has its own chat (tab -> conversation); the side panel follows the active tab.
+const tabChats = new TabChats();
 // Each running session acts in its own agent tab (slot); slot 0 is the first agent tab.
-const slots = new AgentSlots(cdp, vault);
+// Scheduled runs never take over a tab that has a chat.
+const slots = new AgentSlots(cdp, vault, async (tabId) => (await tabChats.get(tabId)) !== null);
 const { tab: agentTab, driver, browser } = slots.get(0);
 const db = new IdbKvDb();
 const localStore = new LocalStore({ db });
@@ -49,15 +57,72 @@ const mediaFiles = new MediaFiles();
 const claudeCodeBrain = new ClaudeCodeBrain(helper, { onSessionsChanged: () => hub?.pushState() });
 const apiBrain = new ApiBrain({ core, browser, onSessionsChanged: () => hub?.pushState() });
 
+// The browsertodo account: Google sign-in, the account's TODO list, billing and the hosted AI.
+const account = new AccountService({
+  loadSettings,
+  clientId: GOOGLE_CLIENT_ID,
+  identity: {
+    redirectUri: () => chrome.identity.getRedirectURL(),
+    launch: (url) => chrome.identity.launchWebAuthFlow({ url, interactive: true }),
+  },
+  localTasks: localStore,
+  onChange: () => {
+    hub?.pushState();
+    hub?.push({ type: "tasks.changed" });
+  },
+  log: (m) => console.log("[browsertodo] account:", m),
+});
+void account.load().catch(() => {});
+const hostedBrain = new ApiBrain({
+  core,
+  browser,
+  onSessionsChanged: () => hub?.pushState(),
+  backend: hostedBackend({
+    core,
+    session: () => account.session(),
+    onOutOfCredit: (topupUrl) => void account.markOutOfCredit(topupUrl).catch(() => {}),
+    afterTurn: () => void account.refresh(true).catch(() => {}),
+  }),
+});
+
 function brainStatus(settings: ExtensionSettings) {
-  return resolveBrain({ settings, helper: helper.info, helperError: helper.lastError });
+  return resolveBrain({ settings, helper: helper.info, helperError: helper.lastError, account: account.brainAccount() });
 }
 
 async function resolveForRun(settings: ExtensionSettings): Promise<ResolvedBrain> {
-  if (settings.brain !== "claude-api" && !helper.connected) await helper.connect().catch(() => undefined);
+  await account.load().catch(() => undefined);
+  const hostedFirst = account.brainAccount().hostedUsable && settings.brain === "auto";
+  if (settings.brain !== "claude-api" && settings.brain !== "browsertodo" && !hostedFirst && !helper.connected) {
+    await helper.connect().catch(() => undefined);
+  }
   const status = brainStatus(settings);
-  const brain = status.effective === "claude-code" ? claudeCodeBrain : status.effective === "claude-api" ? apiBrain : null;
+  const brains = { "claude-code": claudeCodeBrain, "claude-api": apiBrain, browsertodo: hostedBrain } as const;
+  const brain = status.effective && status.effective !== "scripted" ? brains[status.effective] : null;
   return { brain, status };
+}
+
+/** Next due time among the signed-in account's pending tasks (from the last list), for the due alarm. */
+let accountNextDue: number | null = null;
+function noteAccountTasks(tasks?: { status: string; notBefore: string | null; retryAfter: string | null }[]): void {
+  if (tasks) {
+    const times = tasks
+      .filter((t) => t.status === "pending" || t.status === "paused")
+      .map((t) => Math.max(Date.parse(t.notBefore ?? "") || 0, Date.parse(t.retryAfter ?? "") || 0));
+    accountNextDue = times.length ? Math.min(...times) : null;
+  } else {
+    // A task was added or changed: check soon.
+    accountNextDue = Date.now();
+  }
+  void scheduleDueAlarm().catch(() => {});
+}
+
+async function todoSource(): Promise<TodoSource> {
+  await account.load();
+  if (!account.session()) return new LocalTodo(localStore);
+  return new AccountTodo(await account.api(), browserTimeZone(), (tasks) => {
+    noteAccountTasks(tasks);
+    if (!tasks) hub?.push({ type: "tasks.changed" });
+  });
 }
 
 const createApi = (s: ExtensionSettings) => new ApiClient({ apiBase: s.apiBase, runnerKey: s.runnerKey });
@@ -69,12 +134,14 @@ const runner = new Runner({
   saveSettings,
   getRunnerId,
   createApi,
+  accountApi: () => account.runnerApi(),
   localStore,
   sessions,
   media: mediaFiles,
   resolveBrain: resolveForRun,
   core,
   slots,
+  tabChats,
   notify,
   keepAlive: () => chrome.runtime.getPlatformInfo(),
   onStateChange: () => hub?.pushState(),
@@ -92,7 +159,9 @@ async function nextRunAt(): Promise<string | undefined> {
 }
 
 async function scheduleDueAlarm(): Promise<void> {
-  const next = await localStore.nextWakeAt();
+  const local = await localStore.nextWakeAt();
+  const accountDue = account.session() && accountNextDue !== null ? new Date(accountNextDue) : null;
+  const next = local && accountDue ? (local < accountDue ? local : accountDue) : (local ?? accountDue);
   if (!next) {
     await chrome.alarms.clear(DUE_ALARM);
     return;
@@ -117,6 +186,26 @@ const router = new UiRouter({
   testJev: (s) => testJev(s, core),
   testCloud: (s) => testCloud(s, (x) => createApi(x).check()),
   vault,
+  account,
+  todo: todoSource,
+  tabChats,
+  focusTab: async (tabId) => {
+    try {
+      const tab = await chrome.tabs.update(tabId, { active: true });
+      if (tab?.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  runningTabs: async () => {
+    const out: Record<string, number[]> = {};
+    for (const s of runner.runningSessions) {
+      const tabs = await slots.tabsOf(s.sessionId);
+      if (tabs.length) out[s.sessionId] = tabs;
+    }
+    return out;
+  },
 });
 hub = new UiHub(() => router.getState());
 
@@ -127,6 +216,7 @@ localStore.onChange(() => {
   void scheduleDueAlarm().catch(() => {});
 });
 helper.onInfo(() => hub.pushState());
+tabChats.onChange(() => hub.pushState());
 
 let lastAutoConnect = 0;
 function maybeConnectHelper(): void {
@@ -148,13 +238,26 @@ function onStart(): void {
 chrome.runtime.onInstalled.addListener(() => onStart());
 chrome.runtime.onStartup.addListener(() => onStart());
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === DUE_ALARM && accountNextDue !== null && accountNextDue <= Date.now()) accountNextDue = null;
   if (alarm.name === ALARM_NAME || alarm.name === DUE_ALARM) void runner.runDue("alarm");
 });
 chrome.storage.onChanged.addListener((changes, area) => {
   void handleStorageChange(changes, area);
-  if (area === "local" && changes.settings) hub.pushState();
+  if (area === "local" && changes.settings) {
+    // The account server URL may have changed: the session belongs to the old one.
+    void account.load().then(() => hub.pushState(), () => hub.pushState());
+  }
 });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => void runner.onTabUpdated(tabId, changeInfo));
+// A closed tab loses its chat (the session stays in the Activity Log); a turn running there stops.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void tabChats
+    .unbind(tabId)
+    .then((sessionId) => {
+      if (sessionId) runner.onChatTabClosed(sessionId);
+    })
+    .catch(() => {});
+});
 chrome.debugger.onDetach.addListener((source, reason) => cdp.handleDetach(source, String(reason)));
 chrome.runtime.onMessage.addListener((msg: UiRequest | ExtraRequest, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return false;
@@ -164,7 +267,11 @@ chrome.runtime.onMessage.addListener((msg: UiRequest | ExtraRequest, sender, sen
 });
 chrome.runtime.onConnect.addListener((port) => {
   if (port.sender?.id && port.sender.id !== chrome.runtime.id) return;
-  if (hub.attach(port)) maybeConnectHelper();
+  if (hub.attach(port)) {
+    maybeConnectHelper();
+    // Credit and plan may have changed elsewhere (dashboard, another browser).
+    void account.refresh().catch(() => {});
+  }
 });
 
 // Every worker start (not only install/startup): alarms, side panel behavior, crash recovery.
@@ -178,11 +285,13 @@ onStart();
   sessions,
   helper,
   settings: { load: loadSettings, save: saveSettingsPatch },
+  account,
   router,
   media: mediaFiles,
   vault,
   cdp,
   slots,
   agentTab,
+  tabChats,
   scheduleDueAlarm,
 };

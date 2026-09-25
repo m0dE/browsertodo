@@ -17,6 +17,10 @@ export const SETTLE_MS = 500;
 /** Wait after a scroll, for lazy content. */
 export const SCROLL_SETTLE_MS = 300;
 
+/** The screenshot tool's answer when a background tab cannot be captured (it is never brought to the front). */
+export const BACKGROUND_SHOT_SKIPPED =
+  "Screenshot skipped: the tab is in the background (the user is using another tab). Use read_page to see the page.";
+
 /** http(s) pages and about:blank: what navigate and open_tabs accept. */
 export const OPENABLE_URL = /^(https?:\/\/|about:blank$)/i;
 

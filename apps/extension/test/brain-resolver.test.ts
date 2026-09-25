@@ -60,3 +60,43 @@ describe("resolveBrain", () => {
     expect(r("auto", null, false, { jevApiKey: "j" }).jevActive).toBe(false);
   });
 });
+
+describe("resolveBrain with the browsertodo account", () => {
+  const OUT = null;
+  const signedOut = { signedIn: false, hostedUsable: false };
+  const credit = { signedIn: true, hostedUsable: true };
+  const noCredit = { signedIn: true, hostedUsable: false, outOfCredit: true };
+  const ra = (mode: BrainMode, account: typeof credit | typeof signedOut | null, helper: HelperInfo | null, key: boolean) =>
+    resolveBrain({ settings: { ...DEFAULT_SETTINGS, brain: mode, anthropicApiKey: key ? "sk" : "" }, helper, helperError: helper ? null : "host not found", account });
+
+  it.each([
+    // mode, account, helper, own key, expected
+    ["auto", credit, ok, true, "browsertodo"],
+    ["auto", credit, null, false, "browsertodo"],
+    ["auto", noCredit, ok, true, "claude-code"],
+    ["auto", noCredit, null, true, "claude-api"],
+    ["auto", noCredit, null, false, OUT],
+    ["auto", signedOut, ok, false, "claude-code"],
+    ["auto", signedOut, null, true, "claude-api"],
+    ["auto", null, null, false, OUT],
+    ["browsertodo", credit, ok, true, "browsertodo"],
+    ["browsertodo", noCredit, ok, true, OUT],
+    ["browsertodo", signedOut, ok, true, OUT],
+    ["claude-code", credit, ok, false, "claude-code"],
+    ["claude-api", credit, ok, true, "claude-api"],
+  ] as const)("%s, account %o, helper %#, key %s -> %s", (mode, account, helper, key, expected) => {
+    expect(ra(mode, account, helper, key).effective).toBe(expected);
+  });
+
+  it("explains what the hosted AI needs", () => {
+    expect(ra("browsertodo", signedOut, ok, true).note).toBe("Sign in to use browsertodo AI");
+    expect(ra("browsertodo", noCredit, ok, true).note).toMatch(/^Out of AI credit/);
+    expect(ra("auto", noCredit, null, false).note).toMatch(/^Out of AI credit: subscribe or top up.*or set a Claude API key/);
+    expect(ra("auto", signedOut, null, false).note).toMatch(/sign in for browsertodo AI/);
+  });
+
+  it("the hosted AI brings its own Jev (no key needed); off when Jev is switched off", () => {
+    expect(ra("auto", credit, null, false).jevActive).toBe(true);
+    expect(resolveBrain({ settings: { ...DEFAULT_SETTINGS, jevEnabled: false }, helper: null, account: credit }).jevActive).toBe(false);
+  });
+});

@@ -5,7 +5,7 @@
  * limits, the task_* result, user messages and stopping.
  */
 import type { AgentEvent, RunConfig, TaskRunResult, ToolName } from "@browsertodo/shared";
-import { createToolExecutor, type BrowserCaller, type JevLike } from "@browsertodo/core";
+import { createToolExecutor, picksEvent, type BrowserCaller, type JevLike } from "@browsertodo/core";
 import type { RunLog } from "../logger.js";
 import { UserInput } from "../brains/brain.js";
 import type { ToolSession } from "../tool-router.js";
@@ -62,7 +62,7 @@ export class TaskSession {
       mediaPaths: opts.mediaPaths,
       ...(opts.sleep ? { sleep: opts.sleep } : {}),
     });
-    this.tools = { taskId: opts.sessionId, allowedTools: opts.allowed, beforeCall: (name) => this.beforeCall(name), executor };
+    this.tools = { taskId: opts.sessionId, allowedTools: opts.allowed, jev: opts.jev !== null, beforeCall: (name) => this.beforeCall(name), executor };
   }
 
   get aborted(): boolean {
@@ -121,6 +121,9 @@ export class TaskSession {
   /** The finished turn's result, announced with a task_end event. */
   report(turn: Turn): TaskRunResult {
     const result = turnResult(turn, this.brainError);
+    // Who picked this turn's elements: Jev, or Claude after Jev was unsure.
+    const picks = this.opts.jev ? picksEvent(this.tools.executor.takePicks()) : null;
+    if (picks) this.emit(picks);
     const end: AgentEvent = { type: "task_end", outcome: result.outcome };
     if (result.summary !== undefined) end.summary = result.summary;
     if (result.url !== undefined) end.url = result.url;

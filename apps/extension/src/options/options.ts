@@ -1,8 +1,9 @@
-/** Options page: brain, Jev, cloud sync and advanced settings. */
+/** Options page: account and API keys, brain, Jev, self-hosting (account server, cloud sync) and advanced settings. */
 import type { BrainMode, ExtensionSettings } from "@browsertodo/shared";
 import { uiRequest, type UiState } from "../ui-protocol.js";
 import { $, busy, errorText, flash, h } from "../sidepanel/dom.js";
 import { brainLabel, KNOWN_MODELS } from "../sidepanel/format.js";
+import { initAccountSection } from "./account-section.js";
 import { initVaultSection } from "./vault-section.js";
 import {
   adjustedFields,
@@ -26,7 +27,7 @@ const NUMBER_FIELDS = [
   "pauseRetryMinutes",
   "maxConsecutiveFailures",
 ] as const satisfies readonly (keyof ExtensionSettings)[];
-const TEXT_FIELDS = ["anthropicModel", "apiBase"] as const satisfies readonly (keyof ExtensionSettings)[];
+const TEXT_FIELDS = ["anthropicModel", "apiBase", "accountApiBase"] as const satisfies readonly (keyof ExtensionSettings)[];
 const BOOL_FIELDS = ["jevEnabled", "cloudEnabled"] as const satisfies readonly (keyof ExtensionSettings)[];
 
 const LABELS: Partial<Record<keyof ExtensionSettings, string>> = {
@@ -62,6 +63,7 @@ function readForm(): Partial<Omit<ExtensionSettings, SecretKey>> {
   for (const k of TEXT_FIELDS) out[k] = input(k).value.trim();
   for (const k of BOOL_FIELDS) out[k] = input(k).checked;
   if (typeof out.apiBase === "string") out.apiBase = out.apiBase.replace(/\/+$/, "");
+  if (typeof out.accountApiBase === "string") out.accountApiBase = out.accountApiBase.replace(/\/+$/, "");
   return out as Partial<Omit<ExtensionSettings, SecretKey>>;
 }
 
@@ -139,7 +141,10 @@ function onChange(): void {
   $("cloud-fields").hidden = !input("cloudEnabled").checked;
 }
 
+const accountSection = initAccountSection({ onState: (s) => renderState(s) });
+
 function renderState(state: UiState): void {
+  accountSection.render(state);
   const b = state.brain;
   const now = $("now-using");
   if (b.effective) {
@@ -241,6 +246,8 @@ connectBtn.addEventListener("click", () =>
 async function main(): Promise<void> {
   try {
     applySaved(await uiRequest({ type: "state.get" }));
+    // Fresh plan and credit (e.g. back from a Stripe page).
+    renderState(await uiRequest({ type: "account.refresh", force: true }));
   } catch (err) {
     $("now-using").textContent = `Background not reachable: ${errorText(err)}`;
   }

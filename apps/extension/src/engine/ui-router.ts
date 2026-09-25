@@ -3,7 +3,8 @@
  * the side panel are in ui-hub.ts.
  */
 import { redactSettings, type ExtensionSettings, type HelperInfo, type HelperMethods, type SessionInfo } from "@browsertodo/shared";
-import type { BrainStatus, UiRequest, UiResponse, UiResults, UiState } from "../ui-protocol.js";
+import type { AccountView, ApiKeyInfo, BrainStatus, PlanId, UiRequest, UiResponse, UiResults, UiState } from "../ui-protocol.js";
+import { LocalTodo, type TodoSource } from "../account/todo-source.js";
 import { errText } from "../errors.js";
 import type { LocalStore } from "./local-store.js";
 import { uploadToBlob } from "./local-store.js";
@@ -19,7 +20,7 @@ export interface RouterRunner {
   runDue(trigger: "alarm" | "manual"): Promise<{ started: boolean; detail?: string }>;
   runAdhoc(input: AdhocInput): Promise<{ sessionId: string }>;
   continueSession(sessionId: string, note?: string): Promise<{ sessionId: string }>;
-  message(sessionId: string | undefined, text: string): Promise<UiResults["run.message"]>;
+  message(sessionId: string | undefined, text: string, opts?: { tabId?: number }): Promise<UiResults["run.message"]>;
   newChat(sessionId?: string): Promise<{ ok: boolean }>;
   stop(sessionId?: string): boolean;
   say(text: string, sessionId?: string): Promise<boolean>;
@@ -33,6 +34,20 @@ export interface RouterVault {
   list(): Promise<{ locked: boolean; sites: string[] }>;
   set(site: string, username: string, password: string): Promise<void>;
   delete(site: string): Promise<void>;
+}
+
+/** The account side the router uses (AccountService). */
+export interface RouterAccount {
+  view(): Promise<AccountView>;
+  signIn(): Promise<void>;
+  signOut(): Promise<void>;
+  refresh(force?: boolean): Promise<void>;
+  migrateLocalTasks(): Promise<{ moved: number; failed: number; errors: string[] }>;
+  dismissMigration(): Promise<void>;
+  billingLink(req: { action: "checkout" | "topup" | "portal"; plan?: PlanId; amountCents?: number; returnUrl: string }): Promise<string>;
+  listKeys(): Promise<ApiKeyInfo[]>;
+  createKey(name: string, role: "creator" | "runner"): Promise<{ id: string; name: string; role: string; key: string }>;
+  revokeKey(id: string): Promise<void>;
 }
 
 export interface UiRouterDeps {
@@ -58,6 +73,20 @@ export interface UiRouterDeps {
   testJev(settings: ExtensionSettings): Promise<TestResult>;
   testCloud(settings: ExtensionSettings): Promise<TestResult>;
   vault: RouterVault;
+  /** The browsertodo account. Absent: no account features (always signed out). */
+  account?: RouterAccount;
+  /** The TODO tab's tasks: the account's when signed in, else the local store. */
+  todo?(): Promise<TodoSource>;
+  /** Which conversation belongs to which browser tab. Absent: chats are not per tab. */
+  tabChats?: {
+    all(): Promise<Record<string, string>>;
+    bind(tabId: number, sessionId: string): Promise<void>;
+    unbind(tabId: number, sessionId?: string): Promise<string | null>;
+  };
+  /** The tabs each running session acts in (session id -> tab ids). */
+  runningTabs?(): Promise<Record<string, number[]>>;
+  /** Activates a browser tab and focuses its window. */
+  focusTab?(tabId: number): Promise<boolean>;
 }
 
 /** A request outside ui-protocol.ts that the router also answers (the e2e suite reads the helper log with it). */
@@ -68,6 +97,8 @@ export class UiRouter {
 
   async getState(): Promise<UiState> {
     const d = this.deps;
+    // The account first: the brain status reads its cached credit.
+    const account = d.account ? await d.account.view().catch(() => undefined) : undefined;
     const settings = await d.loadSettings();
     const rs = await d.runner.state();
     const state: UiState = {
@@ -78,12 +109,31 @@ export class UiRouter {
       paused: settings.paused,
       openConversations: d.openConversations(),
     };
+    if (account) state.account = account;
+    if (d.tabChats) state.tabChats = await d.tabChats.all().catch(() => ({}));
+    if (d.runningTabs) state.runningTabs = await d.runningTabs().catch(() => ({}));
     if (settings.paused && rs.pausedReason) state.pausedReason = rs.pausedReason;
     if (rs.lastRunAt) state.lastRunAt = rs.lastRunAt;
     if (rs.lastError) state.lastError = rs.lastError;
     const next = await d.nextRunAt().catch(() => undefined);
     if (next) state.nextRunAt = next;
     return state;
+  }
+
+  private account(): RouterAccount {
+    if (!this.deps.account) throw new Error("Accounts are not available");
+    return this.deps.account;
+  }
+
+  /** The conversation belongs to the browser tab its request came from. */
+  private async bindTab(tabId: unknown, sessionId: string | undefined): Promise<void> {
+    const tab = optTab(tabId);
+    if (tab !== undefined && sessionId && this.deps.tabChats) await this.deps.tabChats.bind(tab, sessionId);
+  }
+
+  private async todo(): Promise<TodoSource> {
+    if (this.deps.todo) return this.deps.todo();
+    return new LocalTodo(this.deps.localStore);
   }
 
   /** Answers one request; errors become { ok: false, error }. */
@@ -120,19 +170,44 @@ export class UiRouter {
           account: msg.account ?? null,
           media: (msg.media ?? []).map((m) => ({ name: m.name, blob: uploadToBlob(m) })),
         };
+        const tab = optTab(msg.tabId);
+        if (tab !== undefined) input.tabId = tab;
         return d.runner.runAdhoc(input) satisfies Promise<UiResults["run.adhoc"]>;
       }
       case "run.continue": {
         if (typeof msg.sessionId !== "string" || !msg.sessionId) throw new Error("sessionId is required");
         const note = typeof msg.text === "string" ? msg.text.trim() : "";
+        // Continued from a tab: the conversation goes on there.
+        await this.bindTab(msg.tabId, msg.sessionId);
         return d.runner.continueSession(msg.sessionId, note || undefined) satisfies Promise<UiResults["run.continue"]>;
       }
       case "run.message": {
         const text = typeof msg.text === "string" ? msg.text : "";
-        return d.runner.message(optId(msg.sessionId), text) satisfies Promise<UiResults["run.message"]>;
+        const sessionId = optId(msg.sessionId);
+        const tab = optTab(msg.tabId);
+        if (sessionId && text.trim()) await this.bindTab(tab, sessionId);
+        return d.runner.message(sessionId, text, tab === undefined ? {} : { tabId: tab }) satisfies Promise<UiResults["run.message"]>;
       }
-      case "run.newChat":
+      case "run.newChat": {
+        const tab = optTab(msg.tabId);
+        if (tab !== undefined && d.tabChats) await d.tabChats.unbind(tab, optId(msg.sessionId));
         return d.runner.newChat(optId(msg.sessionId)) satisfies Promise<UiResults["run.newChat"]>;
+      }
+      case "tab.focus": {
+        const tab = optTab(msg.tabId);
+        if (tab === undefined) throw new Error("tabId is required");
+        return { ok: d.focusTab ? await d.focusTab(tab) : false } satisfies UiResults["tab.focus"];
+      }
+      case "chat.bind": {
+        const sessionId = optId(msg.sessionId);
+        const tab = optTab(msg.tabId);
+        if (!sessionId || tab === undefined) throw new Error("sessionId and tabId are required");
+        if (!d.tabChats) throw new Error("Chats are not per tab here");
+        const session = await d.sessions.get(sessionId);
+        if (!session) throw new Error(`No session ${sessionId}`);
+        await d.tabChats.bind(tab, sessionId);
+        return this.getState() satisfies Promise<UiResults["chat.bind"]>;
+      }
       case "session.log": {
         const session = await d.sessions.get(String(msg.sessionId ?? ""));
         if (!session) throw new Error(`No session ${String(msg.sessionId)}`);
@@ -155,11 +230,13 @@ export class UiRouter {
       case "schedule.resume":
         await d.runner.resumeSchedule();
         return this.getState();
-      case "tasks.list":
-        return { tasks: await d.localStore.listWithMedia() } satisfies UiResults["tasks.list"];
+      case "tasks.list": {
+        const todo = await this.todo();
+        return { tasks: await todo.list(), source: todo.kind } satisfies UiResults["tasks.list"];
+      }
       case "tasks.add":
         return {
-          task: await d.localStore.add({
+          task: await (await this.todo()).add({
             instructions: msg.instructions,
             account: msg.account ?? null,
             notBefore: msg.notBefore ?? null,
@@ -168,11 +245,47 @@ export class UiRouter {
           }),
         } satisfies UiResults["tasks.add"];
       case "tasks.update":
-        return { task: await d.localStore.update(msg.id, msg.patch ?? {}) } satisfies UiResults["tasks.update"];
+        return { task: await (await this.todo()).update(msg.id, msg.patch ?? {}) } satisfies UiResults["tasks.update"];
       case "tasks.delete":
-        return { ok: await d.localStore.delete(msg.id) } satisfies UiResults["tasks.delete"];
+        return { ok: await (await this.todo()).delete(msg.id) } satisfies UiResults["tasks.delete"];
       case "tasks.retry":
-        return { task: await d.localStore.retry(msg.id) } satisfies UiResults["tasks.retry"];
+        return { task: await (await this.todo()).retry(msg.id) } satisfies UiResults["tasks.retry"];
+      case "tasks.cancel":
+        return { task: await (await this.todo()).cancel(msg.id) } satisfies UiResults["tasks.cancel"];
+      case "account.signIn":
+        await this.account().signIn();
+        return this.getState();
+      case "account.signOut":
+        await this.account().signOut();
+        return this.getState();
+      case "account.refresh":
+        await this.account().refresh(msg.force === true);
+        return this.getState();
+      case "account.migrate": {
+        const r = await this.account().migrateLocalTasks();
+        return { ...r, state: await this.getState() } satisfies UiResults["account.migrate"];
+      }
+      case "account.dismissMigration":
+        await this.account().dismissMigration();
+        return this.getState();
+      case "account.billing": {
+        if (!["checkout", "topup", "portal"].includes(msg.action)) throw new Error(`Unknown billing action ${String(msg.action)}`);
+        const req: Parameters<RouterAccount["billingLink"]>[0] = { action: msg.action, returnUrl: String(msg.returnUrl ?? "") };
+        if (msg.plan) req.plan = msg.plan;
+        if (typeof msg.amountCents === "number") req.amountCents = msg.amountCents;
+        return { url: await this.account().billingLink(req) } satisfies UiResults["account.billing"];
+      }
+      case "account.keys.list":
+        return { keys: await this.account().listKeys() } satisfies UiResults["account.keys.list"];
+      case "account.keys.create": {
+        const name = String(msg.name ?? "").trim();
+        if (!name) throw new Error("Give the key a name");
+        if (msg.role !== "creator" && msg.role !== "runner") throw new Error("The role must be creator or runner");
+        return this.account().createKey(name, msg.role) satisfies Promise<UiResults["account.keys.create"]>;
+      }
+      case "account.keys.revoke":
+        await this.account().revokeKey(String(msg.id ?? ""));
+        return { ok: true } satisfies UiResults["account.keys.revoke"];
       case "sessions.list":
         return { sessions: await d.sessions.list(msg.limit ?? 50) } satisfies UiResults["sessions.list"];
       case "sessions.events": {
@@ -201,6 +314,11 @@ export class UiRouter {
         throw new Error(`Unknown request type: ${String((msg as { type?: unknown }).type)}`);
     }
   }
+}
+
+/** A browser tab id from a UI message, or undefined. */
+function optTab(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : undefined;
 }
 
 /** A session id from a UI message, or undefined. */

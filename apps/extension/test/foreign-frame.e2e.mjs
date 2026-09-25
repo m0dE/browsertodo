@@ -200,13 +200,20 @@ try {
     return "submitted";
   });
 
-  await step("scroll in fallback moves the page", async () => {
-    await call("scroll", { direction: "down", amount: 1 });
+  await step("scroll in fallback moves the page and reports how far", async () => {
+    const r = await call("scroll", { direction: "down", amount: 1 });
     const s = await call("readPage");
     const y = Number(/ScrollY: (\d+)/.exec(s.text)?.[1]);
     assert.ok(y > 300, `scrollY ${y}`);
-    await call("scroll", { direction: "up", amount: 5 });
-    return `scrollY ${y}`;
+    assert.equal(r.target, "page", JSON.stringify(r));
+    assert.equal(r.moved, y);
+    assert.equal(r.position, y);
+    await call("scroll", { direction: "down", amount: 20 });
+    const end = await call("scroll", { direction: "down", amount: 1 });
+    assert.equal(end.moved, 0, JSON.stringify(end));
+    assert.equal(end.reason, "end");
+    await call("scroll", { direction: "up", amount: 20 });
+    return `scrollY ${y}, then at the bottom: ${end.position} of ${end.size}`;
   });
 
   await step("upload in fallback fails with a clear reason", async () => {

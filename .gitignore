@@ -8,3 +8,4 @@ playwright-report/
 .dev.vars
 *.pem
 apps/extension/test/ui/screenshots/
+apps/extension/config.json

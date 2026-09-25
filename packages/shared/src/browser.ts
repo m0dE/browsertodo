@@ -28,6 +28,8 @@ export interface ElementInfo {
   disabled?: boolean;
   /** True when at least part of the element is inside the viewport. */
   inViewport: boolean;
+  /** Inside an open dialog (role=dialog/alertdialog, aria-modal, or <dialog open>), e.g. X's compose or reply box. */
+  inDialog?: boolean;
 }
 
 export interface PageSnapshot {
@@ -50,6 +52,36 @@ export interface Screenshot {
 }
 
 export type ScrollDirection = "up" | "down" | "left" | "right";
+
+/**
+ * What a browser.scroll actually did, measured before and after. Positions
+ * are along the scroll direction's axis (vertical for up/down).
+ */
+export interface ScrollReport {
+  /** Pixels moved in the requested direction; 0 when nothing moved. */
+  moved: number;
+  /**
+   * What moved, or when nothing moved, what was measured: the page (the
+   * window), or a scrollable container (the element given by index or its
+   * nearest scrollable ancestor, or a container under the wheel point that
+   * scrolled instead of the page).
+   */
+  target: "page" | "container";
+  /** The container's element index from read_page, when it has one. */
+  containerIndex?: number;
+  /** Scroll offset after the scroll (scrollY / scrollTop, or the x equivalents). */
+  position: number;
+  /** Full scrollable length (scrollHeight / scrollWidth). */
+  size: number;
+  /** Visible length (viewport or container client size). */
+  view: number;
+  /**
+   * Why nothing moved: "end" already at the end that way; "fixed" nothing
+   * there scrolls that way; "ignored" it could scroll but the page did not
+   * react; "frame" the wheel point is over an embedded frame.
+   */
+  reason?: "end" | "fixed" | "ignored" | "frame";
+}
 
 /**
  * One tab the agent works in during a run. `id` is a short per-run id ("t1" is
@@ -92,7 +124,8 @@ export type BrowserMethods = {
   "browser.pressKey": { params: { key: string }; result: { ok: true } };
   "browser.scroll": {
     params: { direction: ScrollDirection; amount?: number; index?: number };
-    result: { ok: true };
+    /** The report fields are missing when the driver could not measure (older drivers, fakes). */
+    result: { ok: true } & Partial<ScrollReport>;
   };
   "browser.upload": { params: { index: number; paths: string[] }; result: { ok: true } };
   "browser.currentUrl": { params: Record<string, never>; result: { url: string } };

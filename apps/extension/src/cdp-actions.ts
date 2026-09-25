@@ -9,6 +9,10 @@ import { NAV_TIMEOUT_MS, notFound, POLL_MS, SCROLL_SETTLE_MS, SETTLE_MS, type Pa
 import { isDebuggerBlocked } from "./fallback-driver.js";
 import type { keyEvents } from "./keys.js";
 import { indexSelector, snapshotExpression } from "./page-snapshot.js";
+import { sameProbe, scrollProbeExpression, scrollReport, type PageResult, type ScrollProbe } from "./scroll-probe.js";
+
+/** Extra readings after a wheel while the position still changes (smooth scrolling). */
+const SCROLL_SETTLE_POLLS = 6;
 
 interface EvaluateResult<T> {
   result?: { value?: T };
@@ -94,9 +98,29 @@ export class CdpActions {
     const dx = Math.round(amount * 0.8 * view.w);
     const deltaY = direction === "down" ? dy : direction === "up" ? -dy : 0;
     const deltaX = direction === "right" ? dx : direction === "left" ? -dx : 0;
+    // What could move under the wheel, measured before and after (never fails the scroll itself).
+    const probe = (mode: "measure" | "read") =>
+      this.evaluate<PageResult<ScrollProbe>>(tabId, scrollProbeExpression(mode, at.x, at.y, index ?? null)).then(
+        (r) => (r && r.ok && Array.isArray(r.value?.entries) ? r.value : null),
+        (err: unknown) => {
+          if (isDebuggerBlocked(err)) throw err;
+          return null;
+        },
+      );
+    const before = await probe("measure");
     await this.send(tabId, "Input.dispatchMouseEvent", { type: "mouseWheel", x: at.x, y: at.y, deltaX, deltaY });
     await this.sleep(SCROLL_SETTLE_MS);
-    return { ok: true };
+    if (!before) return { ok: true };
+    // Smooth scrolling may still be animating: read until two readings agree.
+    let after = await probe("read");
+    for (let i = 0; after && i < SCROLL_SETTLE_POLLS; i++) {
+      await this.sleep(POLL_MS / 2);
+      const again = await probe("read");
+      if (!again || sameProbe(after, again)) break;
+      after = again;
+    }
+    if (!after) return { ok: true };
+    return { ok: true, ...scrollReport(direction, before, after, index !== undefined) };
   }
 
   async upload(tabId: number, { index, paths }: P<"browser.upload">): Promise<R<"browser.upload">> {

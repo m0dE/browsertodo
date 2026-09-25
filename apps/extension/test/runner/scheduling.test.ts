@@ -210,7 +210,7 @@ describe("Runner: several tasks at once", () => {
     const b = await h.runner.runAdhoc({ instructions: "two" });
     await vi.waitFor(() => expect(startsOf()).toHaveLength(2));
     // One-off runs act on the tab the user is looking at (each slot picks its own).
-    expect(pool.log.filter((l) => l.startsWith("prepare"))).toEqual(["prepare 0 current-tab show", "prepare 1 current-tab show"]);
+    expect(pool.log.filter((l) => l.startsWith("prepare"))).toEqual(["prepare 0 current-tab", "prepare 1 current-tab"]);
     expect(h.brain.starts[0]!.browser).toBe(pool.slots.get(0)!.browser);
     expect(h.brain.starts[1]!.browser).toBe(pool.slots.get(1)!.browser);
     // A login page in slot 1's tab pauses only that session.

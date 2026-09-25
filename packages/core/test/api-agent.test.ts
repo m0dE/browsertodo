@@ -144,10 +144,26 @@ describe("startApiAgent", () => {
     expect(toolNames(r2!)).not.toContain("click");
     // The second act was not confident: the model is told to retry with an index, still via act.
     expect(lastUser(r3!).content[0].content[0].text).toContain("not confident at step 1");
-    expect(lastUser(r3!).content[0].content[0].text).toMatch(/element index/);
+    expect(lastUser(r3!).content[0].content[0].text).toMatch(/index of the right candidate/);
+    expect(lastUser(r3!).content[0].content[0].text).toContain("Candidates for step 1");
     expect(toolNames(r3!)).not.toContain("click");
     expect(toolNames(r3!)).not.toContain("type");
     expect(events.filter((e) => e.type === "jev")).toHaveLength(3);
+    // Jev mode: the tools are described for it, and the turn ends with who picked the elements.
+    const actTool = r1!.body.tools.find((t: any) => t.name === "act");
+    expect(actTool.description).toMatch(/Describe each step's element in words/);
+    expect(actTool.input_schema.properties.steps.items.properties.index.description).toMatch(/not confident/);
+    expect(r1!.body.tools.find((t: any) => t.name === "read_page").description).toMatch(/no index numbers/);
+    expect(events.at(-2)).toEqual({ type: "status", text: "Jev chose 2 of 2 element picks (clicks and typing)", picks: { jev: 2, claude: 0 } });
+    expect(events.at(-1)).toMatchObject({ type: "task_end", outcome: "done" });
+  });
+
+  it("without Jev, no picks line and the tools keep their index descriptions", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    const { session, server, events } = start(x, [msg(tool("act", { steps: [{ goal: "type", index: 2, text: "gm" }] })), msg(tool("task_complete", { summary: "ok" }))]);
+    await session.done;
+    expect(events.some((e) => e.type === "status" && "picks" in e)).toBe(false);
+    expect(server.requests[0]!.body.tools.find((t: any) => t.name === "read_page").description).toMatch(/indexed list/);
   });
 
   it("refuses a locked tool that the model calls anyway", async () => {

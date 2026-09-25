@@ -5,6 +5,7 @@
  */
 import type {
   AgentEvent,
+  ElementPicks,
   AgentTask,
   BrowserMethod,
   BrowserMethods,
@@ -28,10 +29,19 @@ export interface JevDecision {
   index: number | null;
   /** min(operation confidence, target confidence), 0..1 */
   confidence: number;
+  /** Element indices from most to least likely target (when Jev reports probabilities). */
+  ranked?: number[];
 }
 
 export interface JevLike {
-  decide(input: { goal: string; snapshot: PageSnapshot }): Promise<JevDecision>;
+  decide(input: {
+    goal: string;
+    snapshot: PageSnapshot;
+    /** The step types text (the text itself stays with Claude). */
+    typesText?: boolean;
+    /** What the previous step of the same act call did. */
+    previousStep?: string;
+  }): Promise<JevDecision>;
 }
 
 export interface ToolExecutorOptions {
@@ -55,6 +65,8 @@ export interface ToolExecutor {
   /** Validates args with ToolArgs, runs the tool, emits tool_call/tool_result/jev events. Never throws. */
   call(name: ToolName, args: unknown): Promise<ToolResult>;
   readonly callCount: number;
+  /** Element picks (act clicks and typing) by Jev and by Claude since the last take; resets the counts. */
+  takePicks(): ElementPicks;
 }
 
 /** A running agent. */
@@ -88,6 +100,23 @@ export interface ApiAgentOptions {
   onEvent: (e: AgentEvent) => void;
   /** Default globalThis.fetch. */
   fetch?: typeof fetch;
+  /**
+   * Messages API base: requests go to `${baseUrl}/messages`. Default
+   * "https://api.anthropic.com/v1". The browsertodo hosted AI is
+   * `${apiBase}/v1/ai` (with auth "bearer" and the session token as apiKey).
+   */
+  baseUrl?: string;
+  /** How apiKey is sent: "x-api-key" (Anthropic, default) or "bearer" (Authorization: Bearer). */
+  auth?: "x-api-key" | "bearer";
+  /** Extra headers on every Messages request (e.g. X-Browsertodo-Session). */
+  headers?: Record<string, string>;
+  /** Name in status lines and error reasons. Default "Claude API". */
+  label?: string;
+  /**
+   * HTTP 402 (the account is out of AI credit): called, then the turn ends
+   * paused with reason OUT_OF_CREDIT ("Out of AI credit").
+   */
+  onOutOfCredit?(info: { message: string; topupUrl?: string }): void;
 }
 
 export type FailureKind = "transient" | "permanent";

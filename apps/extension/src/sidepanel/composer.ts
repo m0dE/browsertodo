@@ -1,10 +1,10 @@
 /**
- * The input bar pinned to the bottom of the Tasks and Activity tabs. It talks
- * to the conversation the Activity tab shows (the live one, or the last one):
- * while its turn runs, a message goes into that turn (and Stop pauses it);
- * once the turn ended, a message is the conversation's next turn. "New chat"
- * ends the conversation and the box goes back to "Do this now", which starts
- * a new one.
+ * The input bar pinned to the bottom of the Chat and TODO tabs. It talks to
+ * the conversation the Chat tab shows (the current browser tab's): while its
+ * turn runs, a message goes into that turn (and Stop pauses it); once the
+ * turn ended, a message is the conversation's next turn. With no conversation
+ * shown (a new chat) the box is "Do this now", which starts a new one in the
+ * current tab. Every request names that tab.
  */
 import type { SessionInfo } from "@browsertodo/shared";
 import { uiRequest, type UiState } from "../ui-protocol.js";
@@ -19,13 +19,17 @@ export interface ComposerView {
   setRunning(running: readonly SessionInfo[]): void;
   /** Keeps the model chip in step with the settings and brain status. */
   setState(state: UiState): void;
-  /** The conversation the Activity tab shows (null: none). */
+  /** The conversation the Chat tab shows (null: a new chat). */
   setConversation(session: SessionInfo | null): void;
   /** The conversation the box talks to, or null ("Do this now"). */
   target(): SessionInfo | null;
   mode(): ComposerMode;
-  /** Talk to this conversation (again, after New chat) and focus the box. */
-  focusConversation(sessionId: string): void;
+  /** Put the cursor in the box. */
+  focus(): void;
+  /** Continue a stopped conversation now: sends the typed note if there is one, otherwise just continues. */
+  continueNow(sessionId: string): Promise<void>;
+  /** New Chat left this conversation: the tab has no chat any more, its kept-open agent session is closed (a running turn keeps running). */
+  leave(sessionId: string): void;
 }
 
 const NEW_PLACEHOLDER = "Do this now, e.g. “Post ‘good morning’ on X”";
@@ -36,20 +40,27 @@ export function initComposer(opts: {
   /** A message or a new task went out: show its conversation. */
   onStarted: (sessionId: string) => void;
   onState: (state: UiState) => void;
-  /** The target changed (a conversation, New chat, a run started or ended). */
+  /** The target changed (a conversation, a new chat, a run started or ended). */
   onTargetChange?: () => void;
+  /** "Top up…" in the model menu. */
+  onTopup?: () => void;
+  /** The browser tab the panel is showing the chat of (null: unknown). */
+  tabId?: () => number | null;
 }): ComposerView {
+  const tab = (): { tabId?: number } => {
+    const id = opts.tabId?.() ?? null;
+    return id === null ? {} : { tabId: id };
+  };
   const form = $<HTMLFormElement>("now-form");
   const text = $<HTMLTextAreaElement>("now-text");
   const attach = $("now-attach");
   const submit = $<HTMLButtonElement>("now-submit");
   const stop = $<HTMLButtonElement>("now-stop");
-  const newChat = $<HTMLButtonElement>("now-new");
   const msg = $("now-msg");
   const fileInput = $<HTMLInputElement>("now-files");
   const filesList = $("now-files-list");
   const files = filePicker(fileInput, filesList);
-  const model = initModelPicker({ onState: opts.onState, onError: (t) => flash(msg, t, "bad") });
+  const model = initModelPicker({ onState: opts.onState, onError: (t) => flash(msg, t, "bad"), onTopup: () => opts.onTopup?.() });
   // The attach control is a label around a hidden input; make it keyboard-operable.
   attach.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
@@ -59,10 +70,8 @@ export function initComposer(opts: {
   });
   let running = new Set<string>();
   let shown: SessionInfo | null = null;
-  /** The conversation the user closed with New chat; the box stays in "Do this now" for it. */
-  let dismissed: string | null = null;
 
-  const target = (): SessionInfo | null => (shown && shown.sessionId !== dismissed ? shown : null);
+  const target = (): SessionInfo | null => shown;
   const mode = (): ComposerMode => {
     const t = target();
     if (!t) return "new";
@@ -112,7 +121,7 @@ export function initComposer(opts: {
         clearInput();
         if (m === "conversation") flash(msg, "Sending…");
         try {
-          await uiRequest({ type: "run.message", sessionId: t.sessionId, text: value });
+          await uiRequest({ type: "run.message", sessionId: t.sessionId, text: value, ...tab() });
           flash(msg, "");
           if (m === "conversation") opts.onStarted(t.sessionId);
         } catch (err) {
@@ -126,7 +135,7 @@ export function initComposer(opts: {
       try {
         const media = await filesToUploads(files.files());
         // No account field here: the agent picks up accounts named in the text ("post this from @beta").
-        const { sessionId } = await uiRequest({ type: "run.adhoc", instructions: value, ...(media.length ? { media } : {}) });
+        const { sessionId } = await uiRequest({ type: "run.adhoc", instructions: value, ...(media.length ? { media } : {}), ...tab() });
         clearInput();
         files.clear();
         flash(msg, "");
@@ -135,16 +144,6 @@ export function initComposer(opts: {
         flash(msg, errorText(err), "bad");
       }
     });
-  });
-
-  newChat.addEventListener("click", () => {
-    const t = target();
-    if (!t) return;
-    dismissed = t.sessionId;
-    render();
-    text.focus();
-    // Closes the conversation's kept-open agent session (a running turn keeps running).
-    void uiRequest({ type: "run.newChat", sessionId: t.sessionId }).catch((err) => flash(msg, errorText(err), "bad"));
   });
 
   stop.addEventListener("click", () =>
@@ -170,7 +169,6 @@ export function initComposer(opts: {
     // Files go with a new task; a conversation keeps the files it started with.
     attach.hidden = m !== "new";
     filesList.hidden = m !== "new";
-    newChat.hidden = m !== "conversation";
     form.classList.toggle("running", m === "running");
     model.setRunning(m === "running");
     const key = `${m}:${target()?.sessionId ?? ""}`;
@@ -191,10 +189,24 @@ export function initComposer(opts: {
     },
     target,
     mode,
-    focusConversation(sessionId) {
-      if (dismissed === sessionId) dismissed = null;
-      render();
+    focus() {
       text.focus();
+    },
+    async continueNow(sessionId) {
+      const note = text.value.trim();
+      flash(msg, "Continuing…");
+      try {
+        await uiRequest({ type: "run.continue", sessionId, ...(note ? { text: note } : {}), ...tab() });
+        if (note) clearInput();
+        flash(msg, "");
+        opts.onStarted(sessionId);
+      } catch (err) {
+        flash(msg, errorText(err), "bad");
+      }
+    },
+    leave(sessionId) {
+      text.focus();
+      void uiRequest({ type: "run.newChat", sessionId, ...tab() }).catch((err) => flash(msg, errorText(err), "bad"));
     },
     setState(state) {
       model.setState(state);

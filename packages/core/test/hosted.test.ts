@@ -1,0 +1,141 @@
+/** The browsertodo hosted AI: startApiAgent with a custom endpoint and bearer auth, 402 handling, and Jev through the proxy. */
+import { describe, expect, it, vi } from "vitest";
+import { startApiAgentWith } from "../src/api-agent.js";
+import { OUT_OF_CREDIT } from "../src/anthropic.js";
+import { OutOfCreditError, createJev } from "../src/jev.js";
+import type { ApiAgentOptions } from "../src/types.js";
+import { FakeX } from "./fake-x.js";
+import { CONFIG, collect, noSleep } from "./helpers.js";
+
+type Reply = { status: number; body: unknown };
+
+function server(replies: Reply[]) {
+  const requests: { url: string; headers: Record<string, string>; body: any }[] = [];
+  let i = 0;
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    await new Promise((r) => setTimeout(r, 0));
+    requests.push({ url: String(url), headers: init?.headers as Record<string, string>, body: JSON.parse(String(init?.body)) });
+    const r = replies[Math.min(i++, replies.length - 1)]!;
+    return new Response(JSON.stringify(r.body), { status: r.status, headers: { "content-type": "application/json" } });
+  }) as unknown as typeof fetch;
+  return { fetchImpl, requests };
+}
+
+const done = {
+  status: 200,
+  body: {
+    id: "m1",
+    type: "message",
+    role: "assistant",
+    stop_reason: "tool_use",
+    content: [{ type: "tool_use", id: "tu1", name: "task_complete", input: { summary: "ok" } }],
+  },
+};
+
+function hosted(replies: Reply[], extra: Partial<ApiAgentOptions> = {}) {
+  const s = server(replies);
+  const { events, onEvent } = collect();
+  const x = new FakeX({ url: "https://example.com/" });
+  const session = startApiAgentWith(
+    {
+      sessionId: "S9",
+      apiKey: "bt_s_token",
+      model: "claude-sonnet-5",
+      task: { id: "T", instructions: "say hi", account: null },
+      mediaPaths: [],
+      config: CONFIG,
+      browser: x.caller(),
+      jev: null,
+      onEvent,
+      fetch: s.fetchImpl,
+      baseUrl: "https://api.test/v1/ai/",
+      auth: "bearer",
+      headers: { "X-Browsertodo-Session": "S9" },
+      label: "browsertodo AI",
+      ...extra,
+    },
+    { sleep: noSleep, retryDelaysMs: [] },
+  );
+  return { session, requests: s.requests, events };
+}
+
+describe("hosted AI transport", () => {
+  it("posts to ${baseUrl}/messages with the session token as a bearer and the session header", async () => {
+    const { session, requests, events } = hosted([done]);
+    expect(await session.done).toMatchObject({ outcome: "done" });
+    const req = requests[0]!;
+    expect(req.url).toBe("https://api.test/v1/ai/messages");
+    expect(req.headers).toMatchObject({ authorization: "Bearer bt_s_token", "X-Browsertodo-Session": "S9", "content-type": "application/json" });
+    expect(req.headers["x-api-key"]).toBeUndefined();
+    expect(req.headers["anthropic-dangerous-direct-browser-access"]).toBeUndefined();
+    // The body is a plain Anthropic Messages request.
+    expect(req.body).toMatchObject({ model: "claude-sonnet-5", max_tokens: 4096 });
+    expect(events[0]).toEqual({ type: "status", text: "browsertodo AI (claude-sonnet-5)" });
+  });
+
+  it("402 out_of_credit pauses the turn with OUT_OF_CREDIT and reports the top-up link once", async () => {
+    const onOutOfCredit = vi.fn();
+    const { session, requests, events } = hosted(
+      [{ status: 402, body: { error: "out_of_credit", message: "No AI credit left", topupUrl: "https://dash.test/billing" } }],
+      { onOutOfCredit },
+    );
+    expect(await session.done).toEqual({ outcome: "paused", reason: OUT_OF_CREDIT });
+    expect(OUT_OF_CREDIT).toBe("Out of AI credit");
+    expect(requests).toHaveLength(1); // not retried
+    expect(onOutOfCredit).toHaveBeenCalledTimes(1);
+    expect(onOutOfCredit).toHaveBeenCalledWith({ message: "Out of AI credit: No AI credit left", topupUrl: "https://dash.test/billing" });
+    expect(events).toContainEqual({ type: "error", text: "Out of AI credit: No AI credit left" });
+  });
+
+  it("an expired session (401) fails with a sign-in reason, not the API-key one", async () => {
+    const { session } = hosted([{ status: 401, body: { error: "invalid or expired session" } }]);
+    const r = await session.done;
+    expect(r.outcome).toBe("failed");
+    expect(r.reason).toMatch(/^browsertodo AI rejected the sign-in \(HTTP 401: invalid or expired session\)/);
+  });
+
+  it("server errors from the proxy are retried as transient with the proxy's label", async () => {
+    const { session, requests } = hosted([{ status: 503, body: { error: "upstream" } }]);
+    const r = await session.done;
+    expect(r.outcome).toBe("retry");
+    expect(r.reason).toMatch(/browsertodo AI server error \(HTTP 503: upstream\)/);
+    expect(requests).toHaveLength(1);
+  });
+});
+
+describe("createJev through the browsertodo proxy", () => {
+  const snapshot = {
+    url: "https://example.com",
+    title: "t",
+    text: "",
+    truncated: false,
+    elements: [{ index: 0, tag: "button", role: "button", name: "Go", inViewport: true }],
+  };
+
+  it("posts { state, questions } with the bearer token and extra headers, and reads { answers }", async () => {
+    const s = server([
+      { status: 200, body: { answers: { operation: { choice: "click", confidence: 0.9 }, target: { choice: "0", confidence: 0.95 } }, usage: {} } },
+    ]);
+    const jev = createJev("bt_s_token", { fetch: s.fetchImpl, endpoint: "https://api.test/v1/ai/jev", headers: { "X-Browsertodo-Session": "S1" } });
+    expect(await jev.decide({ goal: "click Go", snapshot })).toEqual({ operation: "click", index: 0, confidence: 0.9 });
+    const req = s.requests[0]!;
+    expect(req.url).toBe("https://api.test/v1/ai/jev");
+    expect(req.headers).toMatchObject({ authorization: "Bearer bt_s_token", "X-Browsertodo-Session": "S1" });
+    expect(Object.keys(req.body).sort()).toEqual(["questions", "state"]);
+    expect(req.body.state.goal).toBe("click Go");
+  });
+
+  it("402 throws OutOfCreditError with the top-up link", async () => {
+    const s = server([{ status: 402, body: { error: "out_of_credit", message: "No AI credit left", topupUrl: "https://dash.test/billing" } }]);
+    const jev = createJev("t", { fetch: s.fetchImpl, endpoint: "https://api.test/v1/ai/jev" });
+    const err = await jev.decide({ goal: "g", snapshot }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OutOfCreditError);
+    expect((err as OutOfCreditError).topupUrl).toBe("https://dash.test/billing");
+  });
+
+  it("other errors name the status", async () => {
+    const s = server([{ status: 500, body: { error: "boom" } }]);
+    const jev = createJev("t", { fetch: s.fetchImpl, endpoint: "https://api.test/v1/ai/jev" });
+    await expect(jev.decide({ goal: "g", snapshot })).rejects.toThrow("Jev HTTP 500: boom");
+  });
+});

@@ -22,6 +22,22 @@ describe("SessionStore", () => {
     expect(await store.get("a")).toMatchObject({ outcome: "done" });
   });
 
+  it("live text deltas are pushed but never stored; the final text is stored (long answers kept up to MAX_ASSISTANT_TEXT)", async () => {
+    const store = new SessionStore(new MemoryKvDb(), { now: () => new Date("2026-09-24T10:00:00Z") });
+    const pushed: StampedAgentEvent[] = [];
+    store.subscribe({ onEvent: (e) => pushed.push(e) });
+    await store.create(info("a", "2026-09-24T10:00:00Z"));
+    for (const t of ["You ", "have ", "mail"]) store.append("a", { type: "assistant_text_delta", id: "m1:0", text: t });
+    const answer = "x".repeat(6000);
+    store.append("a", { type: "assistant_text", text: answer, id: "m1:0" });
+    store.append("a", { type: "status", text: "after" });
+    expect(pushed.map((e) => e.type)).toEqual(["assistant_text_delta", "assistant_text_delta", "assistant_text_delta", "assistant_text", "status"]);
+    expect(pushed[0]).toEqual({ type: "assistant_text_delta", id: "m1:0", text: "You ", ts: "2026-09-24T10:00:00.000Z", sessionId: "a" });
+    const events = await store.eventsOf("a");
+    expect(events.map((e) => e.type)).toEqual(["assistant_text", "status"]);
+    expect((events[0] as Extract<StampedAgentEvent, { type: "assistant_text" }>).text).toBe(answer);
+  });
+
   it("reopen starts the next turn: events append after the stored ones, latest-turn fields are cleared", async () => {
     const db = new MemoryKvDb();
     const store = new SessionStore(db);

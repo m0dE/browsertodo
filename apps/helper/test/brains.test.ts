@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { DeltaBatcher, type AgentEvent } from "@browsertodo/shared";
 import { UserInput } from "../src/brains/brain.js";
 import { extractPostText, extractStartUrl } from "../src/brains/scripted.js";
-import { buildClaudeArgs, mapStreamEvent, userMessageLine } from "../src/brains/claude-code.js";
+import { ClaudeStreamMapper, buildClaudeArgs, isNoisyStreamLine, mapStreamEvent, userMessageLine } from "../src/brains/claude-code.js";
 
 describe("UserInput", () => {
   it("queues until subscribed, and refuses after close", () => {
@@ -46,6 +48,7 @@ describe("ClaudeCodeBrain helpers", () => {
       "--output-format",
       "stream-json",
       "--verbose",
+      "--include-partial-messages",
       "--tools",
       "",
       "--setting-sources",
@@ -78,5 +81,91 @@ describe("ClaudeCodeBrain helpers", () => {
     ]);
     expect(mapStreamEvent({ type: "result", subtype: "error_max_turns", is_error: true })).toEqual([{ type: "error", text: "Claude Code: error_max_turns" }]);
     expect(mapStreamEvent({ type: "system", subtype: "init", model: "claude-sonnet-5" })).toEqual([{ type: "status", text: "Claude Code started (claude-sonnet-5)" }]);
+  });
+});
+
+/** Recorded from real Claude Code 2.1.282: claude -p ... --verbose --include-partial-messages (init trimmed, rate limit line dropped). */
+const FIXTURE = readFileSync(new URL("./fixtures/claude-partial-messages.jsonl", import.meta.url), "utf8")
+  .trim()
+  .split(/\r?\n/)
+  .map((l) => JSON.parse(l));
+
+describe("Claude Code partial messages (recorded fixture)", () => {
+  it("streams text deltas under one block id, then the full text with that id; thinking is ignored", () => {
+    const m = new ClaudeStreamMapper();
+    const events = FIXTURE.flatMap((ev) => m.map(ev));
+    const msgId = FIXTURE.find((e) => e.event?.type === "message_start").event.message.id as string;
+    const deltas = events.filter((e): e is Extract<AgentEvent, { type: "assistant_text_delta" }> => e.type === "assistant_text_delta");
+    const finals = events.filter((e): e is Extract<AgentEvent, { type: "assistant_text" }> => e.type === "assistant_text");
+    expect(deltas.length).toBe(FIXTURE.filter((e) => e.event?.delta?.type === "text_delta").length);
+    expect(deltas.length).toBeGreaterThan(10);
+    // Block 0 is thinking; the answer is block 1.
+    expect(new Set(deltas.map((d) => d.id))).toEqual(new Set([`${msgId}:1`]));
+    expect(finals).toHaveLength(1);
+    expect(finals[0]!.id).toBe(`${msgId}:1`);
+    expect(deltas.map((d) => d.text).join("")).toBe(finals[0]!.text);
+    expect(finals[0]!.text).toContain("**manifest.json**");
+    // Final comes after every delta of its block.
+    expect(events.indexOf(finals[0]!)).toBeGreaterThan(events.indexOf(deltas.at(-1)!));
+    expect(events.filter((e) => e.type !== "assistant_text" && e.type !== "assistant_text_delta")).toEqual([
+      { type: "status", text: "Claude Code started (claude-haiku-4-5-20251001)" },
+    ]);
+  });
+
+  it("keeps stream_event and thinking_tokens lines out of the run log, but not the assistant message", () => {
+    const kept = FIXTURE.filter((e) => !isNoisyStreamLine(e)).map((e) => e.type);
+    expect(kept).toEqual(["system", "system", "assistant", "assistant", "result"]);
+  });
+
+  it("without partial messages (or a message it did not see start), text has no id", () => {
+    const m = new ClaudeStreamMapper();
+    expect(m.map({ type: "assistant", message: { id: "m9", content: [{ type: "text", text: "hi" }] } })).toEqual([{ type: "assistant_text", text: "hi" }]);
+    // Deltas of blocks never started (or before message_start) are dropped.
+    expect(m.map({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "x" } } })).toEqual([]);
+  });
+
+  it("two text blocks in one message each get their own id, in order; whitespace-only blocks still use theirs up", () => {
+    const m = new ClaudeStreamMapper();
+    const se = (event: unknown) => m.map({ type: "stream_event", event, parent_tool_use_id: null });
+    se({ type: "message_start", message: { id: "m1" } });
+    expect(se({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })).toEqual([]);
+    expect(se({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: " " } })).toEqual([{ type: "assistant_text_delta", id: "m1:0", text: " " }]);
+    expect(m.map({ type: "assistant", message: { id: "m1", content: [{ type: "text", text: " " }] } })).toEqual([]);
+    se({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "t", name: "x", input: {} } });
+    expect(se({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{}" } })).toEqual([]);
+    se({ type: "content_block_start", index: 2, content_block: { type: "text", text: "" } });
+    se({ type: "content_block_delta", index: 2, delta: { type: "text_delta", text: "Done." } });
+    expect(m.map({ type: "assistant", message: { id: "m1", content: [{ type: "text", text: "Done." }] } })).toEqual([{ type: "assistant_text", text: "Done.", id: "m1:2" }]);
+    // Subagent streams are ignored.
+    expect(m.map({ type: "stream_event", parent_tool_use_id: "tu", event: { type: "content_block_delta", index: 2, delta: { type: "text_delta", text: "no" } } })).toEqual([]);
+  });
+});
+
+describe("DeltaBatcher", () => {
+  it("joins deltas of a block for ~50 ms, flushes before other events and when the block changes", () => {
+    vi.useFakeTimers();
+    try {
+      const out: AgentEvent[] = [];
+      const b = new DeltaBatcher((e) => out.push(e), 50);
+      b.delta("a", "Hel");
+      b.delta("a", "lo");
+      expect(out).toEqual([]);
+      vi.advanceTimersByTime(50);
+      expect(out).toEqual([{ type: "assistant_text_delta", id: "a", text: "Hello" }]);
+      b.delta("a", " world");
+      b.delta("b", "Next");
+      expect(out.at(-1)).toEqual({ type: "assistant_text_delta", id: "a", text: " world" });
+      b.emit({ type: "assistant_text", text: "Next", id: "b" });
+      expect(out.slice(-2)).toEqual([
+        { type: "assistant_text_delta", id: "b", text: "Next" },
+        { type: "assistant_text", text: "Next", id: "b" },
+      ]);
+      b.delta("c", "dropped");
+      b.discard();
+      vi.advanceTimersByTime(100);
+      expect(out).toHaveLength(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

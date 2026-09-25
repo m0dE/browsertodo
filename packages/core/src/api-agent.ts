@@ -7,7 +7,7 @@
  * abort) its message history stays in memory, and continueWith(text) runs
  * the next turn on top of it, like a chat.
  */
-import { TASK_END_TOOLS, toolsFor, type AgentEvent, type RunConfig, type TaskRunResult, type ToolName } from "@browsertodo/shared";
+import { DeltaBatcher, TASK_END_TOOLS, toolsFor, type AgentEvent, type RunConfig, type TaskRunResult, type ToolName } from "@browsertodo/shared";
 import type { AgentSession, ApiAgentOptions } from "./types.js";
 import { createToolExecutor, picksEvent } from "./executor.js";
 import { buildSystemPrompt, buildTaskPrompt } from "./prompts.js";
@@ -63,13 +63,18 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
   };
   if (opts.headers) transport.headers = opts.headers;
 
-  const emit = (e: AgentEvent) => {
+  // Stream text as it is written: on by default for the Anthropic API; the hosted AI (bearer) answers whole messages.
+  const streaming = opts.stream ?? transport.auth !== "bearer";
+  // Live text goes out in ~50 ms batches; every other event first sends what is pending.
+  const batcher = new DeltaBatcher((e) => {
     try {
       opts.onEvent(e);
     } catch {
       /* listeners must not break the loop */
     }
-  };
+  });
+  const emit = (e: AgentEvent) => batcher.emit(e);
+  const streamText = streaming ? { onText: (messageId: string, index: number, text: string) => batcher.delta(`${messageId}:${index}`, text) } : undefined;
 
   /** The running turn's task_* result sink (the executor is shared by every turn). */
   let onTaskEnd: (r: TaskRunResult) => void = () => {};
@@ -165,7 +170,8 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
     const request = async (): Promise<MessagesResponse | null> => {
       const body = buildRequest({ model: opts.model, system, tools, messages, jev: jevOn });
       for (let attempt = 0; ; attempt++) {
-        const r = await postMessages(doFetch, opts.apiKey, body, controller.signal, transport);
+        const r = await postMessages(doFetch, opts.apiKey, body, controller.signal, transport, streamText);
+        batcher.flush();
         if (ended) return null;
         if (r.kind === "ok") return r.message;
         if (r.kind === "credit") {
@@ -211,11 +217,12 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
         if (!msg || ended) return;
         const content = Array.isArray(msg.content) ? msg.content : [];
         messages.push({ role: "assistant", content });
-        for (const b of content) {
+        content.forEach((b, i) => {
           if (b.type === "text" && typeof (b as TextBlock).text === "string" && (b as TextBlock).text.trim()) {
-            emit({ type: "assistant_text", text: (b as TextBlock).text });
+            // The id of the streamed block this text completes (the chat swaps its live text for it).
+            emit(streaming && msg.id ? { type: "assistant_text", text: (b as TextBlock).text, id: `${msg.id}:${i}` } : { type: "assistant_text", text: (b as TextBlock).text });
           }
-        }
+        });
         const uses = content.filter((b): b is ToolUseBlock => b.type === "tool_use");
         if (uses.length === 0) {
           if (pendingUser.length) {

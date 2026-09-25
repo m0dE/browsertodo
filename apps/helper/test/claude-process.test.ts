@@ -20,6 +20,7 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.FAKE_CLAUDE_HANG;
   delete process.env.FAKE_CLAUDE_SLOW_MS;
+  delete process.env.FAKE_CLAUDE_PARTIAL;
   for (const [k, v] of [["CLAUDECODE", saved.CLAUDECODE], ["CLAUDE_CODE_CHILD_SESSION", saved.CHILD]] as const) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -63,6 +64,25 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     ]);
     expect(c.input.closed).toBe(true);
     expect(log.at(-1)).toMatchObject({ type: "claude_exit", code: 0 });
+  });
+
+  it("streams text deltas in batches, then the final text with the same id; the run log keeps only the final text", async () => {
+    process.env.FAKE_CLAUDE_PARTIAL = "1";
+    const log: Record<string, any>[] = [];
+    const events: AgentEvent[] = [];
+    const c = { ...ctx(new AbortController().signal, log, events), prompt: "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty" };
+    await brain().run(c);
+    const deltas = events.filter((e) => e.type === "assistant_text_delta") as Extract<AgentEvent, { type: "assistant_text_delta" }>[];
+    const final = events.find((e) => e.type === "assistant_text") as Extract<AgentEvent, { type: "assistant_text" }>;
+    expect(final).toEqual({ type: "assistant_text", text: `got: ${c.prompt}`, id: "msg_fake_1:0" });
+    // 22 word deltas over >100 ms arrive batched: more than one, far fewer than 22.
+    expect(deltas.length).toBeGreaterThan(1);
+    expect(deltas.length).toBeLessThan(15);
+    expect(deltas.every((d) => d.id === "msg_fake_1:0")).toBe(true);
+    expect(deltas.map((d) => d.text).join("")).toBe(final.text);
+    expect(events.indexOf(final)).toBe(events.length - 1);
+    expect(log.some((e) => e.type === "claude" && e.event.type === "stream_event")).toBe(false);
+    expect(log.some((e) => e.type === "claude" && e.event.type === "assistant")).toBe(true);
   });
 
   it("runs the model chosen in the extension (ctx.model) instead of its default", async () => {

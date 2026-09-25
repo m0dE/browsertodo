@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { toolArgsSchema, toolDescription, type ToolName, type ToolResult } from "@browsertodo/shared";
 import { errorMessage } from "./util.js";
+import { MessageAccumulator, StreamError, readSse } from "./sse.js";
 
 export const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 export const ANTHROPIC_VERSION = "2023-06-01";
@@ -53,6 +54,8 @@ export interface MessagesRequest {
   system: TextBlock[];
   tools: AnthropicTool[];
   messages: MessageParam[];
+  /** Server-sent events instead of one JSON response (see postMessages' stream option). */
+  stream?: boolean;
 }
 
 export interface MessagesResponse {
@@ -160,13 +163,27 @@ function creditInfo(body: string): { message?: string; topupUrl?: string } {
 
 export const OUT_OF_CREDIT = "Out of AI credit";
 
-/** One POST /v1/messages. Never throws (an abort comes back as an error result). */
+/** Streaming: text as it is written. `messageId:index` names the text block. */
+export interface StreamOptions {
+  onText(messageId: string, index: number, text: string): void;
+}
+
+/** API error types in a stream's error event that are worth a retry. */
+const TRANSIENT_STREAM_ERRORS = new Set(["overloaded_error", "api_error", "rate_limit_error", "stream_error", "timeout_error"]);
+
+/**
+ * One POST /v1/messages. Never throws (an abort comes back as an error
+ * result). With `stream`, the request asks for server-sent events and the
+ * message is rebuilt from them (text reported through onText as it comes);
+ * a JSON answer (an endpoint that does not stream) is read as usual.
+ */
 export async function postMessages(
   doFetch: typeof fetch,
   apiKey: string,
   body: MessagesRequest,
   signal?: AbortSignal,
   transport: MessagesTransport = {},
+  stream?: StreamOptions,
 ): Promise<PostResult> {
   const label = transport.label ?? "Claude API";
   let res: Response;
@@ -178,12 +195,15 @@ export async function postMessages(
       headers["anthropic-version"] = ANTHROPIC_VERSION;
       headers["anthropic-dangerous-direct-browser-access"] = "true";
     }
-    const init: RequestInit = { method: "POST", headers, body: JSON.stringify(body) };
+    const init: RequestInit = { method: "POST", headers, body: JSON.stringify(stream ? { ...body, stream: true } : body) };
     if (signal) init.signal = signal;
     res = await doFetch(transport.url ?? ANTHROPIC_MESSAGES_URL, init);
   } catch (e) {
     if (signal?.aborted) return { kind: "error", reason: "aborted" };
     return { kind: "transient", reason: `${label} network error: ${errorMessage(e)}` };
+  }
+  if (res.ok && stream && res.body && /text\/event-stream/i.test(res.headers.get("content-type") ?? "")) {
+    return readStream(res.body, stream, label, signal);
   }
   let text = "";
   try {
@@ -212,4 +232,33 @@ export async function postMessages(
   if (s === 529) return { kind: "transient", reason: `${label} overloaded (HTTP 529: ${detail})` };
   if (s >= 500) return { kind: "transient", reason: `${label} server error (HTTP ${s}: ${detail})` };
   return { kind: "error", reason: `${label} error (HTTP ${s}: ${detail})` };
+}
+
+async function readStream(body: ReadableStream<Uint8Array>, stream: StreamOptions, label: string, signal?: AbortSignal): Promise<PostResult> {
+  const acc = new MessageAccumulator((id, i, t) => {
+    try {
+      stream.onText(id, i, t);
+    } catch {
+      /* a listener must not break the stream */
+    }
+  });
+  try {
+    for await (const ev of readSse(body)) {
+      acc.apply(ev);
+      if (acc.done) break;
+    }
+  } catch (e) {
+    if (signal?.aborted) return { kind: "error", reason: "aborted" };
+    if (e instanceof StreamError) {
+      const reason = `${label} stream error (${e.message})`;
+      return TRANSIENT_STREAM_ERRORS.has(e.errorType) ? { kind: "transient", reason } : { kind: "error", reason };
+    }
+    return { kind: "transient", reason: `${label} network error while reading the response: ${errorMessage(e)}` };
+  }
+  if (signal?.aborted) return { kind: "error", reason: "aborted" };
+  const message = acc.message;
+  if (!message || !acc.done) return { kind: "transient", reason: `${label} stream ended early` };
+  // Blocks are filled by index; a gap would break the history sent back.
+  message.content = message.content.filter(Boolean);
+  return { kind: "ok", message };
 }

@@ -17,8 +17,9 @@ export function buildSystemPrompt(opts: { tools: ToolName[]; jev: boolean }): st
     "Call task_pause (never guess) when you see a login page, a 2FA or verification prompt, a CAPTCHA, a warning or challenge page, a locked or suspended account, or when X is signed in to an unexpected account that you cannot switch away from.",
     "When a task on X names an X account, call switch_x_account with it first, before anything else on X.",
     "Never refuse or fail a task because it is on a site other than X: every website is in scope. Start by navigating to the site the task is about (e.g. https://mail.google.com for Gmail).",
-    "Tasks either ask you to do something (post, reply, fill in a form) or to find something out (check email, look up a price, see what someone needs). For the second kind, open the site, read what is there (open the relevant items, not just the list), and put the answer in task_complete's summary: specific and complete, e.g. who wrote, when, what they said, and what they need from the user.",
-    "If the message is only a greeting or a question you can answer without the browser, answer it briefly in task_complete's summary. Do not call task_fail for that.",
+    "Tasks either ask you to do something (post, reply, fill in a form) or to find something out (check email, look up a price, see what someone needs). For the second kind, open the site, read what is there (open the relevant items, not just the list), then write the answer to the user as your normal message text: specific and complete, e.g. who wrote, when, what they said, and what they need from the user.",
+    "If the message is only a greeting or a question you can answer without the browser, answer it in your normal message text. Do not call task_fail for that.",
+    "The user reads your message text in a chat that renders Markdown: use short paragraphs, and lists, **bold** or headings where they help. Put every answer and any longer explanation in that text, never in task_complete. task_complete's summary is one short line for the task list (e.g. 'Answered how to publish a Chrome extension', 'Posted the thread'); it does not repeat the answer.",
   ];
   if (tools.includes("act")) {
     if (jev) {
@@ -49,7 +50,7 @@ export function buildSystemPrompt(opts: { tools: ToolName[]; jev: boolean }): st
       ? "Attach media with upload, using the exact absolute file paths listed in the task and the upload index read_page shows for the file input."
       : "Attach media with upload, using the exact absolute file paths listed in the task, on an input of type=file from read_page.",
     "Do only what the task asks. Do not like, follow, reply or post anything else.",
-    `Finish by calling exactly one of task_complete, task_fail or task_pause, then stop. When you create a post, include its URL in task_complete. ${POST_URL_RULE}`,
+    `Finish by calling exactly one of task_complete, task_fail or task_pause, then stop. For questions and information tasks, first write the answer as message text, then call task_complete with a one-line summary. When you create a post, include its URL in task_complete. ${POST_URL_RULE}`,
   );
 
   return `${intro}

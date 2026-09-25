@@ -13,7 +13,9 @@ import { uiRequest } from "../ui-protocol.js";
 import { chatActions, type BarAction } from "./chat-actions.js";
 import { $, busy, errorText, h } from "./dom.js";
 import { describeEvent, isNearBottom, turnPicks } from "./event-format.js";
-import { pruneContinue, renderEvent, renderSessionHead } from "./event-render.js";
+import { placeEvent, pruneContinue, renderEvent, renderSessionHead, renderText } from "./event-render.js";
+import { LiveTexts } from "./live-text.js";
+import { MarkdownView } from "./markdown.js";
 import { brainLabel, sessionMeta } from "./format.js";
 import { openRawLog } from "./raw-log.js";
 import { renderSwitcher } from "./session-switcher.js";
@@ -96,11 +98,61 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
     setBarAction(rawLog, a.rawLog);
   }
 
-  function renderOne(e: StampedAgentEvent, i: number): HTMLElement {
+  /** Text Claude is still writing, and its elements while its conversation is shown. */
+  const live = new LiveTexts();
+  const liveEls = new Map<string, { el: HTMLElement; view: MarkdownView }>();
+  let paintQueued = false;
+
+  function renderOne(e: StampedAgentEvent, i: number): void {
     const s = e.type === "task_end" && current?.sessionId === e.sessionId ? current : null;
     const canContinue = !!opts.onContinue && e.type === "task_end" && isContinuableOutcome(e.outcome) && s?.source !== "cloud";
     const picks = e.type === "task_end" ? turnPicks(events, i) : undefined;
-    return renderEvent(describeEvent(e, picks), canContinue ? () => opts.onContinue?.(e.sessionId) : undefined);
+    const view = describeEvent(e, picks);
+    placeEvent(log, renderEvent(view, canContinue ? () => opts.onContinue?.(e.sessionId) : undefined), view);
+  }
+
+  /** Repaints the shown conversation's live texts, once per frame; a new one starts at the end of the log. */
+  function paintLive(): void {
+    if (paintQueued) return;
+    paintQueued = true;
+    requestAnimationFrame(() => {
+      paintQueued = false;
+      if (!current || backfilling) return;
+      const follow = isNearBottom(log);
+      for (const [id, text] of live.of(current.sessionId)) {
+        if (!text.trim()) continue;
+        let e = liveEls.get(id);
+        if (!e?.el.isConnected) {
+          const el = h("div.ev-text.md.streaming", { "data-stream": id });
+          e = { el, view: new MarkdownView(el) };
+          liveEls.set(id, e);
+          log.querySelector(":scope > p.empty")?.remove();
+          log.append(el);
+        }
+        e.view.update(text, true);
+      }
+      if (follow) log.scrollTop = log.scrollHeight;
+    });
+  }
+
+  /**
+   * Updates live texts for an event of any conversation. A final
+   * assistant_text takes the place of its live text (same spot, final
+   * rendering); live texts of earlier messages that never got theirs are
+   * removed; at task_end what is still live stays as written. True when the
+   * event's own text replaced a live one (so it needs no element of its own).
+   */
+  function settleLive(ev: StampedAgentEvent): boolean {
+    const r = live.settle(ev);
+    for (const id of r.drop) liveEls.get(id)?.el.remove();
+    for (const id of r.freeze) liveEls.get(id)?.el.classList.remove("streaming");
+    for (const id of [...r.drop, ...r.freeze]) liveEls.delete(id);
+    if (!r.replaces) return false;
+    const e = liveEls.get(r.replaces);
+    liveEls.delete(r.replaces);
+    if (!e?.el.isConnected || ev.type !== "assistant_text") return false;
+    e.el.replaceWith(renderText(ev.text.trim(), r.replaces));
+    return true;
   }
 
   function renderLog(): void {
@@ -119,9 +171,12 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
       log.replaceChildren(h("p.empty", null, "Loading…"));
       return;
     }
-    log.replaceChildren(renderSessionHead(current), ...events.map(renderOne));
-    if (!events.length) log.append(h("p.empty", null, "Waiting for the agent…"));
+    log.replaceChildren(renderSessionHead(current));
+    events.forEach(renderOne);
+    liveEls.clear();
+    if (!events.length && !live.of(current.sessionId).some(([, t]) => t.trim())) log.append(h("p.empty", null, "Waiting for the agent…"));
     pruneContinue(log);
+    paintLive();
     log.scrollTop = log.scrollHeight;
   }
 
@@ -179,10 +234,14 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
 
   function append(ev: StampedAgentEvent): void {
     events.push(ev);
-    if (backfilling || !current) return;
+    if (backfilling || !current) {
+      settleLive(ev);
+      return;
+    }
     const follow = isNearBottom(log);
     log.querySelector(":scope > p.empty")?.remove();
-    log.append(renderOne(ev, events.length - 1));
+    // The final text of a streamed block takes the place of its live text.
+    if (!settleLive(ev)) renderOne(ev, events.length - 1);
     pruneContinue(log);
     if (follow) log.scrollTop = log.scrollHeight;
   }
@@ -190,6 +249,29 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
   function appendError(text: string): void {
     if (current) append({ type: "error", text, ts: new Date().toISOString(), sessionId: current.sessionId });
   }
+
+  // A log read at its bottom stays there when it gets shorter (the header grows, the panel is resized).
+  // Scrolling up lets go of the bottom, reaching it again holds it. (Not "is it near the bottom now": a
+  // scroll event can come after the log already got shorter, and that must not let go.)
+  let pinned = true;
+  let lastTop = 0;
+  log.addEventListener(
+    "scroll",
+    () => {
+      if (log.scrollTop < lastTop - 1) pinned = false;
+      if (isNearBottom(log)) pinned = true;
+      lastTop = log.scrollTop;
+    },
+    { passive: true },
+  );
+  // (Also when its content grows after rendering, e.g. once fonts load: every top-level entry is watched.)
+  const stick = new ResizeObserver(() => {
+    if (pinned) log.scrollTop = log.scrollHeight;
+  });
+  stick.observe(log);
+  new MutationObserver((records) => {
+    for (const r of records) for (const n of r.addedNodes) if (n instanceof Element) stick.observe(n);
+  }).observe(log, { childList: true });
 
   title.addEventListener("click", () => {
     if (current) opts.onDetails?.(current, title);
@@ -240,8 +322,16 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
       updateBar();
     },
     onEvent(ev) {
+      if (ev.type === "assistant_text_delta") {
+        live.add(ev);
+        if (shownId && ev.sessionId === shownId) paintLive();
+        return;
+      }
       if (shownId && ev.sessionId === shownId) append(ev);
-      else buffered = [...buffered.slice(-300), ev];
+      else {
+        settleLive(ev);
+        buffered = [...buffered.slice(-300), ev];
+      }
     },
     onSession(s) {
       if (s.sessionId !== shownId) return;

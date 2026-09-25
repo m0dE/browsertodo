@@ -3,7 +3,7 @@
  * IndexedDB. New events and session changes are pushed live to listeners
  * (the UI ports).
  */
-import { clipEventText, type AgentEvent, type SessionInfo, type StampedAgentEvent } from "@browsertodo/shared";
+import { MAX_ASSISTANT_TEXT, clipEventText, type AgentEvent, type SessionInfo, type StampedAgentEvent } from "@browsertodo/shared";
 import type { KvDb, KvStore } from "./kv.js";
 
 export const MAX_SESSIONS = 200;
@@ -23,8 +23,11 @@ function seqKey(sessionId: string, seq: number): string {
 /** Bounds the text fields of an event so storage stays small. */
 function clipEvent(e: AgentEvent): AgentEvent {
   switch (e.type) {
-    case "status":
     case "assistant_text":
+      return { ...e, text: clipEventText(e.text, MAX_ASSISTANT_TEXT) };
+    case "task_end":
+      return e.summary && e.summary.length > MAX_ASSISTANT_TEXT ? { ...e, summary: clipEventText(e.summary, MAX_ASSISTANT_TEXT) } : e;
+    case "status":
     case "user_message":
     case "error":
       return { ...e, text: clipEventText(e.text) };
@@ -74,8 +77,17 @@ export class SessionStore {
     return info;
   }
 
-  /** Stamps, stores and pushes one event. Never throws. */
+  /**
+   * Stamps, stores and pushes one event. Never throws. Live text deltas
+   * (assistant_text_delta) are only pushed: the final assistant_text is
+   * what is kept.
+   */
   append(sessionId: string, event: AgentEvent): StampedAgentEvent {
+    if (event.type === "assistant_text_delta") {
+      const live = { ...event, ts: this.now().toISOString(), sessionId } as StampedAgentEvent;
+      for (const l of this.listeners) safe(() => l.onEvent?.(live));
+      return live;
+    }
     const stamped = { ...clipEvent(event), ts: this.now().toISOString(), sessionId } as StampedAgentEvent;
     const n = this.seq.get(sessionId) ?? 0;
     this.seq.set(sessionId, n + 1);

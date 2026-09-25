@@ -2,6 +2,8 @@
 // every stdin user message with an assistant text and a result event, and
 // exits when stdin closes. FAKE_CLAUDE_HANG=1: never exits until killed.
 // FAKE_CLAUDE_SLOW_MS: delay before answering each message.
+// FAKE_CLAUDE_PARTIAL=1: stream the answer first as --include-partial-messages
+// stream_event lines (one text_delta per word, 5 ms apart), like Claude Code 2.1.
 import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
@@ -21,7 +23,18 @@ rl.on("line", (line) => {
     const msg = JSON.parse(line);
     if (slow) await new Promise((r) => setTimeout(r, slow));
     if (turns++ > 0) init();
-    out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: `got: ${msg.message.content}` }] } });
+    const text = `got: ${msg.message.content}`;
+    const id = `msg_fake_${turns}`;
+    if (process.env.FAKE_CLAUDE_PARTIAL === "1") {
+      const se = (event) => out({ type: "stream_event", event, session_id: "s", parent_tool_use_id: null, uuid: "u" });
+      se({ type: "message_start", message: { id, type: "message", role: "assistant", content: [] } });
+      se({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+      for (const part of text.split(/(?<= )/)) {
+        se({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: part } });
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    }
+    out({ type: "assistant", message: { id, role: "assistant", content: [{ type: "text", text }] } });
     out({ type: "result", subtype: "success", is_error: false, result: "✓ done" });
   });
 });

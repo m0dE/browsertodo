@@ -22,10 +22,36 @@ function fakeAnthropic(replies: Reply[]) {
     const r0 = replies[Math.min(i++, replies.length - 1)]!;
     const r = typeof r0 === "function" ? r0(body) : r0;
     if (r.throws) throw new TypeError(r.throws);
-    return new Response(JSON.stringify(r.body ?? {}), { status: r.status ?? 200, headers: { "content-type": "application/json" } });
+    const status = r.status ?? 200;
+    // Like the real API: a streaming request that succeeds gets server-sent events.
+    if (body.stream === true && status === 200) return new Response(toSse(r.body as any), { status, headers: { "content-type": "text/event-stream" } });
+    return new Response(JSON.stringify(r.body ?? {}), { status, headers: { "content-type": "application/json" } });
   }) as unknown as typeof fetch;
   return { fetchImpl, requests, get served() { return i; } };
 }
+
+/** A message as the Messages API streams it: text in small deltas, tool input in input_json_delta parts. */
+function sseEvents(m: { id: string; content: Block[]; stop_reason: string | null }): [string, unknown][] {
+  const out: [string, unknown][] = [["message_start", { type: "message_start", message: { ...m, content: [], stop_reason: null } }], ["ping", { type: "ping" }]];
+  m.content.forEach((b, index) => {
+    if (b.type === "text") {
+      out.push(["content_block_start", { type: "content_block_start", index, content_block: { type: "text", text: "" } }]);
+      for (const part of (b.text as string).match(/.{1,5}/gs) ?? []) out.push(["content_block_delta", { type: "content_block_delta", index, delta: { type: "text_delta", text: part } }]);
+    } else if (b.type === "tool_use") {
+      out.push(["content_block_start", { type: "content_block_start", index, content_block: { ...b, input: {} } }]);
+      const json = JSON.stringify(b.input ?? {});
+      const cut = Math.floor(json.length / 2);
+      for (const part of [json.slice(0, cut), json.slice(cut)]) out.push(["content_block_delta", { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: part } }]);
+    } else {
+      out.push(["content_block_start", { type: "content_block_start", index, content_block: b }]);
+    }
+    out.push(["content_block_stop", { type: "content_block_stop", index }]);
+  });
+  out.push(["message_delta", { type: "message_delta", delta: { stop_reason: m.stop_reason, stop_sequence: null }, usage: { output_tokens: 10 } }], ["message_stop", { type: "message_stop" }]);
+  return out;
+}
+
+const toSse = (m: any) => sseEvents(m).map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join("");
 
 let nextId = 1;
 const msg = (...content: Block[]) => ({
@@ -117,7 +143,17 @@ describe("startApiAgent", () => {
       { type: "image", source: { type: "base64", media_type: "image/jpeg", data: expect.any(String) } },
     ]);
 
-    expect(events.find((e) => e.type === "assistant_text")).toEqual({ type: "assistant_text", text: "Reading the page." });
+    // Streamed: the request asks for events, text arrives as deltas of block msg:0, then whole with the same id.
+    expect(first.body.stream).toBe(true);
+    const final = events.find((e) => e.type === "assistant_text") as Extract<AgentEvent, { type: "assistant_text" }>;
+    expect(final).toEqual({ type: "assistant_text", text: "Reading the page.", id: expect.stringMatching(/^msg_\d+:0$/) });
+    const deltas = events.filter((e) => e.type === "assistant_text_delta") as Extract<AgentEvent, { type: "assistant_text_delta" }>[];
+    expect(deltas.length).toBeGreaterThan(0);
+    expect(deltas.every((d) => d.id === final.id)).toBe(true);
+    expect(deltas.map((d) => d.text).join("")).toBe("Reading the page.");
+    expect(events.indexOf(final)).toBeGreaterThan(events.indexOf(deltas.at(-1)!));
+    // Tool input rebuilt from input_json_delta parts.
+    expect(server.requests[2]!.body.messages[3].content[0]).toMatchObject({ type: "tool_use", name: "act", input: { steps: [{ goal: "type the post", index: 2, text: "gm" }, { goal: "click Post", index: 4 }] } });
     expect(events.filter((e) => e.type === "tool_call").map((e: any) => e.name)).toEqual(["read_page", "act", "screenshot", "task_complete"]);
     expect(events.at(-1)).toEqual({ type: "task_end", outcome: "done", summary: "posted", url: "https://x.com/alice/status/1000" });
   });

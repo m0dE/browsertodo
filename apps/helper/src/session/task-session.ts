@@ -72,7 +72,8 @@ export class TaskSession {
   /** To the run log and the extension (helper.event). */
   emit(e: AgentEvent): void {
     if (e.type === "error" && this.turn) this.turn.lastError = e.text;
-    this.log.event({ ...e });
+    // Live text deltas only go to the chat; the run log keeps the final text.
+    if (e.type !== "assistant_text_delta") this.log.event({ ...e });
     try {
       this.opts.notify(this.sessionId, e);
     } catch {

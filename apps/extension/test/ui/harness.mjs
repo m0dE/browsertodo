@@ -55,6 +55,59 @@ await thumbPage.setContent(
 const thumbnail = (await thumbPage.screenshot({ type: "jpeg", quality: 50 })).toString("base64");
 await thumbPage.close();
 
+/** A long Markdown answer (made-up sample text): headings, nested lists, bold labels, links, inline code, a code block, a quote. */
+const PUBLISH_ANSWER = [
+  "Here's how to publish a Chrome extension to the **Chrome Web Store**:",
+  "",
+  "## 1. Prepare the package",
+  "",
+  "- Make sure `manifest.json` has a unique `name`, a `version` and `manifest_version: 3`.",
+  "- Add icons in 16, 48 and 128 px.",
+  "- Zip the extension folder (the manifest must be at the root of the zip):",
+  "",
+  "```sh",
+  "cd my-extension",
+  "zip -r ../my-extension-1.0.0.zip . -x '*.git*' 'node_modules/*' '*.map'",
+  "```",
+  "",
+  "## 2. Register as a developer",
+  "",
+  "1. Open the [Developer Dashboard](https://chrome.google.com/webstore/devconsole) and sign in.",
+  "2. Pay the one-time **$5 registration fee**.",
+  "3. Verify your contact email.",
+  "",
+  "## 3. Upload and fill in the listing",
+  "",
+  "- **Store listing:** description, category, language and at least one screenshot (1280×800).",
+  "- **Privacy:** declare what data you collect and justify each permission, for example:",
+  "  - `tabs`: to read the active tab's URL",
+  "  - `storage`: to save settings",
+  "- **Distribution:** public, unlisted or private.",
+  "",
+  "> Review usually takes a few days; broad host permissions can make it longer.",
+  "",
+  "After approval the extension goes live, and updates go through the same review when you upload a new version.",
+].join("\n");
+
+const EMAIL_ANSWER = [
+  "You have **4 unread emails**. Here's what each one needs:",
+  "",
+  "### Needs a reply",
+  "",
+  "1. **Jordan Lee** (Example Corp), 9:12 AM: *Contract renewal*",
+  "   - Asks whether you can sign the renewal by **Friday**.",
+  "   - The draft is linked here: https://docs.example.com/d/renewal-draft-2026-final-version?usp=sharing&view=comments",
+  "2. **Sam Ortiz**, yesterday: *Team offsite dates*",
+  "   - Wants you to pick between Oct 14 and Oct 21.",
+  "",
+  "### For your information",
+  "",
+  "- **Billing** (no-reply@shop.example.com): order `#48213` shipped, arriving Monday.",
+  "- **Newsletter**: this week's product updates; nothing to do.",
+  "",
+  "Want me to draft replies to Jordan and Sam?",
+].join("\n");
+
 function scenario(kind) {
   const now = Date.now();
   const iso = (minutes) => new Date(now + minutes * 60_000).toISOString();
@@ -254,6 +307,59 @@ function scenario(kind) {
     state.openConversations = ["s-conv"];
     sessions.unshift(conv);
     sessions.splice(1, 1);
+  }
+  if (kind === "answer" || kind === "streaming") {
+    // A question answered in the chat. Turn 1: an older run that put the whole answer (Markdown) into
+    // task_complete's summary. Turn 2: the answer as the agent's own text, then a one-line summary.
+    // Made-up sample content only.
+    const ans = {
+      sessionId: "s-ans", source: "adhoc", title: "how do I publish a Chrome extension", brain: "claude-code", jev: false,
+      model: "claude-sonnet-5", startedAt: iso(-2), endedAt: iso(-1), firstStartedAt: iso(-9), outcome: "done", turns: 2,
+      summary: "Summarized 4 unread emails",
+    };
+    const aev = (minutes, e) => ({ ...e, ts: iso(minutes), sessionId: "s-ans" });
+    eventsBySession["s-ans"] = [
+      aev(-9, { type: "status", text: "Claude Code started (claude-sonnet-5)" }),
+      aev(-8, { type: "tool_call", id: "1", name: "task_complete", args: { summary: PUBLISH_ANSWER } }),
+      aev(-8, { type: "tool_result", id: "1", name: "task_complete", text: "Task marked complete." }),
+      aev(-8, { type: "task_end", outcome: "done", summary: PUBLISH_ANSWER }),
+      aev(-3, { type: "user_message", text: "Summarize my unread email" }),
+      aev(-3, { type: "status", text: "Continuing the same Claude Code session" }),
+      aev(-3, { type: "assistant_text", text: "I'll open your inbox and read the unread messages." }),
+      aev(-3, { type: "tool_call", id: "2", name: "navigate", args: { url: "https://mail.example.com/inbox" } }),
+      aev(-3, { type: "tool_result", id: "2", name: "navigate", text: "Opened https://mail.example.com/inbox (title: Inbox (4))" }),
+      aev(-3, { type: "tool_call", id: "3", name: "read_page", args: {} }),
+      aev(-3, { type: "tool_result", id: "3", name: "read_page", text: "URL: https://mail.example.com/inbox\n4 unread conversations" }),
+      aev(-2, { type: "tool_call", id: "4", name: "open_tabs", args: { urls: ["https://mail.example.com/m/1", "https://mail.example.com/m/2", "https://mail.example.com/m/3", "https://mail.example.com/m/4"] } }),
+      aev(-2, { type: "tool_result", id: "4", name: "open_tabs", text: "Opened t2, t3, t4, t5" }),
+      aev(-2, { type: "tool_call", id: "5", name: "read_page", args: { tabs: ["t2", "t3", "t4", "t5"] } }),
+      aev(-2, { type: "tool_result", id: "5", name: "read_page", text: "4 pages read" }),
+      aev(-2, { type: "tool_call", id: "6", name: "close_tabs", args: { tabs: ["t2", "t3", "t4", "t5"] } }),
+      aev(-2, { type: "tool_result", id: "6", name: "close_tabs", text: "Closed 4 tabs" }),
+      aev(-1, { type: "assistant_text", text: EMAIL_ANSWER }),
+      aev(-1, { type: "tool_call", id: "7", name: "task_complete", args: { summary: "Summarized 4 unread emails" } }),
+      aev(-1, { type: "tool_result", id: "7", name: "task_complete", text: "Task marked complete." }),
+      aev(-1, { type: "task_end", outcome: "done", summary: "Summarized 4 unread emails" }),
+    ];
+    state.running = null;
+    state.runningTabs = {};
+    state.tabChats = { "1": "s-ans" };
+    state.brain = { ...state.brain, effective: "claude-code", jevActive: false };
+    state.openConversations = ["s-ans"];
+    sessions.unshift(ans);
+    sessions.splice(1, 1);
+    if (kind === "streaming") {
+      // The second turn is still being written: the harness pushes its text in pieces.
+      const live = { ...ans, endedAt: undefined, outcome: undefined, summary: undefined };
+      delete live.endedAt;
+      delete live.outcome;
+      delete live.summary;
+      eventsBySession["s-ans"] = eventsBySession["s-ans"].slice(0, -4);
+      sessions[0] = live;
+      state.running = live;
+      state.runningSessions = [live];
+      state.runningTabs = { "s-ans": [1] };
+    }
   }
   if (kind === "stopped") {
     // The user pressed Stop after the agent typed the post: the run ends paused "stopped by user".
@@ -503,7 +609,8 @@ async function openPanel(ctx, kind, waitFor = "#chat-log > *") {
   await page.evaluate(() => localStorage.clear());
   await page.reload();
   try {
-    await page.waitForSelector(waitFor);
+    // "attached": rows inside a folded steps group are in the log but not visible.
+    await page.waitForSelector(waitFor, { state: "attached" });
   } catch (err) {
     console.error(`panel did not load (${kind}):`, errors);
     throw err;
@@ -750,11 +857,15 @@ for (const size of SIZES) {
       }
       if (wantAny(["panel-chat-running", "panel-activity-log", "panel-activity-log-past"], size, scheme)) {
         await page.click("#tab-btn-chat");
-        await page.waitForSelector("#chat-log .ev-tool");
+        await page.waitForSelector("#chat-log .ev-tool", { state: "attached" });
         // Running on the Claude API: Show Tab works, Raw Log does not exist for this brain.
         const bar = await expectBar(page, { "chat-new": true, "chat-show": true, "chat-rawlog": false }, "running chat");
         if (!/only local Claude Code runs/.test(bar["chat-rawlog"].title)) fail(`Raw Log tooltip "${bar["chat-rawlog"].title}"`);
-        await page.locator("details.ev-result").first().evaluate((d) => (d.open = true));
+        // One steps group unfolded, with one long result open.
+        await page.locator("details.ev-result").first().evaluate((d) => {
+          d.open = true;
+          d.closest("details.ev-steps").open = true;
+        });
         await page.locator("#chat-log").evaluate((l) => (l.scrollTop = l.scrollHeight));
         await checkLayout(page, `chat ${label}`);
         await shoot(page, "panel-chat-running", size, scheme);
@@ -783,7 +894,7 @@ for (const size of SIZES) {
         await page.waitForSelector("#hist-list:not([hidden]) .sessions li");
         // A running one opens in Chat.
         await page.locator(".sessions li button").first().click();
-        await page.waitForSelector("#tab-chat:not([hidden]) #chat-log .ev-tool");
+        await page.waitForSelector("#tab-chat:not([hidden]) #chat-log .ev-tool", { state: "attached" });
       }
       reportErrors(page, `running ${label}`);
       await page.close();
@@ -989,6 +1100,63 @@ for (const size of SIZES) {
       await p.keyboard.press("Enter");
       await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.adhoc" && r.instructions === "Post gm"));
       reportErrors(p, `conversation ${label}`);
+      await p.close();
+    }
+
+    // A question answered in the chat, with Markdown: the latest turn at the bottom, the older one scrolled to the top.
+    if (wantAny(["panel-chat-answer", "panel-chat-answer-top"], size, scheme)) {
+      const p = await openPanel(ctx, "answer", "#chat-log .ev-user");
+      await checkLayout(p, `answer ${label}`);
+      await p.waitForTimeout(200);
+      const pos = await p.evaluate(() => {
+        const l = document.getElementById("chat-log");
+        return { top: l.scrollTop, h: l.scrollHeight, c: l.clientHeight, last: l.lastElementChild?.className };
+      });
+      if (pos.top + pos.c < pos.h - 2) fail(`answer: chat not scrolled to the bottom ${JSON.stringify(pos)}`);
+      await shoot(p, "panel-chat-answer", size, scheme);
+      await p.evaluate(() => (document.getElementById("chat-log").scrollTop = 0));
+      await shoot(p, "panel-chat-answer-top", size, scheme);
+      reportErrors(p, `answer ${label}`);
+      await p.close();
+    }
+
+    // Streaming: the answer arrives as text deltas and grows in place (no raw ** while a bold is half written);
+    // its final text replaces it without a second copy; the turn then ends with a one-line summary.
+    if (wantAny(["panel-chat-streaming", "panel-chat-streamed"], size, scheme)) {
+      const p = await openPanel(ctx, "streaming", "#chat-log .ev-user");
+      const push = (e) => p.evaluate((ev) => window.__push({ type: "event", event: { ...ev, ts: new Date().toISOString(), sessionId: "s-ans" } }), e);
+      const id = "msg_live01:1";
+      const cut = EMAIL_ANSWER.indexOf("Jordan Lee") + "Jordan Le".length;
+      const pieces = (from, to, n) => Array.from({ length: n }, (_, k) => EMAIL_ANSWER.slice(from + Math.floor(((to - from) * k) / n), from + Math.floor(((to - from) * (k + 1)) / n)));
+      for (const t of pieces(0, cut, 8)) {
+        await push({ type: "assistant_text_delta", id, text: t });
+        await p.waitForTimeout(30);
+      }
+      await p.waitForFunction(() => document.querySelector("#chat-log .ev-text.streaming")?.textContent.includes("Jordan Le"));
+      const mid = await p.evaluate(() => {
+        const el = document.querySelector("#chat-log .ev-text.streaming");
+        return { raw: el.textContent.includes("**"), strong: [...el.querySelectorAll("strong")].map((s) => s.textContent), heading: el.querySelector("h3")?.textContent };
+      });
+      if (mid.raw || !mid.strong.includes("Jordan Le") || mid.heading !== "Needs a reply") fail(`streaming: half-written Markdown ${JSON.stringify(mid)}`);
+      await checkLayout(p, `streaming ${label}`);
+      await shoot(p, "panel-chat-streaming", size, scheme);
+      for (const t of pieces(cut, EMAIL_ANSWER.length, 6)) await push({ type: "assistant_text_delta", id, text: t });
+      await p.waitForFunction(() => document.querySelector("#chat-log .ev-text.streaming")?.textContent.includes("Jordan and Sam?"));
+      await push({ type: "assistant_text", text: EMAIL_ANSWER, id });
+      await push({ type: "tool_call", id: "7", name: "task_complete", args: { summary: "Summarized 4 unread emails" } });
+      await push({ type: "tool_result", id: "7", name: "task_complete", text: "Task marked complete." });
+      await push({ type: "task_end", outcome: "done", summary: "Summarized 4 unread emails" });
+      await p.waitForSelector("#chat-log .ev-end:last-child");
+      const end = await p.evaluate((sid) => ({
+        copies: [...document.querySelectorAll("#chat-log .ev-text")].filter((e) => e.textContent.includes("4 unread emails")).length,
+        live: document.querySelectorAll("#chat-log .streaming").length,
+        same: document.querySelector(`#chat-log .ev-text[data-stream="${sid}"]`)?.textContent.includes("Want me to draft replies"),
+        outcome: document.querySelector("#chat-log > .ev-end:last-child .ev-outcome")?.textContent,
+      }), id);
+      if (end.copies !== 1 || end.live !== 0 || !end.same || end.outcome !== "doneSummarized 4 unread emails") fail(`streaming: after the final text ${JSON.stringify(end)}`);
+      await checkLayout(p, `streamed ${label}`);
+      await shoot(p, "panel-chat-streamed", size, scheme);
+      reportErrors(p, `streaming ${label}`);
       await p.close();
     }
 

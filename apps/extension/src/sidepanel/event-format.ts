@@ -5,13 +5,17 @@ import { clip, outcomeChip, type Chip } from "./format.js";
 export type EventView =
   /** picks: the end-of-turn "Jev chose ..." line, shown in the end card instead of on its own. */
   | { kind: "status"; text: string; picks?: true }
-  | { kind: "text"; text: string }
+  /** Claude's text (Markdown). id: the streamed block it completes. */
+  | { kind: "text"; text: string; id?: string }
   | { kind: "tool"; id: string; name: string; args: string }
   | { kind: "result"; id: string; name: string; preview: string; full: string; isError: boolean; thumbnail?: string }
   | { kind: "jev"; label: string; ms: number; executed: boolean; title: string }
   | { kind: "user"; text: string }
-  /** picks: who picked the turn's elements ("Jev chose 9 of 11 element picks ..."). */
-  | { kind: "end"; chip: Chip; text: string; url?: string; picks?: string }
+  /**
+   * picks: who picked the turn's elements ("Jev chose 9 of 11 element picks ...").
+   * long: the text is an answer (several lines or long), shown as a message above the outcome line.
+   */
+  | { kind: "end"; chip: Chip; text: string; url?: string; picks?: string; long?: true }
   | { kind: "error"; text: string };
 
 const obj = (v: unknown): Record<string, unknown> =>
@@ -59,8 +63,11 @@ export function toolArgsSummary(name: string, args: unknown, max = 70): string {
       return String(a.handle ?? "");
     case "get_credential":
       return String(a.site ?? "");
-    case "task_complete":
-      return clip(String(a.summary ?? ""), max);
+    case "task_complete": {
+      // A long summary (an answer) is shown in the end card; the step stays one quiet line.
+      const summary = String(a.summary ?? "");
+      return isLongSummary(summary) ? "" : clip(summary, max);
+    }
     case "task_fail":
     case "task_pause":
       return clip(String(a.reason ?? ""), max);
@@ -92,7 +99,10 @@ export function describeEvent(ev: AgentEvent, picks?: ElementPicks): EventView {
     case "status":
       return ev.picks ? { kind: "status", text: ev.text, picks: true } : { kind: "status", text: ev.text };
     case "assistant_text":
-      return { kind: "text", text: ev.text.trim() };
+      return ev.id ? { kind: "text", text: ev.text.trim(), id: ev.id } : { kind: "text", text: ev.text.trim() };
+    case "assistant_text_delta":
+      // Live text is shown by the chat as it streams (see chat.ts); as an event it is its block's text so far.
+      return { kind: "text", text: ev.text, id: ev.id };
     case "tool_call":
       return { kind: "tool", id: ev.id, name: ev.name, args: toolArgsSummary(ev.name, ev.args) };
     case "tool_result": {
@@ -122,12 +132,24 @@ export function describeEvent(ev: AgentEvent, picks?: ElementPicks): EventView {
     case "user_message":
       return { kind: "user", text: ev.text };
     case "task_end": {
-      const text = ev.summary || ev.reason || "";
-      return { kind: "end", chip: outcomeChip(ev.outcome), text, ...(ev.url ? { url: ev.url } : {}), ...(picks ? { picks: picksText(picks) } : {}) };
+      const text = (ev.summary || ev.reason || "").trim();
+      return {
+        kind: "end",
+        chip: outcomeChip(ev.outcome),
+        text,
+        ...(ev.url ? { url: ev.url } : {}),
+        ...(picks ? { picks: picksText(picks) } : {}),
+        ...(isLongSummary(text) ? { long: true as const } : {}),
+      };
     }
     case "error":
       return { kind: "error", text: ev.text };
   }
+}
+
+/** A task_end text that is really an answer: several lines, or longer than a one-line summary. */
+export function isLongSummary(text: string): boolean {
+  return text.includes("\n") || text.length > 160;
 }
 
 /** Should a scroll container keep following new content? (within `slack` px of the bottom) */

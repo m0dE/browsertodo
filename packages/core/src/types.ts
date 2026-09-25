@@ -113,6 +113,12 @@ export interface ApiAgentOptions {
   /** Name in status lines and error reasons. Default "Claude API". */
   label?: string;
   /**
+   * Stream responses (server-sent events) and emit assistant_text_delta
+   * events as text is written. Default: on for x-api-key (Anthropic), off
+   * for bearer (the hosted AI's /v1/ai/messages answers whole messages).
+   */
+  stream?: boolean;
+  /**
    * HTTP 402 (the account is out of AI credit): called, then the turn ends
    * paused with reason OUT_OF_CREDIT ("Out of AI credit").
    */

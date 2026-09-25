@@ -10,7 +10,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { dirname } from "node:path";
-import { clipEventText, type AgentEvent } from "@browsertodo/shared";
+import { DeltaBatcher, MAX_ASSISTANT_TEXT, clipEventText, type AgentEvent } from "@browsertodo/shared";
 import { claudeEnv, killTree } from "../claude-process.js";
 import { LineSplitter } from "../line-framing.js";
 import type { Brain, BrainContext } from "./brain.js";
@@ -23,6 +23,8 @@ export function buildClaudeArgs(opts: { systemPrompt: string; mcpConfigPath: str
     "--output-format",
     "stream-json",
     "--verbose",
+    // Text arrives as it is written (stream_event lines), for the chat to show live.
+    "--include-partial-messages",
     "--tools",
     "",
     "--setting-sources",
@@ -46,24 +48,77 @@ export function userMessageLine(text: string): string {
 }
 
 /**
- * AgentEvents for one Claude Code stream-json event. Tool calls and results
- * are not mapped: the helper's tool executor already emits them.
+ * Claude Code stream-json events to AgentEvents. Stateful: with
+ * --include-partial-messages, text arrives first as stream_event deltas
+ * (content_block_delta / text_delta) and then once more, complete, in an
+ * "assistant" event per content block. Each streamed text block gets the id
+ * "<message id>:<block index>"; its assistant_text carries the same id so
+ * the chat replaces the live text with it. Thinking deltas are ignored. Tool
+ * calls and results are not mapped: the helper's tool executor emits them.
  */
+export class ClaudeStreamMapper {
+  private messageId: string | null = null;
+  /** Streamed text blocks of the current message whose assistant event has not come yet, in order. */
+  private open: string[] = [];
+
+  map(ev: any): AgentEvent[] {
+    if (!ev || typeof ev !== "object") return [];
+    if (ev.type === "stream_event") return this.partial(ev);
+    if (ev.type === "assistant" && Array.isArray(ev.message?.content)) {
+      const sameMessage = typeof ev.message.id === "string" && ev.message.id === this.messageId;
+      const out: AgentEvent[] = [];
+      for (const b of ev.message.content) {
+        if (b?.type !== "text" || typeof b.text !== "string") continue;
+        const id = sameMessage ? this.open.shift() : undefined;
+        if (!b.text.trim()) continue;
+        const e: AgentEvent = { type: "assistant_text", text: clipEventText(b.text, MAX_ASSISTANT_TEXT) };
+        if (id) e.id = id;
+        out.push(e);
+      }
+      return out;
+    }
+    if (ev.type === "result" && (ev.is_error === true || (typeof ev.subtype === "string" && ev.subtype !== "success"))) {
+      const detail = typeof ev.result === "string" && ev.result.trim() ? ev.result : (ev.subtype ?? "error");
+      return [{ type: "error", text: clipEventText(`Claude Code: ${detail}`) }];
+    }
+    if (ev.type === "system" && ev.subtype === "init") {
+      return [{ type: "status", text: `Claude Code started${ev.model ? ` (${ev.model})` : ""}` }];
+    }
+    return [];
+  }
+
+  private partial(ev: any): AgentEvent[] {
+    // Subagents' streams (none today: Claude Code runs without its own tools).
+    if (ev.parent_tool_use_id) return [];
+    const e = ev.event;
+    if (!e || typeof e !== "object") return [];
+    if (e.type === "message_start") {
+      this.messageId = typeof e.message?.id === "string" ? e.message.id : null;
+      this.open = [];
+      return [];
+    }
+    if (!this.messageId || typeof e.index !== "number") return [];
+    const id = `${this.messageId}:${e.index}`;
+    if (e.type === "content_block_start" && e.content_block?.type === "text") {
+      this.open.push(id);
+      const text = e.content_block.text;
+      return typeof text === "string" && text ? [{ type: "assistant_text_delta", id, text }] : [];
+    }
+    if (e.type === "content_block_delta" && e.delta?.type === "text_delta" && typeof e.delta.text === "string" && e.delta.text && this.open.includes(id)) {
+      return [{ type: "assistant_text_delta", id, text: e.delta.text }];
+    }
+    return [];
+  }
+}
+
+/** AgentEvents for one Claude Code stream-json event, without stream state (whole messages). */
 export function mapStreamEvent(ev: any): AgentEvent[] {
-  if (!ev || typeof ev !== "object") return [];
-  if (ev.type === "assistant" && Array.isArray(ev.message?.content)) {
-    return ev.message.content
-      .filter((b: any) => b?.type === "text" && typeof b.text === "string" && b.text.trim())
-      .map((b: any) => ({ type: "assistant_text", text: clipEventText(b.text) }));
-  }
-  if (ev.type === "result" && (ev.is_error === true || (typeof ev.subtype === "string" && ev.subtype !== "success"))) {
-    const detail = typeof ev.result === "string" && ev.result.trim() ? ev.result : (ev.subtype ?? "error");
-    return [{ type: "error", text: clipEventText(`Claude Code: ${detail}`) }];
-  }
-  if (ev.type === "system" && ev.subtype === "init") {
-    return [{ type: "status", text: `Claude Code started${ev.model ? ` (${ev.model})` : ""}` }];
-  }
-  return [];
+  return new ClaudeStreamMapper().map(ev);
+}
+
+/** Raw stream lines kept out of the run log (and so the Raw Log): the partial-message deltas; the full text follows in "assistant". */
+export function isNoisyStreamLine(ev: any): boolean {
+  return ev?.type === "stream_event" || (ev?.type === "system" && ev?.subtype === "thinking_tokens");
 }
 
 export class ClaudeCodeBrain implements Brain {
@@ -139,6 +194,9 @@ export class ClaudeCodeBrain implements Brain {
       };
       ctx.signal.addEventListener("abort", onAbort, { once: true });
 
+      const mapper = new ClaudeStreamMapper();
+      // Live text goes out in ~50 ms batches; every other event first sends what is pending.
+      const out = new DeltaBatcher(ctx.emit);
       const lines = new LineSplitter();
       child.stdout!.on("data", (chunk: Buffer) => {
         for (const line of lines.push(chunk)) {
@@ -149,12 +207,17 @@ export class ClaudeCodeBrain implements Brain {
             ctx.log({ type: "claude_stdout", text: line.slice(0, 2000) });
             continue;
           }
-          ctx.log({ type: "claude", event });
+          if (!isNoisyStreamLine(event)) ctx.log({ type: "claude", event });
           // Claude Code repeats its init event for every turn; "started" is said once per session.
           const isInit = event?.type === "system" && event?.subtype === "init";
-          if (!(isInit && started)) for (const e of mapStreamEvent(event)) ctx.emit(e);
+          if (!(isInit && started))
+            for (const e of mapper.map(event)) {
+              if (e.type === "assistant_text_delta") out.delta(e.id, e.text);
+              else out.emit(e);
+            }
           if (isInit) started = true;
           if (event?.type === "result") {
+            out.flush();
             results++;
             if (results >= sent && !ctx.input.closed) {
               ctx.log({ type: "claude_turns_done", sent, results });
@@ -171,6 +234,7 @@ export class ClaudeCodeBrain implements Brain {
         reject(e);
       });
       child.on("close", (code, signal) => {
+        out.flush();
         ctx.signal.removeEventListener("abort", onAbort);
         ctx.log({ type: "claude_exit", code, signal });
         resolve();

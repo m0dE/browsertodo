@@ -71,7 +71,9 @@ export const ToolArgs = {
   switch_x_account: z.object({ handle: z.string().describe("Account handle, e.g. @myhandle") }),
   get_credential: z.object({ site: z.string().describe("Hostname, e.g. example.com") }),
   task_complete: z.object({
-    summary: z.string().describe("What was done"),
+    summary: z
+      .string()
+      .describe("One short line for the task list: what was done (e.g. 'Answered the question', 'Posted the reply'). Not the answer itself: write answers as message text before this call"),
     url: z.string().optional().describe("URL of the created post or result, if any"),
   }),
   task_fail: z.object({ reason: z.string() }),
@@ -101,7 +103,8 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   close_tabs: "Close tabs you opened and no longer need. The tab the task started on is never closed.",
   switch_x_account: "Switch X (Twitter) to another signed-in account using X's account switcher. Verify with a screenshot afterwards.",
   get_credential: "Get the stored username and password for a site. Never use this for X.",
-  task_complete: "Finish the task successfully. Call exactly once when the task is fully done.",
+  task_complete:
+    "Finish the task successfully. Call exactly once when the task is fully done. For questions and information tasks, write the full answer to the user as normal message text first (Markdown is rendered), then call this with a one-line summary; never put the answer or long text in the summary.",
   task_fail: "Finish the task as failed when it cannot be done.",
   task_pause: "Stop and ask the human for help: login page, 2FA, CAPTCHA, warning, or anything uncertain.",
 };

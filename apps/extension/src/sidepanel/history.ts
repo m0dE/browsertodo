@@ -9,7 +9,7 @@ import { uiRequest } from "../ui-protocol.js";
 import { canOpenInChat, chatActions } from "./chat-actions.js";
 import { $, busy, errorText, h } from "./dom.js";
 import { describeEvent, turnPicks } from "./event-format.js";
-import { pruneContinue, renderEvent, renderSessionHead } from "./event-render.js";
+import { placeEvent, pruneContinue, renderEvent, renderSessionHead } from "./event-render.js";
 import { brainLabel, chipHint, clockLabel, outcomeChip, sessionMeta } from "./format.js";
 import { openRawLog } from "./raw-log.js";
 
@@ -92,12 +92,11 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
 
   function renderLog(s: SessionInfo, events: StampedAgentEvent[]): void {
     const cont = (e: StampedAgentEvent) => e.type === "task_end" && isContinuableOutcome(e.outcome) && canOpenInChat(s);
-    log.replaceChildren(
-      renderSessionHead(s),
-      ...events.map((e, i) =>
-        renderEvent(describeEvent(e, e.type === "task_end" ? turnPicks(events, i) : undefined), cont(e) ? () => opts.onOpenInChat(s) : undefined),
-      ),
-    );
+    log.replaceChildren(renderSessionHead(s));
+    events.forEach((e, i) => {
+      const view = describeEvent(e, e.type === "task_end" ? turnPicks(events, i) : undefined);
+      placeEvent(log, renderEvent(view, cont(e) ? () => opts.onOpenInChat(s) : undefined), view);
+    });
     if (!events.length) log.append(h("p.empty", null, "No events were recorded for this run."));
     pruneContinue(log);
     log.scrollTop = log.scrollHeight;

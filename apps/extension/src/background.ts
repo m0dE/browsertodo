@@ -6,6 +6,7 @@ import { z } from "zod";
 import * as core from "@browsertodo/core";
 import type { ExtensionSettings } from "@browsertodo/shared";
 import { AccountService, browserTimeZone, type AccountServiceDeps } from "./account/account.js";
+import type { AccountTaskList } from "./account/account-api.js";
 import { AccountTodo, LocalTodo, type TodoSource } from "./account/todo-source.js";
 import { AgentSlots } from "./agent-slots.js";
 import { ApiClient } from "./api-client.js";
@@ -122,12 +123,17 @@ async function resolveForRun(settings: ExtensionSettings): Promise<ResolvedBrain
 
 /** Next due time among the signed-in account's pending tasks (from the last list), for the due alarm. */
 let accountNextDue: number | null = null;
-function noteAccountTasks(tasks?: { status: string; notBefore: string | null; retryAfter: string | null }[]): void {
-  if (tasks) {
+function noteAccountTasks(listed?: AccountTaskList): void {
+  if (listed) {
+    // The server judges the plan: when it disagrees with the plan cached here, fetch the plan again (at most once a minute).
+    if (listed.locked === account.todoAllowed()) void account.refresh().catch(() => {});
     // Paused tasks wait for the user (or their retryAfter, which the server turns back into pending).
-    const times = tasks
-      .filter((t) => t.status === "pending")
-      .map((t) => Math.max(Date.parse(t.notBefore ?? "") || 0, Date.parse(t.retryAfter ?? "") || 0));
+    // A locked list does not run, so it sets no alarm.
+    const times = listed.locked
+      ? []
+      : listed.tasks
+          .filter((t) => t.status === "pending")
+          .map((t) => Math.max(Date.parse(t.notBefore ?? "") || 0, Date.parse(t.retryAfter ?? "") || 0));
     accountNextDue = times.length ? Math.min(...times) : null;
   } else {
     // A task was added or changed: check soon.
@@ -139,9 +145,9 @@ function noteAccountTasks(tasks?: { status: string; notBefore: string | null; re
 async function todoSource(): Promise<TodoSource> {
   await account.load();
   if (!account.session()) return new LocalTodo(localStore);
-  return new AccountTodo(await account.api(), browserTimeZone(), (tasks) => {
-    noteAccountTasks(tasks);
-    if (!tasks) hub.push({ type: "tasks.changed" });
+  return new AccountTodo(await account.api(), browserTimeZone(), (listed) => {
+    noteAccountTasks(listed);
+    if (!listed) hub.push({ type: "tasks.changed" });
   });
 }
 
@@ -194,7 +200,7 @@ async function nextRunAt(): Promise<string | undefined> {
 
 async function scheduleDueAlarm(): Promise<void> {
   const local = await localStore.nextWakeAt();
-  const accountDue = account.session() && accountNextDue !== null ? new Date(accountNextDue) : null;
+  const accountDue = account.todoAllowed() && accountNextDue !== null ? new Date(accountNextDue) : null;
   const next = local && accountDue ? (local < accountDue ? local : accountDue) : (local ?? accountDue);
   if (!next) {
     await chrome.alarms.clear(DUE_ALARM);

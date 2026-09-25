@@ -238,7 +238,8 @@ export interface UiResults {
   "schedule.pause": UiState;
   "schedule.resume": UiState;
   /** source: the signed-in account's tasks, or this browser's (signed out). */
-  "tasks.list": { tasks: (LocalTask & { media: LocalMediaInfo[] })[]; source?: "local" | "account" };
+  /** locked: the account's plan does not include the TODO list; the tasks are read-only until the user subscribes. */
+  "tasks.list": { tasks: (LocalTask & { media: LocalMediaInfo[] })[]; locked: boolean; source?: "local" | "account" };
   "tasks.add": { task: LocalTask };
   "tasks.update": { task: LocalTask };
   "tasks.delete": { ok: boolean };

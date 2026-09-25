@@ -51,6 +51,11 @@ export function voiceAllowed(plan: PlanInfo | undefined | null): boolean {
   return planAllows(plan, "voice");
 }
 
+/** The plan includes the account's TODO list (tasks kept in the cloud, run on schedule) and is in good standing. */
+export function todoAllowed(plan: PlanInfo | undefined | null): boolean {
+  return planAllows(plan, "todo");
+}
+
 /** A paid plan in good standing (includes API keys and monthly credit). */
 export function isPaidActive(plan: PlanInfo | undefined | null): boolean {
   return !!plan && plan.id !== "free" && GOOD_STANDING.includes(plan.status);

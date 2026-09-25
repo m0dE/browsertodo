@@ -17,7 +17,7 @@ import type { AccountView } from "../ui-protocol.js";
 import { AccountApi } from "./account-api.js";
 import { googleIdToken, SIGN_IN_NOT_SET_UP, SignInError } from "./google-auth.js";
 import { accountTaskInput } from "./todo-source.js";
-import { isPaidActive, type ApiKeyInfo, type BillingLinkRequest, type CreatedApiKey, type CreditInfo, type KeyRole, type Me, type PlanInfo } from "./types.js";
+import { isPaidActive, todoAllowed, type ApiKeyInfo, type BillingLinkRequest, type CreatedApiKey, type CreditInfo, type KeyRole, type Me, type PlanInfo } from "./types.js";
 
 export const ACCOUNT_KEY = "account";
 /** Profile and credit are refetched when older than this (or on demand). */
@@ -147,6 +147,15 @@ export class AccountService {
     return { signedIn: true, hostedUsable, outOfCredit: outOfCredit || (!!info?.credit && credit <= 0) };
   }
 
+  /**
+   * The signed-in account's plan (as last fetched) includes the TODO list.
+   * Without it nothing of the account's list is fetched for running or
+   * scheduled, and local tasks are not offered a move into it.
+   */
+  todoAllowed(): boolean {
+    return !!this.session() && todoAllowed(this.cache?.info?.plan);
+  }
+
   /** The account as the UI shows it. */
   async view(): Promise<AccountView> {
     const a = await this.load();
@@ -163,7 +172,7 @@ export class AccountService {
     if (a.info?.fetchedAt) view.fetchedAt = a.info.fetchedAt;
     const brain = this.brainAccount();
     if (brain.outOfCredit) view.outOfCredit = { topupUrl: a.outOfCredit?.topupUrl || view.dashboardUrl };
-    if (!a.migrationDismissed) {
+    if (!a.migrationDismissed && this.todoAllowed()) {
       try {
         const n = (await this.deps.localTasks.list()).filter(movable).length;
         if (n) view.localTasks = n;
@@ -187,11 +196,16 @@ export class AccountService {
     return (await this.api()).transcribe(wav, opts);
   }
 
-  /** The runner's task source for the signed-in account (claim/heartbeat/result with the session token), or null. */
+  /**
+   * The runner's task source for the signed-in account (claim/heartbeat/result
+   * with the session token), or null: signed out, or the plan does not include
+   * the TODO list (the plan is refetched at most once a minute, so a new
+   * subscription is picked up).
+   */
   async runnerApi(): Promise<ApiClient | null> {
-    await this.load();
+    await this.refresh().catch(() => undefined);
     const s = this.session();
-    if (!s) return null;
+    if (!s || !this.todoAllowed()) return null;
     return new ApiClient({ ...this.apiOpts(s.apiBase), runnerKey: s.token, onUnauthorized: () => void this.expire(s.token) });
   }
 

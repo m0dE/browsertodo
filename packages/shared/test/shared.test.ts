@@ -223,7 +223,29 @@ describe("plan features", () => {
     expect(planAllows({ id: "free", status: "none" }, "voice")).toBe(false);
     expect(planAllows({ id: "gold", status: "active" }, "voice")).toBe(false);
     expect(planAllows(null, "voice")).toBe(false);
+    // The TODO list (account tasks, scheduled runs) is a paid feature like voice.
+    expect(Object.values(PLAN_CATALOG).filter((p) => p.todo).map((p) => p.id)).toEqual(["starter", "plus", "pro"]);
+    expect(planAllows({ id: "starter", status: "active" }, "todo")).toBe(true);
+    expect(planAllows({ id: "free", status: "canceled" }, "todo")).toBe(false);
     // 60 s of the clips the extension sends fits the byte limit.
     expect(44 + (VOICE_LIMITS.maxClipMs / 1000) * VOICE_LIMITS.sampleRate * 2).toBeLessThanOrEqual(VOICE_LIMITS.maxClipBytes);
+  });
+});
+
+describe("the locked TODO list", () => {
+  it("says how many saved tasks come back", async () => {
+    const { keptTasksText } = await import("../src/index.js");
+    expect(keptTasksText(0)).toBe("");
+    expect(keptTasksText(1)).toBe("You have 1 saved task; it comes back when you subscribe.");
+    expect(keptTasksText(1200)).toBe("You have 1,200 saved tasks; they come back when you subscribe.");
+  });
+});
+
+describe("plan descriptions", () => {
+  it("say what a plan includes, generated from the catalog flags", async () => {
+    const { PLAN_CATALOG, planIncludesText } = await import("../src/index.js");
+    expect(planIncludesText(PLAN_CATALOG.free)).toBe("No TODO list, voice input or API keys");
+    expect(planIncludesText(PLAN_CATALOG.plus)).toBe("Includes TODO list, voice input and API keys");
+    expect(planIncludesText({ todo: true, voice: false, apiKeys: false })).toBe("Includes TODO list; no voice input or API keys");
   });
 });

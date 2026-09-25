@@ -11,9 +11,10 @@ import {
   type LocalTask,
   type Tone,
 } from "@browsertodo/shared";
+import { todoAllowed } from "../account/types.js";
 import { API_IDLE_MS } from "../engine/api-brain.js";
 import { BRAIN_LABELS, brainLabel, modelLabel } from "../ui/labels.js";
-import type { UiState } from "../ui-protocol.js";
+import type { AccountView, UiState } from "../ui-protocol.js";
 
 
 /** "Claude Code · claude-sonnet-5 · Jev on": the agent behind a conversation. */
@@ -206,4 +207,17 @@ export function modelChip(state: Pick<UiState, "settings" | "brain" | "account">
   const credit = state.account?.signedIn ? state.account.credit : undefined;
   if (hosted && credit) info.credit = `${formatCents(credit.totalCents)} usage credit left`;
   return info;
+}
+
+/** What the tab shows: the list, or one call to action (Log in; Get a plan). "loading": the account is not known yet. */
+export type TodoGate = "loading" | "out" | "locked" | "in";
+
+/**
+ * The tab's gate. locked: the last list's word (the server judges the plan);
+ * before a list arrived, the plan as the account view has it.
+ */
+export function todoGate(account: AccountView | null, listLocked: boolean | null): TodoGate {
+  if (!account) return "loading";
+  if (!account.signedIn) return "out";
+  return (listLocked ?? !todoAllowed(account.plan)) ? "locked" : "in";
 }

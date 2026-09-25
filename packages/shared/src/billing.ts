@@ -49,11 +49,37 @@ export const PlanCatalogEntry = z.object({
   apiKeys: z.boolean(),
   /** Voice input in the side panel (POST /v1/ai/transcribe). */
   voice: z.boolean(),
+  /** The TODO list kept in the account and run on schedule (task writes, runner claims, media uploads). */
+  todo: z.boolean(),
 });
 export type PlanCatalogEntry = z.infer<typeof PlanCatalogEntry>;
 
-/** What a plan unlocks: the boolean capability flags of the catalog. */
-export type PlanFeature = "apiKeys" | "voice";
+/** What a plan unlocks: the boolean capability flags of the catalog, in the order plan descriptions list them. */
+export const PlanFeature = z.enum(["todo", "voice", "apiKeys"]);
+export type PlanFeature = z.infer<typeof PlanFeature>;
+
+/** How a feature reads in plan descriptions: `name` inside a sentence, `has` / `lacks` as a plan card's line. */
+export const PLAN_FEATURE_TEXT: Readonly<Record<PlanFeature, { name: string; has: string; lacks: string }>> = {
+  todo: { name: "TODO list", has: "Cloud TODO list with scheduled runs", lacks: "No cloud TODO list" },
+  voice: { name: "voice input", has: "Voice input in the side panel", lacks: "No voice input" },
+  apiKeys: { name: "API keys", has: "API keys for your scripts", lacks: "No API keys" },
+};
+
+/** "a", "a and b", "a, b and c". */
+function listOf(items: string[], last: "and" | "or"): string {
+  return items.length < 2 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} ${last} ${items.at(-1)}`;
+}
+
+/** A plan's features in one line: "Includes TODO list, voice input and API keys", "No TODO list, voice input or API keys". */
+export function planIncludesText(plan: Pick<PlanCatalogEntry, PlanFeature>): string {
+  const names = (has: boolean) => PlanFeature.options.filter((f) => plan[f] === has).map((f) => PLAN_FEATURE_TEXT[f].name);
+  const included = names(true);
+  const missing = names(false);
+  const parts = [];
+  if (included.length) parts.push(`Includes ${listOf(included, "and")}`);
+  if (missing.length) parts.push(`${included.length ? "no" : "No"} ${listOf(missing, "or")}`);
+  return parts.join("; ");
+}
 
 /** The 503 answer of a feature this server has not been configured for (its key or binding is missing). */
 export const NOT_SET_UP = {
@@ -67,6 +93,7 @@ export const NOT_SET_UP = {
 export const PLAN_REQUIRED_MESSAGES: Readonly<Record<PlanFeature, string>> = {
   apiKeys: "API keys need a paid plan.",
   voice: "Voice input needs a paid plan.",
+  todo: "The TODO list needs a paid plan.",
 };
 
 /** The plans (decided by the owner; docs/BILLING-CONTRACT.md). The one plan table: API, dashboard, extension and the Stripe setup script read it. */
@@ -137,10 +164,12 @@ export const OutOfCreditError = z.object({
 });
 export type OutOfCreditError = z.infer<typeof OutOfCreditError>;
 
-/** 403 of a feature the user's plan does not include (e.g. voice input on Free). */
+/** 403 of a feature the user's plan does not include (e.g. voice input or the TODO list on Free). */
 export const PLAN_REQUIRED = "plan_required";
 export const PlanRequiredError = z.object({
   error: z.literal(PLAN_REQUIRED),
+  /** The catalog flag the plan lacks. */
+  feature: PlanFeature,
   message: z.string(),
   /** Where to pick a plan (the dashboard's billing page). */
   upgradeUrl: z.string(),

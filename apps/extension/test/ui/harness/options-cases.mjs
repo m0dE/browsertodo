@@ -22,9 +22,13 @@ const onPlus = (data) => {
   };
 };
 
+const onFree = (data) => {
+  data.state.account = { ...data.state.account, plan: { id: "free", status: "none", currentPeriodEnd: null, cancelAtPeriodEnd: false } };
+};
+
 /** [name, scenario kind, hash, data edit, checks(page)] */
 export const OPTION_CASES = [
-  ["options-ai-auto", "ok", "#ai", () => {}, (p) => [
+  ["options-ai-auto", "ok", "#ai", onFree, (p) => [
     ["Auto checked", () => p.isChecked(radio("auto"))],
     ["Auto says what it picks", async () => /picks Local Claude Code/.test(await p.textContent("#auto-pick"))],
     ["API key hidden under Auto", async () => !(await shown(p, "[data-secret=anthropicApiKey]"))],

@@ -809,6 +809,64 @@ export const PANEL_CASES = [
       await p.close();
     },
   },
+  // Signed in on Free: the TODO list is a paid feature. One calm, centred Get a plan (and how many saved
+  // tasks wait in the account), no list, no composer; Chat still works; subscribing brings the list back.
+  {
+    names: ["panel-todo-locked", "panel-todo-locked-empty"],
+    async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, checkLayout, reportErrors }) {
+      for (const name of ["panel-todo-locked", "panel-todo-locked-empty"]) {
+        if (!want(name, size, scheme)) continue;
+        const kind = name.replace("panel-", "");
+        const p = await openPanel(ctx, kind, ".chat-empty");
+        await p.click("#tab-btn-todo");
+        await p.waitForSelector('#tab-todo[data-auth="locked"] #todo-plan-btn');
+        const cta = await p.evaluate(() => {
+          const btn = document.getElementById("todo-plan-btn");
+          const b = btn.getBoundingClientRect();
+          const tab = document.getElementById("tab-todo").getBoundingClientRect();
+          const box = document.getElementById("todo-locked");
+          return {
+            w: b.width, h: b.height, font: parseFloat(getComputedStyle(btn).fontSize),
+            dx: Math.abs((b.left + b.right) / 2 - (tab.left + tab.right) / 2),
+            tabH: tab.height, boxDy: Math.abs((box.getBoundingClientRect().top + box.getBoundingClientRect().bottom) / 2 - (tab.top + tab.bottom) / 2),
+            shown: [...document.querySelectorAll("#tab-todo > *")].filter((e) => e.getBoundingClientRect().height > 0).map((e) => e.id || e.className),
+            text: [...box.querySelectorAll("p, button")].filter((e) => !e.hidden).map((e) => e.textContent),
+            composer: document.getElementById("composer").hidden,
+          };
+        });
+        const kept = name === "panel-todo-locked" ? ["You have 7 saved tasks; they come back when you subscribe."] : [];
+        const want_ = ["TODO needs a paid plan", "Tasks are stored in your account and run on schedule.", "Get a plan", ...kept];
+        if (JSON.stringify(cta.text) !== JSON.stringify(want_)) fail(`locked TODO says ${JSON.stringify(cta.text)}`);
+        if (cta.w < 200 || cta.h < 46 || cta.font < 16) fail(`Get a plan is not big: ${JSON.stringify(cta)}`);
+        if (cta.dx > 2 || cta.boxDy > cta.tabH * 0.12) fail(`the locked state is not centred: ${JSON.stringify(cta)}`);
+        if (cta.shown.join() !== "todo-locked") fail(`locked TODO shows more than Get a plan: ${cta.shown.join(", ")}`);
+        if (!cta.composer) fail("composer shown under Get a plan");
+        await checkLayout(p, `${kind} ${label}`);
+        await shoot(p, name, size, scheme);
+        // The account menu says what Free lacks.
+        const plan = await p.evaluate(() => document.getElementById("acct-plan").textContent);
+        if (plan !== "Free plan, no TODO list · $0.00 usage credit") fail(`account menu plan "${plan}"`);
+        await p.click("#todo-plan-btn");
+        await p.waitForFunction(() => window.__created.some((u) => u.endsWith("options.html#account")));
+        // One-off chats stay free: Chat keeps its composer.
+        await p.click("#tab-btn-chat");
+        if (!(await p.locator("#composer").isVisible())) fail("composer hidden on Chat on Free");
+        if (name === "panel-todo-locked") {
+          // Subscribing (the plan arrives with the next state): the same tasks come back, unlocked.
+          await p.click("#tab-btn-todo");
+          await p.evaluate(() => {
+            window.__data.tasksLocked = false;
+            const s = window.__data.state;
+            window.__push({ type: "state", state: { ...s, account: { ...s.account, plan: { id: "plus", status: "active", currentPeriodEnd: null, cancelAtPeriodEnd: false } } } });
+          });
+          await p.waitForSelector('#tab-todo[data-auth="in"] .task');
+          if (!(await p.locator("#composer").isVisible())) fail("composer not back after subscribing");
+        }
+        reportErrors(p, `${kind} ${label}`);
+        await p.close();
+      }
+    },
+  },
   // Out of usage credit: the status line says so with Top up; the paused run's card links to the top-up page.
   {
     names: ["panel-out-of-credit"],
@@ -978,7 +1036,7 @@ export const PANEL_CASES = [
 
       // Free plan: a lock; the tooltip and a click explain, "Get a plan" opens Settings > Account.
       {
-        const p = await openPanel(ctx, "idle", ".chat-empty");
+        const p = await openPanel(ctx, "free", ".chat-empty");
         if ((await voiceState(p)) !== "locked") fail(`free plan mic ${await voiceState(p)}`);
         if ((await p.getAttribute(mic, "title")) !== "Voice needs a paid plan") fail(`locked tooltip "${await p.getAttribute(mic, "title")}"`);
         await p.click(mic);

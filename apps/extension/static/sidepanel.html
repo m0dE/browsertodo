@@ -62,8 +62,15 @@
         <!-- Signed out: only this. The list lives in the user's account. -->
         <div id="todo-login" class="login-cta">
           <button id="login-btn" type="button" class="primary login-btn">Log in</button>
-          <p class="login-hint">Sign in with Google to keep your TODO list in your account and run it on schedule.</p>
+          <p class="login-hint">Sign in with Google to keep your TODO list in your account and run it on schedule (paid plans).</p>
           <p id="login-msg" class="msg" role="alert"></p>
+        </div>
+        <!-- Signed in on a plan without the TODO list: only this. Kept tasks wait in the account. -->
+        <div id="todo-locked" class="login-cta">
+          <p id="todo-locked-title" class="cta-title"></p>
+          <p id="todo-locked-why" class="login-hint"></p>
+          <button id="todo-plan-btn" type="button" class="primary login-btn"></button>
+          <p id="todo-kept" class="login-hint" hidden></p>
         </div>
         <!-- First sign-in with tasks saved in this browser. -->
         <div id="migrate" class="card migrate" hidden>

@@ -13,6 +13,8 @@ describe("options: account summary", () => {
       stripeConfigured: false,
     });
     expect(s).toMatchObject({ planName: "Free", planStatus: "", credit: "$0.00", creditDetail: "$0.00 top-up", paid: false, keysAllowed: false, billing: "not-set-up" });
+    // What Free lacks, from the plan catalog: the TODO list first.
+    expect(s.planIncludes).toBe("No TODO list, voice input or API keys");
   });
 
   it("paid plan: renewal date, subscription credit with its expiry plus top-up, keys allowed", () => {
@@ -30,6 +32,7 @@ describe("options: account summary", () => {
       paid: true,
       keysAllowed: true,
       billing: "ready",
+      planIncludes: "Includes TODO list, voice input and API keys",
     });
     expect(accountSummary({ ...base, plan: { id: "pro", status: "active", currentPeriodEnd: "2026-10-24T00:00:00Z", cancelAtPeriodEnd: true } }).planStatus).toBe("Ends Oct 24, 2026");
     expect(accountSummary({ ...base, plan: { id: "starter", status: "past_due", currentPeriodEnd: null, cancelAtPeriodEnd: false } })).toMatchObject({ planStatus: "Payment overdue", paid: true });
@@ -37,15 +40,15 @@ describe("options: account summary", () => {
   });
 
   it("unknown billing and out of credit", () => {
-    expect(accountSummary(base)).toMatchObject({ billing: "unknown", credit: "", planName: "Free" });
+    expect(accountSummary(base)).toMatchObject({ billing: "unknown", credit: "", planName: "Free", planIncludes: "" });
     expect(accountSummary({ ...base, outOfCredit: { topupUrl: "u" } }).outOfCredit).toBe(true);
   });
 
   it("plan choices, dates and the return URL", () => {
     expect(planChoices()).toEqual([
-      { id: "starter", label: "Starter", detail: "$9.99/mo · $5.00 usage credit" },
-      { id: "plus", label: "Plus", detail: "$29.99/mo · $20.00 usage credit" },
-      { id: "pro", label: "Pro", detail: "$199.99/mo · $199.99 usage credit" },
+      { id: "starter", label: "Starter", detail: "$9.99/mo · $5.00 usage credit", includes: "Includes TODO list, voice input and API keys" },
+      { id: "plus", label: "Plus", detail: "$29.99/mo · $20.00 usage credit", includes: "Includes TODO list, voice input and API keys" },
+      { id: "pro", label: "Pro", detail: "$199.99/mo · $199.99 usage credit", includes: "Includes TODO list, voice input and API keys" },
     ]);
     expect(dateLabel("bogus")).toBe("");
     expect(billingReturnUrl("https://api.test/")).toBe("https://api.test/billing");

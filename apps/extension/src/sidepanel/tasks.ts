@@ -1,27 +1,32 @@
 /**
  * TODO tab: the task list and the add form ("Do this now" lives in the
- * composer). The list lives in the user's account: signed out, the tab is
- * one big Log in button. After the first sign-in with tasks saved in this
- * browser, it offers to move them into the account.
+ * composer). The list lives in the user's account and is a paid feature:
+ * signed out, the tab is one big Log in button; on a plan without it, one
+ * Get a plan button (with how many tasks the account keeps for later).
+ * After the first sign-in with tasks saved in this browser, it offers to
+ * move them into the account.
  */
 import {
   chipHint,
+  keptTasksText,
   localInputToIso,
   parseRepeatTimes,
   plural,
   repeatLabel,
   splitTasks,
   taskChip,
+  TODO_LOCKED,
   taskNextTime,
   type LocalTask,
 } from "@browsertodo/shared";
 import { SIGN_IN_NOT_SET_UP } from "../account/google-auth.js";
+import { todoAllowed } from "../account/types.js";
 import { uiRequest, type AccountView, type LocalMediaInfo, type UiState } from "../ui-protocol.js";
 import { $, busy, flash, h, restartAnimation, showError } from "../ui/dom.js";
 import { signIn, SIGNED_OUT } from "../ui/sign-in.js";
 import { runsOfTask } from "./details-sheet.js";
 import { filePicker, filesToUploads } from "./files.js";
-import { accountLabel, clockLabel, firstLine, runNowButton } from "./format.js";
+import { accountLabel, clockLabel, firstLine, runNowButton, todoGate, type TodoGate } from "./format.js";
 import { shortUrl } from "../text.js";
 import { taskActions, type TaskAction } from "./task-actions.js";
 
@@ -36,8 +41,8 @@ export interface TasksView {
   tick(): void;
   /** Settings for Run now's tooltip (check interval, cloud sync) and the account (signed in or not). */
   setState(state: UiState): void;
-  /** True when the tab is the Log in button only (no composer below it). */
-  signedOut(): boolean;
+  /** True when the tab is one call to action only (Log in; Get a plan), with no composer below it. */
+  callToActionOnly(): boolean;
   /** Google sign-in, as the tab's Log in button does it (progress shows under that button). */
   signIn(): void;
   /** "Open in TODO": reload, then scroll to this task and focus it. False when the list does not have it. */
@@ -53,6 +58,10 @@ export function initTasks(opts: {
   onState?: (state: UiState) => void;
   /** A task's title was picked: show its details. */
   onDetails?: (task: Row, source: "local" | "account", trigger: HTMLElement) => void;
+  /** Get a plan: Settings > Account. */
+  openPlans?: () => void;
+  /** The tab switched between its list and a call to action (the composer shows only with the list). */
+  onGateChange?: () => void;
 }): TasksView {
   let tasks: Row[] = [];
   let loaded = false;
@@ -60,6 +69,9 @@ export function initTasks(opts: {
   let account: AccountView | null = null;
   /** Where the loaded list came from. */
   let source: "local" | "account" = "local";
+  /** The last list said the account's plan does not include the TODO list; null: no list for this account yet. */
+  let listLocked: boolean | null = null;
+  let gate: TodoGate = "loading";
   const tab = $("tab-todo");
   const tasksMsg = $("tasks-msg");
 
@@ -100,9 +112,24 @@ export function initTasks(opts: {
       .catch((err: unknown) => showError(migrateMsg, err)),
   );
 
+  // A plan without the TODO list: the way to get one.
+  $("todo-locked-title").textContent = TODO_LOCKED.title;
+  $("todo-locked-why").textContent = TODO_LOCKED.why;
+  const planBtn = $("todo-plan-btn");
+  planBtn.textContent = TODO_LOCKED.action;
+  planBtn.addEventListener("click", () => opts.openPlans?.());
+
   const renderAccount = () => {
     const signedIn = !!account?.signedIn;
-    tab.dataset.auth = account ? (signedIn ? "in" : "out") : "loading";
+    const next = todoGate(account, source === "account" ? listLocked : null);
+    tab.dataset.auth = next;
+    const kept = $("todo-kept");
+    kept.textContent = next === "locked" && loaded && source === "account" ? keptTasksText(tasks.length) : "";
+    kept.hidden = !kept.textContent;
+    if (next !== gate) {
+      gate = next;
+      opts.onGateChange?.();
+    }
     loginBtn.title = account && !account.signInConfigured ? SIGN_IN_NOT_SET_UP : "Sign in with Google";
     const n = signedIn ? (account?.localTasks ?? 0) : 0;
     migrate.hidden = n === 0;
@@ -283,7 +310,9 @@ Show the full task and its details`,
       const res = await uiRequest({ type: "tasks.list" });
       tasks = res.tasks;
       source = res.source ?? "local";
+      listLocked = res.locked;
       loaded = true;
+      renderAccount();
       render();
     } catch (err) {
       showError(tasksMsg, err);
@@ -311,13 +340,17 @@ Show the full task and its details`,
     setState(state) {
       settings = state.settings;
       const before = account;
-      account = state.account ?? SIGNED_OUT;
+      const now = state.account ?? SIGNED_OUT;
+      account = now;
+      // Signed in or out: the list comes from somewhere else. Another plan: it is (un)locked now.
+      const otherAccount = !!before && (before.signedIn !== now.signedIn || before.user?.email !== now.user?.email);
+      const otherPlan = !!before && todoAllowed(before.plan) !== todoAllowed(now.plan);
+      if (otherAccount || otherPlan) listLocked = null;
       renderAccount();
       renderRunNow();
-      // Signed in or out: the list comes from somewhere else now.
-      if (before && (before.signedIn !== account.signedIn || before.user?.email !== account.user?.email)) void refresh();
+      if (otherAccount || otherPlan) void refresh();
     },
-    signedOut: () => !!account && !account.signedIn,
+    callToActionOnly: () => gate === "out" || gate === "locked",
     signIn: startSignIn,
   };
 }

@@ -3,7 +3,8 @@
  * wrong and the button that fixes it) and the account menu (Log in,
  * Settings, pausing scheduled runs, Account & billing, Sign out).
  */
-import { formatCents, OUT_OF_CREDIT, planName } from "@browsertodo/shared";
+import { formatCents, OUT_OF_CREDIT, PLAN_FEATURE_TEXT, planName } from "@browsertodo/shared";
+import { todoAllowed } from "../account/types.js";
 import { uiRequest, type UiState } from "../ui-protocol.js";
 import { showAvatar } from "../ui/avatar.js";
 import { $, busy } from "../ui/dom.js";
@@ -94,7 +95,8 @@ export function initHeader(deps: HeaderDeps): Header {
     $("acct-btn").title = `Signed in as ${who}`;
     $("acct-email").textContent = user.email;
     $("acct-email").title = who;
-    const plan = a.plan ? `${planName(a.plan.id)} plan` : "";
+    // A plan without the TODO list says so: the TODO tab then only offers a plan.
+    const plan = a.plan ? `${planName(a.plan.id)} plan${todoAllowed(a.plan) ? "" : `, no ${PLAN_FEATURE_TEXT.todo.name}`}` : "";
     const credit = a.credit ? `${formatCents(a.credit.totalCents)} usage credit` : "";
     const line = $("acct-plan");
     line.textContent = [plan, a.outOfCredit ? OUT_OF_CREDIT : credit].filter(Boolean).join(" · ");

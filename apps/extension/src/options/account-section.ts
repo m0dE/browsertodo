@@ -89,6 +89,7 @@ export function initAccountSection(opts: { onState(state: UiState): void; showBi
     const sum = accountSummary(a);
     $("acct-plan").textContent = sum.planName;
     $("acct-plan-status").textContent = sum.planStatus;
+    $("acct-plan-includes").textContent = sum.planIncludes;
     $("acct-credit").textContent = sum.outOfCredit ? OUT_OF_CREDIT : sum.credit || "—";
     $("acct-credit-detail").textContent = sum.outOfCredit ? (sum.credit ? `${sum.credit} left` : "") : sum.creditDetail;
     $("credit-fact").dataset.tone = sum.outOfCredit ? "warn" : "";
@@ -117,6 +118,7 @@ export function initAccountSection(opts: { onState(state: UiState): void; showBi
           { type: "button", title: `Subscribe to ${p.label}` },
           h("b", null, `Subscribe · ${p.label}`),
           h("small", null, p.detail),
+          h("small", null, p.includes),
         );
         b.addEventListener("click", () => billing(b, { action: "checkout", plan: p.id }));
         return b;

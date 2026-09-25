@@ -116,6 +116,8 @@ const tasks = initTasks({
   onState: (s) => applyState(s),
   tabId: () => activeTab,
   onDetails: (task, listSource, trigger) => void showDetails({ task, listSource }, trigger),
+  openPlans: () => void openSettings("account"),
+  onGateChange: () => updateComposer(),
 });
 const composer = initComposer({
   onStarted: startedHere,
@@ -224,9 +226,9 @@ function updateNote(): void {
   chat.setNote(t && t.source !== "cloud" && composer.mode() === "conversation" ? conversationNote(t, open) : null);
 }
 
-/** The composer sits under Chat and TODO, but not under the TODO tab's Log in button. */
+/** The composer sits under Chat and TODO, but not under the TODO tab's Log in or Get a plan button. */
 function updateComposer(): void {
-  $("composer").hidden = !tabHasComposer(currentTab) || (currentTab === "todo" && tasks.signedOut());
+  $("composer").hidden = !tabHasComposer(currentTab) || (currentTab === "todo" && tasks.callToActionOnly());
 }
 
 function applyState(s: UiState): void {

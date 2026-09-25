@@ -3,6 +3,7 @@
  * dashboard: its status chip and tooltip, list order, repeat label, and the
  * add/edit form's time parsing. Pure and DOM-free.
  */
+import { plural } from "./format.js";
 import { MAX_REPEAT_TIMES, type RepeatRule, type TaskStatus } from "./task.js";
 
 export type Tone = "ok" | "warn" | "bad" | "muted" | "accent";
@@ -99,4 +100,17 @@ export function localInputToIso(value: string): string | undefined {
   if (!value) return undefined;
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
+/** The TODO list on a plan without it (the side panel's TODO tab and the dashboard's TODO page say the same). */
+export const TODO_LOCKED = {
+  title: "TODO needs a paid plan",
+  why: "Tasks are stored in your account and run on schedule.",
+  action: "Get a plan",
+} as const;
+
+/** "You have 3 saved tasks; they come back when you subscribe." ("" for none): what a locked list keeps. */
+export function keptTasksText(n: number): string {
+  if (n <= 0) return "";
+  return n === 1 ? "You have 1 saved task; it comes back when you subscribe." : `You have ${plural(n, "saved task")}; they come back when you subscribe.`;
 }

@@ -5,6 +5,7 @@ import {
   RedirectUrlResponse,
   SESSION_HEADER,
   Task,
+  TaskListResponse,
   TRANSCRIBE_CONTENT_TYPE,
   TRANSCRIBE_PATH,
   TRANSCRIBE_QUERY,
@@ -26,6 +27,11 @@ export interface AccountApiOptions {
 
 /** Tasks listed per page (GET /v1/tasks). */
 const TASK_PAGE_SIZE = 200;
+
+/** A page of GET /v1/tasks (a server from before plans gated the TODO list sends no `locked`). */
+const TaskListPage = TaskListResponse.extend({ locked: TaskListResponse.shape.locked.default(false) });
+
+export type AccountTaskList = { tasks: Task[]; locked: boolean };
 
 export class AccountApi {
   private readonly http: HttpClient;
@@ -80,15 +86,19 @@ export class AccountApi {
     await this.http.request("DELETE", `/v1/me/keys/${encodeURIComponent(id)}`);
   }
 
-  /** Every task of the account (a few pages). */
-  async listTasks(maxPages = 5): Promise<Task[]> {
-    const out: Task[] = [];
+  /**
+   * Every task of the account (a few pages). locked: the plan does not
+   * include the TODO list, so the tasks are read-only until the user subscribes.
+   */
+  async listTasks(maxPages = 5): Promise<AccountTaskList> {
+    const out: AccountTaskList = { tasks: [], locked: false };
     let cursor: string | undefined;
     for (let page = 0; page < maxPages; page++) {
       const q = new URLSearchParams({ limit: String(TASK_PAGE_SIZE) });
       if (cursor) q.set("cursor", cursor);
-      const body = (await (await this.http.request("GET", `/v1/tasks?${q}`)).json()) as { tasks?: unknown[]; nextCursor?: string | null };
-      for (const t of body.tasks ?? []) out.push(Task.parse(t));
+      const body = await this.http.json(TaskListPage, "GET", `/v1/tasks?${q}`);
+      out.tasks.push(...body.tasks);
+      out.locked = body.locked;
       cursor = body.nextCursor ?? undefined;
       if (!cursor) break;
     }

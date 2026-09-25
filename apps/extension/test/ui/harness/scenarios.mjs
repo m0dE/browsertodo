@@ -111,7 +111,7 @@ export function scenario(kind) {
     tabChats: {},
     runningTabs: { "s-live": [1] },
   };
-  // Signed in by default (the TODO tab shows the list); account scenarios below change it.
+  // Signed in on a paid plan by default (the TODO tab shows the list); account scenarios below change it.
   const API = "https://app.browsertodo.com";
   const avatar =
     "data:image/svg+xml;utf8," +
@@ -122,9 +122,11 @@ export function scenario(kind) {
   state.account = {
     signedIn: true, signInConfigured: true, apiBase: API, dashboardUrl: `${API}/`,
     user: { email: "ada.lovelace@example.com", name: "Ada Lovelace", pictureUrl: avatar },
-    plan: FREE, credit: money(0, 0), stripeConfigured: true, fetchedAt: iso(0),
+    plan: PLUS, credit: money(0, 0), stripeConfigured: true, fetchedAt: iso(0),
   };
   let tasksSource;
+  /** The account's list came back locked (a plan without the TODO list). */
+  let tasksLocked = false;
   let keys = [];
   if (kind === "loggedout" || kind === "loggedout-noclient") {
     state.account = { signedIn: false, signInConfigured: kind === "loggedout", apiBase: API, dashboardUrl: `${API}/` };
@@ -141,7 +143,14 @@ export function scenario(kind) {
   if (kind === "hosted-out") {
     state.account = { ...state.account, plan: FREE, credit: money(0, 0), localTasks: undefined, outOfCredit: { topupUrl: `${API}/billing` } };
   }
-  if (kind === "opt-free") state.account = { ...state.account, plan: FREE, credit: money(0, 0) };
+  if (kind === "opt-free" || kind === "free") state.account = { ...state.account, plan: FREE, credit: money(0, 0) };
+  if (kind === "todo-locked" || kind === "todo-locked-empty") {
+    // Signed in on Free: the account keeps the tasks of an earlier subscription, read-only.
+    state.running = null;
+    state.account = { ...state.account, plan: FREE, credit: money(0, 0) };
+    tasksSource = "account";
+    tasksLocked = true;
+  }
   if (kind === "opt-paid") {
     state.account = { ...state.account, plan: PLUS, credit: money(1540, 1000, 2000) };
     keys = [
@@ -152,7 +161,7 @@ export function scenario(kind) {
   if (kind === "opt-out") state.account = { ...state.account, plan: FREE, credit: money(0, 0), outOfCredit: { topupUrl: `${API}/billing` } };
   if (kind === "opt-nobilling") state.account = { ...state.account, plan: FREE, credit: money(0, 0), stripeConfigured: false };
   if (kind === "opt-signedout") state.account = { signedIn: false, signInConfigured: true, apiBase: API, dashboardUrl: `${API}/` };
-  if (kind === "idle" || kind === "empty" || kind === "noshortcut") state.running = null;
+  if (kind === "idle" || kind === "free" || kind === "empty" || kind === "noshortcut") state.running = null;
   if (kind === "nobrain") {
     state.brain = { effective: null, note: "No brain available: add a Claude API key, or install the helper for Claude Code.", helper: null, helperError: "Specified native messaging host not found.", hasApiKey: false, jevActive: false };
     state.running = null;
@@ -204,7 +213,7 @@ export function scenario(kind) {
     { sessionId: "s-4", source: "local", taskId: "t7", title: "Share yesterday's blog post on LinkedIn", brain: "claude-api", jev: true, startedAt: iso(-1502), endedAt: iso(-1500), outcome: "failed", reason: "LinkedIn asked for a captcha" },
   ];
   if (kind === "idle") tasks[0] = { ...tasks[0], status: "pending", notBefore: iso(40) };
-  if (kind === "empty") tasks.splice(0, tasks.length);
+  if (kind === "empty" || kind === "todo-locked-empty") tasks.splice(0, tasks.length);
   const eventsBySession = {};
   if (kind === "parallel") {
     // Two due tasks run at once, each in its own tab.
@@ -407,5 +416,6 @@ export function scenario(kind) {
   if (state.running?.sessionId !== "s-live") delete state.runningTabs["s-live"];
   // Another extension took the key: Chrome assigned none.
   const shortcut = kind === "noshortcut" ? "" : SHORTCUT;
-  return { state, tasks, tasksSource, keys, events, sessions, eventsBySession, shortcut, pastEvents: events.slice(0, 6).map((e) => ({ ...e, sessionId: "s-2" })) };
+  // Log In in the stub signs in as a subscriber (the TODO tab then shows the list).
+  return { state, tasks, tasksSource, tasksLocked, signInPlan: PLUS, keys, events, sessions, eventsBySession, shortcut, pastEvents: events.slice(0, 6).map((e) => ({ ...e, sessionId: "s-2" })) };
 }

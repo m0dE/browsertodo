@@ -219,7 +219,7 @@ export class UiRouter {
         return this.getState();
       case "tasks.list": {
         const todo = await this.todo();
-        return { tasks: await todo.list(), source: todo.kind } satisfies UiResults["tasks.list"];
+        return { ...(await todo.list()), source: todo.kind } satisfies UiResults["tasks.list"];
       }
       case "tasks.add":
         return {

@@ -1,10 +1,10 @@
 {
   "$comment": "The one plan table and Stripe contract (decided by the owner; docs/BILLING-CONTRACT.md). Plain JSON so the API, dashboard, extension (via billing.ts) and scripts/setup-stripe.mjs all read the same values.",
   "plans": {
-    "free": { "id": "free", "name": "Free", "priceCents": 0, "creditCents": 0, "apiKeys": false, "voice": false },
-    "starter": { "id": "starter", "name": "Starter", "priceCents": 999, "creditCents": 500, "apiKeys": true, "voice": true },
-    "plus": { "id": "plus", "name": "Plus", "priceCents": 2999, "creditCents": 2000, "apiKeys": true, "voice": true },
-    "pro": { "id": "pro", "name": "Pro", "priceCents": 19999, "creditCents": 19999, "apiKeys": true, "voice": true }
+    "free": { "id": "free", "name": "Free", "priceCents": 0, "creditCents": 0, "apiKeys": false, "voice": false, "todo": false },
+    "starter": { "id": "starter", "name": "Starter", "priceCents": 999, "creditCents": 500, "apiKeys": true, "voice": true, "todo": true },
+    "plus": { "id": "plus", "name": "Plus", "priceCents": 2999, "creditCents": 2000, "apiKeys": true, "voice": true, "todo": true },
+    "pro": { "id": "pro", "name": "Pro", "priceCents": 19999, "creditCents": 19999, "apiKeys": true, "voice": true, "todo": true }
   },
   "stripe": {
     "$comment": "apiVersion: the Stripe-Version the server calls with and its webhook endpoint is pinned to. webhookEvents: the events apps/api/src/webhooks.ts handles.",

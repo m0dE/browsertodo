@@ -53,10 +53,10 @@ export function installChromeStub(data) {
     "agent.show": () => ({ ok: true }),
     "schedule.pause": () => ({ ...data.state, paused: true }),
     "schedule.resume": () => ({ ...data.state, paused: false }),
-    "tasks.list": () => ({ tasks: data.tasks, ...(data.tasksSource ? { source: data.tasksSource } : {}) }),
+    "tasks.list": () => ({ tasks: data.tasks, locked: !!data.tasksLocked, ...(data.tasksSource ? { source: data.tasksSource } : {}) }),
     "tasks.cancel": (req) => ({ task: { ...data.tasks.find((t) => t.id === req.id), status: "cancelled" } }),
     "account.signIn": () => {
-      data.state = { ...data.state, account: { ...data.state.account, signedIn: true, user: { email: "ada.lovelace@example.com", name: "Ada Lovelace", pictureUrl: null } } };
+      data.state = { ...data.state, account: { ...data.state.account, signedIn: true, user: { email: "ada.lovelace@example.com", name: "Ada Lovelace", pictureUrl: null }, plan: data.signInPlan } };
       return data.state;
     },
     "account.signOut": () => {
@@ -111,6 +111,8 @@ export function installChromeStub(data) {
     },
   };
   window.__requests = [];
+  /** The canned answers, for a case that changes them mid-way (e.g. a subscription unlocking the TODO list). */
+  window.__data = data;
   window.__opened = [];
   /** What the panel sent on its UI port (panel.hello, panel.input), and tabs it opened. */
   window.__portSent = [];

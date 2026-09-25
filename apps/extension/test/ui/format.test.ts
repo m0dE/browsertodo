@@ -14,7 +14,7 @@ import {
   taskChip,
   taskNextTime,
 } from "@browsertodo/shared";
-import { accountLabel, bytesToBase64, clockLabel, firstLine, modelChip, sessionMeta, statusLine } from "../../src/sidepanel/format.js";
+import { accountLabel, bytesToBase64, clockLabel, firstLine, modelChip, sessionMeta, statusLine, todoGate } from "../../src/sidepanel/format.js";
 import { modelLabel } from "../../src/ui/labels.js";
 
 const NOW = new Date(2026, 8, 24, 12, 0, 0).getTime(); // local noon
@@ -223,5 +223,25 @@ describe("shared formatting", () => {
     expect(planName(undefined)).toBe("Free");
     expect(planStatusText({ status: "past_due", cancelAtPeriodEnd: false })).toBe("Payment overdue");
     expect(planStatusText({ status: "active", cancelAtPeriodEnd: false })).toBeNull();
+  });
+});
+
+describe("TODO tab gate (the TODO list is a paid feature)", () => {
+  const view = (plan?: "free" | "plus", signedIn = true) => ({
+    signedIn,
+    signInConfigured: true,
+    apiBase: "https://api.test",
+    dashboardUrl: "https://api.test/",
+    ...(plan ? { plan: { id: plan, status: plan === "free" ? "none" : "active", currentPeriodEnd: null, cancelAtPeriodEnd: false } as const } : {}),
+  });
+  it("signed out: Log in; Free: Get a plan; a paid plan: the list", () => {
+    expect(todoGate(null, null)).toBe("loading");
+    expect(todoGate(view(undefined, false), null)).toBe("out");
+    expect(todoGate(view("free"), null)).toBe("locked");
+    expect(todoGate(view("plus"), null)).toBe("in");
+  });
+  it("the list's word wins over the plan cached in the extension", () => {
+    expect(todoGate(view("plus"), true)).toBe("locked");
+    expect(todoGate(view("free"), false)).toBe("in");
   });
 });

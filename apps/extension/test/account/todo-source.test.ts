@@ -19,14 +19,24 @@ describe("AccountTodo (the signed-in TODO list)", () => {
         ? { body: { tasks: [task("t3", { status: "done" })], nextCursor: null } }
         : { body: { tasks: [task("t1", { mediaIds: ["m1", "m2"], repeat: { dailyAt: ["09:00"] }, tz: "Europe/Berlin" }), task("t2")], nextCursor: "c2" } },
     );
-    const rows = await t.todo.list();
+    const { tasks: rows, locked } = await t.todo.list();
+    expect(locked).toBe(false);
     expect(rows.map((r) => r.id)).toEqual(["t1", "t2", "t3"]);
     expect(rows[0]).toMatchObject({ repeat: { dailyAt: ["09:00"] }, media: [{ id: "m1", name: "file 1" }, { id: "m2", name: "file 2" }] });
     expect(rows[1]!.repeat).toBeNull();
     expect(t.api.calls.map((c) => c.path)).toEqual(["/v1/tasks?limit=200", "/v1/tasks?limit=200&cursor=c2"]);
     expect(t.api.calls[0]!.headers.authorization).toBe("Bearer bt_s_tok");
     // The background learns the next due time from the list.
-    expect(t.onChange).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ id: "t1" })]));
+    expect(t.onChange).toHaveBeenCalledWith({ tasks: expect.arrayContaining([expect.objectContaining({ id: "t1" })]), locked: false });
+  });
+
+  it("a plan without the TODO list: the kept tasks come back locked", async () => {
+    const t = setup();
+    t.api.on("GET /v1/tasks", { body: { tasks: [task("t1"), task("t2", { status: "done" })], nextCursor: null, locked: true } });
+    const list = await t.todo.list();
+    expect(list.locked).toBe(true);
+    expect(list.tasks.map((r) => r.id)).toEqual(["t1", "t2"]);
+    expect(t.onChange).toHaveBeenCalledWith(expect.objectContaining({ locked: true }));
   });
 
   it("adds a task: uploads its files to /v1/media first, sends repeat with the browser's time zone", async () => {

@@ -5,7 +5,7 @@ const answer = (status: number, body: string) => vi.fn(async () => new Response(
 
 describe("HttpClient", () => {
   it("takes the server's words: message before error, never a bare code; keeps the body", async () => {
-    const body = { error: "plan_required", message: "API keys need a paid plan.", upgradeUrl: "https://dash.test/billing" };
+    const body = { error: "plan_required", feature: "apiKeys", message: "API keys need a paid plan.", upgradeUrl: "https://dash.test/billing" };
     const http = new HttpClient({ apiBase: "https://api.test", token: "t", missingBase: "no base", fetch: answer(403, JSON.stringify(body)) });
     const err = (await http.request("POST", "/v1/me/keys", {}).catch((e: unknown) => e)) as ApiRequestError;
     expect(err).toBeInstanceOf(ApiRequestError);

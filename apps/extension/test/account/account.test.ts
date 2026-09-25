@@ -37,13 +37,19 @@ function localTasks(): AccountLocalTasks & { rows: any[]; deleted: string[] } {
   };
 }
 
-function setup(opts: { clientId?: string; identity?: ReturnType<typeof google> } = {}) {
+function setup(opts: { clientId?: string; identity?: ReturnType<typeof google>; plan?: typeof FREE_PLAN | typeof PLUS_PLAN } = {}) {
   const api = fakeApi();
   let settings: ExtensionSettings = { ...DEFAULT_SETTINGS, accountApiBase: api.base };
   const storage = memoryStorageArea();
   const local = localTasks();
   const onChange = vi.fn();
   const identity = opts.identity ?? google();
+  let clock = new Date("2026-09-24T12:00:00.000Z");
+  /** What GET /v1/me and /v1/me/billing answer: the plan (Free unless given). */
+  const onPlan = (plan: typeof FREE_PLAN | typeof PLUS_PLAN) => {
+    api.on("GET /v1/me", { body: { ...USER, plan, credit: credit(0, 0) } });
+    api.on("GET /v1/me/billing", { body: { plan, credit: credit(0, 0), stripeConfigured: true } });
+  };
   const account = new AccountService({
     loadSettings: async () => settings,
     clientId: opts.clientId ?? CLIENT,
@@ -51,13 +57,12 @@ function setup(opts: { clientId?: string; identity?: ReturnType<typeof google> }
     localTasks: local,
     storage,
     fetch: api.fetch,
-    now: () => new Date("2026-09-24T12:00:00.000Z"),
+    now: () => clock,
     timeZone: () => "Asia/Seoul",
     onChange,
   });
   api.on("POST /v1/auth/google", { body: { token: "bt_s_abc", user: USER, expiresAt: "2026-11-23T12:00:00.000Z" } });
-  api.on("GET /v1/me", { body: { ...USER, plan: FREE_PLAN, credit: credit(0, 0) } });
-  api.on("GET /v1/me/billing", { body: { plan: FREE_PLAN, credit: credit(0, 0), stripeConfigured: true } });
+  onPlan(opts.plan ?? FREE_PLAN);
   api.on("POST /v1/auth/logout", { status: 204 });
   return {
     api,
@@ -67,6 +72,8 @@ function setup(opts: { clientId?: string; identity?: ReturnType<typeof google> }
     onChange,
     identity,
     setSettings: (p: Partial<ExtensionSettings>) => (settings = { ...settings, ...p }),
+    onPlan,
+    advance: (ms: number) => (clock = new Date(clock.getTime() + ms)),
   };
 }
 
@@ -234,7 +241,7 @@ describe("AccountService plan, credit and billing", () => {
 
 describe("AccountService: moving local tasks into the account", () => {
   it("offers the pending and paused local tasks, uploads them with their files, then deletes them locally", async () => {
-    const t = setup();
+    const t = setup({ plan: PLUS_PLAN });
     t.local.rows.push(
       { id: "L1", status: "pending", instructions: "Post gm", account: "alpha", notBefore: "2026-09-25T09:00:00.000Z", mediaIds: ["m1"], repeat: { dailyAt: ["09:00"] } },
       { id: "L2", status: "paused", instructions: "Check mail", account: null, notBefore: null, mediaIds: [], repeat: null },
@@ -258,7 +265,7 @@ describe("AccountService: moving local tasks into the account", () => {
   });
 
   it("keeps the tasks that failed to upload, and keeps offering", async () => {
-    const t = setup();
+    const t = setup({ plan: PLUS_PLAN });
     t.local.rows.push(
       { id: "L1", status: "pending", instructions: "ok", account: null, notBefore: null, mediaIds: [], repeat: null },
       { id: "L2", status: "pending", instructions: "bad", account: null, notBefore: null, mediaIds: [], repeat: null },
@@ -274,7 +281,7 @@ describe("AccountService: moving local tasks into the account", () => {
   });
 
   it("Not now hides the offer until the next sign-in", async () => {
-    const t = setup();
+    const t = setup({ plan: PLUS_PLAN });
     t.local.rows.push({ id: "L1", status: "pending", instructions: "x", account: null, notBefore: null, mediaIds: [], repeat: null });
     await t.account.signIn();
     await t.account.dismissMigration();
@@ -285,9 +292,38 @@ describe("AccountService: moving local tasks into the account", () => {
   });
 });
 
+describe("AccountService: the TODO list is a paid feature", () => {
+  it("on Free: no runner for the account's list, and no offer to move local tasks into it", async () => {
+    const t = setup();
+    t.local.rows.push({ id: "L1", status: "pending", instructions: "x", account: null, notBefore: null, mediaIds: [], repeat: null });
+    await t.account.signIn();
+    expect(t.account.todoAllowed()).toBe(false);
+    expect((await t.account.view()).localTasks).toBeUndefined();
+    const before = t.api.calls.length;
+    expect(await t.account.runnerApi()).toBeNull();
+    expect(t.api.calls.slice(before).filter((c) => !c.path.startsWith("/v1/me"))).toEqual([]);
+  });
+
+  it("subscribing unlocks it: runnerApi refetches a plan older than a minute", async () => {
+    const t = setup();
+    await t.account.signIn();
+    expect(await t.account.runnerApi()).toBeNull();
+    t.onPlan(PLUS_PLAN);
+    // Fetched a moment ago: not asked again yet.
+    expect(await t.account.runnerApi()).toBeNull();
+    t.advance(61_000);
+    expect(await t.account.runnerApi()).not.toBeNull();
+    expect(t.account.todoAllowed()).toBe(true);
+    // A canceled subscription locks it again.
+    t.onPlan({ ...FREE_PLAN, status: "canceled" } as never);
+    t.advance(61_000);
+    expect(await t.account.runnerApi()).toBeNull();
+  });
+});
+
 describe("AccountService.runnerApi", () => {
   it("claims with the session token as the bearer; a 401 signs out", async () => {
-    const t = setup();
+    const t = setup({ plan: PLUS_PLAN });
     await t.account.signIn();
     t.api.on("POST /v1/runner/claim", { status: 204 });
     const runner = (await t.account.runnerApi())!;

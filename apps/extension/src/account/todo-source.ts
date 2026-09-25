@@ -2,13 +2,22 @@
  * Where the TODO tab's tasks live: the signed-in account (the API), or this
  * browser (the local store, used when signed out). Both answer with the
  * same row shape, so the tab's UI does not change.
+ *
+ * The account's list is a paid feature: on a plan without it the list comes
+ * back `locked` (the kept tasks are read-only; writes answer plan_required).
  */
 import type { CreateTaskInput, LocalTask, RepeatRule, Task } from "@browsertodo/shared";
 import type { LocalMediaInfo, TaskPatch } from "../ui-protocol.js";
 import { uploadToBlob, type LocalStore, type NewLocalTask } from "../engine/local-store.js";
-import type { AccountApi } from "./account-api.js";
+import type { AccountApi, AccountTaskList } from "./account-api.js";
 
 export type TodoRow = LocalTask & { media: LocalMediaInfo[] };
+
+/** The list and whether it is locked (the plan does not include the TODO list: read-only until the user subscribes). */
+export interface TodoList {
+  tasks: TodoRow[];
+  locked: boolean;
+}
 
 /**
  * A task for the account from a local task's fields (a new one, or one
@@ -34,7 +43,7 @@ export async function accountTaskInput(
 
 export interface TodoSource {
   readonly kind: "local" | "account";
-  list(): Promise<TodoRow[]>;
+  list(): Promise<TodoList>;
   add(input: NewLocalTask): Promise<LocalTask>;
   update(id: string, patch: TaskPatch): Promise<LocalTask>;
   delete(id: string): Promise<boolean>;
@@ -57,16 +66,17 @@ const asLocal = (t: Task): LocalTask => ({ ...t, repeat: t.repeat ?? null });
 export class AccountTodo implements TodoSource {
   readonly kind = "account" as const;
 
+  /** onChange: the list as just fetched, or nothing after a change made here. */
   constructor(
     private readonly api: AccountApi,
     private readonly timeZone: string,
-    private readonly onChange: (tasks?: Task[]) => void = () => {},
+    private readonly onChange: (listed?: AccountTaskList) => void = () => {},
   ) {}
 
-  async list(): Promise<TodoRow[]> {
-    const tasks = await this.api.listTasks();
-    this.onChange(tasks);
-    return tasks.map(accountRow);
+  async list(): Promise<TodoList> {
+    const listed = await this.api.listTasks();
+    this.onChange(listed);
+    return { tasks: listed.tasks.map(accountRow), locked: listed.locked };
   }
 
   async add(input: NewLocalTask): Promise<LocalTask> {
@@ -110,14 +120,20 @@ export class AccountTodo implements TodoSource {
   }
 }
 
-/** This browser's tasks (signed out). */
+/**
+ * This browser's tasks (signed out). The TODO tab does not show them (signed
+ * out it is one Log in button, so none can be added there): they are the
+ * engine's local queue, tasks kept from before the list moved into the
+ * account. They run here and use no cloud storage; moving them into the
+ * account is offered only on a plan with the TODO list.
+ */
 export class LocalTodo implements TodoSource {
   readonly kind = "local" as const;
 
   constructor(private readonly store: LocalStore) {}
 
-  list(): Promise<TodoRow[]> {
-    return this.store.listWithMedia();
+  async list(): Promise<TodoList> {
+    return { tasks: await this.store.listWithMedia(), locked: false };
   }
 
   add(input: NewLocalTask): Promise<LocalTask> {

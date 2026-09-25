@@ -1,5 +1,5 @@
 /** Pure helpers for the options page's Account and API keys sections. */
-import { formatCents, formatDate, planName, planStatusText } from "@browsertodo/shared";
+import { formatCents, formatDate, PLAN_CATALOG, planIncludesText, planName, planStatusText } from "@browsertodo/shared";
 import { PLANS, isPaidActive, type PlanId, type PlanInfo } from "../account/types.js";
 import type { AccountView } from "../ui-protocol.js";
 
@@ -8,6 +8,8 @@ export interface AccountSummary {
   planName: string;
   /** "Renews Oct 24, 2026", "Ends Oct 24, 2026", "Payment overdue"… or "" */
   planStatus: string;
+  /** What the plan comes with, from the catalog: "Includes TODO list, voice input and API keys" ("" when the plan is not known). */
+  planIncludes: string;
   /** "$12.40" (empty when not known). */
   credit: string;
   /** "$4.40 subscription (expires Oct 24) + $8.00 top-up" */
@@ -51,6 +53,7 @@ export function accountSummary(a: AccountView): AccountSummary {
   return {
     planName: planName(plan?.id),
     planStatus: planStatus(plan),
+    planIncludes: plan ? planIncludesText(PLAN_CATALOG[plan.id]) : "",
     credit: c ? formatCents(c.totalCents) : "",
     creditDetail: parts.join(" + "),
     paid,
@@ -60,12 +63,13 @@ export function accountSummary(a: AccountView): AccountSummary {
   };
 }
 
-/** The paid plans as the Subscribe choices show them: "Starter · $9.99/mo · $5.00 usage credit". */
-export function planChoices(): { id: PlanId; label: string; detail: string }[] {
+/** The paid plans as the Subscribe choices show them: "Starter", "$9.99/mo · $5.00 usage credit", "Includes TODO list, …". */
+export function planChoices(): { id: PlanId; label: string; detail: string; includes: string }[] {
   return PLANS.filter((p) => p.id !== "free").map((p) => ({
     id: p.id,
     label: p.name,
     detail: `${formatCents(p.priceCents)}/mo · ${formatCents(p.creditCents)} usage credit`,
+    includes: planIncludesText(p),
   }));
 }
 

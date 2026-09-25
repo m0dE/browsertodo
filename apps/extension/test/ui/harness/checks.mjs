@@ -96,8 +96,9 @@ export function createChecks({ browser, base, only, shots }) {
       one(".tabs", "tab row");
       one(".chat-bar", "chat bar");
       const tab = document.querySelector(".tabs [aria-selected=true]")?.dataset.tab;
-      const loginOnly = tab === "todo" && document.getElementById("tab-todo").dataset.auth === "out";
-      if (comp.hidden !== (tab === "history" || loginOnly)) out.push(`composer ${comp.hidden ? "hidden" : "shown"} on the ${tab} tab${loginOnly ? " (Log In)" : ""}`);
+      // The TODO tab as one call to action (Log In signed out; Get a plan on a plan without the TODO list) has no composer.
+      const ctaOnly = tab === "todo" && ["out", "locked"].includes(document.getElementById("tab-todo").dataset.auth);
+      if (comp.hidden !== (tab === "history" || ctaOnly)) out.push(`composer ${comp.hidden ? "hidden" : "shown"} on the ${tab} tab${ctaOnly ? " (call to action)" : ""}`);
       if (comp.hidden) return out;
       const c = comp.getBoundingClientRect();
       if (Math.abs(c.bottom - window.innerHeight) > 1) out.push(`composer bottom ${c.bottom} != viewport ${window.innerHeight}`);

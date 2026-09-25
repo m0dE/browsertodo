@@ -109,6 +109,14 @@ export const Task = z.object({
 });
 export type Task = z.infer<typeof Task>;
 
+/**
+ * GET /v1/tasks: a page of tasks, newest first. `locked`: the plan of the user
+ * the list belongs to does not include the TODO list, so the list is read-only
+ * (writes, claims and uploads answer 403 plan_required) until they subscribe.
+ */
+export const TaskListResponse = z.object({ tasks: z.array(Task), nextCursor: z.string().nullable(), locked: z.boolean() });
+export type TaskListResponse = z.infer<typeof TaskListResponse>;
+
 export const TaskEvent = z.object({
   id: z.number().int(),
   taskId: z.string(),

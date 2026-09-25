@@ -280,7 +280,7 @@ describe("UiRouter: account", () => {
     };
     const accountTodo = {
       kind: "account" as const,
-      list: vi.fn(async () => []),
+      list: vi.fn(async () => ({ tasks: [], locked: false })),
       add: vi.fn(async (i: any) => ({ id: "A1", ...i })),
       update: vi.fn(),
       delete: vi.fn(async () => true),
@@ -303,7 +303,10 @@ describe("UiRouter: account", () => {
 
   it("the TODO list comes from the account when signed in, from this browser otherwise", async () => {
     const t = withAccount(true);
-    expect(await t.req({ type: "tasks.list" })).toEqual({ tasks: [], source: "account" });
+    expect(await t.req({ type: "tasks.list" })).toEqual({ tasks: [], locked: false, source: "account" });
+    // A plan without the TODO list: the kept tasks come with locked.
+    t.accountTodo.list.mockResolvedValueOnce({ tasks: [], locked: true });
+    expect(await t.req({ type: "tasks.list" })).toEqual({ tasks: [], locked: true, source: "account" });
     await t.req({ type: "tasks.add", instructions: "x", repeat: { dailyAt: ["09:00"] } });
     expect(t.accountTodo.add).toHaveBeenCalledWith({ instructions: "x", account: null, notBefore: null, repeat: { dailyAt: ["09:00"] }, media: [] });
     expect(await t.req({ type: "tasks.cancel", id: "A1" })).toEqual({ task: { id: "A1", status: "cancelled" } });
@@ -340,7 +343,7 @@ describe("UiRouter: account", () => {
     expect(await t.req({ type: "voice.transcribe", wav, speechMs: 900, context: "Open", sessionId: "s1" })).toEqual({ text: "heard 8 bytes" });
     expect(t.account.transcribe).toHaveBeenCalledWith(new TextEncoder().encode("RIFF1234"), { speechMs: 900, context: "Open", sessionId: "s1" });
     t.account.transcribe.mockRejectedValueOnce(
-      new ApiRequestError(403, "plan_required", { error: "plan_required", message: "Voice input needs a paid plan.", upgradeUrl: "https://dash.test/billing" }),
+      new ApiRequestError(403, "plan_required", { error: "plan_required", feature: "voice", message: "Voice input needs a paid plan.", upgradeUrl: "https://dash.test/billing" }),
     );
     expect(await t.req({ type: "voice.transcribe", wav, speechMs: 900 })).toEqual({
       error: { kind: "plan", message: "Voice needs a paid plan.", fatal: true, url: "https://dash.test/billing" },

@@ -49,7 +49,7 @@ describe("AccountApi.transcribe", () => {
   });
 
   it.each([
-    [403, { error: "plan_required", message: "Voice input needs a paid plan.", upgradeUrl: "https://dash.test/billing" }, "plan", "Voice needs a paid plan.", true, "https://dash.test/billing"],
+    [403, { error: "plan_required", feature: "voice", message: "Voice input needs a paid plan.", upgradeUrl: "https://dash.test/billing" }, "plan", "Voice needs a paid plan.", true, "https://dash.test/billing"],
     [402, { error: "out_of_credit", message: "x", topupUrl: "https://dash.test/billing" }, "credit", "You're out of usage credit. Top up to keep using voice.", true, "https://dash.test/billing"],
     [401, { error: "invalid key" }, "signed-out", "Log in to use voice.", true, undefined],
     [413, { error: "audio is longer than 60 seconds" }, "too-long", "Voice messages can be up to 60 seconds.", true, undefined],

@@ -15,6 +15,7 @@ import { initHistory } from "./history.js";
 import { chatForTab, isBound, tabOfSession } from "./tab-chat.js";
 import { savedTab, tabHasComposer, type TabName } from "./tabs.js";
 import { initTasks } from "./tasks.js";
+import { openSettings } from "./open-settings.js";
 
 let state: UiState | null = null;
 let currentTab: TabName = "chat";
@@ -240,7 +241,7 @@ function renderStatus(s: UiState): void {
 statusAction.addEventListener("click", () =>
   void busy(statusAction, async () => {
     const action = statusAction.dataset.action;
-    if (action === "settings") return void chrome.runtime.openOptionsPage();
+    if (action === "settings") return void openSettings("ai");
     if (action === "topup") return openTopup();
     try {
       applyState(await uiRequest({ type: action === "resume" ? "schedule.resume" : "schedule.pause" }));
@@ -249,14 +250,14 @@ statusAction.addEventListener("click", () =>
     }
   }),
 );
-$("open-settings").addEventListener("click", () => void chrome.runtime.openOptionsPage());
+$("open-settings").addEventListener("click", () => void openSettings());
 
 /** The account's top-up page (the link a 402 carried, or the dashboard). */
 function openTopup(): void {
   const a = state?.account;
   const url = a?.outOfCredit?.topupUrl || a?.dashboardUrl;
   if (url) window.open(url, "_blank", "noopener");
-  else chrome.runtime.openOptionsPage();
+  else void openSettings("account");
 }
 
 // The account in the header: avatar, email, plan and credit, sign out.
@@ -297,7 +298,7 @@ $("acct-avatar").addEventListener("error", () => {
 });
 $("acct-settings").addEventListener("click", () => {
   acct.open = false;
-  void chrome.runtime.openOptionsPage();
+  void openSettings("account");
 });
 const signOutBtn = $<HTMLButtonElement>("acct-signout");
 signOutBtn.addEventListener("click", () =>

@@ -8,219 +8,343 @@
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
-    <form id="form" class="page" autocomplete="off" novalidate>
+    <div class="page">
       <header class="head">
-        <h1>browsertodo</h1>
-        <p id="now-using" class="muted">Loading…</p>
+        <div class="head-row">
+          <h1>Settings</h1>
+          <span id="save-msg" class="save-msg" role="status" aria-live="polite"></span>
+        </div>
+        <p id="now-using" class="now"><span class="dot" id="now-dot"></span><span id="now-text">Loading…</span></p>
       </header>
 
-      <section class="card account" id="account-card" aria-labelledby="h-account">
-        <div class="section-title">
-          <h2 id="h-account">Account</h2>
-          <button id="acct-signout" type="button" class="small ghost" hidden>Sign out</button>
-        </div>
-        <div id="acct-out" class="acct-block">
-          <p class="hint">Sign in with Google to keep your TODO list in your account and run it on schedule. Paid plans include browsertodo AI, so you need no Claude or Jev setup.</p>
-          <div class="row">
-            <button id="acct-signin" type="button" class="primary">Log In with Google</button>
-            <span id="acct-signin-msg" class="msg"></span>
-          </div>
-        </div>
-        <div id="acct-in" class="acct-block" hidden>
-          <div class="acct-user">
-            <img id="acct-pic" alt="" referrerpolicy="no-referrer" hidden />
-            <span id="acct-letter" class="acct-letter" aria-hidden="true"></span>
-            <div class="acct-names">
-              <b id="acct-name"></b>
-              <span id="acct-mail" class="muted"></span>
+      <div id="tabs" class="tabs" role="tablist" aria-label="Settings sections"></div>
+
+      <form id="form" autocomplete="off" novalidate>
+        <!-- Account -->
+        <section class="panel" id="panel-account" role="tabpanel" aria-labelledby="tab-account" tabindex="-1">
+          <div class="group" id="account-card">
+            <div id="acct-out" class="acct-block">
+              <h2 class="group-title">Account</h2>
+              <div class="box pad">
+                <p class="hint">Log in with Google to keep your TODO list in your account, run it on schedule, and use browsertodo AI without setting up Claude or Jev.</p>
+                <div class="row">
+                  <button id="acct-signin" type="button" class="primary">Log In with Google</button>
+                  <span id="acct-signin-msg" class="msg"></span>
+                </div>
+              </div>
+            </div>
+            <div id="acct-in" class="acct-block" hidden>
+              <h2 class="group-title">Account</h2>
+              <div class="box">
+                <div class="srow acct-user-row">
+                  <div class="acct-user">
+                    <img id="acct-pic" alt="" referrerpolicy="no-referrer" hidden />
+                    <span id="acct-letter" class="acct-letter" aria-hidden="true"></span>
+                    <div class="acct-names">
+                      <b id="acct-name"></b>
+                      <span id="acct-mail" class="muted"></span>
+                    </div>
+                  </div>
+                  <button id="acct-signout" type="button" class="small" hidden>Sign out</button>
+                </div>
+              </div>
+
+              <h2 class="group-title" id="h-plan">Plan and credit</h2>
+              <div class="box">
+                <div class="acct-facts">
+                  <div class="fact"><span>Plan</span><b id="acct-plan"></b><small id="acct-plan-status"></small></div>
+                  <div class="fact"><span>AI credit</span><b id="acct-credit"></b><small id="acct-credit-detail"></small></div>
+                </div>
+                <div class="box-body">
+                  <p id="acct-note" class="note" hidden></p>
+                  <div id="acct-billing" class="acct-billing">
+                    <div id="acct-plans" class="plan-grid" hidden></div>
+                    <div id="acct-manage" class="row" hidden>
+                      <button id="acct-change" type="button" class="small">Change plan</button>
+                      <button id="acct-portal" type="button" class="small">Manage billing</button>
+                    </div>
+                    <div class="row"><span id="acct-topup" class="topups"></span></div>
+                  </div>
+                  <div class="row">
+                    <a id="acct-dashboard" href="#" target="_blank" rel="noopener">Usage &amp; billing dashboard</a>
+                    <span class="spacer"></span>
+                    <button id="acct-reload" type="button" class="small ghost" title="Load plan and credit again">Refresh</button>
+                  </div>
+                  <p id="acct-msg" class="msg" role="status"></p>
+                </div>
+              </div>
             </div>
           </div>
-          <div class="acct-facts">
-            <div class="fact"><span>Plan</span><b id="acct-plan"></b><small id="acct-plan-status"></small></div>
-            <div class="fact"><span>AI credit</span><b id="acct-credit"></b><small id="acct-credit-detail"></small></div>
-          </div>
-          <p id="acct-note" class="note" hidden></p>
-          <div id="acct-billing" class="acct-billing">
-            <div id="acct-plans" class="plan-grid" hidden></div>
-            <div id="acct-manage" class="row" hidden>
-              <button id="acct-change" type="button" class="small">Change plan</button>
-              <button id="acct-portal" type="button" class="small">Manage billing</button>
-            </div>
-            <div class="row"><span id="acct-topup" class="topups"></span></div>
-          </div>
-          <div class="row">
-            <a id="acct-dashboard" href="#" target="_blank" rel="noopener">Usage &amp; billing dashboard</a>
-            <span class="spacer"></span>
-            <button id="acct-reload" type="button" class="small ghost" title="Load plan and credit again">Refresh</button>
-          </div>
-          <p id="acct-msg" class="msg" role="status"></p>
-        </div>
-      </section>
 
-      <section class="card" id="keys-card" aria-labelledby="h-keys" hidden>
-        <h2 id="h-keys">API keys</h2>
-        <p class="hint">For your own scripts (creator: adds tasks) or another browser (runner: works through them). Fair use: 60 requests a minute per key.</p>
-        <div id="keys-locked" class="row" hidden>
-          <span class="muted">API keys come with a paid plan.</span>
-          <button id="keys-subscribe" type="button" class="small primary">Subscribe</button>
-        </div>
-        <div id="keys-body" class="keys-body">
-          <ul id="keys-list" class="keys-list"></ul>
-          <div class="key-new-form">
-            <input id="key-name" type="text" placeholder="Key name, e.g. laptop scheduler" aria-label="Key name" autocomplete="off" spellcheck="false" />
-            <select id="key-role" aria-label="Key role">
-              <option value="creator">creator</option>
-              <option value="runner">runner</option>
-            </select>
-            <button id="key-create" type="button" class="small">Create key</button>
-          </div>
-          <div id="key-new" class="key-new" hidden>
-            <p class="hint">Copy this key now. It is not shown again.</p>
-            <div class="secret-row">
-              <code id="key-value" class="key-value"></code>
-              <button id="key-copy" type="button" class="small">Copy</button>
+          <div class="group" id="keys-card" hidden>
+            <h2 class="group-title" id="h-keys">API keys</h2>
+            <p class="group-hint">For your own scripts (creator: adds tasks) or another browser (runner: works through them). Fair use: 60 requests a minute per key.</p>
+            <div class="box pad">
+              <div id="keys-locked" class="row" hidden>
+                <span class="muted">API keys come with a paid plan.</span>
+                <button id="keys-subscribe" type="button" class="small primary">Get a plan</button>
+              </div>
+              <div id="keys-body" class="keys-body">
+                <ul id="keys-list" class="keys-list"></ul>
+                <div class="key-new-form">
+                  <input id="key-name" type="text" placeholder="Key name, e.g. laptop scheduler" aria-label="Key name" autocomplete="off" spellcheck="false" />
+                  <select id="key-role" aria-label="Key role">
+                    <option value="creator">creator</option>
+                    <option value="runner">runner</option>
+                  </select>
+                  <button id="key-create" type="button" class="small">Create key</button>
+                </div>
+                <div id="key-new" class="key-new" hidden>
+                  <p class="hint">Copy this key now. It is not shown again.</p>
+                  <div class="secret-row">
+                    <code id="key-value" class="key-value"></code>
+                    <button id="key-copy" type="button" class="small">Copy</button>
+                  </div>
+                </div>
+              </div>
+              <p id="keys-msg" class="msg"></p>
             </div>
           </div>
-        </div>
-        <p id="keys-msg" class="msg"></p>
-      </section>
+        </section>
 
-      <section class="card" aria-labelledby="h-brain">
-        <h2 id="h-brain">Brain</h2>
-        <p class="hint">Which Claude runs your tasks.</p>
-        <div class="choices" role="radiogroup" aria-labelledby="h-brain">
-          <label class="choice"><input type="radio" name="brain" value="auto" />
-            <span><b>Auto</b><small>browsertodo AI when you are signed in with AI credit, else local Claude Code when the helper works, else your API key.</small></span></label>
-          <label class="choice"><input type="radio" name="brain" value="browsertodo" />
-            <span><b>browsertodo AI</b><small>Claude hosted by browsertodo, paid from your account's AI credit. Nothing to set up.</small></span></label>
-          <label class="choice"><input type="radio" name="brain" value="claude-code" />
-            <span><b>Local Claude Code</b><small>Uses your Claude subscription through the helper.</small></span></label>
-          <label class="choice"><input type="radio" name="brain" value="claude-api" />
-            <span><b>Claude API</b><small>Runs inside Chrome with your Anthropic API key. Nothing to install.</small></span></label>
-        </div>
+        <!-- AI -->
+        <section class="panel" id="panel-ai" role="tabpanel" aria-labelledby="tab-ai" tabindex="-1" hidden>
+          <div class="group">
+            <h2 class="group-title" id="h-brain">Brain</h2>
+            <p class="group-hint">Which Claude runs your tasks.</p>
+            <div class="box options" role="radiogroup" aria-labelledby="h-brain">
+              <div class="opt" data-brain="auto">
+                <label class="opt-head">
+                  <input type="radio" name="brain" value="auto" />
+                  <span class="opt-text"><b>Auto</b><small class="opt-detail"></small></span>
+                </label>
+                <div class="reveal"><div class="reveal-inner">
+                  <p id="auto-pick" class="inline-status"><span class="dot"></span><span class="t"></span></p>
+                </div></div>
+              </div>
 
-        <div class="fields">
-          <div class="field secret" data-secret="anthropicApiKey">
-            <span>Anthropic API key</span>
+              <div class="opt" data-brain="browsertodo">
+                <label class="opt-head">
+                  <input type="radio" name="brain" value="browsertodo" aria-describedby="hosted-aside" />
+                  <span class="opt-text"><b>browsertodo AI</b><small class="opt-detail"></small></span>
+                </label>
+                <div id="hosted-aside" class="opt-aside">
+                  <div id="hosted-out" class="row" hidden>
+                    <button id="hosted-signin" type="button" class="small primary">Log in to use browsertodo AI</button>
+                    <span id="hosted-signin-msg" class="msg"></span>
+                  </div>
+                  <div id="hosted-in" class="row" hidden>
+                    <span class="chip" id="hosted-plan"></span>
+                    <span class="chip" id="hosted-credit"></span>
+                    <button id="hosted-action" type="button" class="small link" hidden></button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="opt" data-brain="claude-code">
+                <label class="opt-head">
+                  <input type="radio" name="brain" value="claude-code" />
+                  <span class="opt-text"><b>Local Claude Code</b><small class="opt-detail"></small></span>
+                </label>
+                <div class="reveal"><div class="reveal-inner">
+                  <div class="helper">
+                    <div class="helper-head">
+                      <span id="helper-dot" class="dot"></span>
+                      <b id="helper-headline">Helper</b>
+                      <span class="spacer"></span>
+                      <button id="helper-connect" type="button" class="small">Connect</button>
+                    </div>
+                    <ul id="helper-details" class="helper-details"></ul>
+                    <p id="helper-msg" class="msg" role="status"></p>
+                    <ol id="helper-install" class="steps" hidden>
+                      <li>Install Claude Code and sign in to it once.</li>
+                      <li>Register the helper (Windows): <code>node &lt;repo&gt;\apps\helper\dist\install.js</code></li>
+                      <li>Click <b>Connect</b>. The first connection runs a short self-test.</li>
+                    </ol>
+                  </div>
+                </div></div>
+              </div>
+
+              <div class="opt" data-brain="claude-api">
+                <label class="opt-head">
+                  <input type="radio" name="brain" value="claude-api" />
+                  <span class="opt-text"><b>Claude API</b><small class="opt-detail"></small></span>
+                </label>
+                <div class="reveal"><div class="reveal-inner">
+                  <div class="field secret" data-secret="anthropicApiKey"><span>Anthropic API key</span></div>
+                  <p id="api-key-missing" class="field-hint" hidden>Add a key to run tasks with the Claude API. It stays in this browser.</p>
+                  <div class="row">
+                    <button id="test-claude" type="button" class="small">Test key</button>
+                    <span id="test-claude-msg" class="msg" role="status"></span>
+                  </div>
+                </div></div>
+              </div>
+            </div>
+            <p id="brain-problem" class="note" data-tone="warn" role="status" hidden></p>
           </div>
-          <label class="field"><span>Model</span>
-            <input id="f-anthropicModel" type="text" spellcheck="false" list="model-ids" aria-describedby="model-hint" />
-            <small id="model-hint" class="field-hint">Used by both brains: local Claude Code and the Claude API. You can also pick it from the side panel.</small>
-          </label>
-          <datalist id="model-ids"></datalist>
-        </div>
-        <div class="row">
-          <button id="test-claude" type="button" class="small">Test Claude key</button>
-          <span id="test-claude-msg" class="msg"></span>
-        </div>
 
-        <div class="helper">
-          <div class="helper-head">
-            <span id="helper-dot" class="dot"></span>
-            <b id="helper-headline">Helper</b>
-            <span class="spacer"></span>
-            <button id="helper-connect" type="button" class="small">Connect</button>
+          <div class="group" id="model-group">
+            <h2 class="group-title">Model</h2>
+            <div class="box">
+              <div class="srow">
+                <label class="srow-label" for="model-select"><b>Claude model</b><small id="model-hint"></small></label>
+                <div class="srow-control">
+                  <select id="model-select" aria-describedby="model-hint"></select>
+                  <input id="f-anthropicModel" type="text" spellcheck="false" aria-label="Custom model id" placeholder="Model id, e.g. claude-sonnet-5" aria-describedby="err-anthropicModel" hidden />
+                  <small id="err-anthropicModel" class="field-error"></small>
+                </div>
+              </div>
+            </div>
           </div>
-          <ul id="helper-details" class="helper-details"></ul>
-          <p id="helper-msg" class="msg"></p>
-          <p id="helper-install" class="hint" hidden>
-            Install once: <code>node &lt;repo&gt;\apps\helper\dist\install.js</code>
-          </p>
-        </div>
-      </section>
+        </section>
 
-      <section class="card" aria-labelledby="h-jev">
-        <div class="section-title">
-          <h2 id="h-jev">Jev</h2>
-          <label class="switch" title="Use Jev"><input id="f-jevEnabled" type="checkbox" aria-label="Use Jev" /></label>
-        </div>
-        <p class="hint">Optional. Handles simple clicks and typing faster than Claude. Without a key Claude does every step.</p>
-        <p id="jev-source" class="hint" hidden></p>
-        <div class="fields">
-          <div class="field secret" data-secret="jevApiKey"><span>Jev API key</span></div>
-          <label class="field narrow"><span>Confidence threshold</span>
-            <input id="f-jevThreshold" type="number" min="0" max="1" step="0.05" />
-          </label>
-        </div>
-        <div class="row">
-          <button id="test-jev" type="button" class="small">Test Jev</button>
-          <span id="test-jev-msg" class="msg"></span>
-        </div>
-      </section>
-
-      <details class="card advanced" id="cloud-card">
-        <summary><h2 id="h-cloud">Self-hosting</h2></summary>
-        <div class="adv-body">
-        <label class="field"><span>Account server URL</span>
-          <input id="f-accountApiBase" type="url" spellcheck="false" placeholder="https://browsertodo-api.example.com" aria-describedby="acct-base-hint" />
-          <small id="acct-base-hint" class="field-hint">Sign-in, your account's TODO list, billing and browsertodo AI. Changing it signs you out of the current server.</small>
-        </label>
-        <div class="section-title">
-          <b>Cloud sync with a runner key</b>
-          <label class="switch" title="Take tasks from a server"><input id="f-cloudEnabled" type="checkbox" aria-label="Enable cloud sync" /></label>
-        </div>
-        <p class="hint">For your own task server without accounts. When you are signed in, your account's tasks are used instead.</p>
-        <div id="cloud-fields">
-          <div class="fields">
-            <label class="field"><span>Server URL</span>
-              <input id="f-apiBase" type="url" placeholder="https://tasks.example.com" spellcheck="false" />
-            </label>
-            <div class="field secret" data-secret="runnerKey"><span>Runner key</span></div>
+        <!-- Speed (Jev) -->
+        <section class="panel" id="panel-speed" role="tabpanel" aria-labelledby="tab-speed" tabindex="-1" hidden>
+          <div class="group">
+            <h2 class="group-title">Jev</h2>
+            <p class="group-hint">Optional. Jev handles simple clicks and typing faster than Claude. Without it, Claude does every step.</p>
+            <div class="box">
+              <div class="srow">
+                <label class="srow-label" for="f-jevEnabled"><b>Use Jev</b><small>Speeds up single steps when a key is available.</small></label>
+                <div class="srow-control end"><span class="switch"><input id="f-jevEnabled" type="checkbox" role="switch" /></span></div>
+              </div>
+              <div class="reveal" id="jev-fields"><div class="reveal-inner">
+                <div class="srow">
+                  <div class="srow-label"><b>Jev API key</b><small id="jev-source"></small></div>
+                  <div class="srow-control"><div class="field secret" data-secret="jevApiKey"><span class="sr-only">Jev API key</span></div></div>
+                </div>
+                <div class="srow">
+                  <label class="srow-label" for="f-jevThreshold"><b>Confidence threshold</b><small>0 to 1. Below it, Claude picks the element instead.</small></label>
+                  <div class="srow-control"><input id="f-jevThreshold" type="number" min="0" max="1" step="0.05" aria-describedby="err-jevThreshold" /><small id="err-jevThreshold" class="field-error"></small></div>
+                </div>
+                <div class="srow">
+                  <div class="srow-label"><b>Check Jev</b><small>Sends one test request.</small></div>
+                  <div class="srow-control"><div class="row"><button id="test-jev" type="button" class="small">Test Jev</button><span id="test-jev-msg" class="msg" role="status"></span></div></div>
+                </div>
+              </div></div>
+            </div>
           </div>
-          <div class="row">
-            <button id="test-cloud" type="button" class="small">Test connection</button>
-            <span id="test-cloud-msg" class="msg"></span>
-          </div>
-        </div>
-        </div>
-      </details>
+        </section>
 
-      <details class="card advanced" id="vault-card">
-        <summary><h2>Site logins</h2></summary>
-        <div class="vault-body">
-        <p class="hint">Usernames and passwords the agent may use to sign in to other sites, encrypted with a passphrase you enter once per browser session. Never used for X: sign in to X yourself.</p>
-        <div id="vault-locked" class="row">
-          <input id="vault-pass" type="password" placeholder="Passphrase" aria-label="Vault passphrase" autocomplete="off" />
-          <button id="vault-unlock" type="button" class="small">Unlock</button>
-        </div>
-        <div id="vault-open" hidden>
-          <ul id="vault-sites" class="vault-sites"></ul>
-          <div class="fields grid">
-            <label class="field"><span>Site</span><input id="vault-site" type="text" placeholder="example.com" spellcheck="false" /></label>
-            <label class="field"><span>Username</span><input id="vault-user" type="text" autocomplete="off" spellcheck="false" /></label>
-            <label class="field"><span>Password</span><input id="vault-pw" type="password" autocomplete="off" /></label>
+        <!-- Tasks -->
+        <section class="panel" id="panel-tasks" role="tabpanel" aria-labelledby="tab-tasks" tabindex="-1" hidden>
+          <div class="group">
+            <h2 class="group-title">Schedule</h2>
+            <div class="box">
+              <div class="srow">
+                <label class="srow-label" for="f-intervalMinutes"><b>Check for due tasks every</b></label>
+                <div class="srow-control"><div class="num"><input id="f-intervalMinutes" type="number" min="1" max="1440" step="1" aria-describedby="err-intervalMinutes" /><span class="unit">min</span></div><small id="err-intervalMinutes" class="field-error"></small></div>
+              </div>
+              <div class="srow">
+                <label class="srow-label" for="f-maxParallelTasks"><b>Tasks at once</b><small>1 to 4, each in its own tab. Tasks on X run one at a time.</small></label>
+                <div class="srow-control"><div class="num"><input id="f-maxParallelTasks" type="number" min="1" max="4" step="1" aria-describedby="err-maxParallelTasks" /><span class="unit">tasks</span></div><small id="err-maxParallelTasks" class="field-error"></small></div>
+              </div>
+              <div class="srow">
+                <label class="srow-label" for="f-delayMinSec"><b>Shortest pause between tasks</b></label>
+                <div class="srow-control"><div class="num"><input id="f-delayMinSec" type="number" min="0" max="3600" step="1" aria-describedby="err-delayMinSec" /><span class="unit">s</span></div><small id="err-delayMinSec" class="field-error"></small></div>
+              </div>
+              <div class="srow">
+                <label class="srow-label" for="f-delayMaxSec"><b>Longest pause between tasks</b><small>Each pause is a random time between the two.</small></label>
+                <div class="srow-control"><div class="num"><input id="f-delayMaxSec" type="number" min="0" max="3600" step="1" aria-describedby="err-delayMaxSec" /><span class="unit">s</span></div><small id="err-delayMaxSec" class="field-error"></small></div>
+              </div>
+            </div>
           </div>
-          <div class="row">
-            <button id="vault-add" type="button" class="small">Save login</button>
-            <button id="vault-lock" type="button" class="small">Lock</button>
+
+          <div class="group">
+            <h2 class="group-title">Limits per task</h2>
+            <div class="box">
+              <div class="srow">
+                <label class="srow-label" for="f-maxToolCalls"><b>Most tool calls</b></label>
+                <div class="srow-control"><div class="num"><input id="f-maxToolCalls" type="number" min="5" max="500" step="1" aria-describedby="err-maxToolCalls" /><span class="unit">calls</span></div><small id="err-maxToolCalls" class="field-error"></small></div>
+              </div>
+              <div class="srow">
+                <label class="srow-label" for="f-maxTaskMinutes"><b>Longest run</b></label>
+                <div class="srow-control"><div class="num"><input id="f-maxTaskMinutes" type="number" min="1" max="120" step="1" aria-describedby="err-maxTaskMinutes" /><span class="unit">min</span></div><small id="err-maxTaskMinutes" class="field-error"></small></div>
+              </div>
+            </div>
           </div>
-        </div>
-        <span id="vault-msg" class="msg"></span>
-        </div>
-      </details>
 
-      <details class="card advanced">
-        <summary><h2>Advanced</h2></summary>
-        <div class="fields grid">
-          <label class="field"><span>Check for due tasks every (min)</span><input id="f-intervalMinutes" type="number" min="1" step="1" /></label>
-          <label class="field"><span>Pause between tasks, min (s)</span><input id="f-delayMinSec" type="number" min="0" step="1" /></label>
-          <label class="field"><span>Pause between tasks, max (s)</span><input id="f-delayMaxSec" type="number" min="0" step="1" /></label>
-          <label class="field"><span>Max tool calls per task</span><input id="f-maxToolCalls" type="number" min="5" step="1" /></label>
-          <label class="field"><span>Max minutes per task</span><input id="f-maxTaskMinutes" type="number" min="1" step="1" /></label>
-          <label class="field"><span>Tasks at once (1-4; X tasks one at a time)</span><input id="f-maxParallelTasks" type="number" min="1" max="4" step="1" /></label>
-          <label class="field"><span>Retry temporary failures after (min)</span><input id="f-retryAfterMinutes" type="number" min="1" step="1" /></label>
-          <label class="field"><span>Retry tasks that needed you after (min)</span><input id="f-pauseRetryMinutes" type="number" min="1" step="1" /></label>
-          <label class="field"><span>Pause runs after N failures in a row (0 = never)</span><input id="f-maxConsecutiveFailures" type="number" min="0" step="1" /></label>
-        </div>
-      </details>
+          <div class="group">
+            <h2 class="group-title">When a task fails</h2>
+            <div class="box">
+              <div class="srow">
+                <label class="srow-label" for="f-retryAfterMinutes"><b>Retry temporary failures after</b></label>
+                <div class="srow-control"><div class="num"><input id="f-retryAfterMinutes" type="number" min="1" max="1440" step="1" aria-describedby="err-retryAfterMinutes" /><span class="unit">min</span></div><small id="err-retryAfterMinutes" class="field-error"></small></div>
+              </div>
+              <div class="srow">
+                <label class="srow-label" for="f-pauseRetryMinutes"><b>Retry tasks that needed you after</b></label>
+                <div class="srow-control"><div class="num"><input id="f-pauseRetryMinutes" type="number" min="1" max="1440" step="1" aria-describedby="err-pauseRetryMinutes" /><span class="unit">min</span></div><small id="err-pauseRetryMinutes" class="field-error"></small></div>
+              </div>
+              <div class="srow">
+                <label class="srow-label" for="f-maxConsecutiveFailures"><b>Pause runs after failures in a row</b><small>0 never pauses.</small></label>
+                <div class="srow-control"><div class="num"><input id="f-maxConsecutiveFailures" type="number" min="0" max="100" step="1" aria-describedby="err-maxConsecutiveFailures" /><span class="unit">failures</span></div><small id="err-maxConsecutiveFailures" class="field-error"></small></div>
+              </div>
+            </div>
+          </div>
+        </section>
 
-      <div class="savebar">
-        <span id="save-msg" class="msg"></span>
-        <span class="spacer"></span>
-        <button id="revert" type="button" class="ghost" disabled>Revert</button>
-        <button id="save" type="submit" class="primary" disabled>Save</button>
-      </div>
-    </form>
+        <!-- Site logins -->
+        <section class="panel" id="panel-logins" role="tabpanel" aria-labelledby="tab-logins" tabindex="-1" hidden>
+          <div class="group" id="vault-card">
+            <h2 class="group-title">Site logins</h2>
+            <p class="group-hint">Usernames and passwords the agent may use to sign in to other sites, encrypted with a passphrase you enter once per browser session. Never used for X: sign in to X yourself.</p>
+            <div class="box pad vault-body">
+              <div id="vault-locked" class="row">
+                <input id="vault-pass" type="password" placeholder="Passphrase" aria-label="Vault passphrase" autocomplete="off" />
+                <button id="vault-unlock" type="button" class="small">Unlock</button>
+              </div>
+              <div id="vault-open" hidden>
+                <ul id="vault-sites" class="vault-sites"></ul>
+                <h3 class="sub-title">Add a login</h3>
+                <div class="fields grid">
+                  <label class="field"><span>Site</span><input id="vault-site" type="text" placeholder="example.com" spellcheck="false" /></label>
+                  <label class="field"><span>Username</span><input id="vault-user" type="text" autocomplete="off" spellcheck="false" /></label>
+                  <label class="field"><span>Password</span><input id="vault-pw" type="password" autocomplete="off" /></label>
+                </div>
+                <div class="row">
+                  <button id="vault-add" type="button" class="small primary">Save login</button>
+                  <span class="spacer"></span>
+                  <button id="vault-lock" type="button" class="small ghost">Lock</button>
+                </div>
+              </div>
+              <span id="vault-msg" class="msg" role="status"></span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Advanced -->
+        <section class="panel" id="panel-advanced" role="tabpanel" aria-labelledby="tab-advanced" tabindex="-1" hidden>
+          <div class="group" id="cloud-card">
+            <h2 class="group-title" id="h-cloud">Self-hosting</h2>
+            <p class="group-hint">Only if you run your own server.</p>
+            <div class="box">
+              <div class="srow">
+                <label class="srow-label" for="f-accountApiBase"><b>Account server</b><small>Sign-in, your account's TODO list, billing and browsertodo AI. Changing it signs you out of the current server.</small></label>
+                <div class="srow-control"><input id="f-accountApiBase" type="url" spellcheck="false" placeholder="https://browsertodo-api.example.com" aria-describedby="err-accountApiBase" /><small id="err-accountApiBase" class="field-error"></small></div>
+              </div>
+              <div class="srow">
+                <label class="srow-label" for="f-cloudEnabled"><b>Cloud sync with a runner key</b><small>Take tasks from your own task server without accounts. When you are logged in, your account's tasks are used instead.</small></label>
+                <div class="srow-control end"><span class="switch"><input id="f-cloudEnabled" type="checkbox" role="switch" /></span></div>
+              </div>
+              <div class="reveal" id="cloud-fields"><div class="reveal-inner">
+                <div class="srow">
+                  <label class="srow-label" for="f-apiBase"><b>Task server</b></label>
+                  <div class="srow-control"><input id="f-apiBase" type="url" placeholder="https://tasks.example.com" spellcheck="false" aria-describedby="err-apiBase" /><small id="err-apiBase" class="field-error"></small></div>
+                </div>
+                <div class="srow">
+                  <div class="srow-label"><b>Runner key</b></div>
+                  <div class="srow-control"><div class="field secret" data-secret="runnerKey"><span class="sr-only">Runner key</span></div></div>
+                </div>
+                <div class="srow">
+                  <div class="srow-label"><b>Check the connection</b></div>
+                  <div class="srow-control"><div class="row"><button id="test-cloud" type="button" class="small">Test connection</button><span id="test-cloud-msg" class="msg" role="status"></span></div></div>
+                </div>
+              </div></div>
+            </div>
+          </div>
+        </section>
+      </form>
+    </div>
     <script type="module" src="options.js"></script>
   </body>
 </html>

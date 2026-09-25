@@ -20,9 +20,11 @@ function openTab(url: string): void {
 
 export interface AccountSection {
   render(state: UiState): void;
+  /** Google sign-in from any button; progress and errors go to `note`. */
+  signIn(button: HTMLButtonElement, note: HTMLElement): void;
 }
 
-export function initAccountSection(opts: { onState(state: UiState): void }): AccountSection {
+export function initAccountSection(opts: { onState(state: UiState): void; showBilling(): void }): AccountSection {
   let account: AccountView | null = null;
   const msg = $("acct-msg");
   const keysMsg = $("keys-msg");
@@ -50,21 +52,22 @@ export function initAccountSection(opts: { onState(state: UiState): void }): Acc
     }
   }
 
-  // Sign in / out
-  const signIn = $<HTMLButtonElement>("acct-signin");
-  const signInMsg = $("acct-signin-msg");
-  signIn.addEventListener("click", () => {
-    if (account && !account.signInConfigured) return flash(signInMsg, SIGN_IN_NOT_SET_UP, "bad");
-    void busy(signIn, async () => {
-      flash(signInMsg, "Continue in the Google window…");
+  // Sign in / out (also from the AI tab's "Log in to use browsertodo AI").
+  const signInWith = (button: HTMLButtonElement, note: HTMLElement): void => {
+    if (account && !account.signInConfigured) return flash(note, SIGN_IN_NOT_SET_UP, "bad");
+    void busy(button, async () => {
+      flash(note, "Continue in the Google window…");
       try {
         opts.onState(await uiRequest({ type: "account.signIn" }));
-        flash(signInMsg, "");
+        flash(note, "");
       } catch (err) {
-        flash(signInMsg, errorText(err), "bad");
+        flash(note, errorText(err), "bad");
       }
     });
-  });
+  };
+  const signIn = $<HTMLButtonElement>("acct-signin");
+  const signInMsg = $("acct-signin-msg");
+  signIn.addEventListener("click", () => signInWith(signIn, signInMsg));
   const signOut = $<HTMLButtonElement>("acct-signout");
   signOut.addEventListener("click", () =>
     void busy(signOut, async () => {
@@ -81,7 +84,7 @@ export function initAccountSection(opts: { onState(state: UiState): void }): Acc
   change.addEventListener("click", () => billing(change, { action: "portal" }));
   const portal = $<HTMLButtonElement>("acct-portal");
   portal.addEventListener("click", () => billing(portal, { action: "portal" }));
-  $("keys-subscribe").addEventListener("click", () => $("account-card").scrollIntoView({ behavior: "smooth", block: "start" }));
+  $("keys-subscribe").addEventListener("click", () => opts.showBilling());
   // Coming back from Stripe: the plan and credit changed.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && account?.signedIn) void refresh(true);
@@ -245,6 +248,7 @@ export function initAccountSection(opts: { onState(state: UiState): void }): Acc
   }
 
   return {
+    signIn: signInWith,
     render(state) {
       account = state.account ?? { signedIn: false, signInConfigured: false, apiBase: "", dashboardUrl: "" };
       renderAccount(account);

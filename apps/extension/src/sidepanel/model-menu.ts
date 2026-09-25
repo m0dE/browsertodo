@@ -8,6 +8,7 @@ import type { ExtensionSettings } from "@browsertodo/shared";
 import { uiRequest, type UiState } from "../ui-protocol.js";
 import { $, errorText, h } from "./dom.js";
 import { KNOWN_MODELS, modelChip, modelLabel, type ModelChipInfo } from "./format.js";
+import { openSettings } from "./open-settings.js";
 
 export interface ModelPicker {
   setState(state: UiState): void;
@@ -145,7 +146,7 @@ export function initModelPicker(opts: {
           tabindex: "-1",
           onclick: () => {
             close(false);
-            void chrome.runtime.openOptionsPage();
+            void openSettings("ai");
           },
         },
         h("span.mm-label", null, "More settings…"),

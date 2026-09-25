@@ -20,7 +20,7 @@ describe("chatForTab: the conversation the panel shows for a tab", () => {
     expect(chatForTab(9, state)).toBe("S");
     // Tab 5 was opened by B's agent, and B belongs to tab 2.
     expect(chatForTab(5, state)).toBeNull();
-    // Left with New Chat: that tab is a new chat again.
+    // Left with New chat: that tab is a new chat again.
     expect(chatForTab(9, state, { left: new Map([[9, "S"]]) })).toBeNull();
   });
 

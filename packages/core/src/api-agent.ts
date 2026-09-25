@@ -7,13 +7,13 @@
  * abort) its message history stays in memory, and continueWith(text) runs
  * the next turn on top of it, like a chat.
  */
-import { DeltaBatcher, TASK_END_TOOLS, toolsFor, type AgentEvent, type RunConfig, type TaskRunResult, type ToolName } from "@browsertodo/shared";
+import { ANTHROPIC_MESSAGES_URL, delay, DeltaBatcher, errorMessage, OUT_OF_CREDIT, toolsFor, type AgentEvent, type RunConfig, type Sleep, type TaskRunResult, type ToolName } from "@browsertodo/shared";
 import type { AgentSession, ApiAgentOptions } from "./types.js";
-import { createToolExecutor, picksEvent } from "./executor.js";
-import { buildSystemPrompt, buildTaskPrompt } from "./prompts.js";
+import { createToolExecutor } from "./executor.js";
+import { agentError, CLAUDE_DECLINED, ENDED_WITHOUT_RESULT } from "./failures.js";
+import { buildSystemPrompt, buildTaskPrompt, FOLLOW_UP_PREFIX, humanMessage } from "./prompts.js";
+import { isTaskEndTool, timeLimitReached, toolBudget, toolCallLimitExceeded, toolCallLimitReached, turnEndEvents } from "./turn-rules.js";
 import {
-  ANTHROPIC_MESSAGES_URL,
-  OUT_OF_CREDIT,
   buildRequest,
   postMessages,
   type MessagesTransport,
@@ -25,15 +25,11 @@ import {
   type ToolResultBlock,
   type ToolUseBlock,
 } from "./anthropic.js";
-import { defaultSleep, errorMessage } from "./util.js";
 
 export const RETRY_DELAYS_MS = [1000, 3000, 9000];
 /** Screenshots kept in the conversation; older ones are replaced by a note to save tokens. */
 export const MAX_IMAGES_IN_HISTORY = 3;
 export const KEY_REJECTED = "Claude API key rejected";
-export const ENDED_WITHOUT_RESULT = "agent ended without reporting a result";
-/** Framing of a follow-up message (continueWith), so Claude knows it continues the same conversation. */
-export const FOLLOW_UP_PREFIX = "Next message from the user (same conversation; the browser tab is as you left it): ";
 /** Result text for tool calls a stopped turn never ran, so the history stays valid for the next turn. */
 export const NOT_RUN = "Not run: the turn was stopped before this tool ran.";
 
@@ -41,10 +37,8 @@ export interface ApiAgentInternals {
   /** Delays between retries of one request. Default 1 s, 3 s, 9 s. */
   retryDelaysMs?: number[];
   /** Used for retry backoff and by the tool executor. */
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: Sleep;
 }
-
-const humanSaid = (t: string) => `Message from the human (they are watching this run): ${t}`;
 
 export function startApiAgent(opts: ApiAgentOptions): AgentSession {
   return startApiAgentWith(opts, {});
@@ -52,7 +46,7 @@ export function startApiAgent(opts: ApiAgentOptions): AgentSession {
 
 export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInternals): AgentSession {
   const doFetch: typeof fetch = opts.fetch ?? ((input, init) => globalThis.fetch(input, init));
-  const sleep = internals.sleep ?? defaultSleep;
+  const sleep = internals.sleep ?? delay;
   const delays = internals.retryDelaysMs ?? RETRY_DELAYS_MS;
   const jevOn = opts.jev !== null;
   const label = opts.label ?? "Claude API";
@@ -88,7 +82,7 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
     sleep,
   });
 
-  const tools = toolsFor({ jev: jevOn });
+  const tools = toolsFor();
   const system = buildSystemPrompt({ tools, jev: jevOn });
   /** The whole conversation, across turns. */
   const messages: MessageParam[] = [];
@@ -152,19 +146,13 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
       if (timer) clearTimeout(timer);
       controller.abort();
       // Messages typed while the turn was ending still reach Claude with the next turn.
-      for (const t of pendingUser.splice(0)) addUserText(humanSaid(t));
-      // Who picked this turn's elements: Jev, or Claude after Jev was unsure.
-      const picks = jevOn ? picksEvent(executor.takePicks()) : null;
-      if (picks) emit(picks);
-      const ev: AgentEvent = { type: "task_end", outcome: r.outcome };
-      if (r.summary !== undefined) ev.summary = r.summary;
-      if (r.url !== undefined) ev.url = r.url;
-      if (r.reason !== undefined) ev.reason = r.reason;
-      emit(ev);
+      for (const t of pendingUser.splice(0)) addUserText(humanMessage(t));
+      // Who picked this turn's elements (Jev, or Claude after Jev was unsure), then task_end.
+      for (const e of turnEndEvents(r, jevOn ? executor.takePicks() : null)) emit(e);
       resolveDone(r);
     };
 
-    const takeUserText = (): TextBlock[] => pendingUser.splice(0).map((t) => ({ type: "text" as const, text: humanSaid(t) }));
+    const takeUserText = (): TextBlock[] => pendingUser.splice(0).map((t) => ({ type: "text" as const, text: humanMessage(t) }));
 
     /** One request with retries. null means the turn already ended. */
     const request = async (): Promise<MessagesResponse | null> => {
@@ -230,7 +218,7 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
             messages.push({ role: "user", content: takeUserText() });
             continue;
           }
-          const why = msg.stop_reason === "refusal" ? "Claude declined the task" : ENDED_WITHOUT_RESULT;
+          const why = msg.stop_reason === "refusal" ? CLAUDE_DECLINED : ENDED_WITHOUT_RESULT;
           finish({ outcome: "failed", reason: why });
           return;
         }
@@ -250,16 +238,14 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
             results.push(toolResultBlock(use.id, { text: `Tool ${use.name} is not available.${hint}`, isError: true }));
             continue;
           }
-          if (!TASK_END_TOOLS.includes(name)) {
-            toolCalls++;
-            if (toolCalls >= max + 5) {
-              finish({ outcome: "failed", reason: `tool call limit exceeded (${max} calls)` });
-              return;
-            }
-            if (toolCalls > max) {
-              results.push(toolResultBlock(use.id, { text: `Tool call limit of ${max} reached. Call task_fail now with a short reason.`, isError: true }));
-              continue;
-            }
+          const budget = isTaskEndTool(name) ? "run" : toolBudget(++toolCalls, max);
+          if (budget === "stop") {
+            finish({ outcome: "failed", reason: toolCallLimitExceeded(max) });
+            return;
+          }
+          if (budget === "refuse") {
+            results.push(toolResultBlock(use.id, { text: toolCallLimitReached(max), isError: true }));
+            continue;
           }
           const r = await executor.call(name, use.input);
           // Recorded even when the turn was stopped meanwhile: it did run.
@@ -276,12 +262,12 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
     };
 
     timer = setTimeout(
-      () => finish({ outcome: "failed", reason: `task time limit of ${config.maxTaskMinutes} minutes reached` }),
+      () => finish({ outcome: "failed", reason: timeLimitReached(config.maxTaskMinutes) }),
       Math.max(0, config.maxTaskMinutes * 60_000),
     );
     loop().catch((e) => {
-      emit({ type: "error", text: `agent loop error: ${errorMessage(e)}` });
-      finish({ outcome: "failed", reason: `agent error: ${errorMessage(e)}` });
+      emit({ type: "error", text: `Agent loop error: ${errorMessage(e)}` });
+      finish({ outcome: "failed", reason: agentError(errorMessage(e)) });
     });
 
     return {

@@ -2,6 +2,19 @@
 
 const X_HOSTS = ["x.com", "twitter.com"];
 
+/** X's home timeline (where the composer and the account switcher are). */
+export const X_HOME_URL = "https://x.com/home";
+
+/** "@name" from "name", "@name" or " @@name ". */
+export function normalizeHandle(handle: string): string {
+  return `@${handle.trim().replace(/^@+/, "").trim()}`;
+}
+
+/** The profile page of an X account (handle with or without @). */
+export function xProfileUrl(handle: string): string {
+  return `https://x.com/${normalizeHandle(handle).slice(1)}`;
+}
+
 /** Hostname of a site given as a host or URL, lowercased, without www. */
 export function siteHost(site: string): string {
   const s = site.trim().toLowerCase();

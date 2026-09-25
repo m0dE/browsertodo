@@ -3,100 +3,51 @@
  * answering the browser.* calls from a fake X page. Proves the host end to
  * end without Chrome or a model (BROWSERTODO_BRAIN=scripted).
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import {
-  RpcPeer,
-  type AgentEvent,
-  type BrowserMethod,
-  type HelperNotifications,
-  type RpcMessage,
-  type RunConfig,
-  type TaskRunResult,
-} from "@browsertodo/shared";
-import { encodeNativeMessage, NativeDecoder } from "../src/native-framing.js";
-import type { BrowserMap, HelperMap } from "../src/rpc-types.js";
+import { join } from "node:path";
+import { HelperErrorCode, type AgentEvent, type BrowserMethod, type RunConfig, type TaskRunResult } from "@browsertodo/shared";
+import { ENV } from "../src/env-names.js";
+import helperPackage from "../package.json" with { type: "json" };
 import { FakeX } from "./fake-x.js";
-
-const HOST_JS = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "host.js");
-const BROWSER_METHODS: BrowserMethod[] = [
-  "browser.navigate",
-  "browser.readPage",
-  "browser.screenshot",
-  "browser.click",
-  "browser.type",
-  "browser.paste",
-  "browser.pressKey",
-  "browser.scroll",
-  "browser.upload",
-  "browser.currentUrl",
-  "vault.getCredential",
-];
+import { startHost, type HostProcess } from "./support/host-process.js";
 
 let home: string;
-let child: ChildProcessWithoutNullStreams;
-let ext: RpcPeer<HelperMap, BrowserMap>;
+let host: HostProcess;
 let x: FakeX;
 /** While set, browser.readPage waits for it (to inject a user message mid-task). */
 let gate: Promise<void> | null = null;
-const decodeErrors: string[] = [];
-const events: HelperNotifications["helper.event"][] = [];
-let stderr = "";
 let lastResult: TaskRunResult | null = null;
 
 beforeAll(() => {
   home = mkdtempSync(join(tmpdir(), "bt-host-"));
-  child = spawn(process.execPath, [HOST_JS], {
-    env: { ...process.env, BROWSERTODO_BRAIN: "scripted", BROWSERTODO_HOME: home, TYPESAFE_API_KEY: "" },
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-  });
-  child.stderr.on("data", (c: Buffer) => (stderr += c.toString()));
-  ext = new RpcPeer<HelperMap, BrowserMap>((msg) => child.stdin.write(encodeNativeMessage(msg)), "e");
   x = new FakeX({ account: "alice" });
-  for (const m of BROWSER_METHODS) {
-    ext.handle(m, async (p: any) => {
+  host = startHost({
+    env: { ...process.env, [ENV.brain]: "scripted", [ENV.home]: home, [ENV.typesafeApiKey]: "" },
+    browser: async (m: BrowserMethod, p) => {
       if (m === "browser.readPage" && gate) await gate;
-      return x.handle(m, p) as any;
-    });
-  }
-  ext.onNotification<HelperNotifications["helper.event"]>("helper.event", (p) => events.push(p));
-  const decoder = new NativeDecoder();
-  child.stdout.on("data", (chunk: Buffer) => {
-    try {
-      for (const msg of decoder.push(chunk)) void ext.receive(msg as RpcMessage);
-    } catch (e) {
-      decodeErrors.push(String(e));
-    }
+      return x.handle(m, p as never);
+    },
   });
 });
 
 afterAll(() => {
-  if (child.exitCode === null) child.kill();
+  if (host.child.exitCode === null) host.child.kill();
   rmSync(home, { recursive: true, force: true });
 });
 
 const CONFIG: RunConfig = { maxToolCalls: 60, maxTaskMinutes: 2, jevEnabled: true, jevThreshold: 0.8, isRetry: false };
 
-async function waitFor(pred: () => boolean, ms = 10_000): Promise<void> {
-  const start = Date.now();
-  while (!pred()) {
-    if (Date.now() - start > ms) throw new Error("timed out waiting");
-    await new Promise((r) => setTimeout(r, 20));
-  }
-}
-
 describe("dist/host.js over native messaging", () => {
   it("answers helper.hello with self-test info, and writes helper.json", async () => {
+    const { ext, child } = host;
     const info = await ext.call("helper.hello", {}, { timeoutMs: 10_000 });
     expect(info).toEqual({
-      version: "0.2.0",
+      version: helperPackage.version,
       jevAvailable: false,
-      claudePath: "scripted",
+      brain: "scripted",
+      claudePath: null,
       logDir: join(home, "logs"),
       openSessions: [],
       selfTest: { ok: true, ms: 0, at: expect.any(String) },
@@ -108,6 +59,7 @@ describe("dist/host.js over native messaging", () => {
   });
 
   it("runs a task with media; events arrive as notifications; a user message reaches the brain", async () => {
+    const { ext, events } = host;
     let open!: () => void;
     gate = new Promise<void>((r) => (open = r));
     const media = join(home, "cat.png");
@@ -121,7 +73,7 @@ describe("dist/host.js over native messaging", () => {
       },
       { timeoutMs: 60_000 },
     );
-    await waitFor(() => events.some((e) => e.event.type === "tool_call"));
+    await vi.waitFor(() => expect(events.some((e) => e.event.type === "tool_call")).toBe(true), { timeout: 10_000 });
     expect(await ext.call("helper.sendUserMessage", { sessionId: "S-HOST", text: "please hurry" }, { timeoutMs: 5000 })).toEqual({ ok: true });
     expect(await ext.call("helper.sendUserMessage", { sessionId: "nope", text: "x" }, { timeoutMs: 5000 })).toEqual({ ok: false });
     gate = null;
@@ -142,17 +94,22 @@ describe("dist/host.js over native messaging", () => {
     expect(mine.filter((e) => e.type === "tool_call").map((e) => (e as { name: string }).name)).toContain("upload");
   });
 
-  it("continueSession on a session that is not kept open rejects with 'session ended'; endSession of an unknown one is ok: false", async () => {
-    await expect(ext.call("helper.continueSession", { sessionId: "S-HOST", text: "again", config: CONFIG }, { timeoutMs: 5000 })).rejects.toThrow(/session ended/);
+  it("continueSession on a session that is not kept open rejects with code session_ended; endSession of an unknown one is ok: false", async () => {
+    const { ext } = host;
+    await expect(ext.call("helper.continueSession", { sessionId: "S-HOST", text: "again", config: CONFIG }, { timeoutMs: 5000 })).rejects.toMatchObject({
+      code: HelperErrorCode.sessionEnded,
+    });
     expect(await ext.call("helper.endSession", { sessionId: "S-HOST" }, { timeoutMs: 5000 })).toEqual({ ok: false });
   });
 
   it("forcePause/abortTask for an unknown session are harmless", async () => {
+    const { ext } = host;
     expect(await ext.call("helper.forcePause", { sessionId: "nope", reason: "r" }, { timeoutMs: 5000 })).toEqual({ ok: true });
     expect(await ext.call("helper.abortTask", { sessionId: "nope", reason: "r" }, { timeoutMs: 5000 })).toEqual({ ok: true });
   });
 
   it("serves a session's run log, and nothing outside the runs folder", async () => {
+    const { ext } = host;
     const path = lastResult!.logPath!;
     const log = await ext.call("helper.runLog", { path }, { timeoutMs: 5000 });
     expect(log.truncated).toBe(false);
@@ -167,17 +124,18 @@ describe("dist/host.js over native messaging", () => {
   });
 
   it("returns the live log tail", async () => {
-    const { text } = await ext.call("helper.getLog", { lines: 300 }, { timeoutMs: 5000 });
+    const { text } = await host.ext.call("helper.getLog", { lines: 300 }, { timeoutMs: 5000 });
     expect(text).toContain("runTask S-HOST -> done");
     expect(text).toContain("S-HOST tool_call");
   });
 
   it("never writes anything but frames to stdout, and exits (removing helper.json) when stdin closes", async () => {
-    expect(decodeErrors).toEqual([]);
+    const { child } = host;
+    expect(host.decodeErrors).toEqual([]);
     const exited = new Promise<number | null>((r) => child.once("exit", (code) => r(code)));
     child.stdin.end();
     expect(await exited).toBe(0);
-    expect(stderr).toBe("");
+    expect(host.stderr()).toBe("");
     expect(existsSync(join(home, "helper.json"))).toBe(false);
   });
 });

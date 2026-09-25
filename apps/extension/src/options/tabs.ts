@@ -3,7 +3,7 @@
  * the open tab in location.hash (so options.html#ai opens the AI tab) and,
  * for a plain options.html, the tab opened last in this browser.
  */
-import { $, h } from "../sidepanel/dom.js";
+import { $, h } from "../ui/dom.js";
 import { nextTab, TABS, tabFromHash, type TabId } from "./settings-view.js";
 
 const LAST_TAB_KEY = "browsertodo.options.tab";

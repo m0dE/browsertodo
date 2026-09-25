@@ -1,20 +1,20 @@
 /** The signed-in account's API client: sign-in, profile, billing, keys, tasks and media, with the session token. */
-import { AuthResponse, MediaInfo, Task, type CreateTaskInput, type UpdateTaskInput } from "@browsertodo/shared";
-import { ApiRequestError } from "../api-client.js";
-import { errText } from "../errors.js";
-import type { ApiKeyInfo, BillingInfo, Me } from "./types.js";
-
-/** An API error with the parsed JSON body (e.g. 409 { portal: true }). */
-export class AccountApiError extends ApiRequestError {
-  constructor(
-    status: number,
-    message: string,
-    readonly body: Record<string, unknown> | null,
-  ) {
-    super(status, message);
-    this.name = "AccountApiError";
-  }
-}
+import {
+  AuthResponse,
+  MeBillingResponse,
+  RedirectUrlResponse,
+  SESSION_HEADER,
+  Task,
+  TRANSCRIBE_CONTENT_TYPE,
+  TRANSCRIBE_PATH,
+  TRANSCRIBE_QUERY,
+  TranscribeResponse,
+  type CreateTaskInput,
+  type MediaInfo,
+  type UpdateTaskInput,
+} from "@browsertodo/shared";
+import { HttpClient } from "../http-client.js";
+import { Me, type ApiKeyInfo, type BillingAction, type CreatedApiKey, type KeyRole } from "./types.js";
 
 export interface AccountApiOptions {
   apiBase: string;
@@ -24,61 +24,70 @@ export interface AccountApiOptions {
   onUnauthorized?: () => void;
 }
 
-export class AccountApi {
-  readonly base: string;
-  private readonly fetchFn: typeof fetch;
+/** Tasks listed per page (GET /v1/tasks). */
+const TASK_PAGE_SIZE = 200;
 
-  constructor(private readonly opts: AccountApiOptions) {
-    this.base = opts.apiBase.replace(/\/+$/, "");
-    this.fetchFn = opts.fetch ?? ((input, init) => fetch(input, init));
+export class AccountApi {
+  private readonly http: HttpClient;
+
+  constructor(opts: AccountApiOptions) {
+    this.http = new HttpClient({ ...opts, missingBase: "The account server URL is not set (Settings > Advanced)" });
+  }
+
+  get base(): string {
+    return this.http.base;
+  }
+
+  /** A session token is set (authenticated calls can be made). */
+  get signedIn(): boolean {
+    return this.http.hasToken;
   }
 
   /** POST /v1/auth/google (public). */
-  async signIn(idToken: string): Promise<AuthResponse> {
-    const res = await this.request("POST", "/v1/auth/google", { idToken }, false);
-    return AuthResponse.parse(await res.json());
+  signIn(idToken: string): Promise<AuthResponse> {
+    return this.http.json(AuthResponse, "POST", "/v1/auth/google", { idToken }, { auth: false });
   }
 
   async logout(): Promise<void> {
-    await this.request("POST", "/v1/auth/logout");
+    await this.http.request("POST", "/v1/auth/logout");
   }
 
-  async me(): Promise<Me> {
-    return (await (await this.request("GET", "/v1/me")).json()) as Me;
+  me(): Promise<Me> {
+    return this.http.json(Me, "GET", "/v1/me");
   }
 
-  async billing(): Promise<BillingInfo> {
-    return (await (await this.request("GET", "/v1/me/billing")).json()) as BillingInfo;
+  billing(): Promise<MeBillingResponse> {
+    return this.http.json(MeBillingResponse, "GET", "/v1/me/billing");
   }
 
   /** POST /v1/billing/checkout | topup | portal: the Stripe page to open. */
-  async billingLink(kind: "checkout" | "topup" | "portal", body: Record<string, unknown>): Promise<string> {
-    const res = await this.request("POST", `/v1/billing/${kind}`, body);
-    const { url } = (await res.json()) as { url?: unknown };
-    if (typeof url !== "string" || !url) throw new Error("The server did not return a billing page");
-    return url;
+  async billingLink(kind: BillingAction, body: Record<string, unknown>): Promise<string> {
+    const res = await this.http.request("POST", `/v1/billing/${kind}`, body);
+    const parsed = RedirectUrlResponse.safeParse(await res.json().catch(() => null));
+    if (!parsed.success || !parsed.data.url) throw new Error("The server did not return a billing page");
+    return parsed.data.url;
   }
 
   async listKeys(): Promise<ApiKeyInfo[]> {
-    return ((await (await this.request("GET", "/v1/me/keys")).json()) as { keys: ApiKeyInfo[] }).keys;
+    return ((await (await this.http.request("GET", "/v1/me/keys")).json()) as { keys: ApiKeyInfo[] }).keys;
   }
 
-  async createKey(name: string, role: "creator" | "runner"): Promise<{ id: string; name: string; role: string; key: string }> {
-    return (await (await this.request("POST", "/v1/me/keys", { name, role })).json()) as { id: string; name: string; role: string; key: string };
+  async createKey(name: string, role: KeyRole): Promise<CreatedApiKey> {
+    return (await (await this.http.request("POST", "/v1/me/keys", { name, role })).json()) as CreatedApiKey;
   }
 
   async revokeKey(id: string): Promise<void> {
-    await this.request("DELETE", `/v1/me/keys/${encodeURIComponent(id)}`);
+    await this.http.request("DELETE", `/v1/me/keys/${encodeURIComponent(id)}`);
   }
 
-  /** Every task of the account (a few pages of 200). */
+  /** Every task of the account (a few pages). */
   async listTasks(maxPages = 5): Promise<Task[]> {
     const out: Task[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < maxPages; page++) {
-      const q = new URLSearchParams({ limit: "200" });
+      const q = new URLSearchParams({ limit: String(TASK_PAGE_SIZE) });
       if (cursor) q.set("cursor", cursor);
-      const body = (await (await this.request("GET", `/v1/tasks?${q}`)).json()) as { tasks?: unknown[]; nextCursor?: string | null };
+      const body = (await (await this.http.request("GET", `/v1/tasks?${q}`)).json()) as { tasks?: unknown[]; nextCursor?: string | null };
       for (const t of body.tasks ?? []) out.push(Task.parse(t));
       cursor = body.nextCursor ?? undefined;
       if (!cursor) break;
@@ -86,62 +95,44 @@ export class AccountApi {
     return out;
   }
 
-  async createTask(input: CreateTaskInput): Promise<Task> {
-    return Task.parse(await (await this.request("POST", "/v1/tasks", input)).json());
+  createTask(input: CreateTaskInput): Promise<Task> {
+    return this.http.json(Task, "POST", "/v1/tasks", input);
   }
 
-  async updateTask(id: string, patch: UpdateTaskInput): Promise<Task> {
-    return Task.parse(await (await this.request("PATCH", `/v1/tasks/${encodeURIComponent(id)}`, patch)).json());
+  updateTask(id: string, patch: UpdateTaskInput): Promise<Task> {
+    return this.http.json(Task, "PATCH", `/v1/tasks/${encodeURIComponent(id)}`, patch);
   }
 
   async deleteTask(id: string): Promise<void> {
-    await this.request("DELETE", `/v1/tasks/${encodeURIComponent(id)}`);
+    await this.http.request("DELETE", `/v1/tasks/${encodeURIComponent(id)}`);
   }
 
-  async retryTask(id: string): Promise<Task> {
-    return Task.parse(await (await this.request("POST", `/v1/tasks/${encodeURIComponent(id)}/retry`)).json());
+  retryTask(id: string): Promise<Task> {
+    return this.http.json(Task, "POST", `/v1/tasks/${encodeURIComponent(id)}/retry`);
   }
 
-  async cancelTask(id: string): Promise<Task> {
-    return Task.parse(await (await this.request("POST", `/v1/tasks/${encodeURIComponent(id)}/cancel`)).json());
+  cancelTask(id: string): Promise<Task> {
+    return this.http.json(Task, "POST", `/v1/tasks/${encodeURIComponent(id)}/cancel`);
   }
 
-  async uploadMedia(blob: Blob, filename: string): Promise<MediaInfo> {
-    const form = new FormData();
-    form.append("file", blob, filename);
-    return MediaInfo.parse(await (await this.request("POST", "/v1/media", form)).json());
+  uploadMedia(blob: Blob, filename: string): Promise<MediaInfo> {
+    return this.http.uploadMedia(blob, filename);
   }
 
-  private async request(method: string, path: string, body?: unknown, auth = true): Promise<Response> {
-    if (!this.base) throw new Error("The account server URL is not set (Settings > Advanced)");
-    const headers: Record<string, string> = {};
-    if (auth) {
-      if (!this.opts.token) throw new Error("Not signed in");
-      headers.authorization = `Bearer ${this.opts.token}`;
-    }
-    let payload: BodyInit | undefined;
-    if (body instanceof FormData) payload = body;
-    else if (body !== undefined) {
-      headers["content-type"] = "application/json";
-      payload = JSON.stringify(body);
-    }
-    let res: Response;
-    try {
-      res = await this.fetchFn(this.base + path, { method, headers, body: payload });
-    } catch (err) {
-      throw new Error(`Cannot reach ${this.base}: ${errText(err)}`);
-    }
-    if (res.ok) return res;
-    const text = await res.text().catch(() => "");
-    let parsed: Record<string, unknown> | null = null;
-    try {
-      const j = JSON.parse(text) as unknown;
-      if (j && typeof j === "object") parsed = j as Record<string, unknown>;
-    } catch {
-      /* not JSON */
-    }
-    const message = typeof parsed?.error === "string" ? parsed.error : text.slice(0, 300) || res.statusText || `HTTP ${res.status}`;
-    if (res.status === 401 && auth) this.opts.onUnauthorized?.();
-    throw new AccountApiError(res.status, message, parsed);
+  /** POST /v1/ai/transcribe: a WAV clip to text (voice input; paid plans). */
+  transcribe(
+    wav: Uint8Array,
+    opts: { language?: string; speechMs?: number; context?: string; sessionId?: string; signal?: AbortSignal } = {},
+  ): Promise<TranscribeResponse> {
+    const q = new URLSearchParams();
+    if (opts.language) q.set(TRANSCRIBE_QUERY.language, opts.language);
+    if (opts.speechMs !== undefined) q.set(TRANSCRIBE_QUERY.speechMs, String(Math.round(opts.speechMs)));
+    if (opts.context) q.set(TRANSCRIBE_QUERY.context, opts.context);
+    const path = q.size ? `${TRANSCRIBE_PATH}?${q}` : TRANSCRIBE_PATH;
+    const body = new Blob([wav as BlobPart], { type: TRANSCRIBE_CONTENT_TYPE });
+    return this.http.json(TranscribeResponse, "POST", path, body, {
+      ...(opts.sessionId ? { headers: { [SESSION_HEADER]: opts.sessionId } } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    });
   }
 }

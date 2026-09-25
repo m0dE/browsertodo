@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { DeltaBatcher, type AgentEvent } from "@browsertodo/shared";
 import { UserInput } from "../src/brains/brain.js";
 import { extractPostText, extractStartUrl } from "../src/brains/scripted.js";
-import { ClaudeStreamMapper, buildClaudeArgs, isNoisyStreamLine, mapStreamEvent, userMessageLine } from "../src/brains/claude-code.js";
+import { ClaudeStreamMapper, buildClaudeArgs, isNoisyStreamLine, userMessageLine } from "../src/brains/claude-code.js";
 
 describe("UserInput", () => {
   it("queues until subscribed, and refuses after close", () => {
@@ -49,10 +49,6 @@ describe("ClaudeCodeBrain helpers", () => {
       "stream-json",
       "--verbose",
       "--include-partial-messages",
-      "--tools",
-      "",
-      "--setting-sources",
-      "",
       "--strict-mcp-config",
       "--mcp-config",
       "C:\\run\\mcp-config.json",
@@ -60,6 +56,10 @@ describe("ClaudeCodeBrain helpers", () => {
       "mcp__browsertodo__click,mcp__browsertodo__task_complete",
       "--append-system-prompt",
       "rules",
+      "--tools",
+      "",
+      "--setting-sources",
+      "",
       "--no-session-persistence",
       "--model",
       "sonnet",
@@ -68,6 +68,7 @@ describe("ClaudeCodeBrain helpers", () => {
   });
 
   it("maps stream-json events to AgentEvents (no tool events)", () => {
+    const mapStreamEvent = (line: unknown) => new ClaudeStreamMapper().map(line);
     expect(
       mapStreamEvent({
         type: "assistant",

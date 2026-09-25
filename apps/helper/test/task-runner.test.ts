@@ -1,15 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentEvent, AgentTask, RunConfig } from "@browsertodo/shared";
-import type { JevLike } from "@browsertodo/core";
+import { HelperErrorCode, type AgentEvent, type AgentTask, type RunConfig } from "@browsertodo/shared";
+import { agentError, classifyFailure, ENDED_WITHOUT_RESULT, EXITED_WITHOUT_RESULT, type JevLike } from "@browsertodo/core";
 import { TaskRunner, type RunTaskParams, type TaskRunnerDeps } from "../src/task-runner.js";
 import { ToolRouter } from "../src/tool-router.js";
 import { INTERACTIVE_TASK_ID } from "../src/mcp-tools.js";
 import { ScriptedBrain } from "../src/brains/scripted.js";
 import type { Brain, BrainContext } from "../src/brains/brain.js";
 import { FakeX } from "./fake-x.js";
+import { noSleep } from "../../../packages/core/test/helpers.js";
 
 let dir: string;
 beforeEach(() => {
@@ -18,7 +19,6 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const CONFIG: RunConfig = { maxToolCalls: 60, maxTaskMinutes: 10, jevEnabled: true, jevThreshold: 0.8, isRetry: false };
-const noSleep = async () => {};
 const fakeJev: JevLike = { decide: async () => ({ operation: "blocked", index: null, confidence: 0 }) };
 
 function params(over: Partial<AgentTask> = {}, rest: Partial<RunTaskParams> = {}): RunTaskParams {
@@ -42,7 +42,7 @@ function setup(x: FakeX, over: Partial<TaskRunnerDeps> & { brain?: (router: Tool
     browser: x.caller(),
     envJevKey: "env-key",
     makeJev: () => fakeJev,
-    makeBrain: () => (over.brain ? over.brain(router) : new ScriptedBrain((t, n, a) => router.call(t, n, a), { sleep: noSleep, pollMs: 0 })),
+    makeBrain: () => (over.brain ? over.brain(router) : new ScriptedBrain((t, n, a) => router.call(t, n, a), { sleep: noSleep })),
     notify: (sessionId, event) => events.push({ sessionId, event }),
     sleep: noSleep,
     ...over,
@@ -92,7 +92,7 @@ describe("TaskRunner with ScriptedBrain", () => {
     let seen: BrainContext | undefined;
     const { runner, router } = setup(x, { brain: () => customBrain(async (ctx) => void (seen = ctx), "abort") });
     const done = runner.run(params());
-    await new Promise((r) => setTimeout(r, 20));
+    await vi.waitFor(() => expect(seen).toBeDefined());
     const cfg = JSON.parse(readFileSync(seen!.mcpConfigPath, "utf8"));
     expect(cfg.mcpServers.browsertodo.env.BROWSERTODO_JEV).toBe("1");
     expect(router.jev("S1")).toBe(true);
@@ -176,12 +176,12 @@ describe("TaskRunner with ScriptedBrain", () => {
     const { runner } = setup(new FakeX(), { brain: () => customBrain(async () => {}, "abort") });
     const first = runner.run(params());
     const second = runner.run(params({}, { sessionId: "S2" }));
-    expect(runner.runningSessions.sort()).toEqual(["S1", "S2"]);
-    await expect(runner.run(params())).rejects.toThrow("busy");
+    expect(runner.openSessions.sort()).toEqual(["S1", "S2"]);
+    await expect(runner.run(params())).rejects.toMatchObject({ code: HelperErrorCode.busy });
     expect(runner.abort("S3", "wrong session")).toBe(false);
     runner.abort("S1", "test over");
     expect(await first).toMatchObject({ outcome: "failed", reason: "test over" });
-    expect(runner.runningSessions).toEqual(["S2"]);
+    expect(runner.openSessions).toEqual(["S2"]);
     runner.abort("S2", "done too");
     expect(await second).toMatchObject({ outcome: "failed", reason: "done too" });
     expect(runner.busy).toBe(false);
@@ -202,7 +202,7 @@ describe("TaskRunner with ScriptedBrain", () => {
     const { runner } = setup(new FakeX());
     expect(await runner.run(params())).toMatchObject({ outcome: "done" });
     expect(runner.openSessions).toEqual([]);
-    await expect(runner.continueSession({ sessionId: "S1", text: "again", config: CONFIG })).rejects.toThrow("session ended");
+    await expect(runner.continueSession({ sessionId: "S1", text: "again", config: CONFIG })).rejects.toMatchObject({ code: HelperErrorCode.sessionEnded });
   });
 
   it("refuses the reserved interactive session id", async () => {
@@ -223,13 +223,13 @@ describe("TaskRunner with ScriptedBrain", () => {
   it("fails at the time limit", async () => {
     const { runner } = setup(new FakeX(), { brain: () => customBrain(async () => {}, "abort") });
     const r = await runner.run(params({}, { config: { ...CONFIG, maxTaskMinutes: 0.001 } }));
-    expect(r).toMatchObject({ outcome: "failed", reason: "task time limit of 0.001 minutes reached" });
+    expect(r).toMatchObject({ outcome: "failed", reason: "Task time limit of 0.001 minutes reached" });
   });
 
   it("fails when the agent exits without a result, or with the last Claude error", async () => {
     expect(await setup(new FakeX(), { brain: () => customBrain(async () => {}) }).runner.run(params())).toMatchObject({
       outcome: "failed",
-      reason: "agent exited without reporting a result",
+      reason: EXITED_WITHOUT_RESULT,
     });
     const limited = customBrain(async (ctx) => ctx.emit({ type: "error", text: "Claude Code: Claude AI usage limit reached" }));
     expect(await setup(new FakeX(), { brain: () => limited }).runner.run(params())).toMatchObject({
@@ -240,7 +240,7 @@ describe("TaskRunner with ScriptedBrain", () => {
 
   it("reports brain crashes", async () => {
     const { runner } = setup(new FakeX(), { brain: () => ({ run: async () => Promise.reject(new Error("spawn ENOENT")) }) });
-    expect(await runner.run(params())).toMatchObject({ outcome: "failed", reason: "agent error: spawn ENOENT" });
+    expect(await runner.run(params())).toMatchObject({ outcome: "failed", reason: agentError("spawn ENOENT") });
   });
 
   it("closes the brain's input after a task_* call, then aborts after the grace period", async () => {
@@ -287,10 +287,12 @@ describe("TaskRunner with ScriptedBrain", () => {
     const x = new FakeX();
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
-    const slow = { call: async (m: any, p: any) => (m === "browser.readPage" ? await gate : undefined, x.handle(m, p)) };
+    let reading = false;
+    const slow = { call: async (m: any, p: any) => (m === "browser.readPage" ? ((reading = true), await gate) : undefined, x.handle(m, p)) };
     const { runner, events } = setup(x, { browser: slow as any });
     const run = runner.run(params());
-    await new Promise((r) => setTimeout(r, 20));
+    // The brain is running (waiting for the page) when the message arrives.
+    await vi.waitFor(() => expect(reading).toBe(true));
     expect(runner.sendUserMessage("S1", "hello brain")).toBe(true);
     release();
     await run;
@@ -309,7 +311,7 @@ describe("TaskRunner with ScriptedBrain", () => {
     expect(texts.slice(0, 3).every((t) => t?.startsWith("URL:"))).toBe(true);
     expect(texts[3]).toBe("Tool call limit of 3 reached. Call task_fail now with a short reason.");
     expect(texts).toHaveLength(8);
-    expect(r).toMatchObject({ outcome: "failed", reason: "tool call limit exceeded (3 calls)" });
+    expect(r).toMatchObject({ outcome: "failed", reason: "Tool call limit exceeded (3 calls)" });
   });
 
   it("still accepts task_fail past the tool call limit", async () => {
@@ -389,7 +391,7 @@ describe("TaskRunner: kept-open sessions (persistent brain)", () => {
     await wait(10);
     expect(runner.openSessions).toEqual([]);
     expect(changes.at(-1)).toEqual([]);
-    await expect(runner.continueSession({ sessionId: "S1", text: "again", config: CONFIG })).rejects.toThrow("session ended");
+    await expect(runner.continueSession({ sessionId: "S1", text: "again", config: CONFIG })).rejects.toMatchObject({ code: HelperErrorCode.sessionEnded });
     expect(runner.endSession("S1")).toBe(false);
   });
 
@@ -419,7 +421,21 @@ describe("TaskRunner: kept-open sessions (persistent brain)", () => {
     await runner.run(params({}, { sessionId: "C" }));
     await wait(10);
     expect(runner.openSessions.sort()).toEqual(["B", "C"]);
-    await expect(runner.continueSession({ sessionId: "A", text: "x", config: CONFIG })).rejects.toThrow("session ended");
+    await expect(runner.continueSession({ sessionId: "A", text: "x", config: CONFIG })).rejects.toMatchObject({ code: HelperErrorCode.sessionEnded });
+  });
+
+  it("a turn that goes idle without a task_* call fails as ended without a result, which is retried later", async () => {
+    const idleBrain: Brain = {
+      persistent: true,
+      run: async (ctx) => {
+        ctx.idle?.();
+        await new Promise<void>((r) => ctx.input.onClose(r));
+      },
+    };
+    const { runner } = setup(new FakeX(), { brain: () => idleBrain });
+    expect(await runner.run(params())).toMatchObject({ outcome: "failed", reason: ENDED_WITHOUT_RESULT });
+    expect(classifyFailure(ENDED_WITHOUT_RESULT)).toBe("transient");
+    runner.endSession("S1");
   });
 
   it("an aborted turn ends the session", async () => {
@@ -429,6 +445,6 @@ describe("TaskRunner: kept-open sessions (persistent brain)", () => {
     runner.forcePause("S1", "stopped by user");
     expect(await run).toEqual(expect.objectContaining({ outcome: "paused", reason: "stopped by user" }));
     expect(runner.openSessions).toEqual([]);
-    await expect(runner.continueSession({ sessionId: "S1", text: "go on", config: CONFIG })).rejects.toThrow("session ended");
+    await expect(runner.continueSession({ sessionId: "S1", text: "go on", config: CONFIG })).rejects.toMatchObject({ code: HelperErrorCode.sessionEnded });
   });
 });

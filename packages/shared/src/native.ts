@@ -14,7 +14,7 @@ export interface RunConfig {
   jevApiKey?: string;
   /**
    * Claude model from the extension settings (e.g. "claude-sonnet-5"), so both
-   * brains run the same model. The helper falls back to BROWSERTODO_MODEL, then "sonnet".
+   * brains run the same model. The helper falls back to BROWSERTODO_MODEL, then Claude Code's "sonnet" alias.
    */
   model?: string;
   /**
@@ -30,6 +30,19 @@ export interface AgentTask {
   id: string;
   instructions: string;
   account: string | null;
+  /**
+   * The user sent an empty message in Chat (instructions: SCREEN_HELP_TEXT):
+   * look at the page they are on and do what is needed next.
+   */
+  screenHelp?: boolean;
+  /** The user's tab is a page Chrome keeps extensions out of: the agent works in other tabs. */
+  restrictedPage?: RestrictedPage;
+}
+
+/** A page Chrome does not let extensions see or control (chrome://, the Web Store, ...), as chrome.tabs reports it. */
+export interface RestrictedPage {
+  url: string;
+  title: string;
 }
 
 /** How a task run ended, as reported by either brain. */
@@ -41,10 +54,15 @@ export interface TaskRunResult {
   logPath?: string;
 }
 
+/** What runs a helper's tasks: Claude Code, or the deterministic scripted brain (tests, BROWSERTODO_BRAIN=scripted). */
+export type HelperBrain = "claude" | "scripted";
+
 export interface HelperInfo {
   version: string;
   jevAvailable: boolean;
-  /** Absolute path of claude.exe, "scripted" in test mode, or null when not found. */
+  /** The helper's brain. Absent means "claude". */
+  brain?: HelperBrain;
+  /** Absolute path of claude.exe, or null when not found (always null with the scripted brain). */
   claudePath: string | null;
   logDir: string;
   /**
@@ -57,6 +75,16 @@ export interface HelperInfo {
   /** Result of the startup self-test (one tiny headless Claude Code call), once it has run. */
   selfTest?: { ok: boolean; error?: string; ms: number; at: string };
 }
+
+/** error.code (see RpcError) of the helper's refusals that the extension acts on. */
+export const HelperErrorCode = {
+  /** continueSession: the session's agent is gone; start a fresh runTask. */
+  sessionEnded: "session_ended",
+  /** The session is already running a turn. */
+  busy: "busy",
+  /** continueSession with a blank message. */
+  emptyMessage: "empty_message",
+} as const;
 
 /** RPC methods the extension calls on the helper. */
 export type HelperMethods = {
@@ -77,9 +105,10 @@ export type HelperMethods = {
    * The next user message in a session kept open after its turn (Claude Code
    * stays alive, idle, after each task_* call). Typed in as a follow-up, as a
    * new turn with this config's limits; resolves like runTask when the next
-   * task_* call arrives. Rejects with "session ended" when the session's agent
-   * is gone (idle timeout, ended, crashed, or never kept open): start a fresh
-   * runTask instead. Rejects with "busy" while another turn runs.
+   * task_* call arrives. Rejects with code HelperErrorCode.sessionEnded when
+   * the session's agent is gone (idle timeout, ended, crashed, or never kept
+   * open): start a fresh runTask instead. Rejects with HelperErrorCode.busy
+   * while another turn runs.
    */
   "helper.continueSession": { params: { sessionId: string; text: string; config: RunConfig }; result: TaskRunResult };
   /**

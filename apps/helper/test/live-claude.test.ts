@@ -9,48 +9,37 @@
  * Runs only with BROWSERTODO_LIVE_CLAUDE=1 (after `pnpm build`):
  *   BROWSERTODO_LIVE_CLAUDE=1 pnpm --filter @browsertodo/helper test live-claude
  */
-import { afterAll, describe, expect, it } from "vitest";
-import { spawn } from "node:child_process";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { RpcPeer, type BrowserMethod, type HelperNotifications, type RpcMessage } from "@browsertodo/shared";
-import { encodeNativeMessage, NativeDecoder } from "../src/native-framing.js";
-import type { BrowserMap, HelperMap } from "../src/rpc-types.js";
+import { join } from "node:path";
+import { delay, HelperErrorCode, type BrowserMethod, type HelperNotifications } from "@browsertodo/shared";
+import { ENV } from "../src/env-names.js";
 import { FakeX } from "./fake-x.js";
+import { startHost } from "./support/host-process.js";
 
-const HOST_JS = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "host.js");
 const home = mkdtempSync(join(tmpdir(), "browsertodo-live-test-"));
 afterAll(() => rmSync(home, { recursive: true, force: true }));
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** The helper with its real brain (Claude Code), whatever the environment says. */
+function liveEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, [ENV.home]: home };
+  delete env[ENV.brain];
+  return env;
+}
 
 describe.runIf(process.env.BROWSERTODO_LIVE_CLAUDE === "1")("live Claude Code through dist/host.js", () => {
   it("posts, hears a message injected mid-task, takes a follow-up in the same session, and ends it", async () => {
-    const env: NodeJS.ProcessEnv = { ...process.env, BROWSERTODO_HOME: home };
-    delete env.BROWSERTODO_BRAIN;
-    const child = spawn(process.execPath, [HOST_JS], { env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    const ext = new RpcPeer<HelperMap, BrowserMap>((msg) => child.stdin.write(encodeNativeMessage(msg)), "e");
     const x = new FakeX({ account: "alice", url: "https://x.com/home" });
-    const events: HelperNotifications["helper.event"][] = [];
-    ext.onNotification<HelperNotifications["helper.event"]>("helper.event", (p) => {
-      events.push(p);
-      const e = p.event as Record<string, unknown>;
-      console.log(`[event] ${e.type} ${JSON.stringify(e).slice(0, 220)}`);
-    });
-    const methods: BrowserMethod[] = ["browser.navigate", "browser.readPage", "browser.screenshot", "browser.click", "browser.type", "browser.paste", "browser.pressKey", "browser.scroll", "browser.upload", "browser.currentUrl", "vault.getCredential"];
     let open!: () => void;
     let gate: Promise<void> | null = new Promise<void>((r) => (open = r));
-    for (const m of methods) {
-      ext.handle(m, async (p: any) => {
+    const { child, ext, events, openSessions } = startHost({
+      env: liveEnv(),
+      browser: async (m: BrowserMethod, p) => {
         if (gate) await gate;
-        return x.handle(m, p) as any;
-      });
-    }
-    const decoder = new NativeDecoder();
-    child.stdout.on("data", (c: Buffer) => {
-      for (const msg of decoder.push(c)) void ext.receive(msg as RpcMessage);
+        return x.handle(m, p as never);
+      },
+      onEvent: (p) => console.log(`[event] ${p.event.type} ${JSON.stringify(p.event).slice(0, 220)}`),
     });
     const config = { maxToolCalls: 40, maxTaskMinutes: 6, jevEnabled: true, jevThreshold: 0.8, isRetry: false };
     try {
@@ -67,13 +56,13 @@ describe.runIf(process.env.BROWSERTODO_LIVE_CLAUDE === "1")("live Claude Code th
         { timeoutMs: 7 * 60_000 },
       );
       // Hold the first browser call until the message is in.
-      while (!events.some((e) => e.sessionId === "LIVE-1" && e.event.type === "tool_call")) await sleep(100);
+      await vi.waitFor(() => expect(events.some((e) => e.sessionId === "LIVE-1" && e.event.type === "tool_call")).toBe(true), { timeout: 5 * 60_000, interval: 100 });
       const said = await ext.call(
         "helper.sendUserMessage",
         { sessionId: "LIVE-1", text: "Change of plan: add the hashtag #bt2 at the very end of the post text." },
         { timeoutMs: 5000 },
       );
-      await sleep(3000);
+      await delay(3000);
       gate = null;
       open();
       const result = await run;
@@ -103,29 +92,25 @@ describe.runIf(process.env.BROWSERTODO_LIVE_CLAUDE === "1")("live Claude Code th
 
       // 3. Ending it.
       expect(await ext.call("helper.endSession", { sessionId: "LIVE-1" }, { timeoutMs: 5000 })).toEqual({ ok: true });
-      await sleep(2000);
-      await expect(ext.call("helper.continueSession", { sessionId: "LIVE-1", text: "x", config }, { timeoutMs: 5000 })).rejects.toThrow(/session ended/);
+      await vi.waitFor(() => expect(openSessions()).not.toContain("LIVE-1"), { timeout: 30_000 });
+      await expect(ext.call("helper.continueSession", { sessionId: "LIVE-1", text: "x", config }, { timeoutMs: 5000 })).rejects.toMatchObject({ code: HelperErrorCode.sessionEnded });
     } finally {
       child.stdin.end();
-      await sleep(1000);
+      await delay(1000);
       if (child.exitCode === null) child.kill();
     }
   }, 12 * 60_000);
 
   it("streams a long answer as text deltas over time, answers in the chat and keeps the run log free of deltas", async () => {
-    const env: NodeJS.ProcessEnv = { ...process.env, BROWSERTODO_HOME: home };
-    delete env.BROWSERTODO_BRAIN;
-    const child = spawn(process.execPath, [HOST_JS], { env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    const ext = new RpcPeer<HelperMap, BrowserMap>((msg) => child.stdin.write(encodeNativeMessage(msg)), "e");
     const x = new FakeX({ account: "alice", url: "https://x.com/home" });
     const seen: { at: number; event: HelperNotifications["helper.event"]["event"] }[] = [];
-    ext.onNotification<HelperNotifications["helper.event"]>("helper.event", (p) => {
-      if (p.sessionId === "LIVE-STREAM") seen.push({ at: Date.now(), event: p.event });
-    });
-    for (const m of ["browser.navigate", "browser.readPage", "browser.screenshot", "browser.currentUrl"] as BrowserMethod[]) ext.handle(m, async (p: any) => x.handle(m, p) as any);
-    const decoder = new NativeDecoder();
-    child.stdout.on("data", (c: Buffer) => {
-      for (const msg of decoder.push(c)) void ext.receive(msg as RpcMessage);
+    const { child, ext } = startHost({
+      env: liveEnv(),
+      methods: ["browser.navigate", "browser.readPage", "browser.screenshot", "browser.currentUrl"],
+      browser: (m, p) => x.handle(m, p as never),
+      onEvent: (p) => {
+        if (p.sessionId === "LIVE-STREAM") seen.push({ at: Date.now(), event: p.event });
+      },
     });
     const config = { maxToolCalls: 10, maxTaskMinutes: 6, jevEnabled: false, jevThreshold: 0.8, isRetry: false };
     try {
@@ -178,7 +163,7 @@ describe.runIf(process.env.BROWSERTODO_LIVE_CLAUDE === "1")("live Claude Code th
       expect(log).toContain('"assistant_text"');
     } finally {
       child.stdin.end();
-      await sleep(1000);
+      await delay(1000);
       if (child.exitCode === null) child.kill();
     }
   }, 8 * 60_000);

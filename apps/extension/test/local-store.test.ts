@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { installChromeFake, type ChromeFake } from "./chrome-fake.js";
-import { MemoryKvDb } from "../src/engine/kv.js";
+import { MemoryKvDb } from "./memory-kv.js";
 import { LOCAL_TASKS_KEY, LocalStore } from "../src/engine/local-store.js";
 import { MAX_LOCAL_ATTEMPTS, nextOccurrence } from "../src/engine/local-task-rules.js";
 
@@ -167,10 +167,18 @@ describe("LocalStore", () => {
     now = new Date(now.getTime() + 11 * 60_000);
     await store.markStarted(b.id);
     now = new Date(now.getTime() + 2 * 60_000);
-    // maxTaskMinutes 10 -> cutoff 12 minutes: a (13 min) recovers, b (2 min) does not.
+    // maxTaskMinutes 10 -> cutoff 12.5 minutes (the safety timer and its grace): a (13 min) recovers, b (2 min) does not.
     expect(await store.recoverCrashed(10)).toBe(1);
     expect(await store.get(a.id)).toMatchObject({ status: "pending", crashed: true, attempts: 1 });
     expect(await store.get(b.id)).toMatchObject({ status: "running" });
+  });
+
+  it("recoverCrashed leaves alone the tasks this worker is still running, however old", async () => {
+    const a = await store.add({ instructions: "slow" });
+    await store.markStarted(a.id);
+    now = new Date(now.getTime() + 60 * 60_000);
+    expect(await store.recoverCrashed(10, new Set([a.id]))).toBe(0);
+    expect(await store.get(a.id)).toMatchObject({ status: "running" });
   });
 
   it("recoverCrashed fails a task that is out of attempts", async () => {

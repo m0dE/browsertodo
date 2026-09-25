@@ -14,9 +14,10 @@ import type {
   SessionInfo,
   StampedAgentEvent,
 } from "@browsertodo/shared";
-import type { ApiKeyInfo, CreditInfo, PlanId, PlanInfo } from "./account/types.js";
+import type { VoiceClipRequest, VoiceTranscribeResult } from "./voice/transcribe.js";
+import type { ApiKeyInfo, BillingAction, BillingLinkRequest, CreatedApiKey, CreditInfo, KeyRole, PlanId, PlanInfo } from "./account/types.js";
 
-export type { ApiKeyInfo, CreditInfo, PlanId, PlanInfo };
+export type { ApiKeyInfo, BillingAction, BillingLinkRequest, CreatedApiKey, CreditInfo, KeyRole, PlanId, PlanInfo };
 
 export const UI_PORT_NAME = "browsertodo-ui";
 
@@ -25,6 +26,14 @@ export interface UiMediaUpload {
   name: string;
   type: string;
   dataBase64: string;
+}
+
+/** An edit of a task that is not running: only the fields given change (null clears). */
+export interface TaskPatch {
+  instructions?: string;
+  account?: string | null;
+  notBefore?: string | null;
+  repeat?: RepeatRule | null;
 }
 
 export interface LocalMediaInfo {
@@ -110,7 +119,15 @@ export type UiRequest =
   | { type: "settings.testCloud" }
   | { type: "helper.connect" }
   /** Start a one-off task now ("Do this now"). tabId: the browser tab it is started from (it acts there, the chat belongs to it). */
-  | { type: "run.adhoc"; instructions: string; account?: string; media?: UiMediaUpload[]; tabId?: number }
+  | {
+      type: "run.adhoc";
+      instructions: string;
+      account?: string;
+      media?: UiMediaUpload[];
+      tabId?: number;
+      /** An empty message in Chat: look at the tab's page and do what is needed (instructions may be empty). */
+      screen?: boolean;
+    }
   /** Run everything that is due now (local, then cloud if enabled). */
   | { type: "run.due" }
   /** Stop one session (its current turn is paused), or everything running and the due run. */
@@ -124,10 +141,12 @@ export type UiRequest =
    * The user's message in a conversation: typed into its turn while one
    * runs, else its next turn (same session when still open, else a fresh one
    * with a summary). No sessionId: starts a new one-off conversation.
+   * screen with an empty text: "look at the page and do what is needed"
+   * (a new conversation, or the next turn: "look at the page now and continue").
    * tabId: the browser tab the message was sent from; the conversation
    * belongs to it (and a new one acts there).
    */
-  | { type: "run.message"; sessionId?: string; text: string; tabId?: number }
+  | { type: "run.message"; sessionId?: string; text: string; tabId?: number; screen?: boolean }
   /**
    * The conversation is over: close its kept-open agent session (a running
    * turn keeps running). tabId: that tab has no conversation any more.
@@ -154,7 +173,7 @@ export type UiRequest =
       repeat?: RepeatRule;
       media?: UiMediaUpload[];
     }
-  | { type: "tasks.update"; id: string; patch: { instructions?: string; account?: string | null; notBefore?: string | null; repeat?: RepeatRule | null } }
+  | { type: "tasks.update"; id: string; patch: TaskPatch }
   | { type: "tasks.delete"; id: string }
   | { type: "tasks.retry"; id: string }
   /** Account tasks only: pending or paused tasks stop without running. */
@@ -168,21 +187,33 @@ export type UiRequest =
   | { type: "account.migrate" }
   /** "Not now" on the offer to move local tasks. */
   | { type: "account.dismissMigration" }
-  /** A Stripe page to open in a new tab: subscribe/change plan (checkout), buy credit (topup), manage billing (portal). */
-  | { type: "account.billing"; action: "checkout" | "topup" | "portal"; plan?: PlanId; amountCents?: number; returnUrl: string }
+  /** A Stripe page to open in a new tab (see BillingAction). */
+  | ({ type: "account.billing" } & BillingLinkRequest)
   | { type: "account.keys.list" }
-  | { type: "account.keys.create"; name: string; role: "creator" | "runner" }
+  | { type: "account.keys.create"; name: string; role: KeyRole }
   | { type: "account.keys.revoke"; id: string }
-  | { type: "sessions.list"; limit?: number }
+  /** Newest first; taskId: only that task's runs. */
+  | { type: "sessions.list"; limit?: number; taskId?: string }
   | { type: "sessions.events"; sessionId: string }
   /** Site logins for get_credential (never used for X). Encrypted; unlocked per browser session. */
   | { type: "vault.list" }
   | { type: "vault.unlock"; passphrase: string }
   | { type: "vault.lock" }
   | { type: "vault.set"; site: string; username: string; password: string }
-  | { type: "vault.delete"; site: string };
+  | { type: "vault.delete"; site: string }
+  /** Voice input: one clip of the live dictation to text, with the signed-in account (see voice/transcribe.ts). */
+  | ({ type: "voice.transcribe" } & VoiceClipRequest);
 
 export type UiResponse<T = unknown> = { ok: true; data: T } | { ok: false; error: string };
+
+/** How run.message delivered the user's text. */
+export type MessageMode =
+  /** Typed into the turn that is running. */
+  | "inject"
+  /** A new turn of an ended conversation (in its own agent session when it is still open, else a fresh one with a summary). */
+  | "turn"
+  /** No conversation given: a new one-off conversation. */
+  | "new";
 
 /** Result data per request type. */
 export interface UiResults {
@@ -197,8 +228,7 @@ export interface UiResults {
   "run.stop": { ok: boolean };
   /** The conversation's session id (the same one). */
   "run.continue": { sessionId: string };
-  /** mode: "inject" typed into the running turn, "turn" a new turn of the conversation, "new" a new conversation. */
-  "run.message": { sessionId: string; mode: "inject" | "turn" | "new" };
+  "run.message": { sessionId: string; mode: MessageMode };
   "run.newChat": { ok: boolean };
   "chat.bind": UiState;
   "tab.focus": { ok: boolean };
@@ -222,7 +252,7 @@ export interface UiResults {
   "account.billing": { url: string };
   "account.keys.list": { keys: ApiKeyInfo[] };
   /** key: the new key, shown once. */
-  "account.keys.create": { id: string; name: string; role: string; key: string };
+  "account.keys.create": CreatedApiKey;
   "account.keys.revoke": { ok: boolean };
   "sessions.list": { sessions: SessionInfo[] };
   "sessions.events": { session: SessionInfo; events: StampedAgentEvent[] };
@@ -231,6 +261,8 @@ export interface UiResults {
   "vault.lock": { ok: boolean };
   "vault.set": { ok: boolean };
   "vault.delete": { ok: boolean };
+  /** Failures come back as data (plan, credit, ...), not as a failed request. */
+  "voice.transcribe": VoiceTranscribeResult;
 }
 
 /** Pushed by the background on the UI port. */
@@ -238,7 +270,11 @@ export type UiPush =
   | { type: "state"; state: UiState }
   | { type: "event"; event: StampedAgentEvent }
   | { type: "session"; session: SessionInfo }
-  | { type: "tasks.changed" };
+  | { type: "tasks.changed" }
+  /** The keyboard shortcut: show the Chat tab and put the cursor in the input (see panel-command.ts). */
+  | { type: "panel.focus" }
+  /** The keyboard shortcut, pressed while the cursor is in the input: start or stop voice input. */
+  | { type: "panel.voice" };
 
 /** Typed helper for UI pages. */
 export async function uiRequest<R extends UiRequest>(req: R): Promise<UiResults[R["type"]]> {

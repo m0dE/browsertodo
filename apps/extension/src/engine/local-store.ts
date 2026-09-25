@@ -3,10 +3,12 @@
  * IndexedDB. Works with no cloud at all. The rules (input checks, repeats,
  * how a run changes a task) are in local-task-rules.ts.
  */
-import type { RepeatRule, TaskRunResult } from "@browsertodo/shared";
+import { MAX_MEDIA_PER_TASK, type RepeatRule, type TaskRunResult } from "@browsertodo/shared";
 import { base64ToBytes } from "../base64.js";
-import type { LocalMediaInfo, UiMediaUpload } from "../ui-protocol.js";
+import { Listeners } from "../listeners.js";
+import type { LocalMediaInfo, TaskPatch, UiMediaUpload } from "../ui-protocol.js";
 import type { KvDb, KvStore, StorageLike } from "./kv.js";
+import { crashAfterMs } from "./run/deadline.js";
 import {
   afterCrash,
   afterRun,
@@ -21,7 +23,6 @@ import {
 } from "./local-task-rules.js";
 
 export const LOCAL_TASKS_KEY = "localTasks";
-const MAX_MEDIA_PER_TASK = 10;
 
 export interface MediaRecord {
   id: string;
@@ -37,13 +38,6 @@ export interface NewLocalTask {
   notBefore?: string | null;
   repeat?: RepeatRule | null;
   media?: UiMediaUpload[];
-}
-
-export interface LocalTaskPatch {
-  instructions?: string;
-  account?: string | null;
-  notBefore?: string | null;
-  repeat?: RepeatRule | null;
 }
 
 export interface LocalStoreOptions {
@@ -63,7 +57,7 @@ export class LocalStore {
   private readonly now: () => Date;
   private readonly newId: () => string;
   private lock: Promise<unknown> = Promise.resolve();
-  private readonly listeners = new Set<() => void>();
+  private readonly changes = new Listeners();
 
   constructor(private readonly opts: LocalStoreOptions) {
     this.media = opts.db.store<MediaRecord>("media");
@@ -73,8 +67,7 @@ export class LocalStore {
 
   /** Called after every change to the task list. */
   onChange(fn: () => void): () => void {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
+    return this.changes.add(fn);
   }
 
   async list(): Promise<StoredLocalTask[]> {
@@ -127,7 +120,7 @@ export class LocalStore {
       updatedAt: now,
       repeat,
     };
-    await this.mutate((tasks) => [...tasks, task]);
+    await this.mutate((tasks) => ({ tasks: [...tasks, task], result: undefined }));
     return task;
   }
 
@@ -154,7 +147,7 @@ export class LocalStore {
   }
 
   /** Edits a task that is not running. */
-  async update(id: string, patch: LocalTaskPatch): Promise<StoredLocalTask> {
+  async update(id: string, patch: TaskPatch): Promise<StoredLocalTask> {
     const clean: Partial<StoredLocalTask> = {};
     if (patch.instructions !== undefined) clean.instructions = cleanInstructions(patch.instructions);
     if (patch.account !== undefined) clean.account = cleanAccount(patch.account);
@@ -168,15 +161,12 @@ export class LocalStore {
 
   /** Deletes a task and the media no other task uses. */
   async delete(id: string): Promise<boolean> {
-    let removed: StoredLocalTask | undefined;
-    let rest: StoredLocalTask[] = [];
-    await this.mutate((tasks) => {
-      removed = tasks.find((t) => t.id === id);
-      if (removed?.status === "running") throw new Error("The task is running; stop it first");
-      rest = tasks.filter((t) => t.id !== id);
-      return rest;
+    const { gone, rest } = await this.mutate((tasks) => {
+      const found = tasks.find((t) => t.id === id);
+      if (found?.status === "running") throw new Error("The task is running; stop it first");
+      const kept = tasks.filter((t) => t.id !== id);
+      return { tasks: kept, result: { gone: found, rest: kept } };
     });
-    const gone = removed as StoredLocalTask | undefined;
     if (!gone) return false;
     const inUse = new Set(rest.flatMap((t) => t.mediaIds));
     for (const mid of gone.mediaIds) if (!inUse.has(mid)) await this.media.delete(mid);
@@ -235,47 +225,43 @@ export class LocalStore {
     result: TaskRunResult,
     opts: { retryAfterMinutes: number },
   ): Promise<{ task: StoredLocalTask; next: StoredLocalTask | null }> {
-    let out: StoredLocalTask | null = null;
-    let next: StoredLocalTask | null = null;
     const now = this.now();
-    await this.mutate((tasks) => {
-      const updated = tasks.map((t) => {
-        if (t.id !== id) return t;
-        let r = afterRun(t, result, now, opts.retryAfterMinutes);
-        if ((r.status === "done" || r.status === "failed") && r.repeat && !r.nextId) {
-          next = nextOccurrenceTask({ ...r, repeat: r.repeat }, this.newId(), now);
-          r = { ...r, nextId: next.id };
-        }
-        out = r;
-        return r;
-      });
-      return next ? [...updated, next] : updated;
+    return this.mutate((tasks) => {
+      const cur = tasks.find((t) => t.id === id);
+      if (!cur) throw new Error(`No task with id ${id}`);
+      let task = afterRun(cur, result, now, opts.retryAfterMinutes);
+      let next: StoredLocalTask | null = null;
+      if ((task.status === "done" || task.status === "failed") && task.repeat && !task.nextId) {
+        next = nextOccurrenceTask({ ...task, repeat: task.repeat }, this.newId(), now);
+        task = { ...task, nextId: next.id };
+      }
+      const updated = tasks.map((t) => (t.id === id ? task : t));
+      return { tasks: next ? [...updated, next] : updated, result: { task, next } };
     });
-    if (!out) throw new Error(`No task with id ${id}`);
-    return { task: out, next };
   }
 
   /**
-   * Crash recovery: tasks left running for longer than maxTaskMinutes + 2
-   * go back to pending with the crash marker (or fail when out of attempts).
+   * Crash recovery: tasks left running for longer than any run can last
+   * (crashAfterMs) go back to pending with the crash marker (or fail when out
+   * of attempts). Tasks this worker is running (live) are left alone.
    * Returns how many were recovered.
    */
-  async recoverCrashed(maxTaskMinutes: number): Promise<number> {
+  async recoverCrashed(maxTaskMinutes: number, live: ReadonlySet<string> = new Set()): Promise<number> {
     const now = this.now();
-    const cutoff = now.getTime() - (maxTaskMinutes + 2) * 60_000;
-    let count = 0;
-    await this.mutate((tasks) =>
-      tasks.map((t) => {
-        if (t.status !== "running" || Date.parse(t.updatedAt) > cutoff) return t;
+    const cutoff = now.getTime() - crashAfterMs(maxTaskMinutes);
+    return this.mutate((tasks) => {
+      let count = 0;
+      const next = tasks.map((t) => {
+        if (t.status !== "running" || live.has(t.id) || Date.parse(t.updatedAt) > cutoff) return t;
         count++;
         return afterCrash(t, now);
-      }),
-    );
-    return count;
+      });
+      return { tasks: next, result: count };
+    });
   }
 
   private storage(): StorageLike {
-    return this.opts.storage ?? (chrome.storage.local as unknown as StorageLike);
+    return this.opts.storage ?? chrome.storage.local;
   }
 
   private async read(): Promise<StoredLocalTask[]> {
@@ -284,34 +270,25 @@ export class LocalStore {
     return Array.isArray(v) ? (v as StoredLocalTask[]) : [];
   }
 
-  private async updateOne(id: string, fn: (t: StoredLocalTask) => StoredLocalTask): Promise<StoredLocalTask> {
-    let out: StoredLocalTask | null = null;
-    await this.mutate((tasks) =>
-      tasks.map((t) => {
-        if (t.id !== id) return t;
-        out = fn(t);
-        return out;
-      }),
-    );
-    if (!out) throw new Error(`No task with id ${id}`);
-    return out;
+  private updateOne(id: string, fn: (t: StoredLocalTask) => StoredLocalTask): Promise<StoredLocalTask> {
+    return this.mutate((tasks) => {
+      const cur = tasks.find((t) => t.id === id);
+      if (!cur) throw new Error(`No task with id ${id}`);
+      const next = fn(cur);
+      return { tasks: tasks.map((t) => (t.id === id ? next : t)), result: next };
+    });
   }
 
-  /** Serialized read-modify-write; notifies listeners after a change. */
-  private mutate(fn: (tasks: StoredLocalTask[]) => StoredLocalTask[]): Promise<void> {
+  /** Serialized read-modify-write: fn gives the new list and what to return; listeners hear of the change. */
+  private async mutate<T>(fn: (tasks: StoredLocalTask[]) => { tasks: StoredLocalTask[]; result: T }): Promise<T> {
     const run = this.lock.then(async () => {
-      const next = fn(await this.read());
-      await this.storage().set({ [LOCAL_TASKS_KEY]: next });
+      const { tasks, result } = fn(await this.read());
+      await this.storage().set({ [LOCAL_TASKS_KEY]: tasks });
+      return result;
     });
     this.lock = run.catch(() => {});
-    return run.then(() => {
-      for (const l of this.listeners) {
-        try {
-          l();
-        } catch {
-          /* listener errors must not break the store */
-        }
-      }
-    });
+    const result = await run;
+    this.changes.emit();
+    return result;
   }
 }

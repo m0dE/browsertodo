@@ -24,16 +24,16 @@ describe("options: account summary", () => {
     });
     expect(s).toMatchObject({
       planName: "Plus",
-      planStatus: "renews Oct 24, 2026",
+      planStatus: "Renews Oct 24, 2026",
       credit: "$25.40",
       creditDetail: "$15.40 subscription (expires Oct 24, 2026) + $10.00 top-up",
       paid: true,
       keysAllowed: true,
       billing: "ready",
     });
-    expect(accountSummary({ ...base, plan: { id: "pro", status: "active", currentPeriodEnd: "2026-10-24T00:00:00Z", cancelAtPeriodEnd: true } }).planStatus).toBe("ends Oct 24, 2026");
-    expect(accountSummary({ ...base, plan: { id: "starter", status: "past_due", currentPeriodEnd: null, cancelAtPeriodEnd: false } })).toMatchObject({ planStatus: "payment past due", paid: true });
-    expect(accountSummary({ ...base, plan: { id: "free", status: "canceled", currentPeriodEnd: null, cancelAtPeriodEnd: false } })).toMatchObject({ planName: "Free", planStatus: "subscription canceled", paid: false, keysAllowed: false });
+    expect(accountSummary({ ...base, plan: { id: "pro", status: "active", currentPeriodEnd: "2026-10-24T00:00:00Z", cancelAtPeriodEnd: true } }).planStatus).toBe("Ends Oct 24, 2026");
+    expect(accountSummary({ ...base, plan: { id: "starter", status: "past_due", currentPeriodEnd: null, cancelAtPeriodEnd: false } })).toMatchObject({ planStatus: "Payment overdue", paid: true });
+    expect(accountSummary({ ...base, plan: { id: "free", status: "canceled", currentPeriodEnd: null, cancelAtPeriodEnd: false } })).toMatchObject({ planName: "Free", planStatus: "Subscription ended", paid: false, keysAllowed: false });
   });
 
   it("unknown billing and out of credit", () => {

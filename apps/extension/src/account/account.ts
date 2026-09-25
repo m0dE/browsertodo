@@ -7,19 +7,23 @@
  * A session belongs to the server it was issued by: when the account server
  * URL setting changes, the extension is signed out of it.
  */
-import type { ExtensionSettings } from "@browsertodo/shared";
+import { errorMessage, NOT_SET_UP, type ExtensionSettings, type MeBillingResponse, type TranscribeResponse } from "@browsertodo/shared";
 import { ApiClient } from "../api-client.js";
-import { errText } from "../errors.js";
 import type { StorageLike } from "../engine/kv.js";
+import type { StoredLocalTask } from "../engine/local-task-rules.js";
+import { ApiRequestError, NotSignedInError } from "../http-client.js";
+import { callSafely } from "../listeners.js";
 import type { AccountView } from "../ui-protocol.js";
-import { AccountApi, AccountApiError } from "./account-api.js";
+import { AccountApi } from "./account-api.js";
 import { googleIdToken, SIGN_IN_NOT_SET_UP, SignInError } from "./google-auth.js";
-import { isPaidActive, type ApiKeyInfo, type BillingInfo, type CreditInfo, type Me, type PlanId, type PlanInfo } from "./types.js";
+import { accountTaskInput } from "./todo-source.js";
+import { isPaidActive, type ApiKeyInfo, type BillingLinkRequest, type CreatedApiKey, type CreditInfo, type KeyRole, type Me, type PlanInfo } from "./types.js";
 
 export const ACCOUNT_KEY = "account";
 /** Profile and credit are refetched when older than this (or on demand). */
 const INFO_MAX_AGE_MS = 60_000;
-export const BILLING_NOT_SET_UP = "Billing is not set up on this server yet";
+/** How much of a task's instructions names it in a migration error. */
+const TASK_LABEL_CHARS = 40;
 
 export interface StoredSession {
   token: string;
@@ -60,7 +64,7 @@ export interface MigrationResult {
 }
 
 export interface AccountLocalTasks {
-  list(): Promise<{ id: string; status: string; instructions: string; account: string | null; notBefore: string | null; mediaIds: string[]; repeat: { dailyAt: string[] } | null }[]>;
+  list(): Promise<Pick<StoredLocalTask, "id" | "status" | "instructions" | "account" | "notBefore" | "mediaIds" | "repeat">[]>;
   getMedia(ids: string[]): Promise<{ id: string; name: string; blob: Blob }[]>;
   delete(id: string): Promise<boolean>;
 }
@@ -145,14 +149,13 @@ export class AccountService {
 
   /** The account as the UI shows it. */
   async view(): Promise<AccountView> {
-    await this.load();
+    const a = await this.load();
     const base = this.apiBase;
     const view: AccountView = { signedIn: false, signInConfigured: !!this.deps.clientId, apiBase: base, dashboardUrl: dashboardUrl(base) };
     const s = this.session();
     if (!s) return view;
     view.signedIn = true;
     view.user = { email: s.user.email, name: s.user.name, pictureUrl: s.user.pictureUrl };
-    const a = this.cache!;
     if (a.info?.plan) view.plan = a.info.plan;
     if (a.info?.credit) view.credit = a.info.credit;
     if (a.info?.stripeConfigured !== undefined) view.stripeConfigured = a.info.stripeConfigured;
@@ -175,8 +178,13 @@ export class AccountService {
   async api(): Promise<AccountApi> {
     await this.load();
     const s = this.session();
-    if (!s) throw new Error("Not signed in");
+    if (!s) throw new NotSignedInError();
     return this.apiFor(s);
+  }
+
+  /** Voice input: a WAV clip to text (POST /v1/ai/transcribe). Throws NotSignedInError or ApiRequestError. */
+  async transcribe(wav: Uint8Array, opts: { speechMs?: number; context?: string; sessionId?: string } = {}): Promise<TranscribeResponse> {
+    return (await this.api()).transcribe(wav, opts);
   }
 
   /** The runner's task source for the signed-in account (claim/heartbeat/result with the session token), or null. */
@@ -184,13 +192,7 @@ export class AccountService {
     await this.load();
     const s = this.session();
     if (!s) return null;
-    const f = this.deps.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
-    const fetchWatch: typeof fetch = async (input, init) => {
-      const res = await f(input, init);
-      if (res.status === 401) void this.expire(s.token);
-      return res;
-    };
-    return new ApiClient({ apiBase: s.apiBase, runnerKey: s.token, fetch: fetchWatch });
+    return new ApiClient({ ...this.apiOpts(s.apiBase), runnerKey: s.token, onUnauthorized: () => void this.expire(s.token) });
   }
 
   async signIn(): Promise<void> {
@@ -205,7 +207,7 @@ export class AccountService {
     try {
       auth = await api.signIn(idToken);
     } catch (err) {
-      if (err instanceof AccountApiError && err.status === 503) throw new SignInError(`${err.message} (${settings.accountApiBase})`);
+      if (err instanceof ApiRequestError && err.status === 503) throw new SignInError(`${err.message} (${settings.accountApiBase})`);
       throw err;
     }
     await this.load();
@@ -223,7 +225,7 @@ export class AccountService {
       try {
         await this.apiFor(s).logout();
       } catch (err) {
-        this.log(`logout: ${errText(err)}`);
+        this.log(`logout: ${errorMessage(err)}`);
       }
     }
     await this.store({});
@@ -247,19 +249,19 @@ export class AccountService {
     try {
       me = await api.me();
     } catch (err) {
-      if (err instanceof AccountApiError && err.status === 401) return; // expire() signed us out
-      await this.store({ ...this.cache, info: { ...this.cache?.info, fetchedAt, error: `Could not load the account: ${errText(err)}` } });
+      if (err instanceof ApiRequestError && err.status === 401) return; // expire() signed us out
+      await this.store({ ...this.cache, info: { ...this.cache?.info, fetchedAt, error: `Could not load the account: ${errorMessage(err)}` } });
       return;
     }
-    let billing: BillingInfo | null = null;
+    let billing: MeBillingResponse | null = null;
     let stripeConfigured: boolean | undefined;
     try {
       billing = await api.billing();
       stripeConfigured = billing.stripeConfigured;
     } catch (err) {
       // No billing on this server (older API, or Stripe not configured).
-      if (err instanceof AccountApiError && (err.status === 404 || err.status === 503)) stripeConfigured = false;
-      else this.log(`billing: ${errText(err)}`);
+      if (err instanceof ApiRequestError && (err.status === 404 || err.status === 503)) stripeConfigured = false;
+      else this.log(`billing: ${errorMessage(err)}`);
     }
     const plan = billing?.plan ?? me.plan;
     const credit = billing?.credit ?? me.credit;
@@ -292,7 +294,7 @@ export class AccountService {
    * or manage billing (portal). Changing an existing paid plan goes through
    * the portal (the server answers checkout with 409 { portal: true }).
    */
-  async billingLink(req: { action: "checkout" | "topup" | "portal"; plan?: PlanId; amountCents?: number; returnUrl: string }): Promise<string> {
+  async billingLink(req: BillingLinkRequest): Promise<string> {
     const api = await this.api();
     try {
       if (req.action === "checkout") {
@@ -300,7 +302,7 @@ export class AccountService {
         try {
           return await api.billingLink("checkout", { plan: req.plan, returnUrl: req.returnUrl });
         } catch (err) {
-          if (err instanceof AccountApiError && err.status === 409 && err.body?.portal) {
+          if (err instanceof ApiRequestError && err.status === 409 && err.body?.portal) {
             return await api.billingLink("portal", { returnUrl: req.returnUrl });
           }
           throw err;
@@ -309,9 +311,9 @@ export class AccountService {
       if (req.action === "topup") return await api.billingLink("topup", { amountCents: req.amountCents, returnUrl: req.returnUrl });
       return await api.billingLink("portal", { returnUrl: req.returnUrl });
     } catch (err) {
-      if (err instanceof AccountApiError && (err.status === 503 || err.status === 404)) {
+      if (err instanceof ApiRequestError && (err.status === 503 || err.status === 404)) {
         if (this.cache?.info) await this.store({ ...this.cache, info: { ...this.cache.info, stripeConfigured: false } });
-        throw new Error(BILLING_NOT_SET_UP);
+        throw new Error(NOT_SET_UP.billing);
       }
       throw err;
     }
@@ -321,7 +323,7 @@ export class AccountService {
     return (await this.api()).listKeys();
   }
 
-  async createKey(name: string, role: "creator" | "runner"): Promise<{ id: string; name: string; role: string; key: string }> {
+  async createKey(name: string, role: KeyRole): Promise<CreatedApiKey> {
     return (await this.api()).createKey(name, role);
   }
 
@@ -346,20 +348,13 @@ export class AccountService {
     const result: MigrationResult = { moved: 0, failed: 0, errors: [] };
     for (const t of tasks) {
       try {
-        const mediaIds: string[] = [];
-        for (const m of await this.deps.localTasks.getMedia(t.mediaIds)) mediaIds.push((await api.uploadMedia(m.blob, m.name)).id);
-        await api.createTask({
-          instructions: t.instructions,
-          ...(t.account ? { account: t.account } : {}),
-          ...(t.notBefore ? { notBefore: t.notBefore } : {}),
-          ...(mediaIds.length ? { mediaIds } : {}),
-          ...(t.repeat?.dailyAt.length ? { repeat: { dailyAt: t.repeat.dailyAt }, tz } : {}),
-        });
+        const files = await this.deps.localTasks.getMedia(t.mediaIds);
+        await api.createTask(await accountTaskInput(api, t, files, tz));
         await this.deps.localTasks.delete(t.id);
         result.moved++;
       } catch (err) {
         result.failed++;
-        result.errors.push(`${t.instructions.slice(0, 40)}: ${errText(err)}`);
+        result.errors.push(`${t.instructions.slice(0, TASK_LABEL_CHARS)}: ${errorMessage(err)}`);
       }
     }
     if (result.failed === 0) await this.store({ ...this.cache, migrationDismissed: true });
@@ -390,15 +385,11 @@ export class AccountService {
   }
 
   private changed(): void {
-    try {
-      this.deps.onChange?.();
-    } catch {
-      /* UI push errors are not the account's problem */
-    }
+    callSafely(this.deps.onChange);
   }
 
   private storage(): StorageLike {
-    return this.deps.storage ?? (chrome.storage.local as unknown as StorageLike);
+    return this.deps.storage ?? chrome.storage.local;
   }
 
   private now(): Date {

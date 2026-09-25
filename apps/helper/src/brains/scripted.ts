@@ -22,14 +22,17 @@
  * Messages the human sends while it runs are acknowledged with an
  * assistant_text event ("Scripted brain received: ...").
  */
-import { mcpToolName, pauseReasonForUrl, type ToolName, type ToolResult } from "@browsertodo/shared";
-import { isXUrl, parseSnapshotText, type ParsedPage } from "@browsertodo/core";
+import { isXUrl, mcpToolName, pauseReasonForUrl, pollUntil, X_HOME_URL, xProfileUrl, type Sleep, type ToolName, type ToolResult } from "@browsertodo/shared";
+import { NOT_CONFIDENT, parseSnapshotText, type ParsedPage } from "@browsertodo/core";
 import type { Brain, BrainContext } from "./brain.js";
 
 export type CallTool = (taskId: string, name: ToolName, args: unknown) => Promise<ToolResult>;
 
 const POST_BUTTON_TEST_IDS = new Set(["tweetButton", "tweetButtonInline"]);
 const LOGIN_TITLE = /\b(log ?in|sign ?in)\b/i;
+const STATUS_PATH = /\/status\/\d+/;
+/** How long to wait, after clicking Post, for X to show the new post (its URL, or the "View" link). */
+export const POST_URL_POLL = { intervalMs: 1000, timeoutMs: 5000 };
 
 export function extractPostText(instructions: string): string {
   const i = instructions.indexOf("Post:");
@@ -58,13 +61,12 @@ class Stop extends Error {}
 export class ScriptedBrain implements Brain {
   constructor(
     private readonly callTool: CallTool,
-    private readonly opts: { sleep?: (ms: number) => Promise<void>; urlPolls?: number; pollMs?: number } = {},
+    private readonly opts: { sleep?: Sleep } = {},
   ) {}
 
   async run(ctx: BrainContext): Promise<void> {
     const task = ctx.task;
     if (!task) throw new Error("ScriptedBrain needs ctx.task");
-    const sleep = this.opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
     ctx.input.onMessage((text) => ctx.emit({ type: "assistant_text", text: `Scripted brain received: ${text}` }));
     const offered = (name: ToolName) => ctx.allowedTools.includes(mcpToolName(name));
     const call = async (name: ToolName, args: unknown = {}): Promise<ToolResult> => {
@@ -90,7 +92,7 @@ export class ScriptedBrain implements Brain {
       if (el.index >= 0) return text !== undefined ? call("type", { index: el.index, text }) : call("click", { index: el.index });
       const step = text !== undefined ? { goal, text } : { goal };
       const r = await call("act", { steps: [step] });
-      if (r.isError || !(r.text ?? "").includes("not confident")) return r;
+      if (r.isError || !(r.text ?? "").includes(NOT_CONFIDENT)) return r;
       const candidate = parseSnapshotText(r.text ?? "").elements.filter((e) => e.index >= 0).find(pick);
       if (!candidate) return { text: `no matching candidate for "${goal}"`, isError: true };
       return call("act", { steps: [{ ...step, index: candidate.index }] });
@@ -119,7 +121,7 @@ export class ScriptedBrain implements Brain {
       let textbox = findTextbox();
       if (!textbox && !startUrl && isXUrl(page.url)) {
         // A previous task may have left the tab on a post page; the composer lives on home.
-        await call("navigate", { url: "https://x.com/home" });
+        await call("navigate", { url: X_HOME_URL });
         page = await read();
         pause = loginReason(page);
         if (pause) return await finish("task_pause", pause);
@@ -150,20 +152,14 @@ export class ScriptedBrain implements Brain {
 
       // Find the new post's URL the way the system prompt tells Claude to:
       // the URL itself, the "View" link in X's toast, or the profile's newest post.
-      const statusLink = () =>
-        page.elements.find((e) => e.href && /\/status\/\d+/.test(e.href) && e.name.trim().toLowerCase() === "view") ??
-        null;
-      const polls = this.opts.urlPolls ?? 5;
-      page = await read();
-      for (let i = 0; i < polls && page.url === before && !statusLink(); i++) {
-        await sleep(this.opts.pollMs ?? 1000);
-        page = await read();
-      }
-      let postUrl = /\/status\/\d+/.test(page.url) ? page.url : (statusLink()?.href ?? null);
+      const statusLink = (p: ParsedPage) => p.elements.find((e) => e.href && STATUS_PATH.test(e.href) && e.name.trim().toLowerCase() === "view") ?? null;
+      const posted = await pollUntil(read, (p) => p.url !== before || !!statusLink(p), { ...POST_URL_POLL, ...(this.opts.sleep ? { sleep: this.opts.sleep } : {}) });
+      page = posted.value;
+      let postUrl = STATUS_PATH.test(page.url) ? page.url : (statusLink(page)?.href ?? null);
       if (!postUrl && task.account && isXUrl(page.url)) {
-        await call("navigate", { url: `https://x.com/${task.account.replace(/^@+/, "")}` });
+        await call("navigate", { url: xProfileUrl(task.account) });
         page = await read();
-        postUrl = page.elements.find((e) => e.href && /\/status\/\d+/.test(e.href))?.href ?? null;
+        postUrl = page.elements.find((e) => e.href && STATUS_PATH.test(e.href))?.href ?? null;
       }
       await call("task_complete", { summary: `Posted: ${text.slice(0, 200)}`, url: postUrl ?? page.url });
     } catch (e) {

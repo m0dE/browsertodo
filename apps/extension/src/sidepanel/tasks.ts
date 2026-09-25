@@ -1,28 +1,32 @@
 /**
  * TODO tab: the task list and the add form ("Do this now" lives in the
  * composer). The list lives in the user's account: signed out, the tab is
- * one big Log In button. After the first sign-in with tasks saved in this
+ * one big Log in button. After the first sign-in with tasks saved in this
  * browser, it offers to move them into the account.
  */
-import type { LocalTask } from "@browsertodo/shared";
-import { SIGN_IN_NOT_SET_UP } from "../account/google-auth.js";
-import { uiRequest, type AccountView, type LocalMediaInfo, type UiState } from "../ui-protocol.js";
-import { $, busy, errorText, flash, h } from "./dom.js";
-import { filePicker, filesToUploads } from "./files.js";
 import {
-  accountLabel,
   chipHint,
-  clockLabel,
-  firstLine,
   localInputToIso,
   parseRepeatTimes,
+  plural,
   repeatLabel,
-  runNowButton,
   splitTasks,
   taskChip,
   taskNextTime,
-} from "./format.js";
-import { shortUrl } from "./event-format.js";
+  type LocalTask,
+} from "@browsertodo/shared";
+import { SIGN_IN_NOT_SET_UP } from "../account/google-auth.js";
+import { uiRequest, type AccountView, type LocalMediaInfo, type UiState } from "../ui-protocol.js";
+import { $, busy, flash, h, restartAnimation, showError } from "../ui/dom.js";
+import { signIn, SIGNED_OUT } from "../ui/sign-in.js";
+import { runsOfTask } from "./details-sheet.js";
+import { filePicker, filesToUploads } from "./files.js";
+import { accountLabel, clockLabel, firstLine, runNowButton } from "./format.js";
+import { shortUrl } from "../text.js";
+import { taskActions, type TaskAction } from "./task-actions.js";
+
+/** The Finished list shows this many, newest first. */
+const FINISHED_SHOWN = 50;
 
 type Row = LocalTask & { media: LocalMediaInfo[] };
 
@@ -32,8 +36,10 @@ export interface TasksView {
   tick(): void;
   /** Settings for Run now's tooltip (check interval, cloud sync) and the account (signed in or not). */
   setState(state: UiState): void;
-  /** True when the tab is the Log In button only (no composer below it). */
+  /** True when the tab is the Log in button only (no composer below it). */
   signedOut(): boolean;
+  /** Google sign-in, as the tab's Log in button does it (progress shows under that button). */
+  signIn(): void;
   /** "Open in TODO": reload, then scroll to this task and focus it. False when the list does not have it. */
   reveal(id: string): Promise<boolean>;
 }
@@ -57,49 +63,41 @@ export function initTasks(opts: {
   const tab = $("tab-todo");
   const tasksMsg = $("tasks-msg");
 
-  // Signed out: the Log In button.
+  // Signed out: the Log in button.
   const loginBtn = $<HTMLButtonElement>("login-btn");
   const loginMsg = $("login-msg");
-  loginBtn.addEventListener("click", () => {
-    if (account && !account.signInConfigured) return flash(loginMsg, SIGN_IN_NOT_SET_UP, "bad");
-    void busy(loginBtn, async () => {
-      flash(loginMsg, "Continue in the Google window…");
-      try {
-        const state = await uiRequest({ type: "account.signIn" });
-        flash(loginMsg, "");
-        opts.onState?.(state);
-        await refresh();
-      } catch (err) {
-        flash(loginMsg, errorText(err), "bad");
-      }
+  const startSignIn = () =>
+    signIn(loginBtn, loginMsg, account, async (state) => {
+      opts.onState?.(state);
+      await refresh();
     });
-  });
+  loginBtn.addEventListener("click", startSignIn);
 
   // First sign-in with tasks in this browser: move them into the account.
   const migrate = $("migrate");
   const migrateGo = $<HTMLButtonElement>("migrate-go");
   const migrateMsg = $("migrate-msg");
   migrateGo.addEventListener("click", () =>
-    void busy(migrateGo, async () => {
-      flash(migrateMsg, "Moving…");
-      try {
+    void busy(
+      migrateGo,
+      async () => {
+        flash(migrateMsg, "Moving…");
         const r = await uiRequest({ type: "account.migrate" });
         if (r.failed) flash(migrateMsg, `Moved ${r.moved}; ${r.failed} could not be moved: ${r.errors[0] ?? ""}`, "bad");
         else {
           flash(migrateMsg, "");
-          flash(tasksMsg, `Moved ${r.moved} ${r.moved === 1 ? "task" : "tasks"} to your account.`, "ok");
+          flash(tasksMsg, `Moved ${plural(r.moved, "task")} to your account.`, "ok");
         }
         opts.onState?.(r.state);
         await refresh();
-      } catch (err) {
-        flash(migrateMsg, errorText(err), "bad");
-      }
-    }),
+      },
+      migrateMsg,
+    ),
   );
   $("migrate-later").addEventListener("click", () =>
     void uiRequest({ type: "account.dismissMigration" })
       .then((state) => opts.onState?.(state))
-      .catch((err: unknown) => flash(migrateMsg, errorText(err), "bad")),
+      .catch((err: unknown) => showError(migrateMsg, err)),
   );
 
   const renderAccount = () => {
@@ -110,8 +108,8 @@ export function initTasks(opts: {
     migrate.hidden = n === 0;
     if (n) {
       const one = n === 1;
-      $("migrate-text").textContent = `You have ${n} ${one ? "task" : "tasks"} saved in this browser. Move ${one ? "it" : "them"} to your account so ${one ? "it runs" : "they run"} from there?`;
-      migrateGo.textContent = `Move ${n} ${one ? "task" : "tasks"} to your account`;
+      $("migrate-text").textContent = `You have ${plural(n, "task")} saved in this browser. Move ${one ? "it" : "them"} to your account so ${one ? "it runs" : "they run"} from there?`;
+      migrateGo.textContent = `Move ${plural(n, "task")} to your account`;
     }
   };
 
@@ -136,16 +134,17 @@ export function initTasks(opts: {
   addForm.addEventListener("submit", (e) => {
     e.preventDefault();
     const submit = addForm.querySelector<HTMLButtonElement>("button[type=submit]")!;
-    void busy(submit, async () => {
-      const instructions = $<HTMLTextAreaElement>("add-text").value.trim();
-      const account = $<HTMLInputElement>("add-account").value.trim();
-      const timeValue = $<HTMLInputElement>("add-time").value;
-      const notBefore = localInputToIso(timeValue);
-      const repeat = parseRepeatTimes($<HTMLInputElement>("add-repeat").value);
-      if (!instructions) return flash(addMsg, "Write what the agent should do.", "bad");
-      if (timeValue && !notBefore) return flash(addMsg, "That time is not valid.", "bad");
-      if (!repeat.ok) return flash(addMsg, repeat.error, "bad");
-      try {
+    void busy(
+      submit,
+      async () => {
+        const instructions = $<HTMLTextAreaElement>("add-text").value.trim();
+        const account = $<HTMLInputElement>("add-account").value.trim();
+        const timeValue = $<HTMLInputElement>("add-time").value;
+        const notBefore = localInputToIso(timeValue);
+        const repeat = parseRepeatTimes($<HTMLInputElement>("add-repeat").value);
+        if (!instructions) return flash(addMsg, "Write what the agent should do.", "bad");
+        if (timeValue && !notBefore) return flash(addMsg, "That time is not valid.", "bad");
+        if (!repeat.ok) return flash(addMsg, repeat.error, "bad");
         const media = await filesToUploads(addFiles.files());
         await uiRequest({
           type: "tasks.add",
@@ -160,10 +159,9 @@ export function initTasks(opts: {
         flash(addMsg, "");
         setAddOpen(false);
         await refresh();
-      } catch (err) {
-        flash(addMsg, errorText(err), "bad");
-      }
-    });
+      },
+      addMsg,
+    );
   });
 
   // Run now: the tasks whose time has come, without waiting for the next check.
@@ -178,22 +176,15 @@ export function initTasks(opts: {
   };
   runNow.addEventListener("click", () => {
     if (runNow.getAttribute("aria-disabled") === "true") return;
-    void busy(runNow, async () => {
-      try {
+    void busy(
+      runNow,
+      async () => {
         const res = await uiRequest({ type: "run.due" });
         if (res.started) opts.onStarted();
         else flash(tasksMsg, res.detail || "Nothing is due right now.", "");
-      } catch (err) {
-        flash(tasksMsg, errorText(err), "bad");
-      }
-    });
-  });
-
-  // Close open overflow menus on outside click.
-  document.addEventListener("click", (e) => {
-    for (const m of document.querySelectorAll<HTMLDetailsElement>("details.menu[open]")) {
-      if (!m.contains(e.target as Node)) m.open = false;
-    }
+      },
+      tasksMsg,
+    );
   });
 
   async function act(req: { type: "tasks.retry" | "tasks.delete" | "tasks.cancel"; id: string }): Promise<void> {
@@ -201,23 +192,27 @@ export function initTasks(opts: {
       await uiRequest(req);
       await refresh();
     } catch (err) {
-      flash(tasksMsg, errorText(err), "bad");
+      showError(tasksMsg, err);
     }
   }
 
   /** Continues a paused or failed task from its latest run. */
   async function continueTask(t: Row): Promise<void> {
     try {
-      const { sessions } = await uiRequest({ type: "sessions.list", limit: 200 });
-      const last = sessions.find((s) => s.taskId === t.id && s.source === "local" && s.endedAt);
+      const last = (await runsOfTask(t.id)).find((s) => s.source === "local" && s.endedAt);
       if (!last) return flash(tasksMsg, "No earlier run of this task to continue. Use Run again.", "bad");
       const tabId = opts.tabId?.() ?? null;
       const { sessionId } = await uiRequest({ type: "run.continue", sessionId: last.sessionId, ...(tabId === null ? {} : { tabId }) });
       if (opts.onContinued) opts.onContinued(sessionId);
       else opts.onStarted();
     } catch (err) {
-      flash(tasksMsg, errorText(err), "bad");
+      showError(tasksMsg, err);
     }
+  }
+
+  function actionButton(t: Row, a: TaskAction): HTMLButtonElement {
+    const run = () => void (a.run === "continue" ? continueTask(t) : act({ type: a.run, id: t.id }));
+    return h(a.danger ? "button.bad" : "button", { type: "button", title: a.title ?? null, onclick: run }, a.label);
   }
 
   function row(t: Row, now: number): HTMLLIElement {
@@ -233,7 +228,7 @@ export function initTasks(opts: {
     }
     const rep = repeatLabel(t.repeat);
     if (rep) meta.push(span(rep, "Runs again every day at these times"));
-    if (t.media.length) meta.push(span(t.media.length === 1 ? "1 file" : `${t.media.length} files`, t.media.map((m) => m.name).join(", ")));
+    if (t.media.length) meta.push(span(plural(t.media.length, "file"), t.media.map((m) => m.name).join(", ")));
     if (t.status === "done" && t.resultUrl) {
       meta.push(h("a", { href: t.resultUrl, target: "_blank", rel: "noopener", title: t.resultUrl }, shortUrl(t.resultUrl)));
     } else if (t.status !== "pending" && t.status !== "running" && !t.resultUrl) {
@@ -241,29 +236,7 @@ export function initTasks(opts: {
     }
     const reason = t.status === "failed" ? t.failReason : t.status === "paused" ? t.pauseReason : null;
 
-    const items: HTMLButtonElement[] = [];
-    if (source === "account") {
-      // The account's queue: retry failed tasks, continue paused ones (e.g. after a top-up), cancel waiting ones.
-      // Runs go on from the queue, not the panel.
-      if (t.status === "failed") {
-        items.push(h("button", { type: "button", title: "Put it back in the queue to run again", onclick: () => void act({ type: "tasks.retry", id: t.id }) }, "Retry"));
-      }
-      if (t.status === "paused") {
-        items.push(h("button", { type: "button", title: "Run it again now instead of waiting", onclick: () => void act({ type: "tasks.retry", id: t.id }) }, "Continue"));
-      }
-      if (t.status === "pending" || t.status === "paused") {
-        items.push(h("button", { type: "button", title: "It will not run; it moves to Finished", onclick: () => void act({ type: "tasks.cancel", id: t.id }) }, "Cancel"));
-      }
-      if (t.status !== "running") items.push(h("button.bad", { type: "button", onclick: () => void act({ type: "tasks.delete", id: t.id }) }, "Delete"));
-    } else {
-      if ((t.status === "paused" || t.status === "failed") && t.attempts > 0) {
-        items.push(h("button", { type: "button", title: "Pick up where the last run stopped", onclick: () => void continueTask(t) }, "Continue"));
-      }
-      if (t.status !== "running" && t.status !== "pending") {
-        items.push(h("button", { type: "button", title: "Put it back in the list to run again from the start", onclick: () => void act({ type: "tasks.retry", id: t.id }) }, "Run again"));
-      }
-      items.push(h("button.bad", { type: "button", onclick: () => void act({ type: "tasks.delete", id: t.id }) }, "Delete"));
-    }
+    const items = taskActions(t, source).map((a) => actionButton(t, a));
 
     return h(
       "li.task",
@@ -301,7 +274,7 @@ Show the full task and its details`,
     const fin = $<HTMLDetailsElement>("finished");
     fin.hidden = finished.length === 0;
     $("finished-count").textContent = String(finished.length);
-    $("finished-list").replaceChildren(...finished.slice(0, 50).map((t) => row(t, now)));
+    $("finished-list").replaceChildren(...finished.slice(0, FINISHED_SHOWN).map((t) => row(t, now)));
     renderRunNow();
   }
 
@@ -313,7 +286,7 @@ Show the full task and its details`,
       loaded = true;
       render();
     } catch (err) {
-      flash(tasksMsg, errorText(err), "bad");
+      showError(tasksMsg, err);
     }
   }
 
@@ -326,9 +299,7 @@ Show the full task and its details`,
     const li = btn.closest("li")!;
     li.scrollIntoView({ block: "nearest" });
     btn.focus();
-    li.classList.remove("found");
-    void li.offsetWidth; // restart the highlight
-    li.classList.add("found");
+    restartAnimation(li, "found");
     return true;
   }
 
@@ -340,12 +311,13 @@ Show the full task and its details`,
     setState(state) {
       settings = state.settings;
       const before = account;
-      account = state.account ?? { signedIn: false, signInConfigured: false, apiBase: "", dashboardUrl: "" };
+      account = state.account ?? SIGNED_OUT;
       renderAccount();
       renderRunNow();
       // Signed in or out: the list comes from somewhere else now.
       if (before && (before.signedIn !== account.signedIn || before.user?.email !== account.user?.email)) void refresh();
     },
     signedOut: () => !!account && !account.signedIn,
+    signIn: startSignIn,
   };
 }

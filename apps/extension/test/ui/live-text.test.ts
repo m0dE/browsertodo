@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { StampedAgentEvent } from "@browsertodo/shared";
 import { LiveTexts, MAX_LIVE } from "../../src/sidepanel/live-text.js";
-import { describeEvent, isLongSummary, toolArgsSummary } from "../../src/sidepanel/event-format.js";
+import { describeEvent } from "../../src/sidepanel/event-format.js";
+import { isLongSummary, toolArgsSummary } from "../../src/text.js";
 
 const at = (sessionId: string) => (e: Record<string, unknown>) => ({ ts: "2026-09-25T00:00:00Z", sessionId, ...e }) as StampedAgentEvent;
 const s1 = at("s1");
@@ -23,7 +24,7 @@ describe("LiveTexts (chat append / replace)", () => {
     const l = new LiveTexts();
     l.add(delta("m1:0", "Hel"));
     expect(l.settle(s1({ type: "assistant_text", text: "Other" }))).toEqual({ replaces: null, drop: [], freeze: [] });
-    expect(l.has("m1:0")).toBe(true);
+    expect(l.of("s1")).toEqual([["m1:0", "Hel"]]);
   });
 
   it("two text blocks of one message are settled one by one", () => {

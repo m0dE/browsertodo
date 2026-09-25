@@ -6,7 +6,7 @@
  */
 import type { SessionInfo } from "@browsertodo/shared";
 import { uiRequest } from "../ui-protocol.js";
-import { h } from "./dom.js";
+import { h } from "../ui/dom.js";
 import { detailsModel, linkParts, type DetailsInput, type DetailsModel, type DetailsTask } from "./task-details.js";
 
 export interface SheetOptions {
@@ -54,7 +54,7 @@ export function openDetails(model: DetailsModel, trigger: HTMLElement | null, op
   let back: HTMLElement | null = trigger;
 
   const msg = h("span.msg", { role: "status" });
-  const copyBtn = h("button.ghost.small", { type: "button", disabled: !model.text }, "Copy instructions");
+  const copyBtn = h("button.ghost.small", { type: "button", disabled: !model.text }, model.copyLabel);
   const todoId = model.todoId;
   const todoBtn = todoId && opts.onOpenInTodo ? h("button.ghost.small", { type: "button", title: "Show this task in the TODO tab" }, "Open in TODO") : null;
   const closeBtn = h("button.ghost.small", { type: "button" }, "Close");
@@ -77,7 +77,7 @@ export function openDetails(model: DetailsModel, trigger: HTMLElement | null, op
         "div.sheet-body",
         null,
         h("div.sheet-label", null, model.textLabel),
-        model.text ? renderText(model.text) : h("p.sheet-note", null, "No instructions were saved."),
+        model.text ? renderText(model.text) : h("p.sheet-note", null, model.emptyText),
         model.textNote ? h("p.sheet-note", null, model.textNote) : null,
         rows.length ? h("dl.sheet-fields", null, ...rows) : null,
         model.files.length
@@ -123,9 +123,9 @@ export function openDetails(model: DetailsModel, trigger: HTMLElement | null, op
   return dialog;
 }
 
-/** Closes the sheet if one is open. */
-export function closeDetails(): void {
-  current?.close();
+/** A task's runs in this browser, newest first. */
+export async function runsOfTask(taskId: string): Promise<SessionInfo[]> {
+  return (await uiRequest({ type: "sessions.list", taskId })).sessions;
 }
 
 /**
@@ -136,10 +136,8 @@ export function closeDetails(): void {
 export async function gatherDetails(from: { session: SessionInfo } | { task: DetailsTask; listSource: "local" | "account" }): Promise<DetailsInput> {
   if ("task" in from) {
     try {
-      const { sessions } = await uiRequest({ type: "sessions.list", limit: 200 });
-      // Newest first: the first run of this task is its latest.
-      const session = sessions.find((s) => s.taskId === from.task.id) ?? null;
-      return { ...from, session };
+      const [latest] = await runsOfTask(from.task.id);
+      return { ...from, session: latest ?? null };
     } catch {
       return from;
     }

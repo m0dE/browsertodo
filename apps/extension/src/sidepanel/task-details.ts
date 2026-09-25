@@ -3,9 +3,9 @@
  * about a task or a chat message, from its TODO entry and/or a run of it.
  * Fields the panel does not have are left out. See details-sheet.ts for the DOM.
  */
-import type { LocalTask, RepeatRule, SessionInfo } from "@browsertodo/shared";
+import { chipHint, formatBytes, taskChip, type Chip, type LocalTask, type RepeatRule, type SessionInfo } from "@browsertodo/shared";
 import type { LocalMediaInfo } from "../ui-protocol.js";
-import { accountLabel, chipHint, formatBytes, outcomeChip, sessionHeadline, taskChip, type Chip } from "./format.js";
+import { accountLabel, outcomeChip, sessionHeadline, trimUrlEnd } from "./format.js";
 
 /** A TODO entry as the TODO tab has it (cloud tasks may lack repeat and media). */
 export type DetailsTask = Omit<LocalTask, "repeat"> & { repeat?: RepeatRule | null; media?: LocalMediaInfo[] };
@@ -35,6 +35,10 @@ export interface DetailsModel {
   heading: string;
   /** Label of the text block: "Instructions", or "Message" for a chat message. */
   textLabel: string;
+  /** The copy button: "Copy instructions" / "Copy message". */
+  copyLabel: string;
+  /** Shown in place of the text when none was saved. */
+  emptyText: string;
   /** The full instructions (line breaks kept); "" when nothing is known. */
   text: string;
   /** Set when only the run's one-line title is known, not the full text. */
@@ -155,6 +159,8 @@ export function detailsModel(input: DetailsInput, now = Date.now(), when: WhenOp
   const model: DetailsModel = {
     heading: adhoc ? "Chat message" : "Task details",
     textLabel: adhoc ? "Message" : "Instructions",
+    copyLabel: adhoc ? "Copy message" : "Copy instructions",
+    emptyText: adhoc ? "No message was saved." : "No instructions were saved.",
     text,
     fields,
     files,
@@ -169,23 +175,13 @@ export function detailsModel(input: DetailsInput, now = Date.now(), when: WhenOp
 export type TextPart = { text: string } | { url: string };
 
 const URL_RE = /https?:\/\/[^\s<>"']+/g;
-/** Punctuation that usually ends the sentence around a link rather than the link itself. */
-const TRAILING = ".,;:!?]}";
-
-const count = (s: string, c: string) => s.split(c).length - 1;
 
 /** Splits text into plain runs and http(s) links (only those become clickable). */
 export function linkParts(text: string): TextPart[] {
   const parts: TextPart[] = [];
   let last = 0;
   for (const m of text.matchAll(URL_RE)) {
-    let url = m[0];
-    for (;;) {
-      const c = url.at(-1)!;
-      // A closing paren stays when it closes one inside the link (e.g. Wikipedia's "Foo_(bar)").
-      if (TRAILING.includes(c) || (c === ")" && count(url, ")") > count(url, "("))) url = url.slice(0, -1);
-      else break;
-    }
+    const url = trimUrlEnd(m[0]);
     if (m.index > last) parts.push({ text: text.slice(last, m.index) });
     parts.push({ url });
     last = m.index + url.length;

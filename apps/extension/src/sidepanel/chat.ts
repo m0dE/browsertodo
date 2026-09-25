@@ -2,22 +2,21 @@
  * Chat tab: the conversation of the browser tab that is active in the
  * panel's window, live (every turn of it in one thread: the user's messages
  * as bubbles, the agent's text, tool calls, results and Jev decisions), its
- * action bar (New Chat | Show Tab | Raw Log) and, while conversations of
+ * action bar (New chat | Show tab | Raw log) and, while conversations of
  * other tabs run, one chip each to switch to their tab. Which conversation
  * that is comes from sidepanel.ts (see tab-chat.ts); past runs live in the
- * Activity Log tab (history.ts).
+ * Activity log tab (history.ts).
  */
-import type { SessionInfo, StampedAgentEvent } from "@browsertodo/shared";
+import { errorMessage, type SessionInfo, type StampedAgentEvent } from "@browsertodo/shared";
 import { isContinuableOutcome } from "../continue.js";
 import { uiRequest } from "../ui-protocol.js";
 import { chatActions, type BarAction } from "./chat-actions.js";
-import { $, busy, errorText, h } from "./dom.js";
-import { describeEvent, isNearBottom, turnPicks } from "./event-format.js";
-import { placeEvent, pruneContinue, renderEvent, renderSessionHead, renderText } from "./event-render.js";
+import { $, busy, h } from "../ui/dom.js";
+import { describeEvent, isNearBottom, isScreenHelp, turnPicks } from "./event-format.js";
+import { placeEvent, pruneContinue, renderEvent, renderScreenHelp, renderSessionHead, renderSessionTitle, renderText } from "./event-render.js";
 import { LiveTexts } from "./live-text.js";
 import { MarkdownView } from "./markdown.js";
-import { brainLabel, sessionMeta } from "./format.js";
-import { openRawLog } from "./raw-log.js";
+import { wireRawLog } from "./raw-log.js";
 import { renderSwitcher } from "./session-switcher.js";
 import { otherRunning } from "./tab-chat.js";
 
@@ -32,6 +31,8 @@ export interface ChatView {
   shown(): SessionInfo | null;
   /** The line under the header about the conversation's agent session (null hides it). */
   setNote(text: string | null): void;
+  /** The keyboard shortcut that opens the panel, as the user reads it (null: none is set), for the new chat. */
+  setShortcut(shortcut: string | null): void;
 }
 
 export interface ChatOptions {
@@ -39,15 +40,19 @@ export interface ChatOptions {
   onContinue?(sessionId: string): void;
   /** The conversation the tab shows changed (null: an empty, new chat). */
   onFocus?(session: SessionInfo | null): void;
-  /** New Chat left this conversation. */
+  /** New chat left this conversation. */
   onLeave?(session: SessionInfo): void;
   /** A chip of another tab's running conversation was picked: switch to that tab. */
   onSwitch?(session: SessionInfo): void;
   /** The conversation's title was picked: show its task's details. */
   onDetails?(session: SessionInfo, trigger: HTMLElement): void;
+  /** The new chat's link to set a shortcut (chrome://extensions/shortcuts), when none is set. */
+  onShortcuts?(): void;
 }
 
 const eventKey = (e: StampedAgentEvent) => JSON.stringify(e);
+/** Recent events of conversations not on screen, kept for when one is shown: at most this many. */
+const MAX_BUFFERED_EVENTS = 300;
 
 /** A text button in the action bar; aria-disabled (not disabled) so its tooltip still shows. */
 export function setBarAction(btn: HTMLButtonElement, a: BarAction): void {
@@ -76,6 +81,8 @@ export function initChat(opts: ChatOptions = {}): ChatView {
   /** Recent events of every session, for a conversation shown after they arrived. */
   let buffered: StampedAgentEvent[] = [];
   let noteText: string | null = null;
+  /** The panel's keyboard shortcut: undefined until known, null when none is set. */
+  let shortcut: string | null | undefined;
   /** Every running session, for the switcher. */
   let runningList: readonly SessionInfo[] = [];
   /** onFocus starts after init: the first view (nothing shown) needs no notice, and callers may not be wired yet. */
@@ -83,12 +90,7 @@ export function initChat(opts: ChatOptions = {}): ChatView {
 
   function header(s: SessionInfo | null): void {
     titles.hidden = !s;
-    if (!s) return;
-    title.textContent = s.title;
-    title.title = `${s.title}
-Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
-    meta.textContent = sessionMeta(s);
-    meta.title = brainLabel(s.brain, s.jev);
+    if (s) renderSessionTitle(title, meta, s);
   }
 
   function updateBar(): void {
@@ -162,7 +164,7 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
           "div.empty-state.chat-empty",
           null,
           h("p.empty-title", null, "New chat"),
-          h("p", null, "Type below to have the agent do something in this tab. Each tab has its own chat; earlier runs are in the Activity Log."),
+          shortcutHint(),
         ),
       );
       return;
@@ -172,12 +174,24 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
       return;
     }
     log.replaceChildren(renderSessionHead(current));
+    // A conversation started with an empty message: its first turn shows as that message.
+    if (current.source === "adhoc" && isScreenHelp(current.title)) log.append(renderScreenHelp(current.title));
     events.forEach(renderOne);
     liveEls.clear();
     if (!events.length && !live.of(current.sessionId).some(([, t]) => t.trim())) log.append(h("p.empty", null, "Waiting for the agent…"));
     pruneContinue(log);
     paintLive();
     log.scrollTop = log.scrollHeight;
+  }
+
+  /** "Press Ctrl+Shift+K to open this chat at any time.", or a link to set a shortcut when none is set. */
+  function shortcutHint(): HTMLElement | null {
+    if (shortcut === undefined) return null;
+    if (shortcut === null) {
+      const link = h("button.link.shortcut-link", { type: "button", onclick: () => opts.onShortcuts?.() }, "Set a keyboard shortcut");
+      return h("p.shortcut-hint", null, link, " to open this chat at any time.");
+    }
+    return h("p.shortcut-hint", null, "Press ", h("kbd", null, shortcut), " to open this chat at any time.");
   }
 
   function refreshHead(s: SessionInfo): void {
@@ -188,7 +202,7 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
   function updateSwitcher(): void {
     const others = otherRunning(runningList, shownId);
     switcher.hidden = !others.length;
-    if (others.length) renderSwitcher(switcher, others, undefined, (s) => opts.onSwitch?.(s));
+    if (others.length) renderSwitcher(switcher, others, (s) => opts.onSwitch?.(s));
     head.hidden = !current && !others.length;
   }
 
@@ -223,7 +237,7 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
       // Live pushes still arrive; the backfill is best effort.
       if (shownId === sessionId && !current) {
         backfilling = false;
-        log.replaceChildren(h("p.ev-error", null, `This chat could not be loaded: ${errorText(err)}`));
+        log.replaceChildren(h("p.ev-error", null, `This chat could not be loaded: ${errorMessage(err)}`));
         return;
       }
     } finally {
@@ -284,25 +298,9 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
   showBtn.addEventListener("click", () => {
     const s = current;
     if (!usable(showBtn) || !s) return;
-    void busy(showBtn, async () => {
-      try {
-        await uiRequest({ type: "agent.show", sessionId: s.sessionId });
-      } catch (err) {
-        appendError(errorText(err));
-      }
-    });
+    void busy(showBtn, () => uiRequest({ type: "agent.show", sessionId: s.sessionId }), appendError);
   });
-  rawLog.addEventListener("click", () => {
-    const s = current;
-    if (!usable(rawLog) || !s) return;
-    void busy(rawLog, async () => {
-      try {
-        await openRawLog(s.sessionId);
-      } catch (err) {
-        appendError(`Raw log: ${errorText(err)}`);
-      }
-    });
-  });
+  wireRawLog(rawLog, () => current, appendError);
 
   render();
   ready = true;
@@ -330,7 +328,7 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
       if (shownId && ev.sessionId === shownId) append(ev);
       else {
         settleLive(ev);
-        buffered = [...buffered.slice(-300), ev];
+        buffered = [...buffered.slice(-MAX_BUFFERED_EVENTS), ev];
       }
     },
     onSession(s) {
@@ -345,7 +343,7 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
     show(sessionId) {
       if (sessionId === shownId) return;
       // Events of the conversation that was shown stay available if it comes back.
-      if (shownId) buffered = [...buffered, ...events].slice(-300);
+      if (shownId) buffered = [...buffered, ...events].slice(-MAX_BUFFERED_EVENTS);
       shownId = sessionId;
       if (!sessionId) {
         current = null;
@@ -362,6 +360,11 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
     setNote(text) {
       noteText = text;
       renderNote();
+    },
+    setShortcut(next) {
+      if (next === shortcut) return;
+      shortcut = next;
+      if (!shownId) renderLog();
     },
   };
 }

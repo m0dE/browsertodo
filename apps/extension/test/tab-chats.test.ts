@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installChromeFake, type ChromeFake } from "./chrome-fake.js";
 import { AgentSlots } from "../src/agent-slots.js";
 import { Cdp } from "../src/cdp.js";
+import { stopOf } from "../src/engine/run/active.js";
 import { MOVED_TAB_STATUS } from "../src/engine/run/turn.js";
 import { Runner } from "../src/engine/runner.js";
 import { TabChats } from "../src/tab-chats.js";
@@ -176,6 +177,28 @@ describe("Runner: a chat per tab", () => {
     await h.runner.idle();
   });
 
+  it("a message sent from another tab moves the conversation there once it is taken; a refused one moves nothing", async () => {
+    const { h, pool, chats } = withChats();
+    h.brain.script = () => ({ outcome: "done" });
+    const a = await h.runner.runAdhoc({ instructions: "one", tabId: 7 });
+    await h.runner.idle();
+    await h.runner.message(a.sessionId, "more", { tabId: 9 });
+    await h.runner.idle();
+    expect(pool.log.filter((l) => l.startsWith("prepare")).at(-1)).toBe("prepare 0 current-tab tab 9");
+    expect(await chats.all()).toEqual({ "9": a.sessionId });
+    // Continue refuses a run that finished: tab 5 stays without a chat.
+    await expect(h.runner.continueSession(a.sessionId, undefined, { tabId: 5 })).rejects.toThrow(/already finished/);
+    expect(await chats.all()).toEqual({ "9": a.sessionId });
+    // A running turn takes the message: the conversation follows the tab it came from.
+    h.brain.continueScript = () => "hang";
+    await h.runner.message(a.sessionId, "and more");
+    await vi.waitFor(() => expect(h.brain.continues).toHaveLength(2));
+    expect((await h.runner.message(a.sessionId, "faster", { tabId: 4 })).mode).toBe("inject");
+    expect(await chats.all()).toEqual({ "4": a.sessionId });
+    h.runner.stop();
+    await h.runner.idle();
+  });
+
   it("a conversation's next turn acts in its tab; Open in Chat moves it to another tab", async () => {
     const { h, pool, chats } = withChats();
     h.brain.script = () => ({ outcome: "done" });
@@ -217,9 +240,9 @@ describe("Runner: a chat per tab", () => {
     const closed = await chats.unbind(7);
     expect(closed).toBe(a.sessionId);
     expect(h.runner.onChatTabClosed(closed!)).toBe(true);
-    expect(h.brain.ctls[0]!.aborts).toEqual([{ reason: "the tab was closed", outcome: "paused" }]);
+    expect(h.brain.ctls[0]!.aborts).toEqual([{ reason: stopOf("tab-closed").reason, outcome: "paused" }]);
     await vi.waitFor(async () => expect((await h.sessions.get(a.sessionId))?.outcome).toBe("paused"));
-    expect((await h.sessions.get(a.sessionId))?.reason).toBe("the tab was closed");
+    expect((await h.sessions.get(a.sessionId))?.reason).toBe(stopOf("tab-closed").reason);
     // Tab B's run goes on.
     expect(h.runner.runningSessions.map((s) => s.sessionId)).toEqual([b.sessionId]);
     expect(h.runner.onChatTabClosed("unknown")).toBe(false);

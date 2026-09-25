@@ -13,13 +13,26 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { TOOL_NAMES, toolsFor, mcpToolName, type AgentEvent, type AgentTask, type RunConfig, type TaskRunResult, type ToolName } from "@browsertodo/shared";
-import { buildSystemPrompt, buildTaskPrompt, type BrowserCaller, type JevLike } from "@browsertodo/core";
-import { errorMessage, RunLog, type LiveLog } from "./logger.js";
+import {
+  errorMessage,
+  HelperErrorCode,
+  mcpToolName,
+  RpcError,
+  TOOL_NAMES,
+  toolsFor,
+  type AgentEvent,
+  type AgentTask,
+  type RunConfig,
+  type Sleep,
+  type TaskRunResult,
+  type ToolName,
+} from "@browsertodo/shared";
+import { buildSystemPrompt, buildTaskPrompt, FOLLOW_UP_PREFIX, type BrowserCaller, type JevLike } from "@browsertodo/core";
+import { RunLog, type LiveLog } from "./logger.js";
 import type { Brain } from "./brains/brain.js";
 import { INTERACTIVE_TASK_ID } from "./mcp-tools.js";
 import type { ToolSession } from "./tool-router.js";
-import { buildMcpConfig, FOLLOW_UP_PREFIX, FOLLOW_UP_PROMPT, runDirFor } from "./session/session-setup.js";
+import { buildMcpConfig, runDirFor } from "./session/session-setup.js";
 import { TaskSession } from "./session/task-session.js";
 import type { Turn } from "./session/turn.js";
 
@@ -36,6 +49,18 @@ export interface ContinueSessionParams {
   config: RunConfig;
 }
 
+/** Session timings and limits when TaskRunnerDeps leaves them out. */
+export const RUNNER_DEFAULTS = {
+  /** Single-turn brains: time the agent gets to exit after its first task_* call. */
+  finishGraceMs: 20_000,
+  /** Time a brain gets to return after an abort before we stop waiting. */
+  abortWaitMs: 15_000,
+  /** An idle kept-open session is closed after this long without a turn. */
+  idleSessionMs: 30 * 60_000,
+  /** At most this many kept-open task sessions; starting another closes the oldest idle one. */
+  maxSessions: 3,
+} as const;
+
 export interface TaskRunnerDeps {
   runsDir: string;
   mcpServerPath: string;
@@ -50,22 +75,21 @@ export interface TaskRunnerDeps {
   /** The set of open sessions changed (one opened or closed): helper.sessions notifications. */
   onSessionsChanged?: (open: string[]) => void;
   live?: LiveLog | null;
-  /** Single-turn brains: time the agent gets to exit after its first task_* call. Default 20 s. */
+  /** See RUNNER_DEFAULTS. */
   finishGraceMs?: number;
-  /** Time a brain gets to return after an abort before we stop waiting. Default 15 s. */
   abortWaitMs?: number;
-  /** An idle kept-open session is closed after this long without a turn. Default 30 min. */
   idleSessionMs?: number;
-  /** At most this many kept-open task sessions; starting another closes the oldest idle one. Default 3. */
   maxSessions?: number;
   nodePath?: string;
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: Sleep;
 }
 
 export class TaskRunner {
   private readonly sessions = new Map<string, TaskSession>();
   /** Sessions whose turn is running. */
   private readonly active = new Set<TaskSession>();
+  /** Waiting for every session to close (see whenAllClosed). */
+  private readonly allClosedWaiters: (() => void)[] = [];
 
   constructor(private readonly deps: TaskRunnerDeps) {}
 
@@ -74,9 +98,18 @@ export class TaskRunner {
     return this.active.size > 0;
   }
 
-  /** Sessions whose turn is running. */
-  get runningSessions(): string[] {
-    return [...this.active].map((s) => s.sessionId);
+  /** Resolves once no session is open and no turn is running (e.g. after shutdown). */
+  whenAllClosed(): Promise<void> {
+    if (this.allClosed) return Promise.resolve();
+    return new Promise((resolve) => this.allClosedWaiters.push(resolve));
+  }
+
+  private get allClosed(): boolean {
+    return this.sessions.size === 0 && this.active.size === 0;
+  }
+
+  private checkAllClosed(): void {
+    if (this.allClosed) for (const resolve of this.allClosedWaiters.splice(0)) resolve();
   }
 
   /** Sessions whose agent is still alive (running a turn, or idle and kept open). */
@@ -126,7 +159,7 @@ export class TaskRunner {
     const { sessionId, task, mediaPaths, config } = params;
     if (sessionId === INTERACTIVE_TASK_ID) throw new Error(`sessionId "${INTERACTIVE_TASK_ID}" is reserved`);
     // A session runs one turn at a time; other sessions may run beside it.
-    if (this.sessions.get(sessionId)?.turn) throw new Error("busy");
+    if (this.sessions.get(sessionId)?.turn) throw new RpcError("busy", HelperErrorCode.busy);
     if (this.sessions.has(sessionId)) this.endSession(sessionId, "replaced by a new run");
     this.makeRoom();
 
@@ -135,8 +168,8 @@ export class TaskRunner {
     const log = new RunLog(join(runDir, "log.jsonl"), this.deps.live ?? null, sessionId);
     const jevKey = config.jevApiKey?.trim() || this.deps.envJevKey;
     const jev = config.jevEnabled && jevKey ? this.deps.makeJev(jevKey) : null;
-    // With Jev, act replaces click and type (steps can still name an exact element index).
-    const allowed = new Set<ToolName>(toolsFor({ jev: jev !== null }));
+    // act replaces click and type (steps can still name an exact element index).
+    const allowed = new Set<ToolName>(toolsFor());
     const brain = this.deps.makeBrain();
 
     const s = new TaskSession({
@@ -150,8 +183,8 @@ export class TaskRunner {
       jevThreshold: config.jevThreshold,
       mediaPaths,
       notify: this.deps.notify,
-      finishGraceMs: this.deps.finishGraceMs ?? 20_000,
-      abortWaitMs: this.deps.abortWaitMs ?? 15_000,
+      finishGraceMs: this.deps.finishGraceMs ?? RUNNER_DEFAULTS.finishGraceMs,
+      abortWaitMs: this.deps.abortWaitMs ?? RUNNER_DEFAULTS.abortWaitMs,
       ...(this.deps.sleep ? { sleep: this.deps.sleep } : {}),
     });
     this.sessions.set(sessionId, s);
@@ -183,12 +216,12 @@ export class TaskRunner {
         jev: jev !== null,
       });
       writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
-      const system = buildSystemPrompt({ tools: toolNames, jev: jev !== null });
+      const systemPrompt = buildSystemPrompt({ tools: toolNames, jev: jev !== null, followUps: s.persistent });
       s.brainDone = brain
         .run({
           taskId: sessionId,
           prompt: buildTaskPrompt(task, mediaPaths, { isRetry: config.isRetry }),
-          systemPrompt: s.persistent ? `${system}\n\n${FOLLOW_UP_PROMPT}` : system,
+          systemPrompt,
           ...(config.model?.trim() ? { model: config.model.trim() } : {}),
           mcpConfigPath,
           allowedTools: toolNames.map(mcpToolName),
@@ -214,14 +247,15 @@ export class TaskRunner {
 
   /**
    * The next user message in a kept-open session: a new turn with fresh
-   * limits. Throws "session ended" when its agent is gone (the caller then
-   * starts a fresh run), "busy" while this session's turn runs.
+   * limits. Throws an RpcError with a HelperErrorCode: sessionEnded when its
+   * agent is gone (the caller then starts a fresh run), busy while this
+   * session's turn runs.
    */
   async continueSession(params: ContinueSessionParams): Promise<TaskRunResult> {
     const s = this.sessions.get(params.sessionId);
-    if (!s || s.ended || s.input.closed || s.aborted || !s.persistent) throw new Error("session ended");
-    if (s.turn) throw new Error("busy");
-    if (!params.text.trim()) throw new Error("empty message");
+    if (!s || s.ended || s.input.closed || s.aborted || !s.persistent) throw new RpcError("session ended", HelperErrorCode.sessionEnded);
+    if (s.turn) throw new RpcError("busy", HelperErrorCode.busy);
+    if (!params.text.trim()) throw new RpcError("empty message", HelperErrorCode.emptyMessage);
     s.clearIdleTimer();
     this.active.add(s);
     const turn = s.startTurn(params.config);
@@ -237,6 +271,7 @@ export class TaskRunner {
       await s.waitForTurn(turn);
     } finally {
       this.active.delete(s);
+      this.checkAllClosed();
     }
     const result = s.report(turn);
     if (!s.ended) this.armIdle(s);
@@ -248,11 +283,12 @@ export class TaskRunner {
     if (this.sessions.get(s.sessionId) === s) this.sessions.delete(s.sessionId);
     this.sessionsChanged();
     s.log.event({ type: "session_closed" });
+    this.checkAllClosed();
   }
 
   private armIdle(s: TaskSession): void {
     s.clearIdleTimer();
-    const ms = this.deps.idleSessionMs ?? 30 * 60_000;
+    const ms = this.deps.idleSessionMs ?? RUNNER_DEFAULTS.idleSessionMs;
     s.idleTimer = setTimeout(() => this.endSession(s.sessionId, "idle"), ms);
     // Never keep the helper alive just for this.
     (s.idleTimer as { unref?: () => void }).unref?.();
@@ -260,7 +296,7 @@ export class TaskRunner {
 
   /** Keeps at most maxSessions open: closes the oldest idle ones to make room for a new one. */
   private makeRoom(): void {
-    const max = this.deps.maxSessions ?? 3;
+    const max = this.deps.maxSessions ?? RUNNER_DEFAULTS.maxSessions;
     const idle = [...this.sessions.values()].filter((x) => !x.turn && !x.ended).sort((a, b) => a.lastTurnAt - b.lastTurnAt);
     while (this.sessions.size >= max && idle.length) {
       const oldest = idle.shift()!;

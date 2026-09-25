@@ -7,11 +7,12 @@
  * fallback path scrolls inside the same page function.
  */
 import type { ScrollDirection, ScrollReport } from "@browsertodo/shared";
+import { PAGE_MARKS, type PageMarks } from "./driver-common.js";
 
 /** One scroller's state. `page` is the window (document.scrollingElement). */
 export interface ScrollEntry {
   page: boolean;
-  /** data-browsertodo-index of the container, when read_page numbered it. */
+  /** read_page's number of the container (PageMarks.attr), when it has one. */
   index: number | null;
   top: number;
   left: number;
@@ -44,6 +45,7 @@ export type PageResult<T> = { ok: true; value: T } | { ok: false; error: string 
  *   (dx, dy) that way, like a wheel would, and returns before and after.
  */
 export function scrollProbeInPage(
+  marks: PageMarks,
   mode: string,
   x: number,
   y: number,
@@ -67,7 +69,7 @@ export function scrollProbeInPage(
       return { page: true, index: null, top: root.scrollTop, left: root.scrollLeft, sh: root.scrollHeight, sw: root.scrollWidth, ch: root.clientHeight, cw: root.clientWidth, oy: oy, ox: ox };
     }
     var cs = getComputedStyle(e);
-    var raw = e.getAttribute("data-browsertodo-index");
+    var raw = e.getAttribute(marks.attr);
     return {
       page: false,
       index: raw === null || raw === "" || isNaN(Number(raw)) ? null : Number(raw),
@@ -93,8 +95,8 @@ export function scrollProbeInPage(
 
   var start: Element | null;
   if (index != null) {
-    start = document.querySelector('[data-browsertodo-index="' + Math.trunc(index) + '"]');
-    if (!start) return { ok: false, error: "element " + index + " not found; call read_page again" };
+    start = document.querySelector("[" + marks.attr + '="' + Math.trunc(index) + '"]');
+    if (!start) return { ok: false, error: marks.notFound.replace("#", String(index)) };
   } else {
     start = document.elementFromPoint(x, y);
   }
@@ -136,7 +138,7 @@ export function scrollProbeInPage(
 
 /** Runtime.evaluate expression for scrollProbeInPage. */
 export function scrollProbeExpression(mode: "measure" | "read", x: number, y: number, index: number | null): string {
-  return `(${scrollProbeInPage.toString()})(${JSON.stringify(mode)}, ${x}, ${y}, ${index === null ? "null" : Math.trunc(index)}, 0, 0)`;
+  return `(${scrollProbeInPage.toString()})(${JSON.stringify(PAGE_MARKS)}, ${JSON.stringify(mode)}, ${x}, ${y}, ${index === null ? "null" : Math.trunc(index)}, 0, 0)`;
 }
 
 /**

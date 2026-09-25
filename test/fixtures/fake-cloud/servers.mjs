@@ -11,10 +11,15 @@
 // - createFakeStripe(): customers, Checkout Sessions and portal sessions
 //   (enough for the checkout/topup/portal routes); records what was created.
 // - createFakeTypeSafe(): the Jev systemOne endpoint.
-// - signStripeWebhook(): a Stripe-Signature header, the way Stripe signs.
+// - stripeEvent(), signStripeWebhook(): a Stripe event and its Stripe-Signature
+//   header, the way Stripe sends webhooks.
 
 import { createHmac, createSign, generateKeyPairSync, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import http from "node:http";
+
+/** The plan table and Stripe contract the API reads (packages/shared/src/billing-catalog.json). */
+const BILLING_CATALOG = JSON.parse(readFileSync(new URL("../../../packages/shared/src/billing-catalog.json", import.meta.url), "utf8"));
 
 function listenOn(server) {
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${server.address().port}`)));
@@ -59,16 +64,21 @@ export function createFakeGoogle({ clientId }) {
   const jwk = { ...publicKey.export({ format: "jwk" }), kid, alg: "RS256", use: "sig" };
   let jwksFetches = 0;
 
-  /** A signed ID token like Google's (RS256). */
+  /**
+   * A signed ID token like Google's (RS256), for `claims.sub` (default "e2e-user"), issued now and
+   * valid for an hour; the same standard claims as the API tests' claims() (apps/api/test/helpers.ts).
+   */
   function mint(claims = {}) {
     const now = Math.floor(Date.now() / 1000);
+    const sub = claims.sub ?? "e2e-user";
     const payload = {
       iss: "https://accounts.google.com",
       aud: clientId,
-      sub: "e2e-user",
-      email: "e2e-user@example.com",
+      sub,
+      email: `${sub}@example.com`,
       email_verified: true,
-      name: "E2E User",
+      name: `User ${sub}`,
+      picture: `https://pics.test/${sub}.png`,
       iat: now,
       exp: now + 3600,
       ...claims,
@@ -296,6 +306,22 @@ export function createFakeStripe() {
   return Object.assign(srv, { customers: () => customers, sessions: () => sessions, portals: () => portals });
 }
 
+let eventSeq = 0;
+/** A Stripe event (https://docs.stripe.com/api/events/object) of `type` around `object`, on the API version the server is pinned to. */
+export function stripeEvent(type, object) {
+  return {
+    id: `evt_e2e_${Date.now()}_${++eventSeq}`,
+    object: "event",
+    api_version: BILLING_CATALOG.stripe.apiVersion,
+    created: Math.floor(Date.now() / 1000),
+    type,
+    data: { object },
+    livemode: false,
+    pending_webhooks: 1,
+    request: { id: null, idempotency_key: null },
+  };
+}
+
 /** The Stripe-Signature header for a payload: t=<unix>,v1=HMAC-SHA256(secret, "<t>.<payload>"). */
 export function signStripeWebhook(payload, secret, t = Math.floor(Date.now() / 1000)) {
   return `t=${t},v1=${createHmac("sha256", secret).update(`${t}.${payload}`).digest("hex")}`;
@@ -312,6 +338,37 @@ export function createFakeTypeSafe() {
     requests.push({ headers: req.headers, body });
     const answers = Object.fromEntries(Object.keys(body.questions ?? {}).map((k) => [k, { noul: "yes", probabilities: { yes: 0.97, no: 0.03 } }]));
     sendJson(res, 200, { model: "jev-e2e", answers, usage: { input_tokens: 50_000, output_tokens: 12 } });
+  });
+  return Object.assign(srv, { requests: () => requests });
+}
+
+// ---- Workers AI (voice transcription) ----------------------------------------------
+
+export const FAKE_TRANSCRIPT = "Open Gmail and reply to Sarah.";
+
+/**
+ * Workers AI's REST API shape (POST /ai/run/<model>, { success, result, errors }) for
+ * the API's WORKERS_AI_BASE_URL dev hook: Whisper answers FAKE_TRANSCRIPT for a WAV
+ * and fails like the real one (3030) for anything else.
+ */
+export function createFakeWorkersAi() {
+  const requests = [];
+  const srv = makeServer(async (req, res) => {
+    const url = new URL(req.url, "http://x");
+    const model = url.pathname.replace(/^\/ai\/run\//, "");
+    if (req.method !== "POST" || model === url.pathname) return sendJson(res, 404, { success: false, errors: [{ message: "not found" }] });
+    const body = JSON.parse(await readBody(req));
+    const audio = Buffer.from(typeof body.audio === "string" ? body.audio : body.audio?.body ?? "", "base64");
+    requests.push({ model, body, audioBytes: audio.length });
+    if (audio.subarray(0, 4).toString("latin1") !== "RIFF") {
+      return sendJson(res, 400, { success: false, result: null, errors: [{ code: 3030, message: "3030: Failed to decode audio file." }] });
+    }
+    const seconds = (audio.length - 44) / 32000;
+    sendJson(res, 200, {
+      success: true,
+      errors: [],
+      result: { text: FAKE_TRANSCRIPT, transcription_info: { language: "en", duration: seconds, duration_after_vad: seconds }, segments: [] },
+    });
   });
   return Object.assign(srv, { requests: () => requests });
 }

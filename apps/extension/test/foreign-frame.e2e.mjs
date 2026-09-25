@@ -7,89 +7,44 @@
 // Loads the built extension plus test/fixtures/iframe-injector, which appends
 // its own chrome-extension:// iframe to every page (unless <meta name="no-inject">).
 // Usage: pnpm --filter @browsertodo/extension build && node apps/extension/test/foreign-frame.e2e.mjs [--headed]
-import { chromium } from "@playwright/test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { driverCall, launchExtension } from "../../../test/e2e/lib/extension.mjs";
+import { serveHtml } from "../../../test/e2e/lib/serve.mjs";
+import { createSuite } from "../../../test/e2e/lib/suite.mjs";
+import { driverPage, findIndex, OTHER_PAGE } from "../../../test/fixtures/driver-page.mjs";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const dist = join(root, "..", "..", "dist");
-const injector = join(root, "test", "fixtures", "iframe-injector");
-const headed = process.argv.includes("--headed");
+const injector = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "iframe-injector");
 const NOTE = "(Using fallback mode: another extension's frame on this page blocks Chrome's debugger. Clicks and typing are simulated.)";
 
-const fixture = ({ clean = false, delay = 0 } = {}) => `<!doctype html><html><head><title>${clean ? "Clean page" : "Foreign frame page"}</title>
-${clean ? '<meta name="no-inject">' : ""}${delay ? `<meta name="inject-delay" content="${delay}">` : ""}
-<style>body{font-family:sans-serif} .tall{height:3000px}</style></head><body>
-<h1>${clean ? "Clean" : "Mail"} fixture</h1>
-<a href="/other" data-testid="other-link">Other page</a>
-<button data-testid="incButton" onclick="document.getElementById('count').textContent = String(++window.clicks); document.getElementById('trusted').textContent = String(event.isTrusted)">Increment</button>
-<p>Count: <span id="count">0</span> trusted: <span id="trusted">-</span></p>
-<form onsubmit="event.preventDefault(); document.getElementById('submitted').textContent = document.getElementById('name').value">
-<label for="name">Your name</label><input id="name" type="text"></form>
-<p>Submitted: <span id="submitted">none</span></p>
-<div id="editor" role="textbox" contenteditable="true" aria-label="Compose text" style="border:1px solid #999;min-height:40px"></div>
-<input type="file" id="file">
-<p>Last key: <span id="lastkey">none</span></p>
-<p>ScrollY: <span id="scrolly">0</span></p>
-<div class="tall"></div>
-<script>
-window.clicks = 0;
-document.addEventListener('keydown', e => { document.getElementById('lastkey').textContent = (e.ctrlKey ? 'Control+' : '') + e.key; });
-addEventListener('scroll', () => { document.getElementById('scrolly').textContent = String(Math.round(scrollY)); });
-</script></body></html>`;
+/** The driver page; unless `clean`, the injector adds its frame (after `delay` ms). */
+const fixture = ({ clean = false, delay = 0 } = {}) =>
+  driverPage({
+    title: clean ? "Clean page" : "Foreign frame page",
+    heading: `${clean ? "Clean" : "Mail"} fixture`,
+    head: `${clean ? '<meta name="no-inject">' : ""}${delay ? `<meta name="inject-delay" content="${delay}">` : ""}`,
+  });
+const PAGES = { "/other": OTHER_PAGE, "/clean": fixture({ clean: true }), "/late": fixture({ delay: 1500 }) };
+const site = await serveHtml((path) => PAGES[path] ?? fixture());
+const { base } = site;
 
-const server = createServer((req, res) => {
-  res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-  if (req.url === "/other") res.end("<title>Other</title><p>other page</p>");
-  else if (req.url === "/clean") res.end(fixture({ clean: true }));
-  else if (req.url === "/late") res.end(fixture({ delay: 1500 }));
-  else res.end(fixture());
-});
-await new Promise((r) => server.listen(0, "127.0.0.1", r));
-const base = `http://127.0.0.1:${server.address().port}`;
-
-const profile = mkdtempSync(join(tmpdir(), "browsertodo-foreign-"));
+const { step, finish } = createSuite("foreign-frame");
+const ext = await launchExtension({ name: "foreign", extensions: [injector] });
+const { context, sw, profile } = ext;
 const uploadFile = join(profile, "upload-me.txt");
 writeFileSync(uploadFile, "hello upload");
 
-const results = [];
-const step = async (name, fn) => {
-  try {
-    const detail = await fn();
-    results.push({ name, ok: true, detail });
-    console.log(`ok   ${name}${detail ? ` - ${detail}` : ""}`);
-  } catch (err) {
-    results.push({ name, ok: false, detail: err.message });
-    console.log(`FAIL ${name} - ${err.stack ?? err.message}`);
-  }
-};
-
-const context = await chromium.launchPersistentContext(profile, {
-  channel: "chromium",
-  headless: !headed,
-  args: [`--disable-extensions-except=${dist},${injector}`, `--load-extension=${dist},${injector}`],
-});
-
 try {
-  let sw = context.serviceWorkers().find((w) => w.url().endsWith("/background.js"));
-  if (!sw) sw = await context.waitForEvent("serviceworker", { predicate: (w) => w.url().endsWith("/background.js"), timeout: 15_000 });
-
-  const call = (method, params = {}) => sw.evaluate(async ([m, p]) => globalThis.__browsertodo.driver[m](p), [method, params]);
+  const call = driverCall(sw);
   const mode = () =>
     sw.evaluate(async () => ({
       fallback: globalThis.__browsertodo.driver.inFallback,
       attached: globalThis.__browsertodo.cdp.attachedTabId,
       tab: await globalThis.__browsertodo.agentTab.tabId(),
     }));
-  const findIndex = (snap, pred) => {
-    const el = snap.elements.find(pred);
-    if (!el) throw new Error(`element not found in ${JSON.stringify(snap.elements)}`);
-    return el.index;
-  };
 
   const page = await context.newPage();
   await page.goto(`${base}/clean`);
@@ -257,11 +212,8 @@ try {
     return "fell back after target_closed";
   });
 } finally {
-  await context.close();
-  server.close();
-  rmSync(profile, { recursive: true, force: true });
+  await ext.close();
+  await site.close();
 }
 
-const failed = results.filter((r) => !r.ok);
-console.log(`\n${results.length - failed.length}/${results.length} foreign-frame steps passed`);
-process.exit(failed.length ? 1 : 0);
+finish();

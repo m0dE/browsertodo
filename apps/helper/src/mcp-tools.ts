@@ -10,6 +10,8 @@ export const INTERACTIVE_TASK_ID = "interactive";
 
 /** Long enough for act / switch_x_account, which make several 60 s browser calls. */
 export const TOOL_CALL_TIMEOUT_MS = 5 * 60_000;
+/** tool.list is answered from memory: a helper that takes longer is not answering. */
+export const TOOL_LIST_TIMEOUT_MS = 5000;
 
 export function toolsFromEnv(value: string | undefined): ToolName[] {
   if (!value || !value.trim()) return [...TOOL_NAMES];

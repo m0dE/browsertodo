@@ -6,9 +6,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import type { HelperBrain } from "@browsertodo/shared";
+import helperPackage from "../package.json" with { type: "json" };
+import { ENV } from "./env-names.js";
 
-/** Reported in helper.hello and by the MCP server. */
-export const HELPER_VERSION = "0.2.0";
+/** Reported in helper.hello and by the MCP server: the version in apps/helper/package.json (bundled at build time). */
+export const HELPER_VERSION: string = helperPackage.version;
+
+/** Claude Code's model alias when neither the extension nor BROWSERTODO_MODEL names a model. */
+export const DEFAULT_CLAUDE_MODEL = "sonnet";
 
 export interface HelperConfig {
   /** %LOCALAPPDATA%\browsertodo, or BROWSERTODO_HOME. */
@@ -22,7 +28,7 @@ export interface HelperConfig {
   mcpServerPath: string;
   /** Jev key, or null when missing or blank. */
   typesafeApiKey: string | null;
-  brain: "claude" | "scripted";
+  brain: HelperBrain;
   model: string;
   /** The merged environment (.env files, then process.env). */
   env: Record<string, string | undefined>;
@@ -77,8 +83,8 @@ export function loadConfig(
   const root = helperRoot();
   const env = loadEnv(opts.dotenvDirs ?? [repoRoot(), root], processEnv);
   const localAppData = env.LOCALAPPDATA || join(homedir(), "AppData", "Local");
-  const baseDir = env.BROWSERTODO_HOME || join(localAppData, "browsertodo");
-  const key = env.TYPESAFE_API_KEY?.trim();
+  const baseDir = env[ENV.home] || join(localAppData, "browsertodo");
+  const key = env[ENV.typesafeApiKey]?.trim();
   return {
     baseDir,
     logDir: join(baseDir, "logs"),
@@ -87,8 +93,8 @@ export function loadConfig(
     helperFilePath: join(baseDir, "helper.json"),
     mcpServerPath: join(root, "dist", "mcp-server.js"),
     typesafeApiKey: key ? key : null,
-    brain: env.BROWSERTODO_BRAIN === "scripted" ? "scripted" : "claude",
-    model: env.BROWSERTODO_MODEL?.trim() || "sonnet",
+    brain: env[ENV.brain] === "scripted" ? "scripted" : "claude",
+    model: env[ENV.model]?.trim() || DEFAULT_CLAUDE_MODEL,
     env,
   };
 }

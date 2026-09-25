@@ -1,30 +1,50 @@
-import type { ClaimResponse } from "@browsertodo/shared";
+import type { ClaimResponse, Task } from "@browsertodo/shared";
 
-export function claimFixture(id: string, extra: Partial<ClaimResponse["task"]> = {}): ClaimResponse {
-  const now = "2026-09-23T00:00:00.000Z";
+/** A task row as the API returns it (pending, never run); extra overrides fields. */
+export function taskFixture(id: string, extra: Partial<Task> = {}): Task {
   return {
-    task: {
-      id,
+    id,
+    instructions: `task ${id}`,
+    account: null,
+    mediaIds: [],
+    notBefore: null,
+    priority: 0,
+    status: "pending",
+    attempts: 0,
+    leaseOwner: null,
+    leaseExpiresAt: null,
+    retryAfter: null,
+    resultSummary: null,
+    resultUrl: null,
+    resultScreenshotId: null,
+    pauseReason: null,
+    failReason: null,
+    createdAt: "2026-09-24T00:00:00.000Z",
+    updatedAt: "2026-09-24T00:00:00.000Z",
+    repeat: null,
+    tz: null,
+    ownerId: "u1",
+    ...extra,
+  };
+}
+
+/** A claim of task `id` by runner-1 (its first attempt, leased for 15 minutes). */
+export function claimFixture(id: string, extra: Partial<Task> = {}): ClaimResponse {
+  const now = "2026-09-23T00:00:00.000Z";
+  const leaseExpiresAt = "2026-09-23T00:15:00.000Z";
+  return {
+    task: taskFixture(id, {
       instructions: `Post: hello from ${id}`,
       account: "@me",
-      mediaIds: [],
-      notBefore: null,
-      priority: 0,
       status: "running",
       attempts: 1,
       leaseOwner: "runner-1",
-      leaseExpiresAt: "2026-09-23T00:15:00.000Z",
-      retryAfter: null,
-      resultSummary: null,
-      resultUrl: null,
-      resultScreenshotId: null,
-      pauseReason: null,
-      failReason: null,
+      leaseExpiresAt,
       createdAt: now,
       updatedAt: now,
       ...extra,
-    },
+    }),
     media: [],
-    leaseExpiresAt: "2026-09-23T00:15:00.000Z",
+    leaseExpiresAt,
   };
 }

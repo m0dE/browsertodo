@@ -1,4 +1,5 @@
 import {
+  errorMessage,
   NATIVE_HOST_NAME,
   RpcPeer,
   type BrowserMethods,
@@ -7,14 +8,9 @@ import {
   type HelperNotifications,
   type RpcMessage,
 } from "@browsertodo/shared";
-import { errText } from "./errors.js";
+import { Listeners } from "./listeners.js";
 
-/**
- * HelperMethods and BrowserMethods are interfaces, which TypeScript does not
- * treat as assignable to RpcPeer's MethodMap index signature. A mapped copy is.
- */
-type Methods<T> = { [K in keyof T]: T[K] };
-export type HelperPeer = RpcPeer<Methods<HelperMethods>, Methods<BrowserMethods>>;
+export type HelperPeer = RpcPeer<HelperMethods, BrowserMethods>;
 
 export interface HelperLinkOptions {
   /** Registers the browser.* and vault.* handlers on each new peer. */
@@ -24,8 +20,14 @@ export interface HelperLinkOptions {
 
 /** helper.hello may run the Claude Code self-test (up to 60 s) before answering. */
 const HELLO_TIMEOUT_MS = 75_000;
+/** A quick helper call (logs, ending a session): not a task run. */
+export const HELPER_CALL_TIMEOUT_MS = 15_000;
 
 type NotificationName = keyof HelperNotifications & string;
+type NotificationListeners = { [N in NotificationName]?: Listeners<[HelperNotifications[N]]> };
+
+/** Why the link is down when Chrome gives no reason. */
+const DISCONNECTED = "Helper disconnected";
 
 /**
  * The native messaging connection to the local helper. One RpcPeer per port;
@@ -36,9 +38,12 @@ export class HelperLink {
   private peer: HelperPeer | null = null;
   private helperInfo: HelperInfo | null = null;
   private connecting: Promise<HelperInfo> | null = null;
-  private readonly listeners = new Set<(reason: string) => void>();
-  private readonly infoListeners = new Set<(info: HelperInfo | null) => void>();
-  private readonly notificationListeners = new Map<string, Set<(params: any) => void>>();
+  private readonly disconnects = new Listeners<[reason: string]>();
+  private readonly infos = new Listeners<[info: HelperInfo | null]>();
+  /** Per notification the helper sends, its listeners (only those subscribed to are delivered). */
+  private readonly notifications: NotificationListeners = {};
+  /** Delivers each subscribed notification from a peer to its listeners. */
+  private readonly deliveries: ((peer: HelperPeer) => void)[] = [];
   private lastErrorText: string | null = null;
 
   constructor(private readonly opts: HelperLinkOptions) {}
@@ -62,8 +67,7 @@ export class HelperLink {
    * an existing connection.
    */
   connect(timeoutMs = HELLO_TIMEOUT_MS, opts: { selfTest?: boolean } = {}): Promise<HelperInfo> {
-    if (this.connected && !opts.selfTest) return Promise.resolve(this.helperInfo!);
-    if (this.connected && opts.selfTest) return this.rehello(timeoutMs);
+    if (this.peer && this.helperInfo) return opts.selfTest ? this.rehello(this.peer, timeoutMs) : Promise.resolve(this.helperInfo);
     if (!this.connecting) {
       this.connecting = this.open(timeoutMs, !!opts.selfTest).finally(() => {
         this.connecting = null;
@@ -74,16 +78,12 @@ export class HelperLink {
 
   /** Subscribe to a helper notification (survives reconnects). Returns an unsubscribe function. */
   onNotification<N extends NotificationName>(method: N, fn: (params: HelperNotifications[N]) => void): () => void {
-    let set = this.notificationListeners.get(method);
-    if (!set) this.notificationListeners.set(method, (set = new Set()));
-    set.add(fn);
-    return () => set.delete(fn);
+    return this.listenersOf(method).add(fn);
   }
 
   /** Called with the new info after every hello and with null on disconnect. */
   onInfo(fn: (info: HelperInfo | null) => void): () => void {
-    this.infoListeners.add(fn);
-    return () => this.infoListeners.delete(fn);
+    return this.infos.add(fn);
   }
 
   call<M extends keyof HelperMethods & string>(
@@ -97,11 +97,10 @@ export class HelperLink {
 
   /** Subscribe to port loss. Returns an unsubscribe function. */
   onDisconnect(fn: (reason: string) => void): () => void {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
+    return this.disconnects.add(fn);
   }
 
-  disconnect(reason = "Helper disconnected"): void {
+  disconnect(reason = DISCONNECTED): void {
     const port = this.port;
     this.teardown(reason);
     try {
@@ -111,8 +110,7 @@ export class HelperLink {
     }
   }
 
-  private async rehello(timeoutMs: number): Promise<HelperInfo> {
-    const peer = this.peer!;
+  private async rehello(peer: HelperPeer, timeoutMs: number): Promise<HelperInfo> {
     const info = await peer.call("helper.hello", { selfTest: true }, { timeoutMs });
     if (this.peer === peer) this.setInfo(info);
     return info;
@@ -120,13 +118,20 @@ export class HelperLink {
 
   private setInfo(info: HelperInfo | null): void {
     this.helperInfo = info;
-    for (const fn of this.infoListeners) {
-      try {
-        fn(info);
-      } catch {
-        /* listener errors are not the link's problem */
-      }
-    }
+    this.infos.emit(info);
+  }
+
+  /** The listeners of a notification; the first subscriber has it delivered from the current peer (later peers: open()). */
+  private listenersOf<N extends NotificationName>(method: N): Listeners<[HelperNotifications[N]]> {
+    const known = this.notifications[method];
+    if (known) return known;
+    const created = new Listeners<[HelperNotifications[N]]>();
+    // TypeScript cannot check a write through a generic key of a mapped type; this is the entry for N.
+    this.notifications[method] = created as NotificationListeners[N];
+    const deliver = (peer: HelperPeer) => peer.onNotification<HelperNotifications[N]>(method, (params) => created.emit(params));
+    this.deliveries.push(deliver);
+    if (this.peer) deliver(this.peer);
+    return created;
   }
 
   private async open(timeoutMs: number, selfTest: boolean): Promise<HelperInfo> {
@@ -135,40 +140,30 @@ export class HelperLink {
     try {
       port = chrome.runtime.connectNative(hostName);
     } catch (err) {
-      this.lastErrorText = `Cannot start helper: ${errText(err)}`;
+      this.lastErrorText = `Cannot start helper: ${errorMessage(err)}`;
       throw new Error(this.lastErrorText);
     }
-    const peer: HelperPeer = new RpcPeer<Methods<HelperMethods>, Methods<BrowserMethods>>((msg) => port.postMessage(msg), "e");
+    const peer: HelperPeer = new RpcPeer<HelperMethods, BrowserMethods>((msg) => port.postMessage(msg), "e");
     this.opts.registerHandlers(peer);
-    for (const method of ["helper.event", "helper.sessions"] as const) {
-      peer.onNotification(method, (params) => {
-        for (const fn of this.notificationListeners.get(method) ?? []) {
-          try {
-            fn(params);
-          } catch {
-            /* keep delivering to the others */
-          }
-        }
-      });
-    }
+    for (const deliver of this.deliveries) deliver(peer);
     this.port = port;
     this.peer = peer;
     port.onMessage.addListener((m: unknown) => {
       void peer.receive(m as RpcMessage);
     });
     port.onDisconnect.addListener(() => {
-      const reason = chrome.runtime.lastError?.message ?? "Helper disconnected";
+      const reason = chrome.runtime.lastError?.message ?? DISCONNECTED;
       if (this.port === port) this.teardown(reason);
       else peer.close(reason);
     });
     try {
       const info = await peer.call("helper.hello", selfTest ? { selfTest: true } : {}, { timeoutMs });
-      if (this.port !== port) throw new Error(this.lastErrorText ?? "Helper disconnected");
+      if (this.port !== port) throw new Error(this.lastErrorText ?? DISCONNECTED);
       this.lastErrorText = null;
       this.setInfo(info);
       return info;
     } catch (err) {
-      const msg = errText(err);
+      const msg = errorMessage(err);
       if (this.port === port) this.disconnect(msg);
       this.lastErrorText = msg;
       throw err;
@@ -184,6 +179,6 @@ export class HelperLink {
     this.lastErrorText = reason;
     if (wasConnected) this.setInfo(null);
     else this.helperInfo = null;
-    if (hadPeer && wasConnected) for (const fn of this.listeners) fn(reason);
+    if (hadPeer && wasConnected) this.disconnects.emit(reason);
   }
 }

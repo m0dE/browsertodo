@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent } from "@browsertodo/shared";
 import type { AgentSession, ApiAgentOptions } from "@browsertodo/core";
 import { ApiBrain } from "../../src/engine/api-brain.js";
+import { stopOf } from "../../src/engine/run/active.js";
 import { CONTINUE_TEXT, FRESH_SESSION_STATUS } from "../../src/engine/run/conversation.js";
 import { env, FakeBrain, harness, setupRunnerTests, status, type Harness } from "./harness.js";
 
@@ -92,7 +93,7 @@ describe("Runner: conversations", () => {
       "task_end",
     ]);
     // The second post is verified against what the second turn typed.
-    expect(h.verify).toHaveBeenLastCalledWith(h.deps.browser, "https://x.com/alpha/status/2", "second turn");
+    expect(h.verify).toHaveBeenLastCalledWith(h.browser, "https://x.com/alpha/status/2", "second turn");
     const s = (await h.sessions.get(sessionId))!;
     expect(s).toMatchObject({ outcome: "done", summary: "posted the second", url: "https://x.com/alpha/status/2", turns: 2, logPath: "C:\\runs\\s1\\log.jsonl", model: "claude-sonnet-5" });
     expect(s.startedAt).toBe(new Date(env.clock).toISOString());
@@ -146,7 +147,7 @@ describe("Runner: conversations", () => {
     await vi.waitFor(() => expect(h.brain.starts).toHaveLength(1));
     h.runner.stop();
     await settle(h);
-    expect(await h.sessions.get(sessionId)).toMatchObject({ outcome: "paused", reason: "stopped by user" });
+    expect(await h.sessions.get(sessionId)).toMatchObject({ outcome: "paused", reason: stopOf("user-stop").reason });
     // Stopping Claude Code ends its session: the fallback continues.
     expect(h.brain.isOpen(sessionId)).toBe(false);
 
@@ -154,7 +155,7 @@ describe("Runner: conversations", () => {
     await h.runner.message(sessionId, "just press Post");
     await settle(h);
     const start = h.brain.starts[1]!;
-    expect(start.task.instructions).toContain("stopped before it finished (reason: stopped by user)");
+    expect(start.task.instructions).toContain(`stopped before it finished (reason: ${stopOf("user-stop").reason})`);
     expect(start.task.instructions).toContain(`- type #12 "${POST}" → typed 61 chars`);
     expect(start.config.isRetry).toBe(true);
     expect(h.verify).toHaveBeenCalledWith(expect.anything(), "https://x.com/me/status/123", POST);
@@ -204,6 +205,31 @@ describe("Runner: conversations", () => {
     expect(h.brain.ended).toEqual([sessionId]);
     h.runner.stop();
     await settle(h);
+  });
+
+  it("a task that runs, first turn or next, is never recovered as crashed however long it takes", async () => {
+    const h = harness();
+    const t = await h.store.add({ instructions: "slow work" });
+    h.brain.script = () => "hang";
+    await h.runner.runDue("manual");
+    await vi.waitFor(() => expect(h.brain.starts).toHaveLength(1));
+    env.clock += 60 * 60_000;
+    expect(await h.runner.recover()).toBe(0);
+    expect((await h.store.get(t.id))?.status).toBe("running");
+    h.runner.stop();
+    await settle(h);
+
+    // Continue: the next turn runs the same local task.
+    h.brain.continueScript = () => "hang";
+    await h.runner.continueSession(h.brain.starts[0]!.sessionId);
+    await vi.waitFor(() => expect(h.brain.continues).toHaveLength(1));
+    expect((await h.store.get(t.id))?.status).toBe("running");
+    env.clock += 60 * 60_000;
+    expect(await h.runner.recover()).toBe(0);
+    expect((await h.store.get(t.id))?.status).toBe("running");
+    h.runner.stop();
+    await settle(h);
+    expect((await h.store.get(t.id))?.status).toBe("paused");
   });
 
   it("Continue (a stopped run) is the next turn with the note, or a default text; it refuses what cannot continue", async () => {

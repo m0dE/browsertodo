@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_MODEL } from "./models.js";
 
 export const BrainMode = z.enum(["auto", "claude-code", "claude-api", "browsertodo"]);
 export type BrainMode = z.infer<typeof BrainMode>;
@@ -6,20 +7,20 @@ export type BrainMode = z.infer<typeof BrainMode>;
 /** Extension settings stored in chrome.storage.local under "settings". */
 export const ExtensionSettings = z.object({
   /**
-   * Which agent runs tasks. auto: browsertodo AI when signed in with AI
+   * Which agent runs tasks. auto: browsertodo AI when signed in with usage
    * credit or an active paid plan, else local Claude Code when the helper is
    * connected and Claude Code was found, otherwise the Claude API key.
    */
   brain: BrainMode.default("auto"),
   anthropicApiKey: z.string().default(""),
-  anthropicModel: z.string().default("claude-sonnet-5"),
+  anthropicModel: z.string().default(DEFAULT_MODEL),
   /** Jev speeds up single steps. Used only when a key is set and jevEnabled. */
   jevApiKey: z.string().default(""),
   /**
    * The browsertodo account server (Google sign-in, the account's TODO list,
    * billing and the hosted AI). Self-hosters point it at their own API.
    */
-  accountApiBase: z.string().default("https://browsertodo-api.jaeyun.workers.dev"),
+  accountApiBase: z.string().default("https://app.browsertodo.com"),
   /** Cloud task queue with a runner key (self-hosters). Off by default; local tasks always work. */
   cloudEnabled: z.boolean().default(false),
   apiBase: z.string().default(""),
@@ -73,8 +74,14 @@ export function pickDelayMs(s: Pick<ExtensionSettings, "delayMinSec" | "delayMax
   return Math.round((min + rand() * (max - min)) * 1000);
 }
 
-/** Settings with secrets replaced by "set"/"" markers, safe to show or log. */
+/** Settings that hold secrets: never shown or logged, only marked as set (redactSettings). */
+export const SECRET_SETTING_KEYS = ["anthropicApiKey", "jevApiKey", "runnerKey"] as const satisfies readonly (keyof ExtensionSettings)[];
+/** What a secret that is set reads as in redacted settings ("" when it is not set). */
+export const REDACTED = "set";
+
+/** Settings with secrets replaced by REDACTED/"" markers, safe to show or log. */
 export function redactSettings(s: ExtensionSettings): ExtensionSettings {
-  const mark = (v: string) => (v ? "set" : "");
-  return { ...s, anthropicApiKey: mark(s.anthropicApiKey), jevApiKey: mark(s.jevApiKey), runnerKey: mark(s.runnerKey) };
+  const out = { ...s };
+  for (const key of SECRET_SETTING_KEYS) out[key] = s[key] ? REDACTED : "";
+  return out;
 }

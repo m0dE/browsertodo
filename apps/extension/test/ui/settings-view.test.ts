@@ -211,7 +211,7 @@ describe("storage round-trip", () => {
 
   it("an untouched form changes nothing", () => {
     const saved = redactSettings({ ...DEFAULT_SETTINGS, anthropicApiKey: "sk", brain: "claude-code", apiBase: "https://tasks.test" });
-    expect(buildSettingsPatch(saved, parseForm(formValues(saved)), {})).toEqual({});
+    expect(buildSettingsPatch(saved, parseForm(formValues(saved)))).toEqual({});
   });
 
   it("every field saved from the form reads back the same, under the same storage key", async () => {
@@ -238,7 +238,7 @@ describe("storage round-trip", () => {
       pauseRetryMinutes: "12",
       maxConsecutiveFailures: "0",
     };
-    const patch = buildSettingsPatch(redactSettings(before), parseForm(edited), {});
+    const patch = buildSettingsPatch(redactSettings(before), parseForm(edited));
     const after = await saveSettingsPatch(patch);
     expect(await loadSettings()).toEqual(after);
     expect(Object.keys(chrome.storage.local.data)).toContain("settings");
@@ -269,10 +269,8 @@ describe("storage round-trip", () => {
   it("keys: set, replace and remove save one key at a time", async () => {
     await saveSettingsPatch({ anthropicApiKey: "sk-1" });
     expect((await loadSettings()).anthropicApiKey).toBe("sk-1");
-    const saved = redactSettings(await loadSettings());
-    const patch = buildSettingsPatch(saved, {}, { jevApiKey: { mode: "set", value: " j-1 " } });
-    expect(patch).toEqual({ jevApiKey: "j-1" });
-    await saveSettingsPatch(patch);
+    // Each key field saves just its own key (secret-field.ts).
+    await saveSettingsPatch({ jevApiKey: "j-1" });
     await saveSettingsPatch({ anthropicApiKey: "" });
     const s = await loadSettings();
     expect(secrets(s)).toEqual({ anthropicApiKey: "", jevApiKey: "j-1", runnerKey: "" });

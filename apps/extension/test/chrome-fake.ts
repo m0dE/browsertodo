@@ -74,6 +74,40 @@ export interface FakePort {
   hostDisconnect(error?: string): void;
 }
 
+/**
+ * A runtime.Port whose other end the test plays: deliver() is a message from
+ * there, hostDisconnect() closes it from there (with chrome.runtime.lastError
+ * set through setLastError while its listeners run).
+ */
+export function fakePort(name: string, setLastError: (message?: string) => void = () => {}): FakePort {
+  const port: FakePort = {
+    name,
+    posted: [],
+    onMessage: new FakeEvent(),
+    onDisconnect: new FakeEvent(),
+    postMessage(msg) {
+      port.posted.push(msg);
+    },
+    disconnect() {
+      /* a client-side disconnect does not fire onDisconnect in Chrome */
+    },
+    deliver(msg) {
+      port.onMessage.emit(msg);
+    },
+    hostDisconnect(error) {
+      setLastError(error);
+      port.onDisconnect.emit(port);
+      setLastError(undefined);
+    },
+  };
+  return port;
+}
+
+/** A chrome.storage area on its own (no chrome fake around it), for code that takes a StorageLike. */
+export function memoryStorageArea(name = "local"): FakeStorageArea {
+  return new FakeStorageArea(name, new FakeEvent());
+}
+
 export interface FakeTab {
   id: number;
   windowId: number;
@@ -146,26 +180,7 @@ export function installChromeFake() {
       /** Called for every new native port; tests use it to script the host. */
       onConnectNative: undefined as ((port: FakePort) => void) | undefined,
       connectNative(name: string): FakePort {
-        const port: FakePort = {
-          name,
-          posted: [],
-          onMessage: new FakeEvent(),
-          onDisconnect: new FakeEvent(),
-          postMessage(msg) {
-            port.posted.push(msg);
-          },
-          disconnect() {
-            /* a client-side disconnect does not fire onDisconnect in Chrome */
-          },
-          deliver(msg) {
-            port.onMessage.emit(msg);
-          },
-          hostDisconnect(error) {
-            fake.runtime.lastError = error ? { message: error } : undefined;
-            port.onDisconnect.emit(port);
-            fake.runtime.lastError = undefined;
-          },
-        };
+        const port = fakePort(name, (message) => (fake.runtime.lastError = message ? { message } : undefined));
         fake.runtime.ports.push(port);
         fake.runtime.onConnectNative?.(port);
         return port;
@@ -359,11 +374,15 @@ export function installChromeFake() {
       attached: new Set<number>(),
       /** Tabs showing another extension's frame: Chrome refuses the debugger there. */
       blocked: new Set<number>(),
+      /** Tabs Chrome keeps extensions out of (Web Store, chrome://): tab id -> Chrome's error. */
+      refused: new Map<number, string>(),
       commands: [] as { tabId: number; method: string; params?: unknown }[],
       /** Test hook deciding each command's result. */
       respond: ((_method: string, _params: unknown): unknown => ({})) as (method: string, params: any) => unknown,
       async attach(target: { tabId: number }, _version: string) {
         if (fake.debugger.blocked.has(target.tabId)) throw new Error(FOREIGN_FRAME_ERROR);
+        const refused = fake.debugger.refused.get(target.tabId);
+        if (refused) throw new Error(refused);
         if (fake.debugger.attached.has(target.tabId)) {
           throw new Error(`Another debugger is already attached to the tab with id: ${target.tabId}.`);
         }

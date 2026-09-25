@@ -7,50 +7,40 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { HelperInfo } from "@browsertodo/shared";
-import { CLAUDE_NOT_FOUND, claudeEnv, killTree } from "./claude-process.js";
-import { errorMessage } from "./logger.js";
+import { errorMessage, type HelperBrain, type HelperInfo } from "@browsertodo/shared";
+import { CLAUDE_NOT_FOUND, claudeEnv, isolatedClaudeArgs, killTree } from "./claude-process.js";
 
 export type SelfTestResult = NonNullable<HelperInfo["selfTest"]>;
 
 export const SELF_TEST_TIMEOUT_MS = 60_000;
 export const SELF_TEST_TTL_MS = 12 * 60 * 60_000;
+/** The self-test only proves Claude Code starts, is signed in and answers: the cheapest model alias does. */
+export const SELF_TEST_MODEL = "haiku";
 
-export function selfTestArgs(model = "haiku"): string[] {
-  return [
-    "-p",
-    "Reply with exactly: OK",
-    "--tools",
-    "",
-    "--setting-sources",
-    "",
-    "--no-session-persistence",
-    "--output-format",
-    "json",
-    "--model",
-    model,
-  ];
+export function selfTestArgs(model = SELF_TEST_MODEL): string[] {
+  return ["-p", "Reply with exactly: OK", "--output-format", "json", ...isolatedClaudeArgs(model)];
 }
 
 /** Reads `claude -p --output-format json` output. */
 export function parseSelfTestOutput(stdout: string, stderr: string, code: number | null): { ok: boolean; error?: string } {
   const lines = stdout.trim().split(/\r?\n/).reverse();
   for (const line of lines) {
-    let j: any;
+    let j: unknown;
     try {
       j = JSON.parse(line);
     } catch {
       continue;
     }
     if (j && typeof j === "object" && "result" in j) {
-      const text = String(j.result ?? "");
-      if (j.is_error) return { ok: false, error: `Claude Code error: ${text.slice(0, 300) || j.subtype}` };
+      const r = j as { result?: unknown; is_error?: unknown; subtype?: unknown };
+      const text = String(r.result ?? "");
+      if (r.is_error) return { ok: false, error: `Claude Code error: ${text.slice(0, 300) || String(r.subtype)}` };
       if (/\bOK\b/.test(text)) return { ok: true };
-      return { ok: false, error: `unexpected reply: ${text.slice(0, 200)}` };
+      return { ok: false, error: `Unexpected reply: ${text.slice(0, 200)}` };
     }
   }
   const detail = (stderr.trim() || stdout.trim()).slice(0, 300);
-  return { ok: false, error: `claude exited with code ${code}${detail ? `: ${detail}` : ""}` };
+  return { ok: false, error: `Claude Code exited with code ${code}${detail ? `: ${detail}` : ""}` };
 }
 
 export async function runSelfTest(opts: {
@@ -87,17 +77,17 @@ export async function runSelfTest(opts: {
         ...(opts.cwd ? { cwd: opts.cwd } : {}),
       });
     } catch (e) {
-      resolve(done({ ok: false, error: `could not start Claude Code: ${errorMessage(e)}` }));
+      resolve(done({ ok: false, error: `Could not start Claude Code: ${errorMessage(e)}` }));
       return;
     }
     const timeoutMs = opts.timeoutMs ?? SELF_TEST_TIMEOUT_MS;
     const timer = setTimeout(() => {
       killTree(child);
-      finish({ ok: false, error: `self-test timed out after ${Math.round(timeoutMs / 1000)} s` });
+      finish({ ok: false, error: `Self-test timed out after ${Math.round(timeoutMs / 1000)} s` });
     }, timeoutMs);
     child.stdout!.on("data", (c: Buffer) => (stdout += c.toString("utf8")));
     child.stderr!.on("data", (c: Buffer) => (stderr += c.toString("utf8")));
-    child.on("error", (e) => finish({ ok: false, error: `could not start Claude Code: ${e.message}` }));
+    child.on("error", (e) => finish({ ok: false, error: `Could not start Claude Code: ${e.message}` }));
     child.on("close", (code) => finish(parseSelfTestOutput(stdout, stderr, code)));
   });
 }
@@ -109,7 +99,9 @@ export class SelfTestCache {
 
   constructor(
     private readonly opts: {
-      /** null: Claude Code not found. "scripted": always ok. */
+      /** "scripted": always ok, nothing cached on disk. */
+      brain: HelperBrain;
+      /** null: Claude Code not found. */
       claudePath: string | null;
       cacheFile: string | null;
       run?: (claudePath: string) => Promise<SelfTestResult>;
@@ -134,7 +126,7 @@ export class SelfTestCache {
   private async runOnce(): Promise<SelfTestResult> {
     const path = this.opts.claudePath;
     let r: SelfTestResult;
-    if (path === "scripted") r = { ok: true, ms: 0, at: new Date().toISOString() };
+    if (this.opts.brain === "scripted") r = { ok: true, ms: 0, at: new Date().toISOString() };
     else if (!path) r = { ok: false, error: CLAUDE_NOT_FOUND, ms: 0, at: new Date().toISOString() };
     else r = await (this.opts.run ?? ((p) => runSelfTest({ claudePath: p })))(path);
     this.result = r;
@@ -144,7 +136,7 @@ export class SelfTestCache {
 
   private loadDisk(): SelfTestResult | undefined {
     const file = this.opts.cacheFile;
-    if (!file || !this.opts.claudePath || this.opts.claudePath === "scripted" || !existsSync(file)) return undefined;
+    if (!file || this.opts.brain === "scripted" || !this.opts.claudePath || !existsSync(file)) return undefined;
     try {
       const j = JSON.parse(readFileSync(file, "utf8")) as { claudePath?: string; result?: SelfTestResult };
       const r = j.result;
@@ -158,7 +150,7 @@ export class SelfTestCache {
 
   private saveDisk(r: SelfTestResult): void {
     const file = this.opts.cacheFile;
-    if (!file || this.opts.claudePath === "scripted") return;
+    if (!file || this.opts.brain === "scripted") return;
     try {
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, JSON.stringify({ claudePath: this.opts.claudePath, result: r }, null, 2));

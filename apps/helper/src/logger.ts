@@ -6,6 +6,10 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync
 import { dirname, join } from "node:path";
 
 export const LIVE_LOG_MAX_BYTES = 5 * 1024 * 1024;
+/** Most lines one tail() returns. */
+export const LIVE_LOG_TAIL_MAX_LINES = 5000;
+/** Most characters one tail() returns: keeps getLog answers well under native messaging's 1 MB cap. */
+export const LIVE_LOG_TAIL_MAX_CHARS = 400_000;
 
 /** Combined human-readable log, one line per event, tailed by the options page. */
 export class LiveLog {
@@ -31,13 +35,11 @@ export class LiveLog {
 
   tail(lines: number): string {
     if (!existsSync(this.path)) return "";
-    const n = Math.max(0, Math.min(Math.floor(lines) || 0, 5000));
+    const n = Math.max(0, Math.min(Math.floor(lines) || 0, LIVE_LOG_TAIL_MAX_LINES));
     const all = readFileSync(this.path, "utf8").split("\n");
     if (all[all.length - 1] === "") all.pop();
-    let text = n === 0 ? "" : all.slice(-n).join("\n");
-    // Keep getLog responses well under the 1 MB native messaging cap.
-    if (text.length > 400_000) text = text.slice(-400_000);
-    return text;
+    const text = n === 0 ? "" : all.slice(-n).join("\n");
+    return text.length > LIVE_LOG_TAIL_MAX_CHARS ? text.slice(-LIVE_LOG_TAIL_MAX_CHARS) : text;
   }
 
   private rotateIfNeeded(): void {
@@ -48,8 +50,8 @@ export class LiveLog {
   }
 }
 
-/** Short one-line summary of an event for live.log. */
-export function summarize(event: Record<string, unknown>, max = 300): string {
+/** Short one-line summary of an event (an AgentEvent, or a run log record) for live.log. */
+export function summarize(event: { readonly type?: unknown }, max = 300): string {
   const { type, ...rest } = event;
   let body: string;
   try {
@@ -96,11 +98,6 @@ export function redirectConsole(live: LiveLog): void {
   console.error = to("error");
   console.debug = to("debug");
   console.trace = to("trace");
-}
-
-/** The message of a thrown value. */
-export function errorMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 function safeJson(v: unknown): string {

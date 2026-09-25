@@ -1,24 +1,12 @@
 /**
  * What a new task session needs before its brain starts: the run folder, the
- * MCP config Claude Code loads, the follow-up prompts, and the session's view
- * of the browser.
+ * MCP config Claude Code loads, and the session's view of the browser.
  */
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MCP_SERVER_NAME, type ToolName } from "@browsertodo/shared";
 import type { BrowserCaller } from "@browsertodo/core";
-
-/** Typed before a follow-up message, so the agent knows it continues the same conversation. */
-/** Same text the Claude API brain uses, so both brains see follow-ups alike. */
-export { FOLLOW_UP_PREFIX } from "@browsertodo/core";
-
-/** Added to the system prompt of kept-open sessions. */
-export const FOLLOW_UP_PROMPT = [
-  "Follow-up messages: after you call task_complete (or task_fail / task_pause), this session stays open",
-  "and the user may send follow-up messages in it. Treat each follow-up as the next request in the same",
-  "conversation, starting from the browser as you left it, and end each follow-up with exactly one",
-  "task_complete, task_fail or task_pause call again. After that call, stop and wait.",
-].join(" ");
+import { ENV } from "../env-names.js";
 
 function runStamp(d = new Date()): string {
   return d.toISOString().replace(/[:.]/g, "-");
@@ -41,11 +29,11 @@ export function buildMcpConfig(opts: { nodePath: string; mcpServerPath: string; 
         command: opts.nodePath,
         args: [opts.mcpServerPath],
         env: {
-          BROWSERTODO_PIPE: opts.pipePath,
-          BROWSERTODO_TASK: opts.taskId,
-          BROWSERTODO_TOOLS: opts.toolNames.join(","),
+          [ENV.pipe]: opts.pipePath,
+          [ENV.task]: opts.taskId,
+          [ENV.tools]: opts.toolNames.join(","),
           // Jev picks act's elements: the tools are described for that mode.
-          BROWSERTODO_JEV: opts.jev ? "1" : "0",
+          [ENV.jev]: opts.jev ? "1" : "0",
         },
       },
     },

@@ -61,7 +61,9 @@ export class Vault {
 
   async set(site: string, username: string, password: string): Promise<void> {
     const key = await this.requireKey();
-    const data = (await this.read())!;
+    const data = await this.read();
+    // Unlocking creates the vault; it can be gone only if storage was cleared since.
+    if (!data) throw new Error("Vault is locked");
     const host = normalizeSite(site);
     if (!host) throw new Error("Site is empty");
     data.entries[host] = await seal(key, JSON.stringify({ username, password }));

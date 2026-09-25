@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { installChromeFake, type ChromeFake } from "./chrome-fake.js";
+import type { ChromeFake } from "./chrome-fake.js";
+import { driverHarness, userWindow as openWindow } from "./driver-harness.js";
 import { AgentTab } from "../src/agent-tab.js";
-import { Cdp } from "../src/cdp.js";
-import { Driver } from "../src/driver.js";
+import { DEBUGGER_CANCELED, type Cdp } from "../src/cdp.js";
+import type { Driver } from "../src/driver.js";
+import { PAGE_MARKS } from "../src/driver-common.js";
 import { snapshotExpression } from "../src/page-snapshot.js";
 
 let chrome: ChromeFake;
@@ -13,10 +15,7 @@ let driver: Driver;
 let evalResults: [string, unknown][];
 
 beforeEach(() => {
-  chrome = installChromeFake();
-  cdp = new Cdp();
-  agent = new AgentTab();
-  driver = new Driver(cdp, agent, { sleep: async () => {} });
+  ({ chrome, cdp, agent, driver } = driverHarness());
   evalResults = [];
   chrome.debugger.respond = (method, params) => {
     if (method === "Runtime.evaluate") {
@@ -35,10 +34,7 @@ beforeEach(() => {
 const inputCommands = () => chrome.debugger.commands.filter((c) => c.method.startsWith("Input."));
 
 /** A focused normal window whose active tab shows `url`. */
-async function userWindow(url: string) {
-  const win = await chrome.windows.create({ url, focused: true, type: "normal" });
-  return { windowId: win.id, tabId: win.tabs[0]!.id };
-}
+const userWindow = (url: string) => openWindow(chrome, url);
 
 describe("AgentTab", () => {
   it("one-off runs act on the tab the user is looking at, in a browsertodo group", async () => {
@@ -216,7 +212,7 @@ describe("Cdp", () => {
     chrome.debugger.attached.delete(5);
     cdp.handleDetach({ tabId: 5 }, "canceled_by_user");
     expect(onCancel).toHaveBeenCalled();
-    await expect(cdp.send("Page.enable")).rejects.toThrow("debugger detached by user");
+    await expect(cdp.send("Page.enable")).rejects.toThrow(DEBUGGER_CANCELED);
     // A fresh task resets the state.
     cdp.reset();
     await cdp.attach(5);
@@ -282,8 +278,8 @@ describe("Driver", () => {
       const base = chrome.debugger.respond;
       chrome.debugger.respond = (method, params) => {
         const expr = String((params as { expression?: string })?.expression ?? "");
-        if (expr.includes('("measure"')) return { result: { value: { ok: true, value: before } } };
-        if (expr.includes('("read"')) return { result: { value: { ok: true, value: reads[Math.min(n++, reads.length - 1)] } } };
+        if (expr.includes(`${JSON.stringify(PAGE_MARKS)}, "measure"`)) return { result: { value: { ok: true, value: before } } };
+        if (expr.includes(`${JSON.stringify(PAGE_MARKS)}, "read"`)) return { result: { value: { ok: true, value: reads[Math.min(n++, reads.length - 1)] } } };
         return base!(method, params);
       };
     }
@@ -387,7 +383,7 @@ describe("snapshotExpression", () => {
   it("is a self-contained expression with the limits baked in", () => {
     const expr = snapshotExpression();
     expect(expr).toMatch(/^\(function/);
-    expect(expr).toContain("(8000, 300)");
+    expect(expr).toContain(`(${JSON.stringify(PAGE_MARKS)}, 8000, 300)`);
     expect(expr).not.toMatch(/__name|__vite|_interop|import\(/);
     expect(() => new Function(`return ${expr}`)).not.toThrow();
   });

@@ -1,7 +1,7 @@
 /**
  * Tiny key-value layer over IndexedDB. The engine only needs get/put/delete
- * and prefix listing, so the rest of the code (and the tests, which use
- * MemoryKvDb) never touches the IndexedDB API directly.
+ * and prefix listing, so the rest of the code (and the tests, which use an
+ * in-memory KvDb) never touches the IndexedDB API directly.
  */
 
 const KV_STORES = ["media", "sessions", "events"] as const;
@@ -82,33 +82,6 @@ export class IdbKvDb implements KvDb {
       deletePrefix: async (prefix) => {
         const r = range(prefix);
         if (r) await req((await tx("readwrite")).delete(r));
-      },
-    };
-  }
-}
-
-/** In-memory stores with the same behavior, for tests. */
-export class MemoryKvDb implements KvDb {
-  readonly data = new Map<KvStoreName, Map<string, unknown>>();
-
-  store<T>(name: KvStoreName): KvStore<T> {
-    let m = this.data.get(name);
-    if (!m) this.data.set(name, (m = new Map()));
-    const map = m;
-    const sorted = (prefix?: string) =>
-      [...map.keys()].filter((k) => !prefix || k.startsWith(prefix)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    return {
-      get: async (key) => map.get(key) as T | undefined,
-      put: async (key, value) => {
-        map.set(key, value);
-      },
-      delete: async (key) => {
-        map.delete(key);
-      },
-      list: async (prefix) => sorted(prefix).map((key) => ({ key, value: map.get(key) as T })),
-      keys: async (prefix) => sorted(prefix),
-      deletePrefix: async (prefix) => {
-        for (const k of sorted(prefix)) map.delete(k);
       },
     };
   }

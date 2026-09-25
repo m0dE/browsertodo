@@ -1,10 +1,10 @@
 /**
- * The Chat tab's action bar (New Chat | Show Tab | Raw Log): whether each
+ * The Chat tab's action bar (New chat | Show tab | Raw log): whether each
  * action applies to the chat on screen, and a tooltip that says what it does
  * or why it cannot be used. Pure.
  */
 import type { SessionInfo } from "@browsertodo/shared";
-import { brainLabel } from "./format.js";
+import { brainLabel } from "../ui/labels.js";
 
 export interface BarAction {
   disabled: boolean;

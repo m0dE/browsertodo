@@ -1,12 +1,12 @@
 /** Pure helpers for the options page's Account and API keys sections. */
-import { PLANS, isPaidActive, type PlanId } from "../account/types.js";
-import { centsLabel } from "../sidepanel/format.js";
+import { formatCents, formatDate, planName, planStatusText } from "@browsertodo/shared";
+import { PLANS, isPaidActive, type PlanId, type PlanInfo } from "../account/types.js";
 import type { AccountView } from "../ui-protocol.js";
 
 export interface AccountSummary {
   /** "Plus" / "Free". */
   planName: string;
-  /** "active", "past due", "cancels on Oct 24"… or "" */
+  /** "Renews Oct 24, 2026", "Ends Oct 24, 2026", "Payment overdue"… or "" */
   planStatus: string;
   /** "$12.40" (empty when not known). */
   credit: string;
@@ -20,44 +20,38 @@ export interface AccountSummary {
   outOfCredit: boolean;
 }
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
 /** "Oct 24, 2026" (UTC date: billing periods are UTC). */
 export function dateLabel(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
+  return formatDate(iso, "UTC");
 }
 
-export function planName(id: PlanId | undefined): string {
-  return PLANS.find((p) => p.id === id)?.name ?? "Free";
+/** The line under the plan: a payment problem, else when a paid plan renews or ends. */
+function planStatus(plan: PlanInfo | undefined): string {
+  if (!plan) return "";
+  // A canceled subscription comes back as { id: "free", status: "canceled" }.
+  if (plan.status === "canceled") return planStatusText(plan) ?? "";
+  if (plan.id === "free") return "";
+  if (plan.status === "past_due") return planStatusText(plan) ?? "";
+  if (!plan.currentPeriodEnd) return "";
+  return `${plan.cancelAtPeriodEnd ? "Ends" : "Renews"} ${dateLabel(plan.currentPeriodEnd)}`;
 }
 
 export function accountSummary(a: AccountView): AccountSummary {
   const plan = a.plan;
   const paid = isPaidActive(plan);
-  let planStatus = "";
-  // A canceled subscription comes back as { id: "free", status: "canceled" }.
-  if (plan?.status === "canceled") planStatus = "subscription canceled";
-  else if (plan && plan.id !== "free") {
-    if (plan.status === "past_due") planStatus = "payment past due";
-    else if (plan.cancelAtPeriodEnd && plan.currentPeriodEnd) planStatus = `ends ${dateLabel(plan.currentPeriodEnd)}`;
-    else if (plan.currentPeriodEnd) planStatus = `renews ${dateLabel(plan.currentPeriodEnd)}`;
-  }
   const c = a.credit;
   const parts: string[] = [];
   if (c) {
     if (c.subscriptionCents > 0 || c.periodGrantCents > 0) {
       const ends = dateLabel(c.periodEnd);
-      parts.push(`${centsLabel(c.subscriptionCents)} subscription${ends ? ` (expires ${ends})` : ""}`);
+      parts.push(`${formatCents(c.subscriptionCents)} subscription${ends ? ` (expires ${ends})` : ""}`);
     }
-    if (c.topupCents > 0 || parts.length === 0) parts.push(`${centsLabel(c.topupCents)} top-up`);
+    if (c.topupCents > 0 || parts.length === 0) parts.push(`${formatCents(c.topupCents)} top-up`);
   }
   return {
     planName: planName(plan?.id),
-    planStatus,
-    credit: c ? centsLabel(c.totalCents) : "",
+    planStatus: planStatus(plan),
+    credit: c ? formatCents(c.totalCents) : "",
     creditDetail: parts.join(" + "),
     paid,
     keysAllowed: paid,
@@ -71,7 +65,7 @@ export function planChoices(): { id: PlanId; label: string; detail: string }[] {
   return PLANS.filter((p) => p.id !== "free").map((p) => ({
     id: p.id,
     label: p.name,
-    detail: `${centsLabel(p.priceCents)}/mo · ${centsLabel(p.creditCents)} usage credit`,
+    detail: `${formatCents(p.priceCents)}/mo · ${formatCents(p.creditCents)} usage credit`,
   }));
 }
 

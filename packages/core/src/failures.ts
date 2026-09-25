@@ -1,7 +1,24 @@
-/** Sorts failure reasons into temporary (retry later) and permanent. */
+/**
+ * Sorts failure reasons into temporary (retry later) and permanent. Reasons
+ * the agents produce themselves are known by identity; patterns are only for
+ * text from elsewhere (HTTP and network errors, Claude Code, Chrome).
+ */
 import type { FailureKind } from "./types.js";
 
-const TRANSIENT: RegExp[] = [
+/** The agent's turn ended (it stopped, or went idle) without a task_* call. */
+export const ENDED_WITHOUT_RESULT = "Agent ended its turn without reporting a result";
+/** The agent process exited without a task_* call. */
+export const EXITED_WITHOUT_RESULT = "Agent exited without reporting a result";
+/** The model refused the task. */
+export const CLAUDE_DECLINED = "Claude declined the task";
+/** The agent crashed. */
+export const agentError = (detail: string) => `Agent error: ${detail}`;
+
+/** Our own reasons worth another attempt. Every other reason we produce is permanent. */
+const TRANSIENT_REASONS: ReadonlySet<string> = new Set([ENDED_WITHOUT_RESULT, EXITED_WITHOUT_RESULT]);
+
+/** Foreign error text that means "try again later". */
+const TRANSIENT_TEXT: RegExp[] = [
   // Usage and rate limits, overload.
   /\b429\b/,
   /\b529\b/,
@@ -24,11 +41,6 @@ const TRANSIENT: RegExp[] = [
   /socket hang up/i,
   /\btimeout\b/i,
   /timed out/i,
-  // Crashes and lost connections around the agent.
-  /helper disconnected/i,
-  /agent exited without reporting a result/i,
-  /agent ended without reporting a result/i,
-  /could not verify the post/i,
 ];
 
 const DEBUGGER_DETACHED = /debugger (was )?detached/i;
@@ -36,6 +48,7 @@ const BY_USER = /by (the )?user|canceled_by_user|cancelled by user/i;
 
 export function classifyFailure(reason: string): FailureKind {
   const r = reason ?? "";
+  if (TRANSIENT_REASONS.has(r)) return "transient";
   if (DEBUGGER_DETACHED.test(r)) return BY_USER.test(r) ? "permanent" : "transient";
-  return TRANSIENT.some((re) => re.test(r)) ? "transient" : "permanent";
+  return TRANSIENT_TEXT.some((re) => re.test(r)) ? "transient" : "permanent";
 }

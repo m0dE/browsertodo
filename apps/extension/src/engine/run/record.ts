@@ -2,9 +2,8 @@
  * Recording how a run ended: on its local task, to the cloud API (with a
  * final screenshot), and in the session history.
  */
-import type { AgentEvent, ExtensionSettings, ResultInput, SessionInfo, TaskRunResult } from "@browsertodo/shared";
+import { errorMessage, MAX_RESULT_REASON, MAX_RESULT_SUMMARY, MAX_RESULT_URL, type AgentEvent, type ExtensionSettings, type ResultInput, type SessionInfo, type TaskRunResult } from "@browsertodo/shared";
 import { base64ToBytes } from "../../base64.js";
-import { errText } from "../../errors.js";
 import type { LocalStore } from "../local-store.js";
 import type { SessionStore } from "../sessions.js";
 import { localTaskOf, type CloudJob, type Job } from "./jobs.js";
@@ -29,7 +28,7 @@ export class ResultRecorder {
       try {
         await this.deps.localStore.finish(localTask.id, result, { retryAfterMinutes: settings.retryAfterMinutes });
       } catch (err) {
-        this.deps.log(`recording local result failed: ${errText(err)}`);
+        this.deps.log(`recording local result failed: ${errorMessage(err)}`);
       }
     } else if (job.source === "cloud") {
       await this.reportCloud(active, job, result, settings);
@@ -53,26 +52,25 @@ export class ResultRecorder {
 
   private async reportCloud(active: ActiveSession, job: CloudJob, result: TaskRunResult, settings: ExtensionSettings): Promise<void> {
     const taskId = job.claim.task.id;
-    const body: ResultInput = {
-      runnerId: job.runnerId,
-      outcome: result.outcome,
-      retryAfterMinutes: result.outcome === "retry" ? settings.retryAfterMinutes : settings.pauseRetryMinutes,
-    };
-    if (result.summary) body.summary = result.summary.slice(0, 4000);
-    if (result.url) body.url = result.url.slice(0, 2000);
-    if (result.reason) body.reason = result.reason.slice(0, 4000);
+    const body: ResultInput = { runnerId: job.runnerId, outcome: result.outcome };
+    // Only paused and retry tasks come back to the queue after a while.
+    if (result.outcome === "retry") body.retryAfterMinutes = settings.retryAfterMinutes;
+    if (result.outcome === "paused") body.retryAfterMinutes = settings.pauseRetryMinutes;
+    if (result.summary) body.summary = result.summary.slice(0, MAX_RESULT_SUMMARY);
+    if (result.url) body.url = result.url.slice(0, MAX_RESULT_URL);
+    if (result.reason) body.reason = result.reason.slice(0, MAX_RESULT_REASON);
     try {
       const shot = await active.slot.screenshot();
       const ext = shot.mimeType === "image/png" ? "png" : "jpg";
       const blob = new Blob([base64ToBytes(shot.base64)], { type: shot.mimeType });
       body.screenshotId = (await job.api.uploadMedia(blob, `result-${taskId}.${ext}`)).id;
     } catch (err) {
-      this.deps.log(`final screenshot skipped: ${errText(err)}`);
+      this.deps.log(`final screenshot skipped: ${errorMessage(err)}`);
     }
     try {
       await job.api.result(taskId, body);
     } catch (err) {
-      await this.deps.patchState({ lastError: `Reporting ${taskId} failed: ${errText(err)}` });
+      await this.deps.patchState({ lastError: `Reporting ${taskId} failed: ${errorMessage(err)}` });
     }
   }
 }

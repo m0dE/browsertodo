@@ -3,12 +3,20 @@
  * and allows, which fields are visible, and inline validation. The page
  * (options.ts) only renders what these functions return.
  */
-import type { BrainMode, ExtensionSettings } from "@browsertodo/shared";
-import { HOSTED_MODELS, isPaidActive } from "../account/types.js";
+import {
+  CLAUDE_MODELS,
+  DEFAULT_MODEL,
+  ExtensionSettings,
+  formatCents,
+  isClaudeModel,
+  OUT_OF_CREDIT,
+  planName,
+  type BrainMode,
+} from "@browsertodo/shared";
+import { isPaidActive } from "../account/types.js";
 import { resolveBrain } from "../engine/brain-resolver.js";
-import { brainLabel, centsLabel, KNOWN_MODELS } from "../sidepanel/format.js";
+import { brainLabel, modelLabel } from "../ui/labels.js";
 import type { AccountView, BrainStatus } from "../ui-protocol.js";
-import { planName } from "./account-view.js";
 
 // ---------------------------------------------------------------- tabs
 
@@ -140,7 +148,7 @@ function hostedAccount(a: AccountView): HostedAccount {
   const paid = isPaidActive(a.plan);
   const cents = a.credit?.totalCents;
   const noCredit = !!a.outOfCredit || cents === 0;
-  const credit = cents === undefined ? (a.outOfCredit ? "No usage credit left" : "Credit not loaded") : noCredit ? "No usage credit left" : `${centsLabel(cents)} usage credit left`;
+  const credit = cents === undefined ? (a.outOfCredit ? "No usage credit left" : "Usage credit not loaded") : noCredit ? "No usage credit left" : `${formatCents(cents)} usage credit left`;
   const canBuy = a.stripeConfigured !== false;
   let action: HostedAccount["action"] = null;
   if (canBuy && !paid) action = { kind: "get-plan", label: "Get a plan" };
@@ -150,13 +158,13 @@ function hostedAccount(a: AccountView): HostedAccount {
 
 function modelChoice(draft: Draft): ModelChoice {
   const id = draft.anthropicModel.trim();
-  const known = KNOWN_MODELS.some((m) => m.id === id);
+  const known = isClaudeModel(id);
   const selected = known ? id : CUSTOM_MODEL;
   let hint = "Used by every brain. You can also switch it from the side panel.";
   if (draft.brain === "browsertodo") {
-    hint = known || !id ? "browsertodo AI runs this model." : "browsertodo AI does not offer this model, so it runs Sonnet 5.";
+    hint = known || !id ? "browsertodo AI runs this model." : `browsertodo AI does not offer this model, so it runs ${modelLabel(DEFAULT_MODEL)}.`;
   } else if (draft.brain === "auto" && !known && id) {
-    hint = "If Auto picks browsertodo AI, it runs Sonnet 5 instead: it does not offer this model.";
+    hint = `If Auto picks browsertodo AI, it runs ${modelLabel(DEFAULT_MODEL)} instead: it does not offer this model.`;
   }
   return { selected, custom: selected === CUSTOM_MODEL, hint };
 }
@@ -189,7 +197,7 @@ export function settingsView(input: ViewInput): SettingsView {
   if (draft.brain === "browsertodo" && !signedIn) {
     brainProblem = "browsertodo AI is selected but you are logged out, so no tasks run. Log in, or pick another brain.";
   } else if (draft.brain === "browsertodo" && !chosen.effective) {
-    brainProblem = "Out of usage credit, so no tasks run on browsertodo AI. Top up, get a plan, or pick another brain.";
+    brainProblem = `${OUT_OF_CREDIT}, so no tasks run on browsertodo AI. Top up, get a plan, or pick another brain.`;
   }
   // Local Claude Code and the Claude API say what is missing in their own inline sections.
 
@@ -232,9 +240,9 @@ export function settingsView(input: ViewInput): SettingsView {
   };
 }
 
-/** Models the select offers: the side panel's list, marking the ones browsertodo AI does not run. */
+/** Models the select offers: the side panel's list (browsertodo AI runs every one of them). */
 export function modelOptions(): { id: string; label: string }[] {
-  return KNOWN_MODELS.map((m) => ({ id: m.id, label: HOSTED_MODELS.includes(m.id) ? m.label : `${m.label} (not on browsertodo AI)` }));
+  return CLAUDE_MODELS.map((m) => ({ id: m.id, label: m.label }));
 }
 
 // ---------------------------------------------------------------- form values and validation
@@ -257,19 +265,20 @@ export type NumberField = (typeof NUMBER_FIELDS)[number];
 export type TextField = (typeof TEXT_FIELDS)[number];
 export type BoolField = (typeof BOOL_FIELDS)[number];
 
+export interface NumberRule {
+  min: number;
+  max: number;
+  int: boolean;
+}
+
+/** The allowed range of a number field, read from the settings schema. */
+function numberRule(key: NumberField): NumberRule {
+  const schema = ExtensionSettings.shape[key].unwrap();
+  return { min: schema.minValue ?? -Infinity, max: schema.maxValue ?? Infinity, int: schema.isInt };
+}
+
 /** The allowed range of each number (the settings schema's bounds). */
-export const NUMBER_RULES: Record<NumberField, { min: number; max: number; int: boolean }> = {
-  jevThreshold: { min: 0, max: 1, int: false },
-  intervalMinutes: { min: 1, max: 1440, int: false },
-  delayMinSec: { min: 0, max: 3600, int: false },
-  delayMaxSec: { min: 0, max: 3600, int: false },
-  maxToolCalls: { min: 5, max: 500, int: true },
-  maxTaskMinutes: { min: 1, max: 120, int: false },
-  maxParallelTasks: { min: 1, max: 4, int: true },
-  retryAfterMinutes: { min: 1, max: 1440, int: true },
-  pauseRetryMinutes: { min: 1, max: 1440, int: true },
-  maxConsecutiveFailures: { min: 0, max: 100, int: true },
-};
+export const NUMBER_RULES = Object.fromEntries(NUMBER_FIELDS.map((k) => [k, numberRule(k)])) as Record<NumberField, NumberRule>;
 
 /** Raw values as the form holds them. */
 export type FormValues = { brain: BrainMode } & Record<NumberField | TextField, string> & Record<BoolField, boolean>;

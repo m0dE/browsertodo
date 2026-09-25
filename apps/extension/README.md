@@ -17,6 +17,6 @@ redirect URI `https://<extension id>.chromiumapp.org/` (the ID is in
 `extension-id.txt`), and the account server must accept the same client ID
 (`GOOGLE_CLIENT_ID`, see `apps/api/README.md`).
 
-The account server defaults to `https://browsertodo-api.jaeyun.workers.dev`.
+The account server defaults to `https://app.browsertodo.com`.
 Self-hosters can change it in Settings > Self-hosting > Account server URL.
 The runner-key cloud sync stays there as well, for servers without accounts.

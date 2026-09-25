@@ -4,10 +4,11 @@
  * browsertodo AI it offers the hosted models and shows the credit left. Choices are saved with
  * settings.save; the chip then follows the state the background returns.
  */
-import type { ExtensionSettings } from "@browsertodo/shared";
+import { CLAUDE_MODELS, errorMessage, isClaudeModel, OUT_OF_CREDIT, type ExtensionSettings } from "@browsertodo/shared";
 import { uiRequest, type UiState } from "../ui-protocol.js";
-import { $, errorText, h } from "./dom.js";
-import { KNOWN_MODELS, modelChip, modelLabel, type ModelChipInfo } from "./format.js";
+import { $, h } from "../ui/dom.js";
+import { modelChip, type ModelChipInfo } from "./format.js";
+import { modelLabel } from "../ui/labels.js";
 import { openSettings } from "./open-settings.js";
 
 export interface ModelPicker {
@@ -54,7 +55,7 @@ export function initModelPicker(opts: {
     label.textContent = info.label;
     const what = `${info.hosted ? "browsertodo AI · " : ""}${info.model}${info.jevActive ? " with Jev" : ""}`;
     chip.title = info.outOfCredit
-      ? "Out of usage credit: top up or subscribe to keep using browsertodo AI"
+      ? `${OUT_OF_CREDIT}: top up or subscribe to keep using browsertodo AI`
       : running
         ? `This task runs on ${what}. Changes apply to the next task.`
         : `Model for new tasks: ${what}${info.credit ? ` (${info.credit})` : ""}`;
@@ -67,7 +68,7 @@ export function initModelPicker(opts: {
     try {
       opts.onState(await uiRequest({ type: "settings.save", settings: patch }));
     } catch (err) {
-      opts.onError(errorText(err));
+      opts.onError(errorMessage(err));
     }
   };
 
@@ -76,7 +77,7 @@ export function initModelPicker(opts: {
     const current = info.model;
     // The hosted AI runs only the models it prices; your own key or Claude Code can run any id.
     const models =
-      info.hosted || KNOWN_MODELS.some((m) => m.id === current) || !current ? KNOWN_MODELS : [...KNOWN_MODELS, { id: current, label: modelLabel(current) }];
+      info.hosted || isClaudeModel(current) || !current ? CLAUDE_MODELS : [...CLAUDE_MODELS, { id: current, label: modelLabel(current) }];
     const rows: Node[] = [h("div.mm-head", { role: "presentation" }, info.hosted ? "browsertodo AI model" : "Model")];
     for (const m of models) {
       const on = m.id === current;
@@ -95,7 +96,7 @@ export function initModelPicker(opts: {
         h(
           "div.mm-credit",
           { role: "presentation", "data-tone": info.outOfCredit ? "warn" : "" },
-          info.outOfCredit ? "Out of usage credit" : (info.credit ?? ""),
+          info.outOfCredit ? OUT_OF_CREDIT : (info.credit ?? ""),
         ),
       );
       rows.push(

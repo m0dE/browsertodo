@@ -1,3 +1,8 @@
+import { errorMessage } from "@browsertodo/shared";
+import { logger } from "./log.js";
+
+const log = logger("notify");
+
 /** Show a Chrome notification with the extension icon. Never throws. */
 export async function notify(title: string, message: string): Promise<void> {
   try {
@@ -9,6 +14,6 @@ export async function notify(title: string, message: string): Promise<void> {
       priority: 1,
     });
   } catch (err) {
-    console.warn("notification failed", err);
+    log(`notification failed: ${errorMessage(err)}`);
   }
 }

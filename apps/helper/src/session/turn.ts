@@ -1,14 +1,11 @@
 /**
  * One turn of a task session: from the first message (or a follow-up) to its
  * task_* call. Holds the turn's limits (tool calls, time) and turns its state
- * into the TaskRunResult the extension gets.
+ * into the TaskRunResult the extension gets. The rules and texts are core's,
+ * shared with the Claude API brain.
  */
 import type { RunConfig, TaskRunResult, ToolName } from "@browsertodo/shared";
-
-const IDLE_TURN_REASON = "agent ended its turn without reporting a result";
-
-/** Past maxToolCalls the agent is told to call task_fail; this many calls past the max the turn is stopped. */
-const TOOL_CALL_STOP_MARGIN = 5;
+import { agentError, ENDED_WITHOUT_RESULT, EXITED_WITHOUT_RESULT, isTaskEndTool, timeLimitReached, toolBudget, toolCallLimitExceeded, toolCallLimitReached } from "@browsertodo/core";
 
 export interface Turn {
   config: RunConfig;
@@ -55,17 +52,16 @@ export function clearTurnTimers(t: Turn): void {
  * `stop`: the limit is far exceeded; the caller aborts the turn.
  */
 export function checkToolCall(t: Turn, name: ToolName): { refusal: string | null; stop?: true } {
-  const isFinish = name.startsWith("task_");
-  if (t.finish) return { refusal: isFinish ? "The task result was already recorded. Stop now." : "The task is finished. Stop now." };
-  if (isFinish) return { refusal: null };
-  t.toolCalls++;
+  const ends = isTaskEndTool(name);
+  if (t.finish) return { refusal: ends ? "The task result was already recorded. Stop now." : "The task is finished. Stop now." };
+  if (ends) return { refusal: null };
   const max = t.config.maxToolCalls;
-  if (t.toolCalls >= max + TOOL_CALL_STOP_MARGIN) {
-    if (t.abortReason === null) t.abortReason = `tool call limit exceeded (${max} calls)`;
+  const budget = toolBudget(++t.toolCalls, max);
+  if (budget === "stop") {
+    if (t.abortReason === null) t.abortReason = toolCallLimitExceeded(max);
     return { refusal: "Tool call limit exceeded. The task was stopped.", stop: true };
   }
-  if (t.toolCalls > max) return { refusal: `Tool call limit of ${max} reached. Call task_fail now with a short reason.` };
-  return { refusal: null };
+  return { refusal: budget === "refuse" ? toolCallLimitReached(max) : null };
 }
 
 /** The turn's outcome. `brainError`: the brain crashed (session-wide). */
@@ -73,10 +69,10 @@ export function turnResult(t: Turn, brainError: string | null): TaskRunResult {
   if (t.forcedPause !== null) return { outcome: "paused", reason: t.forcedPause };
   if (t.finish) return { ...t.finish };
   if (t.abortReason !== null) return { outcome: "failed", reason: t.abortReason };
-  if (t.timedOut) return { outcome: "failed", reason: `task time limit of ${t.config.maxTaskMinutes} minutes reached` };
-  if (brainError) return { outcome: "failed", reason: `agent error: ${brainError}` };
+  if (t.timedOut) return { outcome: "failed", reason: timeLimitReached(t.config.maxTaskMinutes) };
+  if (brainError) return { outcome: "failed", reason: agentError(brainError) };
   // e.g. "Claude Code: Claude AI usage limit reached" (the extension classifies it as temporary)
   if (t.lastError) return { outcome: "failed", reason: t.lastError };
-  if (t.idleEnd) return { outcome: "failed", reason: IDLE_TURN_REASON };
-  return { outcome: "failed", reason: "agent exited without reporting a result" };
+  if (t.idleEnd) return { outcome: "failed", reason: ENDED_WITHOUT_RESULT };
+  return { outcome: "failed", reason: EXITED_WITHOUT_RESULT };
 }

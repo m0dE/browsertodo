@@ -5,22 +5,24 @@
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RpcPeer, type PipeMethods, type RpcMessage } from "@browsertodo/shared";
+import { RPC_CLOSED, RpcError, RpcPeer, type MethodMap, type PipeMethods, type RpcMessage } from "@browsertodo/shared";
 import { encodeLine, LineDecoder } from "./line-framing.js";
-import type { NoMethods, PipeMap } from "./rpc-types.js";
+
+/** The side of the pipe that handles no calls. */
+type NoMethods = Record<never, never>;
 
 export function pipePathFor(pid: number): string {
   return process.platform === "win32" ? `\\\\.\\pipe\\browsertodo-${pid}` : join(tmpdir(), `browsertodo-${pid}.sock`);
 }
 
 /** Connect an RpcPeer to a socket: line framing both ways, close on disconnect. */
-function wire<O extends Record<string, { params: unknown; result: unknown }>, I extends Record<string, { params: unknown; result: unknown }>>(
+function wire<O extends MethodMap, I extends MethodMap>(
   socket: Socket,
   idPrefix: string,
   onError?: (e: Error) => void,
 ): RpcPeer<O, I> {
   const peer = new RpcPeer<O, I>((msg: RpcMessage) => {
-    if (socket.destroyed) throw new Error("pipe closed");
+    if (socket.destroyed) throw new RpcError("pipe closed", RPC_CLOSED);
     socket.write(encodeLine(msg));
   }, idPrefix);
   const decoder = new LineDecoder();
@@ -56,7 +58,7 @@ export function startPipeServer(path: string, handlers: PipeHandlers, log?: (lin
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
     log?.("pipe client connected");
-    const peer = wire<NoMethods, PipeMap>(socket, "p", (e) => log?.(`pipe client error: ${e.message}`));
+    const peer = wire<NoMethods, PipeMethods>(socket, "p", (e) => log?.(`pipe client error: ${e.message}`));
     peer.handle("tool.call", (p) => handlers.toolCall(p));
     peer.handle("tool.list", (p) => handlers.toolList(p));
   });
@@ -78,7 +80,7 @@ export function startPipeServer(path: string, handlers: PipeHandlers, log?: (lin
 }
 
 export interface PipeClient {
-  peer: RpcPeer<PipeMap, NoMethods>;
+  peer: RpcPeer<PipeMethods, NoMethods>;
   close(): void;
   closed: Promise<void>;
 }
@@ -89,7 +91,7 @@ export function connectPipe(path: string): Promise<PipeClient> {
     socket.once("error", reject);
     socket.once("connect", () => {
       socket.off("error", reject);
-      const peer = wire<PipeMap, NoMethods>(socket, "m");
+      const peer = wire<PipeMethods, NoMethods>(socket, "m");
       const closed = new Promise<void>((r) => socket.once("close", () => r()));
       resolve({ peer, close: () => socket.destroy(), closed });
     });

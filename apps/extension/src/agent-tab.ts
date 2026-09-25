@@ -1,5 +1,6 @@
 import { MAX_AGENT_TABS } from "@browsertodo/shared";
-import { addToGroup, createWindowTab, isControllableUrl, lastNormalWindow, mustId, removeTabs, tabExists } from "./chrome-tabs.js";
+import { addToGroup, createWindowTab, lastNormalWindow, mustId, removeTabs, tabExists } from "./chrome-tabs.js";
+import { isControllableUrl } from "./restricted.js";
 
 const TAB_KEY = "agentTabId";
 /** The run's tabs (main + opened by open_tabs) and which one is current. */
@@ -24,9 +25,20 @@ export interface RunTab {
 interface TabsState {
   /** Chrome id of the current tab (the one single-tab browser methods act on). */
   current: number;
-  /** tabs[0] is the run's main tab (from prepare()). */
-  tabs: RunTab[];
+  /** The run's main tab (from prepare()) first, then the tabs the agent opened. */
+  tabs: [main: RunTab, ...opened: RunTab[]];
   next: number;
+}
+
+/** A run with only its main tab, current. */
+function freshState(tabId: number): TabsState {
+  return { current: tabId, tabs: [{ id: "t1", tabId, opened: false }], next: 2 };
+}
+
+/** The run's tabs without the opened ones that match (the main tab always stays). */
+function withoutOpened(state: TabsState, drop: (t: RunTab) => boolean): TabsState["tabs"] {
+  const [main, ...opened] = state.tabs;
+  return [main, ...opened.filter((t) => !drop(t))];
 }
 
 export interface AgentTabOptions {
@@ -76,8 +88,7 @@ export class AgentTab {
     const tabId = mode === "current-tab" ? await this.pickCurrentTab(opts.tabId) : await this.pickOwnTab();
     const previous = await this.state();
     await removeTabs((previous?.tabs ?? []).filter((t) => t.opened && t.tabId !== tabId).map((t) => t.tabId));
-    const state: TabsState = { current: tabId, tabs: [{ id: "t1", tabId, opened: false }], next: 2 };
-    await chrome.storage.session.set({ [this.tabKey]: tabId, [this.tabsKey]: state });
+    await chrome.storage.session.set({ [this.tabKey]: tabId, [this.tabsKey]: freshState(tabId) });
     await addToGroup(tabId);
     return tabId;
   }
@@ -93,13 +104,13 @@ export class AgentTab {
     const state = await this.state();
     if (state === null) return this.prepare("own-tab");
     if (await tabExists(state.current)) return state.current;
-    const main = state.tabs[0]!;
+    const [main] = state.tabs;
     const gone = state.tabs.find((t) => t.tabId === state.current);
     if (!gone || gone === main || !(await tabExists(main.tabId))) {
       await chrome.storage.session.remove([this.tabKey, this.tabsKey]);
       throw new Error(AGENT_TAB_CLOSED);
     }
-    await this.save({ ...state, current: main.tabId, tabs: state.tabs.filter((t) => t !== gone) });
+    await this.save({ ...state, current: main.tabId, tabs: withoutOpened(state, (t) => t === gone) });
     throw new Error(`tab ${gone.id} was closed; the current tab is now ${main.id}`);
   }
 
@@ -110,7 +121,7 @@ export class AgentTab {
     const tab = state?.tabs.find((t) => t.id === key);
     if (!state || !tab) throw new Error(`unknown tab "${id}"; call list_tabs`);
     if (await tabExists(tab.tabId)) return tab.tabId;
-    if (tab.opened) await this.save({ ...state, tabs: state.tabs.filter((t) => t !== tab) });
+    if (tab.opened) await this.save({ ...state, tabs: withoutOpened(state, (t) => t === tab) });
     throw new Error(`tab ${tab.id} was closed`);
   }
 
@@ -118,7 +129,7 @@ export class AgentTab {
   async list(): Promise<(RunTab & { current: boolean })[]> {
     const state = await this.state();
     if (!state) return [];
-    const main = state.tabs[0]!;
+    const [main] = state.tabs;
     const alive: RunTab[] = [];
     for (const t of state.tabs) if (await tabExists(t.tabId)) alive.push(t);
     const opened = alive.filter((t) => t !== main);
@@ -148,8 +159,9 @@ export class AgentTab {
     if (alive.length + urls.length > MAX_AGENT_TABS) {
       throw new Error(`too many tabs: ${alive.length} open, at most ${MAX_AGENT_TABS} in total; close tabs you no longer need (close_tabs)`);
     }
-    const state = (await this.state())!;
-    const main = await chrome.tabs.get(state.tabs[0]!.tabId);
+    const state = await this.state();
+    if (!state) throw new Error(AGENT_TAB_CLOSED);
+    const main = await chrome.tabs.get(state.tabs[0].tabId);
     let index = main.index;
     for (const t of alive) {
       const tab = await chrome.tabs.get(t.tabId).catch(() => null);
@@ -174,7 +186,8 @@ export class AgentTab {
   /** Makes a run tab current. Returns its Chrome id. */
   async setCurrent(id: string): Promise<number> {
     const tabId = await this.resolve(id);
-    const state = (await this.state())!;
+    const state = await this.state();
+    if (!state) throw new Error(AGENT_TAB_CLOSED);
     await this.save({ ...state, current: tabId });
     return tabId;
   }
@@ -195,8 +208,8 @@ export class AgentTab {
       targets.push(tab);
     }
     await removeTabs(targets.map((t) => t.tabId));
-    const tabs = state.tabs.filter((t) => !targets.includes(t));
-    const current = tabs.some((t) => t.tabId === state.current) ? state.current : tabs[0]!.tabId;
+    const tabs = withoutOpened(state, (t) => targets.includes(t));
+    const current = tabs.some((t) => t.tabId === state.current) ? state.current : tabs[0].tabId;
     await this.save({ ...state, tabs, current });
     return targets.map((t) => t.id);
   }
@@ -208,7 +221,7 @@ export class AgentTab {
     const opened = state.tabs.filter((t) => t.opened);
     if (!opened.length) return 0;
     await removeTabs(opened.map((t) => t.tabId));
-    const main = state.tabs[0]!;
+    const [main] = state.tabs;
     await this.save({ ...state, tabs: [main], current: main.tabId });
     return opened.length;
   }
@@ -263,7 +276,7 @@ export class AgentTab {
     if (typeof main !== "number") return null;
     const s = got[this.tabsKey] as TabsState | undefined;
     if (!s || !Array.isArray(s.tabs) || s.tabs[0]?.tabId !== main || typeof s.current !== "number") {
-      return { current: main, tabs: [{ id: "t1", tabId: main, opened: false }], next: 2 };
+      return freshState(main);
     }
     return s;
   }

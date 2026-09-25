@@ -101,6 +101,15 @@ describe("Runner: cloud tasks", () => {
     expect(h.results[0]!.body).toMatchObject({ outcome: "paused", reason: "2FA", retryAfterMinutes: 30 });
   });
 
+  it("done and failed cloud results carry no retry delay", async () => {
+    const h = harness({ cloudEnabled: true, apiBase: "https://api.test", runnerKey: "bt_k" });
+    h.claims.push(claimFixture("c3"), claimFixture("c4"));
+    const outcomes = [{ outcome: "done" as const }, { outcome: "failed" as const, reason: "button not found" }];
+    h.brain.script = () => outcomes.shift()!;
+    await runAll(h);
+    expect(h.results.map((r) => r.body.retryAfterMinutes)).toEqual([undefined, undefined]);
+  });
+
   it("signed in: claims from the account (not the runner-key cloud sync) and reports there", async () => {
     const h = harness({ cloudEnabled: true, apiBase: "https://selfhosted.test", runnerKey: "bt_k" });
     const runnerKeyClaims = vi.fn(async () => null);

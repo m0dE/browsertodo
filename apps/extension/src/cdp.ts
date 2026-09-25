@@ -1,4 +1,7 @@
-import { errText } from "./errors.js";
+import { errorMessage } from "@browsertodo/shared";
+
+/** Every command fails with this once the user canceled debugging from Chrome's infobar (failure classification reads it as final). */
+export const DEBUGGER_CANCELED = "The debugger was detached by the user (the Cancel button on Chrome's debugging bar)";
 
 /**
  * chrome.debugger wrapper for the agent's tabs. Several tabs can be attached at
@@ -36,7 +39,7 @@ export class Cdp {
 
   /** Attaches to the tab if needed, without changing the current tab. */
   async ensure(tabId: number): Promise<void> {
-    if (this.canceledByUser) throw new Error("debugger detached by user");
+    if (this.canceledByUser) throw new Error(DEBUGGER_CANCELED);
     if (this.attached.has(tabId)) return;
     let pending = this.attaching.get(tabId);
     if (!pending) {
@@ -51,7 +54,7 @@ export class Cdp {
       await chrome.debugger.attach({ tabId }, "1.3");
     } catch (err) {
       // Left over from a previous service worker lifetime: detach and retry once.
-      if (!/already attached/i.test(errText(err))) throw err;
+      if (!/already attached/i.test(errorMessage(err))) throw err;
       await chrome.debugger.detach({ tabId }).catch(() => {});
       await chrome.debugger.attach({ tabId }, "1.3");
     }
@@ -62,7 +65,7 @@ export class Cdp {
 
   /** A command on the current tab. */
   async send<T = Record<string, unknown>>(method: string, params?: Record<string, unknown>): Promise<T> {
-    if (this.canceledByUser) throw new Error("debugger detached by user");
+    if (this.canceledByUser) throw new Error(DEBUGGER_CANCELED);
     if (this.tabId === null) throw new Error("debugger is not attached");
     return this.sendTo<T>(this.tabId, method, params);
   }

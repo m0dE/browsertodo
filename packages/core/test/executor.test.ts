@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { TaskRunResult } from "@browsertodo/shared";
-import { createToolExecutor, picksEvent } from "../src/index.js";
+import { OUT_OF_CREDIT, type TaskRunResult } from "@browsertodo/shared";
+import { createToolExecutor } from "../src/index.js";
+import { picksEvent } from "../src/executor.js";
+import { OutOfCreditError } from "../src/api-errors.js";
 import { goalKey, rankCandidates } from "../src/act.js";
 import { formatElementsInWords } from "../src/page-format.js";
 import type { BrowserCaller, JevLike } from "../src/types.js";
@@ -25,7 +27,7 @@ function setup(x: FakeX, over: { jev?: JevLike | null; mediaPaths?: string[]; on
 describe("createToolExecutor: plain tools", () => {
   it("maps plain tools to browser.* calls", async () => {
     const x = new FakeX();
-    const { exec } = setup(x, { mediaPaths: ["C:\\media\\a.png"] });
+    const { exec, events } = setup(x, { mediaPaths: ["C:\\media\\a.png"] });
     await exec.call("navigate", { url: "https://x.com/home" });
     await exec.call("read_page", {});
     await exec.call("click", { index: 0 });
@@ -44,7 +46,7 @@ describe("createToolExecutor: plain tools", () => {
       ["browser.scroll", { direction: "down", amount: 2 }],
       ["browser.upload", { index: 3, paths: ["C:\\media\\a.png"] }],
     ]);
-    expect(exec.callCount).toBe(8);
+    expect(events.filter((e) => e.type === "tool_call")).toHaveLength(8);
   });
 
   it("read_page returns compact text including element text", async () => {
@@ -411,6 +413,51 @@ describe("browser notes", () => {
     expect(events.find((e) => e.type === "tool_result")!.text).toMatch(/^\(Using fallback mode/);
     const r2 = await exec.call("read_page", {});
     expect(r2.text).not.toMatch(/fallback/);
+  });
+
+  it("switch_x_account results carry the browser's note too", async () => {
+    const x = new FakeX({ account: "alice" });
+    const inner = x.caller();
+    const note = "(Using fallback mode.)";
+    const browser: BrowserCaller = { call: async (method, params) => ({ ...(await inner.call(method, params)), note }) as never };
+    const r = await setup(x, { browser }).exec.call("switch_x_account", { handle: "bob" });
+    expect(r.text).toMatch(/^\(Using fallback mode\.\)\nSwitched to @bob\./);
+  });
+});
+
+describe("act: failures after Jev picked", () => {
+  it("a Jev-picked element that cannot be used stops the batch and keeps the steps that ran", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    const inner = x.caller();
+    let clicks = 0;
+    const browser: BrowserCaller = {
+      call: (method, params) => (method === "browser.click" && clicks++ === 1 ? Promise.reject(new Error("node detached")) : inner.call(method, params)),
+    };
+    const { exec, events } = setup(x, { browser, jev: fakeJev([{ operation: "click", index: 1, confidence: 0.95 }]) });
+    const r = await exec.call("act", { steps: [{ goal: "go home" }, { goal: "go home again" }, { goal: "never run" }] });
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toMatch(/step 1: clicked \[1\] link "Home"/);
+    expect(r.text).toContain('step 2: "go home again": could not use element [1]: node detached');
+    expect(r.text).toContain("not confident at step 2. Steps 3-3 were not run.");
+    expect(events.filter((e) => e.type === "jev").map((e) => (e as { executed: boolean }).executed)).toEqual([true, false]);
+  });
+
+  it("Jev out of usage credit pauses the task instead of asking Jev again", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    let asked = 0;
+    const jev: JevLike = {
+      decide: async () => {
+        if (asked++ === 0) return { operation: "click", index: 1, confidence: 0.95 };
+        throw new OutOfCreditError(`${OUT_OF_CREDIT}: No usage credit left`);
+      },
+    };
+    const { exec, ended } = setup(x, { jev });
+    const r = await exec.call("act", { steps: [{ goal: "go home" }, { goal: "open the composer" }, { goal: "never run" }] });
+    expect(ended).toEqual([{ outcome: "paused", reason: OUT_OF_CREDIT }]);
+    expect(r.text).toMatch(/step 1: clicked \[1\] link "Home"/);
+    expect(r.text).toContain(`step 2: "open the composer": ${OUT_OF_CREDIT}: No usage credit left`);
+    expect(r.text).toMatch(/Task paused.*Stop now\.$/);
+    expect(asked).toBe(2);
   });
 });
 

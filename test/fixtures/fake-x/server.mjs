@@ -10,11 +10,8 @@
 // Also a non-X page for tasks that run beside X tasks: /notes/<board>?delay=<ms>
 // (served under any host name, e.g. https://notes.test) saves notes; notes() lists them.
 
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import https from "node:https";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { selfSignedCert } from "../tls.mjs";
 
 export const ACCOUNTS = [
   { handle: "@alpha", name: "Alpha" },
@@ -22,21 +19,6 @@ export const ACCOUNTS = [
   { handle: "@gamma", name: "Gamma" },
   { handle: "@locked", name: "Locked" },
 ];
-
-function ensureCert() {
-  const dir = join(tmpdir(), "browsertodo-fake-x");
-  const key = join(dir, "key.pem");
-  const cert = join(dir, "cert.pem");
-  if (!existsSync(key) || !existsSync(cert)) {
-    mkdirSync(dir, { recursive: true });
-    execFileSync("openssl", [
-      "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "30",
-      "-keyout", key, "-out", cert, "-subj", "/CN=x.com",
-      "-addext", "subjectAltName=DNS:x.com,DNS:twitter.com,IP:127.0.0.1",
-    ], { stdio: "ignore", env: { ...process.env, MSYS_NO_PATHCONV: "1" } });
-  }
-  return { key: readFileSync(key), cert: readFileSync(cert) };
-}
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -235,7 +217,7 @@ export function createFakeX() {
     send(404, page("Not found / X", "<main>Page not found</main>"));
   };
 
-  const server = https.createServer(ensureCert(), handler);
+  const server = https.createServer(selfSignedCert(["x.com", "twitter.com"]), handler);
   return {
     server,
     listen: (port = 443, host = "127.0.0.1") => new Promise((resolve) => server.listen(port, host, () => resolve(server.address().port))),

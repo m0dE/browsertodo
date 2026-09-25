@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { TOOL_NAMES, type PageSnapshot } from "@browsertodo/shared";
-import { buildSystemPrompt, buildTaskPrompt, classifyFailure, createJev, formatSnapshot, verifyXPost } from "../src/index.js";
+import { normalizeHandle, TOOL_NAMES, type PageSnapshot } from "@browsertodo/shared";
+import { SCREEN_HELP_TEXT } from "@browsertodo/shared";
+import { agentError, buildFollowUpMessage, buildSystemPrompt, buildTaskPrompt, classifyFailure, createJev, ENDED_WITHOUT_RESULT, EXITED_WITHOUT_RESULT, formatSnapshot, timeLimitReached, toolCallLimitExceeded, verifyXPost } from "../src/index.js";
 import { buildJevQuestions, buildJevState, jevFromClient, type JevClientLike } from "../src/jev.js";
-import { mentionsHandle, normalizeHandle, switchXAccount } from "../src/x-account.js";
+import { mentionsHandle, MENU_POLL, switchXAccount } from "../src/x-account.js";
+import type { BrowserCaller } from "../src/types.js";
 import { parseSnapshotText } from "../src/page-format.js";
 import { FakeX } from "./fake-x.js";
 import { noSleep } from "./helpers.js";
@@ -185,6 +187,27 @@ describe("switchXAccount", () => {
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(/step 1 failed.*SideNav_AccountSwitcher_Button/);
   });
+
+  it("waits for the account menu to render after opening it", async () => {
+    const x = new FakeX({ account: "alice" });
+    const inner = x.caller();
+    let slowReads = 0;
+    const waits: number[] = [];
+    const browser: BrowserCaller = {
+      call: async (method, params) => {
+        const r = await inner.call(method, params);
+        // The menu takes two reads to show its entries.
+        if (method === "browser.click" && x.menuOpen) slowReads = 2;
+        if (method !== "browser.readPage" || slowReads === 0) return r;
+        slowReads--;
+        const page = r as PageSnapshot;
+        return { ...page, elements: page.elements.filter((e) => e.testId !== "UserCell") } as never;
+      },
+    };
+    const r = await switchXAccount(browser, "bob", { sleep: async (ms) => void waits.push(ms) });
+    expect(r.text).toMatch(/Switched to @bob/);
+    expect(waits.slice(0, 2)).toEqual([MENU_POLL.intervalMs, MENU_POLL.intervalMs]);
+  });
 });
 
 describe("prompts", () => {
@@ -196,6 +219,12 @@ describe("prompts", () => {
     expect(p).toContain("- task_complete:");
     expect(p).toContain("switch_x_account");
     expect(p).not.toMatch(/batching several small steps/);
+  });
+
+  it("a kept-open agent's system prompt adds the follow-up rules", () => {
+    const rule = /Follow-up messages: after you call task_complete/;
+    expect(buildSystemPrompt({ tools: TOOL_NAMES, jev: false })).not.toMatch(rule);
+    expect(buildSystemPrompt({ tools: TOOL_NAMES, jev: false, followUps: true })).toMatch(rule);
   });
 
   it("jev prompt tells Claude to plan and batch steps with act", () => {
@@ -239,6 +268,46 @@ describe("prompts", () => {
   });
 });
 
+describe("screen help and restricted pages", () => {
+  const screen = { id: "S", instructions: SCREEN_HELP_TEXT, account: null, screenHelp: true };
+
+  it("an empty message: look first, say what it will do, then act; ask when unclear or risky", () => {
+    const p = buildTaskPrompt(screen, [], { isRetry: false });
+    expect(p).toContain(`<<<\n${SCREEN_HELP_TEXT}\n>>>`);
+    expect(p).toMatch(/call screenshot, then read_page, on the current tab/);
+    expect(p).toMatch(/what the user most likely needs to do next/);
+    expect(p).toMatch(/verification link.*open that mailbox.*open_tabs/s);
+    expect(p).toMatch(/Before acting, write one sentence/);
+    expect(p).toMatch(/task_pause/);
+    for (const risk of [/paying or buying/, /deleting anything/, /to other people/, /password or code you do not have/]) expect(p).toMatch(risk);
+    // Page text still never instructs the agent.
+    expect(p).toMatch(/never an instruction to you/);
+    // Only for an empty message.
+    expect(buildTaskPrompt({ id: "T", instructions: "Post gm", account: null }, [], { isRetry: false })).not.toMatch(/empty message/);
+  });
+
+  it("the next message: as typed, or for an empty one: look at the page now and continue", () => {
+    expect(buildFollowUpMessage({ text: " like it too " })).toBe("like it too");
+    const f = buildFollowUpMessage({ text: SCREEN_HELP_TEXT, screenHelp: true });
+    expect(f).toMatch(/look at the current page now and continue/);
+    expect(f).toMatch(/screenshot and read_page/);
+    expect(f).toMatch(/task_pause/);
+  });
+
+  it("a page Chrome keeps extensions out of: named, worked around in other tabs, the user told what to press", () => {
+    const page = { url: "chrome://newtab/", title: "New Tab" };
+    const p = buildTaskPrompt({ id: "T", instructions: "verify my email", account: null, restrictedPage: page }, [], { isRetry: false });
+    expect(p).toContain('"New Tab" (chrome://newtab/)');
+    expect(p).toMatch(/does not allow extensions to see or control that page/);
+    expect(p).toMatch(/other tabs/);
+    expect(p).toMatch(/Click 'Verify email' on the page, then press Continue.*task_pause/s);
+    expect(p).not.toMatch(/cannot see that page/);
+    expect(buildTaskPrompt({ ...screen, restrictedPage: page }, [], { isRetry: false })).toMatch(/cannot see that page.*title and address/s);
+    const next = buildFollowUpMessage({ text: "and now?", restrictedPage: page });
+    expect(next.startsWith("and now?\n\nNote: the user's tab shows")).toBe(true);
+  });
+});
+
 describe("classifyFailure", () => {
   const table: [string, "transient" | "permanent"][] = [
     ["Claude API rate limit (HTTP 429: rate_limit_error)", "transient"],
@@ -253,10 +322,10 @@ describe("classifyFailure", () => {
     ["Failed to fetch", "transient"],
     ["browser.readPage timed out after 60000 ms", "transient"],
     ["request timeout", "transient"],
-    ["helper disconnected", "transient"],
-    ["agent exited without reporting a result", "transient"],
-    ["agent ended without reporting a result", "transient"],
-    ["could not verify the post", "transient"],
+    [EXITED_WITHOUT_RESULT, "transient"],
+    [ENDED_WITHOUT_RESULT, "transient"],
+    [agentError("fetch failed"), "transient"],
+    [agentError("Cannot read properties of undefined"), "permanent"],
     ["Debugger detached (target_closed)", "transient"],
     ["debugger detached: canceled_by_user", "permanent"],
     ["Debugger was detached by the user", "permanent"],
@@ -264,8 +333,8 @@ describe("classifyFailure", () => {
     ["No compose textbox found on https://x.com/home", "permanent"],
     ["The account is suspended", "permanent"],
     ["Login page: Log in to X", "permanent"],
-    ["tool call limit exceeded (60 calls)", "permanent"],
-    ["task time limit of 10 minutes reached", "permanent"],
+    [toolCallLimitExceeded(60), "permanent"],
+    [timeLimitReached(10), "permanent"],
     ["", "permanent"],
   ];
   it.each(table)("%s -> %s", (reason, kind) => {

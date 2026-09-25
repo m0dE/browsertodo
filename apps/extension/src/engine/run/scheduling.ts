@@ -7,17 +7,15 @@
  * shares one login session in the browser, so switching accounts in one tab
  * switches it in all of them.
  */
-import type { ExtensionSettings } from "@browsertodo/shared";
+import { delay, type ExtensionSettings, type Sleep } from "@browsertodo/shared";
 
-/** Agent slots (tabs) in use at most: maxParallelTasks due tasks plus one-off runs beside them. */
-export const MAX_SLOTS = 6;
 /** The most due tasks that run at once, whatever maxParallelTasks says. */
 const MAX_PARALLEL_TASKS = 4;
 export const X_WAIT_STATUS = "Waiting for the other X task to finish (X accounts share one login in this browser)";
 
-/** How many due tasks may run at once: one without a slot pool. */
-export function scheduledCap(settings: ExtensionSettings, pooled: boolean): number {
-  return pooled ? Math.max(1, Math.min(MAX_PARALLEL_TASKS, settings.maxParallelTasks)) : 1;
+/** How many due tasks may run at once (never more than there are slots). */
+export function scheduledCap(settings: ExtensionSettings, slotCount: number): number {
+  return Math.max(1, Math.min(MAX_PARALLEL_TASKS, slotCount, settings.maxParallelTasks));
 }
 
 /** Slot index -> the session using it (or a placeholder owner reserving it while the session starts). */
@@ -133,12 +131,12 @@ export class Signal {
 export class Pacer {
   private wake: (() => void) | null = null;
 
-  constructor(private readonly sleep?: (ms: number) => Promise<void>) {}
+  constructor(private readonly sleep?: Sleep) {}
 
   async pause(ms: number): Promise<void> {
     if (ms <= 0) return;
     const woke = new Promise<void>((r) => (this.wake = r));
-    const slept = this.sleep ? this.sleep(ms) : new Promise<void>((r) => setTimeout(r, ms));
+    const slept = (this.sleep ?? delay)(ms);
     await Promise.race([slept, woke]);
     this.wake = null;
   }

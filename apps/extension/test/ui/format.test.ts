@@ -1,23 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { UiState } from "../../src/ui-protocol.js";
-import { DEFAULT_SETTINGS } from "@browsertodo/shared";
 import {
-  accountLabel,
-  bytesToBase64,
-  clockLabel,
-  firstLine,
+  DEFAULT_SETTINGS,
+  formatBytes,
+  formatCents,
+  formatRelative,
   localInputToIso,
-  modelChip,
-  modelLabel,
   parseRepeatTimes,
-  relativeTime,
-  sessionMeta,
+  planName,
+  planStatusText,
   repeatLabel,
   splitTasks,
-  statusLine,
   taskChip,
   taskNextTime,
-} from "../../src/sidepanel/format.js";
+} from "@browsertodo/shared";
+import { accountLabel, bytesToBase64, clockLabel, firstLine, modelChip, sessionMeta, statusLine } from "../../src/sidepanel/format.js";
+import { modelLabel } from "../../src/ui/labels.js";
 
 const NOW = new Date(2026, 8, 24, 12, 0, 0).getTime(); // local noon
 const at = (h: number, m = 0, dayOffset = 0) => new Date(2026, 8, 24 + dayOffset, h, m).toISOString();
@@ -53,12 +51,13 @@ describe("statusLine", () => {
 });
 
 describe("times", () => {
-  it("relativeTime", () => {
-    expect(relativeTime(new Date(NOW - 10_000).toISOString(), NOW)).toBe("just now");
-    expect(relativeTime(new Date(NOW - 5 * 60_000).toISOString(), NOW)).toBe("5 min ago");
-    expect(relativeTime(new Date(NOW + 3 * 3600_000).toISOString(), NOW)).toBe("in 3 h");
-    expect(relativeTime(new Date(NOW - 2 * 86400_000).toISOString(), NOW)).toBe("2 d ago");
-    expect(relativeTime("nope", NOW)).toBe("");
+  it("formatRelative", () => {
+    expect(formatRelative(new Date(NOW - 10_000).toISOString(), NOW)).toBe("just now");
+    expect(formatRelative(new Date(NOW - 5 * 60_000).toISOString(), NOW)).toBe("5 min ago");
+    expect(formatRelative(new Date(NOW + 3 * 3600_000).toISOString(), NOW)).toBe("in 3 h");
+    expect(formatRelative(new Date(NOW - 2 * 86400_000).toISOString(), NOW)).toBe("2 days ago");
+    expect(formatRelative(new Date(NOW - 86400_000).toISOString(), NOW)).toBe("1 day ago");
+    expect(formatRelative("nope", NOW)).toBe("");
   });
   it("clockLabel", () => {
     expect(clockLabel(at(14, 30), NOW)).toBe("today 14:30");
@@ -125,7 +124,7 @@ describe("tasks", () => {
     expect(finished.map((x) => x.id)).toEqual(["new-fail", "old-done"]);
   });
   it("labels", () => {
-    expect(repeatLabel({ dailyAt: ["09:00", "18:00"] })).toBe("daily 09:00, 18:00");
+    expect(repeatLabel({ dailyAt: ["09:00", "18:00"] })).toBe("daily at 09:00, 18:00");
     expect(repeatLabel(null)).toBe("");
     expect(accountLabel("myhandle")).toBe("@myhandle");
     expect(accountLabel("@myhandle")).toBe("@myhandle");
@@ -203,5 +202,26 @@ describe("hosted AI in the status line and the model chip", () => {
     const out = modelChip(state({ account: account({ outOfCredit: { topupUrl: "u" } }) }, { effective: "browsertodo" }));
     expect(out).toMatchObject({ label: "Out of usage credit", outOfCredit: true });
     expect(modelChip(state({ account: account() })).hosted).toBe(false);
+  });
+});
+
+describe("shared formatting", () => {
+  it("money: cents to dollars, thousands grouped, sub-cent charges not shown as $0.00", () => {
+    expect(formatCents(421)).toBe("$4.21");
+    expect(formatCents(-12)).toBe("-$0.12");
+    expect(formatCents(123456)).toBe("$1,234.56");
+    expect(formatCents(0.3)).toBe("<$0.01");
+    expect(formatCents(1000, { whole: true })).toBe("$10");
+  });
+  it("file sizes", () => {
+    expect(formatBytes(512)).toBe("512 B");
+    expect(formatBytes(1536)).toBe("1.5 KB");
+    expect(formatBytes(2 * 1024 * 1024)).toBe("2 MB");
+  });
+  it("plans", () => {
+    expect(planName("plus")).toBe("Plus");
+    expect(planName(undefined)).toBe("Free");
+    expect(planStatusText({ status: "past_due", cancelAtPeriodEnd: false })).toBe("Payment overdue");
+    expect(planStatusText({ status: "active", cancelAtPeriodEnd: false })).toBeNull();
   });
 });

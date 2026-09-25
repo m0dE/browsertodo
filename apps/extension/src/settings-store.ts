@@ -1,6 +1,9 @@
-import { ExtensionSettings, parseSettings } from "@browsertodo/shared";
+import { ExtensionSettings, parseSettings, REDACTED, SECRET_SETTING_KEYS } from "@browsertodo/shared";
 
+/** The periodic due check, every intervalMinutes. */
 export const ALARM_NAME = "browsertodo-run";
+/** One-shot alarm for the next task that becomes due (notBefore / retryAfter); set by the service worker. */
+export const DUE_ALARM = "browsertodo-due";
 const SETTINGS_KEY = "settings";
 const RUNNER_ID_KEY = "runnerId";
 
@@ -14,19 +17,17 @@ export async function saveSettings(patch: Partial<ExtensionSettings>): Promise<E
   return storeSettings(parseSettings({ ...(await loadSettings()), ...patch }));
 }
 
-const SECRET_FIELDS = ["anthropicApiKey", "jevApiKey", "runnerKey"] as const;
-
 /**
  * Applies a partial update from the UI. Secret fields: omitted (or the
- * redaction marker "set") keeps the stored value, "" clears it, anything
+ * redaction marker REDACTED) keeps the stored value, "" clears it, anything
  * else replaces it. Unknown keys are ignored; invalid values keep the old value.
  */
 export function applySettingsPatch(current: ExtensionSettings, patch: Partial<ExtensionSettings>): ExtensionSettings {
   const next: Record<string, unknown> = { ...current };
   for (const [key, value] of Object.entries(patch ?? {})) {
     if (!(key in current) || value === undefined) continue;
-    if ((SECRET_FIELDS as readonly string[]).includes(key)) {
-      if (typeof value !== "string" || value === "set") continue;
+    if ((SECRET_SETTING_KEYS as readonly string[]).includes(key)) {
+      if (typeof value !== "string" || value === REDACTED) continue;
       next[key] = value.trim();
       continue;
     }

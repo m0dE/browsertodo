@@ -2,7 +2,15 @@
  * The pure rules of local tasks: checking what the user entered, the daily
  * repeat schedule, and how the end of a run changes a task.
  */
-import { MAX_INSTRUCTIONS_CHARS, RepeatRule, type LocalTask, type TaskRunResult } from "@browsertodo/shared";
+import {
+  MAX_ACCOUNT_CHARS,
+  MAX_INSTRUCTIONS_CHARS,
+  nextOccurrenceInZone,
+  normalizeRepeat,
+  RepeatRule,
+  type LocalTask,
+  type TaskRunResult,
+} from "@browsertodo/shared";
 
 /** A local task fails for good after this many attempts. */
 export const MAX_LOCAL_ATTEMPTS = 5;
@@ -16,21 +24,11 @@ export type StoredLocalTask = LocalTask & {
 };
 
 /**
- * The next local wall-clock time from dailyAt ("HH:MM", local time zone)
- * strictly after `after`.
+ * The next local wall-clock time from dailyAt ("HH:MM", the browser's time
+ * zone) strictly after `after`.
  */
 export function nextOccurrence(dailyAt: string[], after: Date): Date {
-  if (dailyAt.length === 0) throw new Error("repeat rule has no times");
-  for (let day = 0; day <= 2; day++) {
-    let best: Date | null = null;
-    for (const hhmm of dailyAt) {
-      const [h, m] = hhmm.split(":").map(Number) as [number, number];
-      const cand = new Date(after.getFullYear(), after.getMonth(), after.getDate() + day, h, m, 0, 0);
-      if (cand.getTime() > after.getTime() && (!best || cand < best)) best = cand;
-    }
-    if (best) return best;
-  }
-  throw new Error("no next occurrence found");
+  return nextOccurrenceInZone(dailyAt, after, Intl.DateTimeFormat().resolvedOptions().timeZone);
 }
 
 export function cleanInstructions(text: unknown): string {
@@ -43,7 +41,7 @@ export function cleanInstructions(text: unknown): string {
 export function cleanAccount(a: unknown): string | null {
   if (typeof a !== "string") return null;
   const t = a.trim();
-  if (t.length > 100) throw new Error("Account is longer than 100 characters");
+  if (t.length > MAX_ACCOUNT_CHARS) throw new Error(`Account is longer than ${MAX_ACCOUNT_CHARS} characters`);
   return t || null;
 }
 
@@ -58,7 +56,7 @@ export function cleanRepeat(r: unknown): RepeatRule | null {
   if (r === null || r === undefined) return null;
   const parsed = RepeatRule.safeParse(r);
   if (!parsed.success) throw new Error("Repeat times must be HH:MM (24 h), 1 to 24 of them");
-  return { dailyAt: [...new Set(parsed.data.dailyAt)].sort() };
+  return normalizeRepeat(parsed.data);
 }
 
 export const byCreated = (a: StoredLocalTask, b: StoredLocalTask) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0);

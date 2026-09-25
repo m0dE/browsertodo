@@ -1,6 +1,5 @@
 /** The options page's Test buttons. Each resolves { ok, detail } and never throws. */
-import type { ExtensionSettings, PageSnapshot } from "@browsertodo/shared";
-import { errText } from "../errors.js";
+import { ANTHROPIC_API_BASE, ANTHROPIC_API_VERSION, errorMessage, type ExtensionSettings, type PageSnapshot } from "@browsertodo/shared";
 import type { CoreApi } from "./brains.js";
 
 export interface TestResult {
@@ -8,7 +7,7 @@ export interface TestResult {
   detail: string;
 }
 
-export const ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models";
+export const ANTHROPIC_MODELS_URL = `${ANTHROPIC_API_BASE}/models`;
 
 /** GET /v1/models with the stored key: proves the key works without spending tokens. */
 export async function testClaude(settings: ExtensionSettings, fetchFn: typeof fetch = (i, init) => fetch(i, init)): Promise<TestResult> {
@@ -19,12 +18,12 @@ export async function testClaude(settings: ExtensionSettings, fetchFn: typeof fe
       method: "GET",
       headers: {
         "x-api-key": settings.anthropicApiKey,
-        "anthropic-version": "2023-06-01",
+        "anthropic-version": ANTHROPIC_API_VERSION,
         "anthropic-dangerous-direct-browser-access": "true",
       },
     });
   } catch (err) {
-    return { ok: false, detail: `Cannot reach api.anthropic.com: ${errText(err)}` };
+    return { ok: false, detail: `Cannot reach ${new URL(ANTHROPIC_API_BASE).host}: ${errorMessage(err)}` };
   }
   const body = (await res.json().catch(() => null)) as { data?: { id?: string }[]; error?: { message?: string } } | null;
   if (res.status === 401 || res.status === 403) return { ok: false, detail: `Claude API key rejected (HTTP ${res.status})` };
@@ -61,7 +60,7 @@ export async function testJev(settings: ExtensionSettings, core: Pick<CoreApi, "
       detail: `Jev answered in ${ms} ms: ${d.operation} ${target} (confidence ${d.confidence.toFixed(2)})${right ? "" : " (unexpected choice)"}`,
     };
   } catch (err) {
-    return { ok: false, detail: `Jev test failed: ${errText(err)}` };
+    return { ok: false, detail: `Jev test failed: ${errorMessage(err)}` };
   }
 }
 
@@ -76,6 +75,6 @@ export async function testCloud(
     const r = await check(settings);
     return r.ok ? { ok: true, detail: `Connected to ${settings.apiBase}` } : { ok: false, detail: r.error };
   } catch (err) {
-    return { ok: false, detail: errText(err) };
+    return { ok: false, detail: errorMessage(err) };
   }
 }

@@ -17,7 +17,22 @@
   --bad: #b91c1c;
   --bad-soft: #fcebeb;
   --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --radius-sm: 6px;
   --radius: 8px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-lg: 14px;
+  /* Stacking: sticky bars, popups (menus, tips), the voice veil and what stays above it. */
+  --z-sticky: 2;
+  --z-popup: 10;
+  --z-veil: 30;
+  --z-above-veil: 31;
+  --hover: color-mix(in srgb, var(--text) 8%, transparent);
+  --focus-ring: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  --knob: #fff;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -52,7 +67,7 @@ body {
 h1, h2, h3 { margin: 0; font-weight: 600; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
-code, pre { font-family: var(--mono); font-size: 12px; }
+code, pre { font-family: var(--mono); font-size: var(--text-sm); }
 
 /* Fields */
 input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), textarea, select {
@@ -60,14 +75,14 @@ input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), textarea, s
   color: var(--text);
   background: var(--field);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 6px 8px;
   min-width: 0;
   width: 100%;
 }
 textarea { resize: vertical; display: block; }
 input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible, summary:focus-visible, .btn:focus-within {
-  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline: var(--focus-ring);
   outline-offset: 1px;
 }
 input:focus, textarea:focus { border-color: var(--accent); }
@@ -75,7 +90,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); margi
 ::placeholder { color: var(--faint); }
 
 .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.field > span { color: var(--muted); font-size: 12px; }
+.field > span { color: var(--muted); font-size: var(--text-sm); }
 
 /* Buttons */
 button, .btn {
@@ -85,7 +100,7 @@ button, .btn {
   justify-content: center;
   gap: 4px;
   padding: 5px 12px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
@@ -99,19 +114,19 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button.primary:hover { filter: brightness(1.08); }
 button.ghost, .btn.ghost { background: transparent; }
 button.danger { background: transparent; color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
-button.small, .btn.small { padding: 3px 9px; font-size: 12px; }
+button.small, .btn.small { padding: 3px 9px; font-size: var(--text-sm); }
 button.link { border: 0; background: none; padding: 0; color: var(--accent); font-weight: 500; }
 button.link:hover { text-decoration: underline; }
-button.icon { border: 0; background: none; padding: 4px; color: var(--muted); border-radius: 6px; }
-button.icon:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+button.icon { border: 0; background: none; padding: 4px; color: var(--muted); border-radius: var(--radius-sm); }
+button.icon:hover { color: var(--text); background: var(--hover); }
 
 /* Status chips */
 .chip {
   display: inline-block;
-  font-size: 11px;
+  font-size: var(--text-xs);
   line-height: 18px;
   padding: 0 7px;
-  border-radius: 9px;
+  border-radius: var(--radius-lg);
   white-space: nowrap;
   font-weight: 500;
   background: color-mix(in srgb, var(--muted) 14%, transparent);
@@ -122,7 +137,7 @@ button.icon:hover { color: var(--text); background: color-mix(in srgb, var(--tex
 .chip[data-tone="bad"] { background: var(--bad-soft); color: var(--bad); }
 .chip[data-tone="accent"] { background: var(--accent-soft); color: var(--accent); }
 
-.msg { margin: 0; color: var(--muted); font-size: 12px; min-height: 0; }
+.msg { margin: 0; color: var(--muted); font-size: var(--text-sm); min-height: 0; }
 .msg:empty { display: none; }
 .msg[data-tone="ok"] { color: var(--ok); }
 .msg[data-tone="bad"] { color: var(--bad); }
@@ -135,3 +150,11 @@ button.icon:hover { color: var(--text); background: color-mix(in srgb, var(--tex
 
 /* Cards: each page sets its own padding, gap and radius. */
 .card { background: var(--surface); border: 1px solid var(--border); display: flex; flex-direction: column; }
+
+/* A status dot; its colour follows data-tone (on the dot, or on its .status line in the panel). */
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; display: inline-block; }
+.dot[data-tone="ok"] { background: var(--ok); }
+.dot[data-tone="warn"] { background: var(--warn); }
+.dot[data-tone="bad"] { background: var(--bad); }
+
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

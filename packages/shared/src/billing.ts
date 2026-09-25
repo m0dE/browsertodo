@@ -1,4 +1,5 @@
 import { z } from "zod";
+import catalog from "./billing-catalog.json";
 import { User } from "./task.js";
 
 /**
@@ -46,8 +47,47 @@ export const PlanCatalogEntry = z.object({
   priceCents: z.number().int(),
   creditCents: z.number().int(),
   apiKeys: z.boolean(),
+  /** Voice input in the side panel (POST /v1/ai/transcribe). */
+  voice: z.boolean(),
 });
 export type PlanCatalogEntry = z.infer<typeof PlanCatalogEntry>;
+
+/** What a plan unlocks: the boolean capability flags of the catalog. */
+export type PlanFeature = "apiKeys" | "voice";
+
+/** The 503 answer of a feature this server has not been configured for (its key or binding is missing). */
+export const NOT_SET_UP = {
+  billing: "Billing is not set up on this server yet",
+  hostedAi: "Hosted AI is not set up on this server yet",
+  jev: "Hosted Jev is not set up on this server yet",
+  voice: "Voice input is not set up on this server yet",
+} as const;
+
+/** The `message` of a 403 plan_required, per feature. */
+export const PLAN_REQUIRED_MESSAGES: Readonly<Record<PlanFeature, string>> = {
+  apiKeys: "API keys need a paid plan.",
+  voice: "Voice input needs a paid plan.",
+};
+
+/** The plans (decided by the owner; docs/BILLING-CONTRACT.md). The one plan table: API, dashboard, extension and the Stripe setup script read it. */
+export const PLAN_CATALOG: Readonly<Record<PlanId, PlanCatalogEntry>> = z.record(PlanId, PlanCatalogEntry).parse(catalog.plans);
+
+/** The Stripe API version the server calls with and pins its webhook endpoint to. */
+export const STRIPE_API_VERSION: string = catalog.stripe.apiVersion;
+/** The Stripe events the webhook handles (and the setup script subscribes to). */
+export const STRIPE_WEBHOOK_EVENTS: readonly string[] = catalog.stripe.webhookEvents;
+
+/** Statuses in which a plan's features work (past_due: Stripe is still retrying the payment). */
+export const GOOD_STANDING: readonly PlanStatus[] = ["active", "past_due"];
+
+/** True when `plan` is in good standing and its catalog entry has `feature`. */
+export function planAllows(plan: { id: string; status: string } | null | undefined, feature: PlanFeature): boolean {
+  if (!plan || !Object.hasOwn(PLAN_CATALOG, plan.id)) return false;
+  return PLAN_CATALOG[plan.id as PlanId][feature] && (GOOD_STANDING as readonly string[]).includes(plan.status);
+}
+
+/** Fair-use limits on API-key traffic (docs/BILLING-CONTRACT.md): the API enforces them, the dashboard and extension state them. */
+export const API_KEY_LIMITS = { requestsPerMinute: 60, taskCreationsPerDay: 10_000 } as const;
 
 /** Top-up amounts that can be bought, in cents. */
 export const TOPUP_AMOUNTS_CENTS = [1000, 2500, 5000] as const;
@@ -71,7 +111,7 @@ export type CheckoutInput = z.infer<typeof CheckoutInput>;
 
 /** POST /v1/billing/topup. */
 export const TopupInput = z.object({
-  amountCents: z.union([z.literal(1000), z.literal(2500), z.literal(5000)]),
+  amountCents: z.literal(TOPUP_AMOUNTS_CENTS),
   returnUrl: z.string().min(1).max(2000),
 });
 export type TopupInput = z.infer<typeof TopupInput>;
@@ -84,13 +124,28 @@ export type PortalInput = z.infer<typeof PortalInput>;
 export const RedirectUrlResponse = z.object({ url: z.string() });
 export type RedirectUrlResponse = z.infer<typeof RedirectUrlResponse>;
 
+/** The `error` code of a 402 from /v1/ai/* (no usage credit left). */
+export const OUT_OF_CREDIT_CODE = "out_of_credit";
+/** What the user reads when the hosted AI has no usage credit left (a paused run's reason starts with it). */
+export const OUT_OF_CREDIT = "Out of usage credit";
+
 /** 402 of /v1/ai/* when the user has no credit left. */
 export const OutOfCreditError = z.object({
-  error: z.literal("out_of_credit"),
+  error: z.literal(OUT_OF_CREDIT_CODE),
   message: z.string(),
   topupUrl: z.string(),
 });
 export type OutOfCreditError = z.infer<typeof OutOfCreditError>;
+
+/** 403 of a feature the user's plan does not include (e.g. voice input on Free). */
+export const PLAN_REQUIRED = "plan_required";
+export const PlanRequiredError = z.object({
+  error: z.literal(PLAN_REQUIRED),
+  message: z.string(),
+  /** Where to pick a plan (the dashboard's billing page). */
+  upgradeUrl: z.string(),
+});
+export type PlanRequiredError = z.infer<typeof PlanRequiredError>;
 
 /** Body of POST /v1/ai/jev: a TypeSafe systemOne request without `model`. */
 export const JevProxyInput = z.object({
@@ -108,7 +163,8 @@ export const CSRF_HEADER = "X-Requested-With";
 export const CSRF_HEADER_VALUE = "browsertodo";
 export const SESSION_COOKIE = "bt_session";
 
-export const UsageKind = z.enum(["ai_messages", "jev"]);
+/** "transcribe" = voice input (Workers AI speech-to-text), billed by audio length. */
+export const UsageKind = z.enum(["ai_messages", "jev", "transcribe"]);
 export type UsageKind = z.infer<typeof UsageKind>;
 
 export const UsageEvent = z.object({
@@ -122,6 +178,8 @@ export const UsageEvent = z.object({
   costMicroCents: z.number().int(),
   chargedCents: z.number(),
   sessionId: z.string().nullable().optional(),
+  /** transcribe only: seconds of audio billed. */
+  audioSeconds: z.number().optional(),
 });
 export type UsageEvent = z.infer<typeof UsageEvent>;
 
@@ -140,9 +198,19 @@ export const UsageReport = z.object({
     chargedCents: z.number(),
     creditGrantedCents: z.number(),
     topupsCents: z.number(),
+    /** Seconds of voice input transcribed (optional: older servers do not send it). */
+    audioSeconds: z.number().optional(),
   }),
   byModel: z.array(
-    z.object({ model: z.string(), requests: z.number().int(), inputTokens: z.number().int(), outputTokens: z.number().int(), chargedCents: z.number() }),
+    z.object({
+      model: z.string(),
+      requests: z.number().int(),
+      inputTokens: z.number().int(),
+      outputTokens: z.number().int(),
+      chargedCents: z.number(),
+      /** Seconds of audio, for speech-to-text models (optional: older servers do not send it). */
+      audioSeconds: z.number().optional(),
+    }),
   ),
   byDay: z.array(z.object({ date: z.string(), tasksRun: z.number().int(), chargedCents: z.number() })),
 });

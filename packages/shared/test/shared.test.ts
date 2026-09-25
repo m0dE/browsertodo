@@ -161,13 +161,13 @@ describe("multi-tab tools", () => {
   it("are offered to tasks and to mcp-server --attach, with descriptions", () => {
     for (const n of ["open_tabs", "switch_tab", "list_tabs", "close_tabs"] as const) {
       expect(TOOL_DESCRIPTIONS[n].length).toBeGreaterThan(10);
-      expect(toolsFor({ jev: false })).toContain(n);
-      expect(toolsFor({ jev: true, interactive: true })).toContain(n);
+      expect(toolsFor()).toContain(n);
+      expect(toolsFor({ interactive: true })).toContain(n);
       expect(INTERACTIVE_TOOL_NAMES).toContain(n);
     }
     // act replaces click/type; no task_* for --attach.
-    expect(toolsFor({ jev: false })).not.toContain("click");
-    expect(toolsFor({ jev: true, interactive: true })).not.toContain("task_complete");
+    expect(toolsFor()).not.toContain("click");
+    expect(toolsFor({ interactive: true })).not.toContain("task_complete");
   });
 });
 
@@ -210,5 +210,20 @@ describe("url helpers", () => {
     expect(isXStatusUrl("https://x.com/home?ref=/status/123")).toBe(false);
     expect(isXStatusUrl("https://x.com/i/web/status/123")).toBe(true);
     expect(isXStatusUrl("https://example.com/alpha/status/123")).toBe(false);
+  });
+});
+
+describe("plan features", () => {
+  it("a feature works when the catalog grants it and the plan is in good standing", async () => {
+    const { PLAN_CATALOG, planAllows, VOICE_LIMITS } = await import("../src/index.js");
+    expect(Object.values(PLAN_CATALOG).filter((p) => p.voice).map((p) => p.id)).toEqual(["starter", "plus", "pro"]);
+    expect(planAllows({ id: "plus", status: "active" }, "voice")).toBe(true);
+    expect(planAllows({ id: "pro", status: "past_due" }, "apiKeys")).toBe(true);
+    expect(planAllows({ id: "starter", status: "canceled" }, "voice")).toBe(false);
+    expect(planAllows({ id: "free", status: "none" }, "voice")).toBe(false);
+    expect(planAllows({ id: "gold", status: "active" }, "voice")).toBe(false);
+    expect(planAllows(null, "voice")).toBe(false);
+    // 60 s of the clips the extension sends fits the byte limit.
+    expect(44 + (VOICE_LIMITS.maxClipMs / 1000) * VOICE_LIMITS.sampleRate * 2).toBeLessThanOrEqual(VOICE_LIMITS.maxClipBytes);
   });
 });

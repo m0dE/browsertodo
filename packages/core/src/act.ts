@@ -9,15 +9,21 @@
  * (once). The batch stops at the first step Jev is not sure about and
  * returns candidates for that step only, so the model can pick one.
  */
-import type { AgentEvent, BrowserMethod, BrowserMethods, ElementInfo, ElementPicks, PageSnapshot, ToolArgsOf, ToolResult } from "@browsertodo/shared";
+import { errorMessage, type AgentEvent, type BrowserMethod, type BrowserMethods, type ElementInfo, type ElementPicks, type PageSnapshot, type Sleep, type ToolArgsOf, type ToolResult } from "@browsertodo/shared";
+import { OutOfCreditError } from "./api-errors.js";
 import type { JevDecision, JevLike } from "./types.js";
 import { formatCompact, formatElement, formatSnapshot } from "./page-format.js";
-import { errorMessage } from "./util.js";
 
 /** Marker in act results when a step was not executed. */
 export const NOT_CONFIDENT = "not confident";
 /** Candidates returned for a step Jev was not sure about. */
 export const MAX_CANDIDATES = 40;
+/** Time the page gets to react after act types into an element. */
+export const SETTLE_AFTER_TYPE_MS = 300;
+/** Time the page gets to react after act clicks an element. */
+export const SETTLE_AFTER_CLICK_MS = 500;
+/** How long a step waits when Jev says the page is still loading. */
+export const JEV_WAIT_MS = 1000;
 
 type Step = ToolArgsOf<"act">["steps"][number];
 
@@ -44,8 +50,10 @@ export interface ActContext {
   browser: <M extends BrowserMethod>(method: M, params: BrowserMethods[M]["params"]) => Promise<BrowserMethods[M]["result"]>;
   jev: JevLike | null;
   jevThreshold: number;
-  sleep: (ms: number) => Promise<void>;
+  sleep: Sleep;
   emit: (e: AgentEvent) => void;
+  /** Jev was refused for lack of usage credit (hosted Jev): ends the task. Returns the act result. */
+  outOfCredit: (e: OutOfCreditError) => ToolResult;
   /** Default: a fresh gate (nothing pending). */
   gate?: ActGate;
 }
@@ -126,6 +134,17 @@ export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult
   const jevOn = jev !== null;
   const readPage = () => browser("browser.readPage", {});
   const pageText = async () => formatSnapshot(await readPage(), { words: jevOn });
+  /** Types `text` into the element, or clicks it when there is no text, then lets the page settle. Returns what was done. */
+  const perform = async (index: number, text: string | undefined): Promise<string> => {
+    if (text) {
+      await browser("browser.type", { index, text });
+      await sleep(SETTLE_AFTER_TYPE_MS);
+      return `typed ${text.length} characters into`;
+    }
+    await browser("browser.click", { index });
+    await sleep(SETTLE_AFTER_CLICK_MS);
+    return "clicked";
+  };
 
   // Jev mode: index steps only for the steps the last act result left to Claude.
   const offered = gate.pending;
@@ -168,21 +187,14 @@ export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult
     const n = i + 1;
     const step = steps[i]!;
     const hasText = step.text !== undefined && step.text !== "";
+    const couldNotUse = async (index: number, e: unknown, d?: JevDecision) => stop(n, `"${step.goal}": could not use element [${index}]: ${errorMessage(e)}`, await readPage(), d);
     if (step.index !== undefined) {
       // The model knows the element (Jev off, or Jev was unsure about this step): run it directly.
       try {
-        if (hasText) {
-          await browser("browser.type", { index: step.index, text: step.text! });
-          lines.push(`step ${n}: typed ${step.text!.length} characters into [${step.index}] (picked by Claude)`);
-          await sleep(300);
-        } else {
-          await browser("browser.click", { index: step.index });
-          lines.push(`step ${n}: clicked [${step.index}] (picked by Claude)`);
-          await sleep(500);
-        }
+        lines.push(`step ${n}: ${await perform(step.index, step.text)} [${step.index}] (picked by Claude)`);
         gate.picks.claude++;
       } catch (e) {
-        return stop(n, `"${step.goal}": could not use element [${step.index}]: ${errorMessage(e)}`, await readPage());
+        return couldNotUse(step.index, e);
       }
       continue;
     }
@@ -197,6 +209,10 @@ export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult
       d = await jev.decide(input);
     } catch (e) {
       emit({ type: "jev", goal: step.goal, operation: "error", index: null, confidence: 0, executed: false, ms: Date.now() - started });
+      if (e instanceof OutOfCreditError) {
+        const ended = ctx.outOfCredit(e);
+        return { ...ended, text: [...lines, `step ${n}: "${step.goal}": ${e.message}`, ended.text].join("\n") };
+      }
       return stop(n, `"${step.goal}": Jev is unavailable (${errorMessage(e)})`, snap);
     }
     const ms = Date.now() - started;
@@ -213,28 +229,22 @@ export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult
     let op = d.operation;
     if ((op === "click" || op === "type") && target) op = hasText ? "type" : "click";
     switch (op) {
-      case "click": {
-        if (!target) {
-          jevEvent(false);
-          return stop(n, `"${step.goal}": ${conf}, but element [${d.index}] does not exist`, snap, d);
-        }
-        await browser("browser.click", { index: target.index });
-        jevEvent(true, op);
-        gate.picks.jev++;
-        lines.push(`step ${n}: clicked ${formatElement(target)} (picked by Jev, ${d.confidence.toFixed(2)}, ${ms} ms)`);
-        await sleep(500);
-        break;
-      }
+      case "click":
       case "type": {
         if (!target) {
           jevEvent(false);
           return stop(n, `"${step.goal}": ${conf}, but element [${d.index}] does not exist`, snap, d);
         }
-        await browser("browser.type", { index: target.index, text: step.text! });
+        let did: string;
+        try {
+          did = await perform(target.index, op === "type" ? step.text : undefined);
+        } catch (e) {
+          jevEvent(false, op);
+          return couldNotUse(target.index, e, d);
+        }
         jevEvent(true, op);
         gate.picks.jev++;
-        lines.push(`step ${n}: typed ${step.text!.length} characters into ${formatElement(target)} (picked by Jev, ${d.confidence.toFixed(2)}, ${ms} ms)`);
-        await sleep(300);
+        lines.push(`step ${n}: ${did} ${formatElement(target)} (picked by Jev, ${d.confidence.toFixed(2)}, ${ms} ms)`);
         break;
       }
       case "scroll":
@@ -246,9 +256,9 @@ export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult
         jevEvent(false);
         return stop(n, `"${step.goal}": Jev chose to press a key${target ? ` on ${formatElement(target)}` : ""}; call press_key yourself, or pick the element`, snap, d);
       case "wait":
-        await sleep(1000);
+        await sleep(JEV_WAIT_MS);
         jevEvent(true);
-        lines.push(`step ${n}: waited 1 s for the page`);
+        lines.push(`step ${n}: waited ${JEV_WAIT_MS / 1000} s for the page`);
         break;
       case "done": {
         jevEvent(true);

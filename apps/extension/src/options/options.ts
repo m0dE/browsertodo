@@ -4,19 +4,23 @@
  * themselves as they change; keys save with their own Save button.
  * What shows when comes from settingsView() (settings-view.ts).
  */
-import type { BrainMode, ExtensionSettings } from "@browsertodo/shared";
+import { openShortcutSettings, readShortcut } from "../shortcut.js";
+import { errorMessage, type BrainMode, type ExtensionSettings } from "@browsertodo/shared";
 import { uiRequest, type UiState } from "../ui-protocol.js";
-import { $, busy, errorText, flash, h } from "../sidepanel/dom.js";
-import { brainLabel } from "../sidepanel/format.js";
+import { $, busy, find, flash, h, restartAnimation } from "../ui/dom.js";
+import { brainLabel } from "../ui/labels.js";
 import { initAccountSection } from "./account-section.js";
+import { SaveQueue } from "./autosave.js";
+import { initSecretFields } from "./secret-field.js";
 import { initVaultSection } from "./vault-section.js";
-import { adjustedFields, buildSettingsPatch, helperStatus, SECRET_KEYS, type SecretKey } from "./settings-patch.js";
+import { adjustedFields, buildSettingsPatch, helperStatus } from "./settings-patch.js";
 import {
   BOOL_FIELDS,
   CUSTOM_MODEL,
   formValues,
   modelOptions,
   NUMBER_FIELDS,
+  NUMBER_RULES,
   parseForm,
   settingsView,
   TEXT_FIELDS,
@@ -39,7 +43,10 @@ const LABELS: Partial<Record<keyof ExtensionSettings, string>> = {
   pauseRetryMinutes: "retry needed-you tasks after",
   maxConsecutiveFailures: "failure limit",
 };
-const SECRET_LABELS: Record<SecretKey, string> = { anthropicApiKey: "Anthropic API key", jevApiKey: "Jev API key", runnerKey: "Runner key" };
+/** Typing pauses this long before a field saves. */
+const TYPING_SETTLE_MS = 700;
+/** How long "Saved" stays in the save note. */
+const SAVED_NOTE_MS = 1800;
 
 const form = $<HTMLFormElement>("form");
 const saveMsg = $("save-msg");
@@ -49,6 +56,12 @@ const tabs = initTabs();
 
 let state: UiState | null = null;
 let saved: ExtensionSettings | null = null;
+
+// The number fields take the settings schema's range.
+for (const k of NUMBER_FIELDS) {
+  input(k).min = String(NUMBER_RULES[k].min);
+  input(k).max = String(NUMBER_RULES[k].max);
+}
 
 modelSelect.replaceChildren(
   ...modelOptions().map((m) => h("option", { value: m.id }, m.label)),
@@ -96,8 +109,6 @@ function showErrors(onlyTouched = true): boolean {
 
 // ------------------------------------------------------------ saving
 
-let timer: ReturnType<typeof setTimeout> | undefined;
-let chain: Promise<void> = Promise.resolve();
 let hideTimer: ReturnType<typeof setTimeout> | undefined;
 
 function status(text: string, tone: "ok" | "bad" | "" = "ok"): void {
@@ -105,14 +116,14 @@ function status(text: string, tone: "ok" | "bad" | "" = "ok"): void {
   saveMsg.dataset.tone = tone;
   saveMsg.classList.toggle("show", !!text);
   clearTimeout(hideTimer);
-  if (tone === "ok" && text) hideTimer = setTimeout(() => saveMsg.classList.remove("show"), 1800);
+  if (tone === "ok" && text) hideTimer = setTimeout(() => saveMsg.classList.remove("show"), SAVED_NOTE_MS);
 }
 
 /** Saves whatever differs from the saved settings (fields with a problem are left out). */
 async function saveChanged(): Promise<boolean> {
   if (!saved) return true;
   const valid = showErrors();
-  const patch = buildSettingsPatch(saved, parseForm(readValues()), {});
+  const patch = buildSettingsPatch(saved, parseForm(readValues()));
   const ok = Object.keys(patch).length ? await sendPatch(patch) : true;
   // Fields with a problem keep their saved value until fixed.
   if (ok && !valid && form.querySelector("[aria-invalid=true]")) status("Not saved: fix the field marked in red", "bad");
@@ -131,31 +142,12 @@ async function sendPatch(patch: Partial<ExtensionSettings>): Promise<boolean> {
     } else status("Saved");
     return true;
   } catch (err) {
-    status(`Not saved: ${errorText(err)}`, "bad");
+    status(`Not saved: ${errorMessage(err)}`, "bad");
     return false;
   }
 }
 
-/** Queue a save; `delay` lets typing settle first. */
-function scheduleSave(delay = 0): void {
-  clearTimeout(timer);
-  timer = setTimeout(() => {
-    timer = undefined;
-    chain = chain.then(() => saveChanged().then(() => undefined));
-  }, delay);
-}
-
-/** Save anything pending now (before a test). */
-async function flush(): Promise<boolean> {
-  clearTimeout(timer);
-  timer = undefined;
-  let ok = true;
-  chain = chain.then(async () => {
-    ok = await saveChanged();
-  });
-  await chain;
-  return ok;
-}
+const saves = new SaveQueue(saveChanged);
 
 form.addEventListener("submit", (e) => e.preventDefault());
 form.addEventListener("input", (e) => {
@@ -164,14 +156,14 @@ form.addEventListener("input", (e) => {
   t.dataset.touched = "1";
   if (t.type === "checkbox") return;
   render();
-  scheduleSave(700);
+  saves.schedule(TYPING_SETTLE_MS);
 });
 form.addEventListener("change", (e) => {
   const t = e.target as HTMLInputElement;
   if (t.name === "brain" || t.id?.startsWith("f-")) {
     t.dataset.touched = "1";
     render();
-    scheduleSave();
+    saves.schedule();
   }
 });
 modelSelect.addEventListener("change", () => {
@@ -184,84 +176,12 @@ modelSelect.addEventListener("change", () => {
   }
   custom.value = modelSelect.value;
   render();
-  scheduleSave();
+  saves.schedule();
 });
 
 // ------------------------------------------------------------ keys (masked fields)
 
-/** Keys being replaced (Replace clicked), per key. */
-const replacing = new Set<SecretKey>();
-const secretNotes: Partial<Record<SecretKey, { text: string; tone: "ok" | "bad" | "" }>> = {};
-
-function renderSecret(key: SecretKey): void {
-  const host = document.querySelector<HTMLElement>(`[data-secret=${key}]`)!;
-  const label = host.querySelector("span")!;
-  const isSet = saved?.[key] === "set";
-  // A note from the last action on this key shows once, in the re-rendered field.
-  const note = h("p.msg", { role: "status" });
-  const last = secretNotes[key];
-  delete secretNotes[key];
-  if (last) flash(note, last.text, last.tone);
-  const say = (text: string, tone: "ok" | "bad" | "" = "") => flash(note, text, tone);
-  const done = (text: string) => {
-    secretNotes[key] = { text, tone: "ok" };
-    renderSecret(key);
-  };
-  let row: HTMLElement;
-  if (isSet && !replacing.has(key)) {
-    const remove = h("button.small.danger", { type: "button" }, "Remove");
-    remove.addEventListener("click", () =>
-      void busy(remove, async () => {
-        if (await sendPatch({ [key]: "" })) done(`${SECRET_LABELS[key]} removed.`);
-      }),
-    );
-    row = h(
-      "div.secret-row",
-      null,
-      h("div.secret-state", null, h("b", null, "Set"), h("span", null, "••••••••")),
-      h("button.small", { type: "button", onclick: () => { replacing.add(key); renderSecret(key); host.querySelector("input")?.focus(); } }, "Replace"),
-      remove,
-    );
-  } else {
-    const field = h("input", {
-      type: "password",
-      placeholder: isSet ? "New key" : "Paste the key",
-      autocomplete: "off",
-      spellcheck: "false",
-      "aria-label": SECRET_LABELS[key],
-    });
-    const save = h("button.small.primary", { type: "button", disabled: true }, "Save");
-    const doSave = () =>
-      void busy(save, async () => {
-        const value = field.value.trim();
-        if (!value) return say("Paste a key first.", "bad");
-        replacing.delete(key);
-        if (await sendPatch({ [key]: value })) done(`${SECRET_LABELS[key]} saved.`);
-        else replacing.add(key);
-      }).then(() => {
-        save.disabled = !field.value.trim();
-      });
-    field.addEventListener("input", () => (save.disabled = !field.value.trim()));
-    field.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        doSave();
-      } else if (e.key === "Escape" && isSet) {
-        replacing.delete(key);
-        renderSecret(key);
-      }
-    });
-    save.addEventListener("click", doSave);
-    row = h(
-      "div.secret-row",
-      null,
-      field,
-      save,
-      isSet ? h("button.small.ghost", { type: "button", onclick: () => { replacing.delete(key); renderSecret(key); } }, "Cancel") : null,
-    );
-  }
-  host.replaceChildren(label, row, note);
-}
+const renderSecrets = initSecretFields({ saved: () => saved, save: sendPatch });
 
 // ------------------------------------------------------------ rendering
 
@@ -287,17 +207,16 @@ function render(): void {
   const v = settingsView({ settings: saved, draft: d, brain: state.brain, account: state.account });
 
   for (const o of v.options) {
-    const row = document.querySelector<HTMLElement>(`.opt[data-brain="${o.value}"]`)!;
-    const radio = row.querySelector<HTMLInputElement>("input[type=radio]")!;
-    radio.disabled = !o.enabled;
-    row.querySelector(".opt-detail")!.textContent = o.detail;
+    const row = find(document, `.opt[data-brain="${o.value}"]`);
+    find<HTMLInputElement>(row, "input[type=radio]").disabled = !o.enabled;
+    find(row, ".opt-detail").textContent = o.detail;
     const more = row.querySelector(".reveal");
     if (more) reveal(more, d.brain === o.value);
   }
   const pick = $("auto-pick");
-  pick.querySelector(".t")!.textContent = v.autoPick.text;
+  find(pick, ".t").textContent = v.autoPick.text;
   setTone(pick, v.autoPick.tone);
-  setTone(pick.querySelector<HTMLElement>(".dot")!, v.autoPick.tone);
+  setTone(find(pick, ".dot"), v.autoPick.tone);
 
   $("hosted-out").hidden = !v.showHostedSignIn;
   $("hosted-in").hidden = !v.hosted;
@@ -351,18 +270,16 @@ function renderState(s: UiState): void {
 /** A new state from the background: new saved settings, keys re-rendered. */
 function applyState(s: UiState): void {
   saved = s.settings;
-  for (const k of SECRET_KEYS) renderSecret(k);
+  renderSecrets();
   renderState(s);
 }
 
 /** Plan and credit on the Account tab, highlighted. */
 function showBilling(): void {
   tabs.show("account");
-  const target = $("acct-in").hidden ? $("account-card") : $("h-plan").nextElementSibling as HTMLElement;
+  const target = $("acct-in").hidden ? $("account-card") : $("plan-box");
   target.scrollIntoView({ behavior: "smooth", block: "center" });
-  target.classList.remove("flash-target");
-  void target.offsetWidth;
-  target.classList.add("flash-target");
+  restartAnimation(target, "flash-target");
 }
 
 const accountSection = initAccountSection({ onState: (s) => renderState(s), showBilling });
@@ -376,18 +293,18 @@ function testButton(id: string, type: "settings.testClaude" | "settings.testJev"
   const btn = $<HTMLButtonElement>(id);
   const msg = $(`${id}-msg`);
   btn.addEventListener("click", () =>
-    void busy(btn, async () => {
-      flash(msg, "Testing…");
-      // Test what is on screen: save pending edits first.
-      if (!(await flush())) return flash(msg, "Save failed; fix the settings first.", "bad");
-      try {
+    void busy(
+      btn,
+      async () => {
+        flash(msg, "Testing…");
+        // Test what is on screen: save pending edits first.
+        if (!(await saves.flush())) return flash(msg, "Save failed; fix the settings first.", "bad");
         const res = await uiRequest({ type });
-        flash(msg, res.detail || (res.ok ? "Works." : "Failed."), res.ok ? "" : "bad");
-        msg.dataset.tone = res.ok ? "ok" : "bad";
-      } catch (err) {
-        flash(msg, errorText(err), "bad");
-      }
-    }),
+        // The result stays until the next test.
+        flash(msg, res.detail || (res.ok ? "Works." : "Failed."), res.ok ? "ok" : "bad", { keep: true });
+      },
+      msg,
+    ),
   );
 }
 testButton("test-claude", "settings.testClaude");
@@ -395,18 +312,18 @@ testButton("test-jev", "settings.testJev");
 testButton("test-cloud", "settings.testCloud");
 
 const connectBtn = $<HTMLButtonElement>("helper-connect");
+const helperMsg = $("helper-msg");
 connectBtn.addEventListener("click", () =>
-  void busy(connectBtn, async () => {
-    const msg = $("helper-msg");
-    flash(msg, "Connecting… (the self-test can take up to a minute)");
-    try {
+  void busy(
+    connectBtn,
+    async () => {
+      flash(helperMsg, "Connecting… (the self-test can take up to a minute)");
       const s = await uiRequest({ type: "helper.connect" });
       renderState(s);
-      flash(msg, s.brain.helper ? "" : s.brain.helperError || "Helper not found.", s.brain.helper ? "" : "bad");
-    } catch (err) {
-      flash(msg, errorText(err), "bad");
-    }
-  }),
+      flash(helperMsg, s.brain.helper ? "" : s.brain.helperError || "Helper not found.", s.brain.helper ? "" : "bad");
+    },
+    helperMsg,
+  ),
 );
 
 async function main(): Promise<void> {
@@ -418,10 +335,20 @@ async function main(): Promise<void> {
     // Fresh plan and credit (e.g. back from a Stripe page).
     renderState(await uiRequest({ type: "account.refresh", force: true }));
   } catch (err) {
-    $("now-text").textContent = `Background not reachable: ${errorText(err)}`;
+    $("now-text").textContent = `Background not reachable: ${errorMessage(err)}`;
     $("now-using").dataset.tone = "bad";
   }
 }
 
 void main();
 initVaultSection();
+
+/** The keyboard shortcut as Chrome assigned it, and where to change it (chrome://extensions/shortcuts). */
+async function renderShortcut(): Promise<void> {
+  const key = await readShortcut();
+  $("shortcut-key").textContent = key ?? "Not set";
+  $("shortcut-change").textContent = key ? "Change" : "Set shortcut";
+}
+$("shortcut-change").addEventListener("click", () => void openShortcutSettings());
+window.addEventListener("focus", () => void renderShortcut());
+void renderShortcut();

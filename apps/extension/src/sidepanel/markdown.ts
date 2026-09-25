@@ -14,6 +14,7 @@
  * half-written link is closed or hidden instead of showing as raw marks.
  * MarkdownView re-renders only the blocks that changed.
  */
+import { trimUrlEnd } from "./format.js";
 
 export type Block =
   | { type: "p"; src: string; text: string }
@@ -236,8 +237,6 @@ function wrap(tag: "strong" | "em" | "del" | "code", children: Node[] | string):
   return el;
 }
 
-const PUNCT_END = /[.,;:!?'")\]]+$/;
-
 /**
  * Closes what the tail of streaming text left open, so it renders as it will
  * once complete: an odd ` or ** / * / ~~, and a half-written [link](url.
@@ -334,16 +333,7 @@ export function renderInline(text: string): Node[] {
     }
 
     if ((c === "h" || c === "H") && /^https?:\/\//i.test(rest) && !/[\w/]$/.test(buf)) {
-      let url = /^https?:\/\/[^\s<>`]+/i.exec(rest)![0];
-      const trail = PUNCT_END.exec(url);
-      if (trail) {
-        // Keep a closing parenthesis that belongs to the URL.
-        let cut = trail[0];
-        const opens = (url.match(/\(/g) ?? []).length;
-        const closes = (url.match(/\)/g) ?? []).length;
-        if (cut.startsWith(")") && opens >= closes) cut = cut.slice(1);
-        url = url.slice(0, url.length - cut.length);
-      }
+      const url = trimUrlEnd(/^https?:\/\/[^\s<>`]+/i.exec(rest)![0]);
       const href = safeUrl(url);
       if (href) {
         flush();
@@ -497,12 +487,6 @@ function cell(tag: "th" | "td", text: string, align: string | null): HTMLElement
 }
 
 /** Markdown to a fragment. `streaming`: the text is still being written (the last block renders open). */
-export function renderMarkdown(text: string, opts: { streaming?: boolean } = {}): DocumentFragment {
-  const f = document.createDocumentFragment();
-  f.append(...renderBlocks(parseBlocks(text), opts.streaming === true));
-  return f;
-}
-
 /**
  * A container that shows Markdown and can be updated as text grows: blocks
  * whose source did not change keep their DOM (no flicker, selections in

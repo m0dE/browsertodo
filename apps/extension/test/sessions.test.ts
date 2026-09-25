@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionInfo, StampedAgentEvent } from "@browsertodo/shared";
-import { MemoryKvDb } from "../src/engine/kv.js";
+import { MemoryKvDb } from "./memory-kv.js";
 import { MAX_EVENTS_PER_SESSION, MAX_SESSIONS, SessionStore } from "../src/engine/sessions.js";
 
 const info = (id: string, startedAt: string): SessionInfo => ({ sessionId: id, source: "adhoc", title: id, brain: "claude-api", jev: false, startedAt });

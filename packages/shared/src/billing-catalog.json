@@ -1,0 +1,22 @@
+{
+  "$comment": "The one plan table and Stripe contract (decided by the owner; docs/BILLING-CONTRACT.md). Plain JSON so the API, dashboard, extension (via billing.ts) and scripts/setup-stripe.mjs all read the same values.",
+  "plans": {
+    "free": { "id": "free", "name": "Free", "priceCents": 0, "creditCents": 0, "apiKeys": false, "voice": false },
+    "starter": { "id": "starter", "name": "Starter", "priceCents": 999, "creditCents": 500, "apiKeys": true, "voice": true },
+    "plus": { "id": "plus", "name": "Plus", "priceCents": 2999, "creditCents": 2000, "apiKeys": true, "voice": true },
+    "pro": { "id": "pro", "name": "Pro", "priceCents": 19999, "creditCents": 19999, "apiKeys": true, "voice": true }
+  },
+  "stripe": {
+    "$comment": "apiVersion: the Stripe-Version the server calls with and its webhook endpoint is pinned to. webhookEvents: the events apps/api/src/webhooks.ts handles.",
+    "apiVersion": "2026-08-26.dahlia",
+    "webhookEvents": [
+      "checkout.session.completed",
+      "checkout.session.async_payment_succeeded",
+      "customer.subscription.created",
+      "customer.subscription.updated",
+      "customer.subscription.deleted",
+      "invoice.paid",
+      "invoice.payment_failed"
+    ]
+  }
+}

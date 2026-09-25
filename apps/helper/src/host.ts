@@ -7,15 +7,20 @@
  */
 import { join } from "node:path";
 import {
-  toolsFor,
+  DEFAULT_SETTINGS,
+  delay,
+  errorMessage,
   RpcPeer,
+  toolsFor,
   type AgentEvent,
+  type BrowserMethods,
+  type HelperMethods,
   type HelperNotifications,
   type RpcMessage,
 } from "@browsertodo/shared";
 import { createJev, createToolExecutor, type JevLike } from "@browsertodo/core";
 import { HELPER_VERSION, loadConfig } from "./config.js";
-import { errorMessage, LiveLog, redirectConsole, summarize } from "./logger.js";
+import { LiveLog, redirectConsole, summarize } from "./logger.js";
 import { encodeNativeMessage, FrameTooLargeError, NativeDecoder } from "./native-framing.js";
 import { pipePathFor, startPipeServer, type PipeServer } from "./pipe-server.js";
 import { rpcBrowser, ToolRouter, type InteractiveTools } from "./tool-router.js";
@@ -28,7 +33,9 @@ import type { Brain } from "./brains/brain.js";
 import { SelfTestCache } from "./self-test.js";
 import { readRunLog } from "./run-log.js";
 import { removeHelperFile, writeHelperFile } from "./helper-file.js";
-import type { BrowserMap, HelperMap } from "./rpc-types.js";
+
+/** On shutdown, how long the sessions get to stop their Claude Code processes before the helper exits anyway. */
+const SHUTDOWN_WAIT_MS = 5000;
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -50,7 +57,7 @@ async function main(): Promise<void> {
     }
     process.stdout.write(frame);
   };
-  const peer = new RpcPeer<BrowserMap, HelperMap>(writeFrame, "h");
+  const peer = new RpcPeer<BrowserMethods, HelperMethods>(writeFrame, "h");
   const notify = <K extends keyof HelperNotifications>(method: K, params: HelperNotifications[K]) => peer.notify(method, params);
   const browser = rpcBrowser(peer);
 
@@ -59,8 +66,6 @@ async function main(): Promise<void> {
   const pipePath = pipePathFor(process.pid);
   // resolveClaudePath honours BROWSERTODO_CLAUDE_PATH (from .env or the environment).
   const claudePath = scripted ? null : resolveClaudePath(config.env);
-  /** As reported in helper.hello and keyed in the self-test cache. */
-  const shownClaudePath = scripted ? "scripted" : claudePath;
 
   const makeBrain = (): Brain => {
     if (scripted) return new ScriptedBrain((t, n, a) => router.call(t, n, a));
@@ -83,20 +88,21 @@ async function main(): Promise<void> {
 
   // Tools for the user's own Claude Code (`mcp-server.js --attach`): no task to end, no media.
   const interactive: InteractiveTools = {
-    allowedTools: new Set(toolsFor({ jev: envJev !== null, interactive: true })),
+    allowedTools: new Set(toolsFor({ interactive: true })),
     jev: envJev !== null,
     executor: createToolExecutor({
       browser,
       jev: envJev,
-      jevThreshold: 0.8,
-      onEvent: (e) => live.write(`${INTERACTIVE_TASK_ID} ${summarize(e as unknown as Record<string, unknown>)}`),
+      jevThreshold: DEFAULT_SETTINGS.jevThreshold,
+      onEvent: (e) => live.write(`${INTERACTIVE_TASK_ID} ${summarize(e)}`),
       mediaPaths: [],
     }),
   };
   const router = new ToolRouter({ getSession: (taskId) => runner.session(taskId), getInteractive: () => interactive });
 
   const selfTest = new SelfTestCache({
-    claudePath: shownClaudePath,
+    brain: config.brain,
+    claudePath,
     cacheFile: join(config.baseDir, "selftest.json"),
   });
 
@@ -125,14 +131,15 @@ async function main(): Promise<void> {
     return {
       version: HELPER_VERSION,
       jevAvailable: envJev !== null,
-      claudePath: shownClaudePath,
+      brain: config.brain,
+      claudePath,
       logDir: config.logDir,
       openSessions: runner.openSessions,
       selfTest: st,
     };
   });
   peer.handle("helper.runTask", async (params) => {
-    if (!pipe) throw new Error("helper pipe server is not running");
+    if (!pipe) throw new Error("Helper pipe server is not running");
     logLine(`runTask ${params.sessionId} task=${params.task.id} media=${params.mediaPaths.length}`);
     const result = await runner.run(params);
     logLine(`runTask ${params.sessionId} -> ${result.outcome}${result.reason ? `: ${result.reason}` : ""}`);
@@ -177,9 +184,8 @@ async function main(): Promise<void> {
     peer.close("helper shutting down");
     runner.shutdown(why);
     removeHelperFile(config.helperFilePath, process.pid);
-    // Give the brain a moment to kill its process tree.
-    const deadline = Date.now() + 5000;
-    while ((runner.busy || runner.openSessions.length > 0) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    // Give the brains a moment to kill their process trees.
+    await Promise.race([runner.whenAllClosed(), delay(SHUTDOWN_WAIT_MS)]);
     await pipe?.close().catch(() => {});
     process.exit(0);
   };

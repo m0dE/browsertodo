@@ -1,30 +1,11 @@
 /** The hosted browsertodo AI brain: request shape (endpoint, auth, session header), hosted models, Jev, 402. */
 import { describe, expect, it, vi } from "vitest";
 import * as core from "@browsertodo/core";
-import { DEFAULT_SETTINGS, type AgentEvent, type ExtensionSettings } from "@browsertodo/shared";
+import { DEFAULT_SETTINGS, SESSION_HEADER, type AgentEvent, type ExtensionSettings } from "@browsertodo/shared";
 import { ApiBrain } from "../src/engine/api-brain.js";
 import type { BrainStartOptions } from "../src/engine/brains.js";
-import { hostedBackend, SESSION_HEADER } from "../src/engine/hosted-brain.js";
-
-type Req = { url: string; headers: Record<string, string>; body: any };
-
-function server(replies: { status: number; body: unknown }[]) {
-  const requests: Req[] = [];
-  let i = 0;
-  const fetchFn = (async (url: RequestInfo | URL, init?: RequestInit) => {
-    const headers: Record<string, string> = {};
-    new Headers(init?.headers).forEach((v, k) => (headers[k] = v));
-    requests.push({ url: String(url), headers, body: JSON.parse(String(init?.body)) });
-    const r = replies[Math.min(i++, replies.length - 1)]!;
-    return new Response(JSON.stringify(r.body), { status: r.status, headers: { "content-type": "application/json" } });
-  }) as typeof fetch;
-  return { fetchFn, requests };
-}
-
-const complete = {
-  status: 200,
-  body: { id: "m", type: "message", role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "t1", name: "task_complete", input: { summary: "done" } }] },
-};
+import { hostedBackend } from "../src/engine/hosted-brain.js";
+import { fakeMessagesServer, TASK_COMPLETE_REPLY as complete, type FakeReply } from "../../../packages/core/test/helpers.js";
 
 function startOpts(settings: Partial<ExtensionSettings> = {}, events: AgentEvent[] = []): BrainStartOptions {
   return {
@@ -37,15 +18,15 @@ function startOpts(settings: Partial<ExtensionSettings> = {}, events: AgentEvent
   };
 }
 
-function brain(replies: { status: number; body: unknown }[], session: { token: string; apiBase: string } | null = { token: "bt_s_tok", apiBase: "https://api.test" }) {
-  const s = server(replies);
+function brain(replies: FakeReply[], session: { token: string; apiBase: string } | null = { token: "bt_s_tok", apiBase: "https://api.test" }) {
+  const s = fakeMessagesServer(replies);
   const onOutOfCredit = vi.fn();
   const afterTurn = vi.fn();
   const b = new ApiBrain({
     core,
     browser: { call: vi.fn() as never },
-    fetch: s.fetchFn,
-    backend: hostedBackend({ core, session: () => session, onOutOfCredit, afterTurn, fetch: s.fetchFn }),
+    fetch: s.fetchImpl,
+    backend: hostedBackend({ core, session: () => session, onOutOfCredit, afterTurn, fetch: s.fetchImpl }),
   });
   return { b, s, onOutOfCredit, afterTurn };
 }

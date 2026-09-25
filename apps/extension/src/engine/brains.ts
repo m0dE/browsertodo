@@ -75,6 +75,13 @@ export interface Brain {
   openSessions?(): string[];
 }
 
+/** A brain that keeps a conversation's agent session between turns. */
+export type ContinuableBrain = Brain & Required<Pick<Brain, "continue">>;
+
+export function isContinuable(brain: Brain): brain is ContinuableBrain {
+  return typeof brain.continue === "function";
+}
+
 /** A run that ended before it started: continue() found no agent session. */
 export function endedRun(): BrainRun {
   const done = Promise.reject(new SessionEndedError());

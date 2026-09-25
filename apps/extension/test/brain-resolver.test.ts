@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS, type BrainMode, type HelperInfo } from "@browsertodo/shared";
-import { resolveBrain } from "../src/engine/brain-resolver.js";
+import { needsHelper, NO_AI, resolveBrain } from "../src/engine/brain-resolver.js";
 
 const base: HelperInfo = { version: "2", jevAvailable: false, claudePath: "C:\\claude.exe", logDir: "L" };
 const ok: HelperInfo = { ...base, selfTest: { ok: true, ms: 900, at: "2026-09-24T00:00:00Z" } };
 const failed: HelperInfo = { ...base, selfTest: { ok: false, error: "not logged in", ms: 900, at: "2026-09-24T00:00:00Z" } };
 const noClaude: HelperInfo = { ...base, claudePath: null };
 const notTested: HelperInfo = { ...base };
-const scripted: HelperInfo = { ...base, claudePath: "scripted" };
+const scripted: HelperInfo = { ...base, brain: "scripted", claudePath: null };
 
 function r(mode: BrainMode, helper: HelperInfo | null, key: boolean, extra: Partial<typeof DEFAULT_SETTINGS> = {}) {
   return resolveBrain({ settings: { ...DEFAULT_SETTINGS, brain: mode, anthropicApiKey: key ? "sk" : "", ...extra }, helper, helperError: helper ? null : "host not found" });
@@ -36,7 +36,7 @@ describe("resolveBrain", () => {
 
   it("explains why nothing is usable", () => {
     const s = r("auto", null, false);
-    expect(s.note).toMatch(/No brain available.*Helper not connected: host not found/);
+    expect(s.note).toMatch(new RegExp(`^${NO_AI}: .*Helper not connected: host not found`));
     expect(s.helperError).toBe("host not found");
     expect(r("claude-code", failed, true).note).toMatch(/self-test failed: not logged in/);
     expect(r("claude-code", noClaude, true).note).toMatch(/not found/);
@@ -98,5 +98,17 @@ describe("resolveBrain with the browsertodo account", () => {
   it("the hosted AI brings its own Jev (no key needed); off when Jev is switched off", () => {
     expect(ra("auto", credit, null, false).jevActive).toBe(true);
     expect(resolveBrain({ settings: { ...DEFAULT_SETTINGS, jevEnabled: false }, helper: null, account: credit }).jevActive).toBe(false);
+  });
+});
+
+describe("needsHelper", () => {
+  it("only when Claude Code may run: not for an API brain, nor when auto picks the hosted AI", () => {
+    const usable = { signedIn: true, hostedUsable: true };
+    expect(needsHelper({ brain: "claude-code" }, usable)).toBe(true);
+    expect(needsHelper({ brain: "claude-api" }, null)).toBe(false);
+    expect(needsHelper({ brain: "browsertodo" }, null)).toBe(false);
+    expect(needsHelper({ brain: "auto" }, usable)).toBe(false);
+    expect(needsHelper({ brain: "auto" }, { signedIn: true, hostedUsable: false })).toBe(true);
+    expect(needsHelper({ brain: "auto" }, null)).toBe(true);
   });
 });

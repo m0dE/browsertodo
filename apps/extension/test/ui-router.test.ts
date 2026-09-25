@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS, type ExtensionSettings, type HelperInfo, type SessionInfo } from "@browsertodo/shared";
-import { installChromeFake } from "./chrome-fake.js";
+import { fakePort, installChromeFake, type FakePort } from "./chrome-fake.js";
 import { resolveBrain } from "../src/engine/brain-resolver.js";
-import { MemoryKvDb } from "../src/engine/kv.js";
+import { MemoryKvDb } from "./memory-kv.js";
 import { LocalStore } from "../src/engine/local-store.js";
 import type { AdhocInput } from "../src/engine/run/jobs.js";
 import type { RunnerState } from "../src/engine/run/state.js";
 import { SessionStore } from "../src/engine/sessions.js";
 import { LocalTodo } from "../src/account/todo-source.js";
+import { ApiRequestError, NotSignedInError } from "../src/http-client.js";
 import { UiHub } from "../src/engine/ui-hub.js";
 import { UiRouter, type RouterRunner, type UiRouterDeps } from "../src/engine/ui-router.js";
 import { TabChats } from "../src/tab-chats.js";
@@ -139,11 +140,11 @@ describe("UiRouter", () => {
   it("run.continue passes the session id and the trimmed note; errors come back as { ok: false }", async () => {
     const t = setup();
     expect(await t.req({ type: "run.continue", sessionId: "s-old", text: "  it's typed already, just post  " })).toEqual({ sessionId: "cont-1" });
-    expect(t.runner.continueSession).toHaveBeenLastCalledWith("s-old", "it's typed already, just post");
+    expect(t.runner.continueSession).toHaveBeenLastCalledWith("s-old", "it's typed already, just post", {});
     await t.req({ type: "run.continue", sessionId: "s-old", text: "   " });
-    expect(t.runner.continueSession).toHaveBeenLastCalledWith("s-old", undefined);
+    expect(t.runner.continueSession).toHaveBeenLastCalledWith("s-old", undefined, {});
     await t.req({ type: "run.continue", sessionId: "s-old" });
-    expect(t.runner.continueSession).toHaveBeenLastCalledWith("s-old", undefined);
+    expect(t.runner.continueSession).toHaveBeenLastCalledWith("s-old", undefined, {});
     expect(await t.router.handle({ type: "run.continue" } as never)).toEqual({ ok: false, error: "sessionId is required" });
     t.runner.continueSession.mockRejectedValueOnce(new Error("Cloud tasks continue from the queue; use Retry on the server"));
     expect(await t.router.handle({ type: "run.continue", sessionId: "c" })).toEqual({
@@ -238,11 +239,8 @@ describe("UiRouter", () => {
 });
 
 describe("UiHub", () => {
-  function port(name = UI_PORT_NAME) {
-    const posted: UiPush[] = [];
-    const disc: (() => void)[] = [];
-    return { name, posted, postMessage: (m: unknown) => posted.push(m as UiPush), onDisconnect: { addListener: (fn: () => void) => disc.push(fn) }, close: () => disc.forEach((f) => f()) };
-  }
+  const port = (name = UI_PORT_NAME) => fakePort(name);
+  const pushes = (p: FakePort) => p.posted as UiPush[];
 
   it("sends state on attach, pushes events, coalesces state pushes, forgets closed ports", async () => {
     const getState = vi.fn(async () => ({ paused: false }) as never);
@@ -257,8 +255,8 @@ describe("UiHub", () => {
     hub.pushState();
     hub.pushState();
     await new Promise((r) => setTimeout(r, 20));
-    expect(p.posted.map((m) => m.type)).toEqual(["state", "tasks.changed", "event", "state"]);
-    p.close();
+    expect(pushes(p).map((m) => m.type)).toEqual(["state", "tasks.changed", "event", "state"]);
+    p.hostDisconnect();
     expect(hub.size).toBe(0);
   });
 });
@@ -278,6 +276,7 @@ describe("UiRouter: account", () => {
       listKeys: vi.fn(async () => []),
       createKey: vi.fn(async (name: string, role: string) => ({ id: "k1", name, role, key: "bt_new" })),
       revokeKey: vi.fn(async (_id: string) => {}),
+      transcribe: vi.fn(async (wav: Uint8Array, _opts: unknown) => ({ text: `heard ${wav.length} bytes` })),
     };
     const accountTodo = {
       kind: "account" as const,
@@ -332,6 +331,22 @@ describe("UiRouter: account", () => {
     const t = setup();
     expect(await t.router.handle({ type: "account.signIn" })).toEqual({ ok: false, error: "Accounts are not available" });
     expect((await t.req({ type: "tasks.list" })).source).toBe("local");
+    expect(await t.req({ type: "voice.transcribe", wav: "", speechMs: 0 })).toEqual({ error: { kind: "signed-out", message: "Log in to use voice.", fatal: true } });
+  });
+
+  it("voice.transcribe: the clip goes to the account, failures come back as data", async () => {
+    const t = withAccount(true);
+    const wav = btoa("RIFF1234");
+    expect(await t.req({ type: "voice.transcribe", wav, speechMs: 900, context: "Open", sessionId: "s1" })).toEqual({ text: "heard 8 bytes" });
+    expect(t.account.transcribe).toHaveBeenCalledWith(new TextEncoder().encode("RIFF1234"), { speechMs: 900, context: "Open", sessionId: "s1" });
+    t.account.transcribe.mockRejectedValueOnce(
+      new ApiRequestError(403, "plan_required", { error: "plan_required", message: "Voice input needs a paid plan.", upgradeUrl: "https://dash.test/billing" }),
+    );
+    expect(await t.req({ type: "voice.transcribe", wav, speechMs: 900 })).toEqual({
+      error: { kind: "plan", message: "Voice needs a paid plan.", fatal: true, url: "https://dash.test/billing" },
+    });
+    t.account.transcribe.mockRejectedValueOnce(new NotSignedInError());
+    expect(await t.req({ type: "voice.transcribe", wav, speechMs: 900 })).toMatchObject({ error: { kind: "signed-out" } });
   });
 });
 
@@ -375,12 +390,22 @@ describe("UiRouter: a chat per browser tab", () => {
     expect(t.runner.runAdhoc.mock.calls.at(-1)![0].tabId).toBeUndefined();
   });
 
-  it("a message to a conversation binds it to the tab it was sent from", async () => {
+  it("an empty message in Chat (screen) reaches the runner with its tab", async () => {
+    const t = await withTabs();
+    await t.req({ type: "run.adhoc", instructions: "", screen: true, tabId: 7 });
+    expect(t.runner.runAdhoc.mock.calls.at(-1)![0]).toMatchObject({ instructions: "", screen: true, tabId: 7 });
+    await t.req({ type: "run.message", sessionId: "S1", text: "", screen: true, tabId: 5 });
+    expect(t.runner.message).toHaveBeenLastCalledWith("S1", "", { tabId: 5, screen: true });
+  });
+
+  it("a message or Continue to a conversation passes the tab it was sent from to the runner (which binds it once taken)", async () => {
     const t = await withTabs();
     await t.req({ type: "run.message", sessionId: "S1", text: "go on", tabId: 5 });
-    expect(await t.tabChats.get(5)).toBe("S1");
+    expect(t.runner.message).toHaveBeenLastCalledWith("S1", "go on", { tabId: 5 });
     await t.req({ type: "run.continue", sessionId: "S1", tabId: 6 });
-    expect(await t.tabChats.all()).toEqual({ "6": "S1" });
+    expect(t.runner.continueSession).toHaveBeenLastCalledWith("S1", undefined, { tabId: 6 });
+    // The router binds nothing itself: a refused message leaves the tabs as they were.
+    expect(await t.tabChats.all()).toEqual({});
   });
 
   it("New Chat unbinds only that tab", async () => {

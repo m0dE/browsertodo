@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_SETTINGS, type AgentEvent, type HelperNotifications, type TaskRunResult } from "@browsertodo/shared";
+import { DEFAULT_SETTINGS, HelperErrorCode, RpcError, type AgentEvent, type HelperNotifications, type TaskRunResult } from "@browsertodo/shared";
 import type { AgentSession, ApiAgentOptions } from "@browsertodo/core";
 import { ApiBrain } from "../src/engine/api-brain.js";
 import { SessionEndedError, type BrainContinueOptions, type BrainStartOptions } from "../src/engine/brains.js";
@@ -147,7 +147,7 @@ describe("ClaudeCodeBrain: conversations", () => {
     expect(f.calls).toEqual([]);
     f.notify("helper.sessions", { open: ["s1"] });
     const run = brain.continue(contOpts([]));
-    f.fail(new Error("session ended"));
+    f.fail(new RpcError("session ended", HelperErrorCode.sessionEnded));
     await expect(run.done).rejects.toBeInstanceOf(SessionEndedError);
     // Other helper errors are a temporary problem, as for runTask.
     const again = brain.continue(contOpts([]));

@@ -11,6 +11,7 @@ import type {
   BrowserMethods,
   PageSnapshot,
   RunConfig,
+  Sleep,
   TaskRunResult,
   ToolName,
   ToolResult,
@@ -58,13 +59,12 @@ export interface ToolExecutorOptions {
   /** Absolute local paths the task may upload. upload rejects other paths. */
   mediaPaths: string[];
   /** For tests. Default: real setTimeout. */
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: Sleep;
 }
 
 export interface ToolExecutor {
   /** Validates args with ToolArgs, runs the tool, emits tool_call/tool_result/jev events. Never throws. */
   call(name: ToolName, args: unknown): Promise<ToolResult>;
-  readonly callCount: number;
   /** Element picks (act clicks and typing) by Jev and by Claude since the last take; resets the counts. */
   takePicks(): ElementPicks;
 }

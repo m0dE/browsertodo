@@ -4,8 +4,8 @@
  * closed); this class handles what happens inside one session: turns, their
  * limits, the task_* result, user messages and stopping.
  */
-import type { AgentEvent, RunConfig, TaskRunResult, ToolName } from "@browsertodo/shared";
-import { createToolExecutor, picksEvent, type BrowserCaller, type JevLike } from "@browsertodo/core";
+import { type Sleep, type AgentEvent, type RunConfig, type TaskRunResult, type ToolName } from "@browsertodo/shared";
+import { createToolExecutor, turnEndEvents, type BrowserCaller, type JevLike } from "@browsertodo/core";
 import type { RunLog } from "../logger.js";
 import { UserInput } from "../brains/brain.js";
 import type { ToolSession } from "../tool-router.js";
@@ -29,7 +29,7 @@ export interface TaskSessionOptions {
   finishGraceMs: number;
   /** Time a brain gets to return after an abort (or a close) before we stop waiting (or kill it). */
   abortWaitMs: number;
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: Sleep;
 }
 
 export class TaskSession {
@@ -122,14 +122,8 @@ export class TaskSession {
   /** The finished turn's result, announced with a task_end event. */
   report(turn: Turn): TaskRunResult {
     const result = turnResult(turn, this.brainError);
-    // Who picked this turn's elements: Jev, or Claude after Jev was unsure.
-    const picks = this.opts.jev ? picksEvent(this.tools.executor.takePicks()) : null;
-    if (picks) this.emit(picks);
-    const end: AgentEvent = { type: "task_end", outcome: result.outcome };
-    if (result.summary !== undefined) end.summary = result.summary;
-    if (result.url !== undefined) end.url = result.url;
-    if (result.reason !== undefined) end.reason = result.reason;
-    this.emit(end);
+    // Who picked this turn's elements (Jev, or Claude after Jev was unsure), then task_end.
+    for (const e of turnEndEvents(result, this.opts.jev ? this.tools.executor.takePicks() : null)) this.emit(e);
     result.logPath = this.log.path;
     return result;
   }
@@ -158,7 +152,7 @@ export class TaskSession {
   end(why: string): void {
     this.log.event({ type: "session_end", why });
     if (this.turn) {
-      if (this.turn.abortReason === null) this.turn.abortReason = `session ${why}`;
+      if (this.turn.abortReason === null) this.turn.abortReason = `Session ${why}`;
       this.controller.abort(new Error(why));
     } else {
       this.input.close();

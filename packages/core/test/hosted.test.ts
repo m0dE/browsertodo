@@ -1,39 +1,15 @@
 /** The browsertodo hosted AI: startApiAgent with a custom endpoint and bearer auth, 402 handling, and Jev through the proxy. */
 import { describe, expect, it, vi } from "vitest";
 import { startApiAgentWith } from "../src/api-agent.js";
-import { OUT_OF_CREDIT } from "../src/anthropic.js";
-import { OutOfCreditError, createJev } from "../src/jev.js";
+import { OUT_OF_CREDIT } from "@browsertodo/shared";
+import { OutOfCreditError } from "../src/api-errors.js";
+import { createJev } from "../src/jev.js";
 import type { ApiAgentOptions } from "../src/types.js";
 import { FakeX } from "./fake-x.js";
-import { CONFIG, collect, noSleep } from "./helpers.js";
+import { CONFIG, collect, fakeMessagesServer, noSleep, TASK_COMPLETE_REPLY as done, type FakeReply } from "./helpers.js";
 
-type Reply = { status: number; body: unknown };
-
-function server(replies: Reply[]) {
-  const requests: { url: string; headers: Record<string, string>; body: any }[] = [];
-  let i = 0;
-  const fetchImpl = (async (url: string, init?: RequestInit) => {
-    await new Promise((r) => setTimeout(r, 0));
-    requests.push({ url: String(url), headers: init?.headers as Record<string, string>, body: JSON.parse(String(init?.body)) });
-    const r = replies[Math.min(i++, replies.length - 1)]!;
-    return new Response(JSON.stringify(r.body), { status: r.status, headers: { "content-type": "application/json" } });
-  }) as unknown as typeof fetch;
-  return { fetchImpl, requests };
-}
-
-const done = {
-  status: 200,
-  body: {
-    id: "m1",
-    type: "message",
-    role: "assistant",
-    stop_reason: "tool_use",
-    content: [{ type: "tool_use", id: "tu1", name: "task_complete", input: { summary: "ok" } }],
-  },
-};
-
-function hosted(replies: Reply[], extra: Partial<ApiAgentOptions> = {}) {
-  const s = server(replies);
+function hosted(replies: FakeReply[], extra: Partial<ApiAgentOptions> = {}) {
+  const s = fakeMessagesServer(replies);
   const { events, onEvent } = collect();
   const x = new FakeX({ url: "https://example.com/" });
   const session = startApiAgentWith(
@@ -65,7 +41,7 @@ describe("hosted AI transport", () => {
     expect(await session.done).toMatchObject({ outcome: "done" });
     const req = requests[0]!;
     expect(req.url).toBe("https://api.test/v1/ai/messages");
-    expect(req.headers).toMatchObject({ authorization: "Bearer bt_s_token", "X-Browsertodo-Session": "S9", "content-type": "application/json" });
+    expect(req.headers).toMatchObject({ authorization: "Bearer bt_s_token", "x-browsertodo-session": "S9", "content-type": "application/json" });
     expect(req.headers["x-api-key"]).toBeUndefined();
     expect(req.headers["anthropic-dangerous-direct-browser-access"]).toBeUndefined();
     // The body is a plain Anthropic Messages request.
@@ -113,28 +89,29 @@ describe("createJev through the browsertodo proxy", () => {
   };
 
   it("posts { state, questions } with the bearer token and extra headers, and reads { answers }", async () => {
-    const s = server([
+    const s = fakeMessagesServer([
       { status: 200, body: { answers: { operation: { choice: "click", confidence: 0.9 }, target: { choice: "0", confidence: 0.95 } }, usage: {} } },
     ]);
     const jev = createJev("bt_s_token", { fetch: s.fetchImpl, endpoint: "https://api.test/v1/ai/jev", headers: { "X-Browsertodo-Session": "S1" } });
     expect(await jev.decide({ goal: "click Go", snapshot })).toEqual({ operation: "click", index: 0, confidence: 0.9 });
     const req = s.requests[0]!;
     expect(req.url).toBe("https://api.test/v1/ai/jev");
-    expect(req.headers).toMatchObject({ authorization: "Bearer bt_s_token", "X-Browsertodo-Session": "S1" });
+    expect(req.headers).toMatchObject({ authorization: "Bearer bt_s_token", "x-browsertodo-session": "S1" });
     expect(Object.keys(req.body).sort()).toEqual(["questions", "state"]);
     expect(req.body.state.goal).toBe("click Go");
   });
 
   it("402 throws OutOfCreditError with the top-up link", async () => {
-    const s = server([{ status: 402, body: { error: "out_of_credit", message: "No usage credit left", topupUrl: "https://dash.test/billing" } }]);
+    const s = fakeMessagesServer([{ status: 402, body: { error: "out_of_credit", message: "No usage credit left", topupUrl: "https://dash.test/billing" } }]);
     const jev = createJev("t", { fetch: s.fetchImpl, endpoint: "https://api.test/v1/ai/jev" });
     const err = await jev.decide({ goal: "g", snapshot }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(OutOfCreditError);
+    expect((err as OutOfCreditError).message).toBe("Out of usage credit: No usage credit left");
     expect((err as OutOfCreditError).topupUrl).toBe("https://dash.test/billing");
   });
 
   it("other errors name the status", async () => {
-    const s = server([{ status: 500, body: { error: "boom" } }]);
+    const s = fakeMessagesServer([{ status: 500, body: { error: "boom" } }]);
     const jev = createJev("t", { fetch: s.fetchImpl, endpoint: "https://api.test/v1/ai/jev" });
     await expect(jev.decide({ goal: "g", snapshot })).rejects.toThrow("Jev HTTP 500: boom");
   });

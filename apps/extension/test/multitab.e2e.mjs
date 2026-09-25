@@ -3,63 +3,35 @@
 // switches, screenshots a background tab (left in the background), closes, and compares the wall time
 // with the one-tab way (navigate + read_page, page after page).
 // Usage: pnpm --filter @browsertodo/extension build && node apps/extension/test/multitab.e2e.mjs [--headed]
-import { chromium } from "@playwright/test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { createServer } from "node:http";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { driverCall, launchExtension } from "../../../test/e2e/lib/extension.mjs";
+import { serveHtml } from "../../../test/e2e/lib/serve.mjs";
+import { createSuite, sleep } from "../../../test/e2e/lib/suite.mjs";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const dist = join(root, "..", "..", "dist");
-const headed = process.argv.includes("--headed");
 const PAGES = 5;
 /** Server latency per page, like a real site (Gmail takes far longer). */
 const PAGE_DELAY_MS = 400;
 
-const server = createServer((req, res) => {
-  const m = /^\/mail\/(\d+)/.exec(req.url ?? "");
-  const send = () => {
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    if (!m) {
-      const links = Array.from({ length: PAGES }, (_, i) => `<li><a href="/mail/${i + 1}">Message ${i + 1}</a></li>`).join("");
-      res.end(`<!doctype html><title>Inbox</title><h1>Search results</h1><ul>${links}</ul>`);
-      return;
-    }
-    const n = m[1];
-    res.end(`<!doctype html><title>Message ${n}</title><h1>Message ${n}</h1><p>Body of message ${n}: the invoice number is INV-${n}00.</p>
-      <button onclick="document.title='clicked ${n}'">Reply</button>`);
-  };
-  setTimeout(send, m ? PAGE_DELAY_MS : 0);
+const site = await serveHtml(async (path) => {
+  const m = /^\/mail\/(\d+)/.exec(path);
+  if (!m) {
+    const links = Array.from({ length: PAGES }, (_, i) => `<li><a href="/mail/${i + 1}">Message ${i + 1}</a></li>`).join("");
+    return `<!doctype html><title>Inbox</title><h1>Search results</h1><ul>${links}</ul>`;
+  }
+  await sleep(PAGE_DELAY_MS);
+  const n = m[1];
+  return `<!doctype html><title>Message ${n}</title><h1>Message ${n}</h1><p>Body of message ${n}: the invoice number is INV-${n}00.</p>
+      <button onclick="document.title='clicked ${n}'">Reply</button>`;
 });
-await new Promise((r) => server.listen(0, "127.0.0.1", r));
-const base = `http://127.0.0.1:${server.address().port}`;
+const { base } = site;
 const urls = Array.from({ length: PAGES }, (_, i) => `${base}/mail/${i + 1}`);
 
-const profile = mkdtempSync(join(tmpdir(), "browsertodo-multitab-"));
-const results = [];
-const step = async (name, fn) => {
-  try {
-    const detail = await fn();
-    results.push({ name, ok: true, detail });
-    console.log(`ok   ${name}${detail ? ` - ${detail}` : ""}`);
-  } catch (err) {
-    results.push({ name, ok: false, detail: err.message });
-    console.log(`FAIL ${name} - ${err.stack ?? err.message}`);
-  }
-};
-
-const context = await chromium.launchPersistentContext(profile, {
-  channel: "chromium",
-  headless: !headed,
-  args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
-});
+const { step, finish } = createSuite("multi-tab");
+const ext = await launchExtension({ name: "multitab" });
+const { context, sw } = ext;
 
 try {
-  let [sw] = context.serviceWorkers();
-  if (!sw) sw = await context.waitForEvent("serviceworker", { timeout: 15_000 });
-  const call = (method, params = {}) => sw.evaluate(async ([m, p]) => globalThis.__browsertodo.driver[m](p), [method, params]);
+  const call = driverCall(sw);
   const evalSw = (fn, arg) => sw.evaluate(fn, arg);
 
   const userPage = await context.newPage();
@@ -174,11 +146,8 @@ try {
       (parallelMs ? `  (${(sequentialMs / parallelMs).toFixed(1)}x faster, and 2 tool calls instead of ${PAGES * 2})` : ""),
   );
 } finally {
-  await context.close();
-  server.close();
-  rmSync(profile, { recursive: true, force: true });
+  await ext.close();
+  await site.close();
 }
 
-const failed = results.filter((r) => !r.ok);
-console.log(`\n${results.length - failed.length}/${results.length} multi-tab steps passed`);
-process.exit(failed.length ? 1 : 0);
+finish();

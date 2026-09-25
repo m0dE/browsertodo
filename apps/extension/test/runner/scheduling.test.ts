@@ -2,7 +2,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TaskRunResult } from "@browsertodo/shared";
 import { claimFixture } from "../fixtures.js";
-import { MAX_SLOTS, X_WAIT_STATUS } from "../../src/engine/run/scheduling.js";
+import { MAX_SLOTS } from "../../src/agent-slots.js";
+import { stopOf } from "../../src/engine/run/active.js";
+import { X_WAIT_STATUS } from "../../src/engine/run/scheduling.js";
 import { KEEP_ALIVE_MS } from "../../src/engine/run/state.js";
 import { env, harness, parallel, runAll, setupRunnerTests } from "./harness.js";
 
@@ -74,8 +76,9 @@ describe("Runner: scheduling", () => {
     await vi.waitFor(() => expect(h.brain.starts).toHaveLength(1));
     expect(h.runner.stop()).toBe(true);
     await h.runner.idle();
-    expect(h.brain.ctls[0]!.aborts).toEqual([{ reason: "stopped by user", outcome: "paused" }]);
-    expect(await h.store.get(a.id)).toMatchObject({ status: "paused", pauseReason: "stopped by user" });
+    const { reason } = stopOf("user-stop");
+    expect(h.brain.ctls[0]!.aborts).toEqual([{ reason, outcome: "paused" }]);
+    expect(await h.store.get(a.id)).toMatchObject({ status: "paused", pauseReason: reason });
     expect(h.brain.starts).toHaveLength(1);
     expect(h.runner.stop()).toBe(false);
   });
@@ -103,8 +106,22 @@ describe("Runner: scheduling", () => {
     expect((await h.runner.runDue("alarm")).started).toBe(false);
     h.brain.script = () => ({ outcome: "done" });
     h.brain.ctls[0]!.resolve({ outcome: "done" });
-    await vi.waitFor(() => expect(h.brain.starts.map((s) => s.task.id)).toEqual(["t1", "late"]));
+    // idle() covers the second look too.
     await h.runner.idle();
+    expect(h.brain.starts.map((s) => s.task.id)).toEqual(["t1", "late"]);
+  });
+
+  it("a Stop drops the alarm missed during the run: nothing else starts", async () => {
+    const h = harness();
+    await h.store.add({ instructions: "a" });
+    h.brain.script = () => "hang";
+    await h.runner.runDue("manual");
+    await vi.waitFor(() => expect(h.brain.starts).toHaveLength(1));
+    expect((await h.runner.runDue("alarm")).started).toBe(false);
+    await h.store.add({ instructions: "b" });
+    h.runner.stop();
+    await h.runner.idle();
+    expect(h.brain.starts).toHaveLength(1);
   });
 
   it("keeps the service worker alive every 20 s while busy", async () => {

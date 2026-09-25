@@ -1,34 +1,16 @@
 /**
- * The account side of docs/BILLING-CONTRACT.md as the extension sees it.
- * Plan and credit may be missing while a server has no billing yet.
+ * The account side of docs/BILLING-CONTRACT.md as the extension sees it:
+ * the shared shapes, tolerant of servers that have no billing yet (plan and
+ * credit may be missing from GET /v1/me).
  */
-import type { User } from "@browsertodo/shared";
+import type { z } from "zod";
+import { CreditInfo, GOOD_STANDING, PLAN_CATALOG, planAllows, PlanInfo, User, type IssuableKeyRole, type PlanId } from "@browsertodo/shared";
 
-export type PlanId = "free" | "starter" | "plus" | "pro";
+export type { CreditInfo, PlanId, PlanInfo };
 
-export interface PlanInfo {
-  id: PlanId;
-  status: "active" | "past_due" | "canceled" | "none";
-  currentPeriodEnd: string | null;
-  cancelAtPeriodEnd: boolean;
-}
-
-export interface CreditInfo {
-  subscriptionCents: number;
-  topupCents: number;
-  totalCents: number;
-  periodGrantCents: number;
-  periodEnd: string | null;
-}
-
-/** GET /v1/me: the user plus plan and credit (older servers: the user only). */
-export type Me = User & { plan?: PlanInfo; credit?: CreditInfo };
-
-export interface BillingInfo {
-  plan: PlanInfo;
-  credit: CreditInfo;
-  stripeConfigured: boolean;
-}
+/** GET /v1/me: the user, plus plan and credit when the server has billing (a plan or credit it cannot read counts as missing). */
+export const Me = User.extend({ plan: PlanInfo.optional().catch(undefined), credit: CreditInfo.optional().catch(undefined) });
+export type Me = z.infer<typeof Me>;
 
 export interface ApiKeyInfo {
   id: string;
@@ -38,27 +20,38 @@ export interface ApiKeyInfo {
   revokedAt: string | null;
 }
 
-/** The plans of the contract (the server's GET /v1/billing/plans says the same). */
-export const PLANS: readonly { id: PlanId; name: string; priceCents: number; creditCents: number; apiKeys: boolean }[] = [
-  { id: "free", name: "Free", priceCents: 0, creditCents: 0, apiKeys: false },
-  { id: "starter", name: "Starter", priceCents: 999, creditCents: 500, apiKeys: true },
-  { id: "plus", name: "Plus", priceCents: 2999, creditCents: 2000, apiKeys: true },
-  { id: "pro", name: "Pro", priceCents: 19999, creditCents: 19999, apiKeys: true },
-];
-
-export const TOPUP_AMOUNTS: readonly number[] = [1000, 2500, 5000];
-
-/** The models the hosted AI prices (the contract's price table). */
-export const HOSTED_MODELS: readonly string[] = ["claude-sonnet-5", "claude-opus-5-5", "claude-fable-5-1", "claude-haiku-4-5-20251001"];
-export const DEFAULT_HOSTED_MODEL = "claude-sonnet-5";
-
-/** The model the hosted AI runs for this setting: unknown ids fall back to the default. */
-export function hostedModel(model: string): string {
-  return HOSTED_MODELS.includes(model) ? model : DEFAULT_HOSTED_MODEL;
+/** POST /v1/me/keys: the new key, shown once. */
+export interface CreatedApiKey {
+  id: string;
+  name: string;
+  role: string;
+  key: string;
 }
 
-/** A paid plan that is currently active (includes API keys and monthly credit). */
+/** The roles a key made in the extension can have. */
+export type KeyRole = IssuableKeyRole;
+
+/** A Stripe page: subscribe or change plan (checkout), buy credit (topup), manage billing (portal). */
+export type BillingAction = "checkout" | "topup" | "portal";
+export const BILLING_ACTIONS: readonly BillingAction[] = ["checkout", "topup", "portal"];
+
+export interface BillingLinkRequest {
+  action: BillingAction;
+  plan?: PlanId;
+  amountCents?: number;
+  /** Where Stripe sends the user back. */
+  returnUrl: string;
+}
+
+/** The plans of the contract (the shared catalog the server serves too). */
+export const PLANS = Object.values(PLAN_CATALOG);
+
+/** The plan includes voice input and is in good standing. */
+export function voiceAllowed(plan: PlanInfo | undefined | null): boolean {
+  return planAllows(plan, "voice");
+}
+
+/** A paid plan in good standing (includes API keys and monthly credit). */
 export function isPaidActive(plan: PlanInfo | undefined | null): boolean {
-  return !!plan && plan.id !== "free" && (plan.status === "active" || plan.status === "past_due");
+  return !!plan && plan.id !== "free" && GOOD_STANDING.includes(plan.status);
 }
-

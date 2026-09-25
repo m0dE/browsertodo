@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { SessionInfo } from "@browsertodo/shared";
 import { canOpenInChat, chatActions } from "../../src/sidepanel/chat-actions.js";
-import { chipHint, runNowButton, taskChip } from "../../src/sidepanel/format.js";
+import { chipHint, taskChip } from "@browsertodo/shared";
+import { runNowButton } from "../../src/sidepanel/format.js";
 import { savedTab, tabHasComposer } from "../../src/sidepanel/tabs.js";
 
 describe("tabs", () => {
@@ -39,13 +40,13 @@ describe("chat action bar", () => {
       expect(x.title).not.toBe("");
     }
   });
-  it("Show Tab only while the chat's turn runs", () => {
+  it("Show tab only while the chat's turn runs", () => {
     expect(chatActions(session(), new Set(["s1"])).showTab.disabled).toBe(false);
     const ended = chatActions(session({ endedAt: "2026-09-24T10:05:00Z" }), new Set());
     expect(ended.showTab).toEqual({ disabled: true, title: expect.stringContaining("only has one while it is working") });
     expect(ended.newChat.disabled).toBe(false);
   });
-  it("Raw Log only for Claude Code runs with a log", () => {
+  it("Raw log only for Claude Code runs with a log", () => {
     expect(chatActions(session({ logPath: "C:\runs\s1\log.jsonl" }), new Set()).rawLog.disabled).toBe(false);
     expect(chatActions(session(), new Set()).rawLog).toEqual({ disabled: true, title: "No raw log was recorded for this chat" });
     const api = chatActions(session({ brain: "claude-api" }), new Set(["s1"])).rawLog;

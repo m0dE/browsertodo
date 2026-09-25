@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS, type ExtensionSettings } from "@browsertodo/shared";
-import { ACCOUNT_KEY, AccountService, BILLING_NOT_SET_UP, type AccountLocalTasks } from "../../src/account/account.js";
+import { NOT_SET_UP } from "@browsertodo/shared";
+import { ACCOUNT_KEY, AccountService, type AccountLocalTasks } from "../../src/account/account.js";
 import { SIGN_IN_NOT_SET_UP } from "../../src/account/google-auth.js";
-import { FREE_PLAN, PLUS_PLAN, USER, credit, fakeApi, jwt, memoryStorage, task } from "./fake-api.js";
+import { memoryStorageArea } from "../chrome-fake.js";
+import { taskFixture as task } from "../fixtures.js";
+import { FREE_PLAN, PLUS_PLAN, USER, credit, fakeApi, jwt } from "./fake-api.js";
 
 const CLIENT = "123-abc.apps.googleusercontent.com";
 const REDIRECT = "https://bfffghamekalimhllmeeigmmcoghhfke.chromiumapp.org/";
@@ -37,7 +40,7 @@ function localTasks(): AccountLocalTasks & { rows: any[]; deleted: string[] } {
 function setup(opts: { clientId?: string; identity?: ReturnType<typeof google> } = {}) {
   const api = fakeApi();
   let settings: ExtensionSettings = { ...DEFAULT_SETTINGS, accountApiBase: api.base };
-  const storage = memoryStorage();
+  const storage = memoryStorageArea();
   const local = localTasks();
   const onChange = vi.fn();
   const identity = opts.identity ?? google();
@@ -202,7 +205,7 @@ describe("AccountService plan, credit and billing", () => {
       ["/v1/billing/portal", { returnUrl: ret }],
     ]);
     t.api.on("POST /v1/billing/topup", { status: 503, body: { error: "Billing is not set up on this server yet" } });
-    await expect(t.account.billingLink({ action: "topup", amountCents: 1000, returnUrl: ret })).rejects.toThrow(BILLING_NOT_SET_UP);
+    await expect(t.account.billingLink({ action: "topup", amountCents: 1000, returnUrl: ret })).rejects.toThrow(NOT_SET_UP.billing);
     expect((await t.account.view()).stripeConfigured).toBe(false);
   });
 

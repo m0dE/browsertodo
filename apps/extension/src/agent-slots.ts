@@ -11,6 +11,7 @@ import { AgentTab, type TabMode } from "./agent-tab.js";
 import type { Cdp } from "./cdp.js";
 import { Driver } from "./driver.js";
 import { createBrowserCaller, type VaultLike } from "./engine/browser-caller.js";
+import { isRestrictedError } from "./restricted.js";
 
 /** What the runner needs of a slot (see RunnerDeps.slots). */
 export interface AgentSlot {
@@ -18,16 +19,21 @@ export interface AgentSlot {
   /**
    * Picks the slot's main tab for a run and attaches the debugger (see
    * AgentTab.prepare). tabId: with mode current-tab, the tab the run belongs
-   * to. Returns the tab picked (single-slot mode may return nothing).
+   * to. Returns the tab picked.
    */
-  prepare(opts: { mode?: TabMode; tabId?: number }): Promise<number | void>;
+  prepare(opts: { mode?: TabMode; tabId?: number }): Promise<number>;
   /** Browser calls in this slot's tabs (the Claude API brain, post verification). */
   readonly browser: BrowserCaller;
   isAgentTab(tabId: number): Promise<boolean>;
   screenshot(): Promise<Screenshot>;
 }
 
+/** Agent slots (tabs) in use at most: maxParallelTasks due tasks plus one-off runs beside them. */
+export const MAX_SLOTS = 6;
+
 export interface SlotPool {
+  /** How many slots there are (indexes 0 .. size - 1). */
+  readonly size: number;
   /** The slot with this index, now used by this session (its browser calls go there). */
   take(index: number, sessionId: string): AgentSlot;
   /** The session's turn ended: its browser calls are refused, tabs it opened are closed. */
@@ -42,6 +48,7 @@ interface Slot extends AgentSlot {
 }
 
 export class AgentSlots implements SlotPool {
+  readonly size = MAX_SLOTS;
   private readonly slots = new Map<number, Slot>();
 
   constructor(
@@ -70,7 +77,10 @@ export class AgentSlots implements SlotPool {
         // The run's tab is picked once; the driver keeps using it for the whole turn.
         const tabId = await tab.prepare(opts.mode ?? "own-tab", opts.tabId === undefined ? {} : { tabId: opts.tabId });
         // Never brought to the front: the user may be using another tab (only "Show Tab" does that).
-        await driver.ready();
+        // A page Chrome keeps extensions out of does not end the run: its tools say so, other tabs work.
+        await driver.ready().catch((err: unknown) => {
+          if (!isRestrictedError(err)) throw err;
+        });
         return tabId;
       },
       isAgentTab: (tabId) => tab.isAgentTab(tabId),

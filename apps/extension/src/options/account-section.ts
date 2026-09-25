@@ -4,19 +4,19 @@
  * the background for a Stripe page (returnUrl = the dashboard billing page) and open it in a
  * new tab. When the server has no billing, a plain note replaces them.
  */
+import { API_KEY_LIMITS, API_KEY_ROLE_LABELS, apiKeyRoleLabel, formatCents, OUT_OF_CREDIT, TOPUP_AMOUNTS_CENTS } from "@browsertodo/shared";
 import { SIGN_IN_NOT_SET_UP } from "../account/google-auth.js";
-import { TOPUP_AMOUNTS, type PlanId } from "../account/types.js";
-import { $, busy, errorText, flash, h } from "../sidepanel/dom.js";
-import { centsLabel } from "../sidepanel/format.js";
+import type { BillingAction, KeyRole, PlanId } from "../account/types.js";
+import { showAvatar } from "../ui/avatar.js";
+import { $, busy, flash, h, showError } from "../ui/dom.js";
+import { signIn, SIGNED_OUT } from "../ui/sign-in.js";
 import { uiRequest, type AccountView, type ApiKeyInfo, type UiState } from "../ui-protocol.js";
 import { accountSummary, billingReturnUrl, dateLabel, planChoices } from "./account-view.js";
 
 export const BILLING_NOT_SET_UP_NOTE = "Billing isn't set up on this server yet, so plans and top-ups can't be bought here.";
 
-function openTab(url: string): void {
-  if (typeof chrome !== "undefined" && typeof chrome.tabs?.create === "function") void chrome.tabs.create({ url });
-  else window.open(url, "_blank", "noopener");
-}
+/** How long "Opened in a new tab..." stays after a billing page opened. */
+const BILLING_OPENED_MS = 8000;
 
 export interface AccountSection {
   render(state: UiState): void;
@@ -30,56 +30,41 @@ export function initAccountSection(opts: { onState(state: UiState): void; showBi
   const keysMsg = $("keys-msg");
 
   /** A Stripe page for this account, opened in a new tab. */
-  const billing = (button: HTMLButtonElement, req: { action: "checkout" | "topup" | "portal"; plan?: PlanId; amountCents?: number }) =>
-    void busy(button, async () => {
-      flash(msg, "Opening the billing page…");
-      try {
-        const { url } = await uiRequest({ type: "account.billing", ...req, returnUrl: billingReturnUrl(account?.dashboardUrl ?? "") });
-        openTab(url);
-        flash(msg, "Opened in a new tab. Come back here when you are done; the credit updates by itself.", "ok", 8000);
-      } catch (err) {
-        flash(msg, errorText(err), "bad");
-        // The server may have just told us billing is not set up.
-        await refresh(true);
-      }
-    });
+  const billing = (button: HTMLButtonElement, req: { action: BillingAction; plan?: PlanId; amountCents?: number }) =>
+    void busy(
+      button,
+      async () => {
+        flash(msg, "Opening the billing page…");
+        try {
+          const { url } = await uiRequest({ type: "account.billing", ...req, returnUrl: billingReturnUrl(account?.dashboardUrl ?? "") });
+          void chrome.tabs.create({ url });
+          flash(msg, "Opened in a new tab. Come back here when you are done; the credit updates by itself.", "ok", { ms: BILLING_OPENED_MS });
+        } catch (err) {
+          // The server may have just told us billing is not set up.
+          await refresh(true);
+          throw err;
+        }
+      },
+      msg,
+    );
 
   async function refresh(force = false): Promise<void> {
     try {
       opts.onState(await uiRequest({ type: "account.refresh", force }));
     } catch (err) {
-      flash(msg, errorText(err), "bad");
+      showError(msg, err);
     }
   }
 
   // Sign in / out (also from the AI tab's "Log in to use browsertodo AI").
-  const signInWith = (button: HTMLButtonElement, note: HTMLElement): void => {
-    if (account && !account.signInConfigured) return flash(note, SIGN_IN_NOT_SET_UP, "bad");
-    void busy(button, async () => {
-      flash(note, "Continue in the Google window…");
-      try {
-        opts.onState(await uiRequest({ type: "account.signIn" }));
-        flash(note, "");
-      } catch (err) {
-        flash(note, errorText(err), "bad");
-      }
-    });
-  };
-  const signIn = $<HTMLButtonElement>("acct-signin");
+  const signInWith = (button: HTMLButtonElement, note: HTMLElement): void => signIn(button, note, account, opts.onState);
+  const signInBtn = $<HTMLButtonElement>("acct-signin");
   const signInMsg = $("acct-signin-msg");
-  signIn.addEventListener("click", () => signInWith(signIn, signInMsg));
+  signInBtn.addEventListener("click", () => signInWith(signInBtn, signInMsg));
   const signOut = $<HTMLButtonElement>("acct-signout");
-  signOut.addEventListener("click", () =>
-    void busy(signOut, async () => {
-      try {
-        opts.onState(await uiRequest({ type: "account.signOut" }));
-      } catch (err) {
-        flash(msg, errorText(err), "bad");
-      }
-    }),
-  );
+  signOut.addEventListener("click", () => void busy(signOut, async () => opts.onState(await uiRequest({ type: "account.signOut" })), msg));
   const reload = $<HTMLButtonElement>("acct-reload");
-  reload.addEventListener("click", () => void busy(reload, () => refresh(true)));
+  reload.addEventListener("click", () => void busy(reload, () => refresh(true), msg));
   const change = $<HTMLButtonElement>("acct-change");
   change.addEventListener("click", () => billing(change, { action: "portal" }));
   const portal = $<HTMLButtonElement>("acct-portal");
@@ -94,32 +79,19 @@ export function initAccountSection(opts: { onState(state: UiState): void; showBi
     $("acct-out").hidden = a.signedIn;
     $("acct-in").hidden = !a.signedIn;
     signOut.hidden = !a.signedIn;
-    signIn.title = a.signInConfigured ? "" : SIGN_IN_NOT_SET_UP;
+    signInBtn.title = a.signInConfigured ? "" : SIGN_IN_NOT_SET_UP;
     if (!a.signedIn || !a.user) return;
     const u = a.user;
     $("acct-name").textContent = u.name || u.email;
     $("acct-mail").textContent = u.name ? u.email : "";
-    const pic = $<HTMLImageElement>("acct-pic");
-    const letter = $("acct-letter");
-    if (u.pictureUrl) {
-      if (pic.getAttribute("src") !== u.pictureUrl) pic.src = u.pictureUrl;
-      pic.hidden = false;
-      letter.textContent = "";
-      pic.onerror = () => {
-        pic.hidden = true;
-        letter.textContent = (u.name || u.email).charAt(0).toUpperCase();
-      };
-    } else {
-      pic.hidden = true;
-      letter.textContent = (u.name || u.email).charAt(0).toUpperCase();
-    }
+    showAvatar($<HTMLImageElement>("acct-pic"), $("acct-letter"), u);
 
     const sum = accountSummary(a);
     $("acct-plan").textContent = sum.planName;
     $("acct-plan-status").textContent = sum.planStatus;
-    $("acct-credit").textContent = sum.outOfCredit ? "Out of usage credit" : sum.credit || "—";
+    $("acct-credit").textContent = sum.outOfCredit ? OUT_OF_CREDIT : sum.credit || "—";
     $("acct-credit-detail").textContent = sum.outOfCredit ? (sum.credit ? `${sum.credit} left` : "") : sum.creditDetail;
-    $("acct-credit").parentElement!.dataset.tone = sum.outOfCredit ? "warn" : "";
+    $("credit-fact").dataset.tone = sum.outOfCredit ? "warn" : "";
 
     const note = $("acct-note");
     const noteText =
@@ -154,8 +126,8 @@ export function initAccountSection(opts: { onState(state: UiState): void; showBi
     const topup = $("acct-topup");
     topup.replaceChildren(
       h("span", null, "Top up"),
-      ...TOPUP_AMOUNTS.map((cents) => {
-        const b = h("button.small", { type: "button", title: `Buy ${centsLabel(cents)} of usage credit (never expires)` }, centsLabel(cents));
+      ...TOPUP_AMOUNTS_CENTS.map((cents) => {
+        const b = h("button.small", { type: "button", title: `Buy ${formatCents(cents)} of usage credit (never expires)` }, formatCents(cents));
         b.addEventListener("click", () => billing(b, { action: "topup", amountCents: cents }));
         return b;
       }),
@@ -173,13 +145,15 @@ export function initAccountSection(opts: { onState(state: UiState): void; showBi
   const keyRole = $<HTMLSelectElement>("key-role");
   const create = $<HTMLButtonElement>("key-create");
   let keysLoadedFor = "";
+  keyRole.replaceChildren(...Object.entries(API_KEY_ROLE_LABELS).map(([role, r]) => h("option", { value: role, title: r.hint }, r.label)));
+  $("keys-rate").textContent = String(API_KEY_LIMITS.requestsPerMinute);
 
   async function loadKeys(): Promise<void> {
     try {
       const { keys } = await uiRequest({ type: "account.keys.list" });
       renderKeys(keys);
     } catch (err) {
-      flash(keysMsg, errorText(err), "bad");
+      showError(keysMsg, err);
     }
   }
 
@@ -190,37 +164,37 @@ export function initAccountSection(opts: { onState(state: UiState): void; showBi
         ? live.map((k) => {
             const revoke = h("button.small.danger", { type: "button" }, "Revoke");
             revoke.addEventListener("click", () =>
-              void busy(revoke, async () => {
-                try {
+              void busy(
+                revoke,
+                async () => {
                   await uiRequest({ type: "account.keys.revoke", id: k.id });
                   flash(keysMsg, `Revoked ${k.name}.`, "ok");
                   await loadKeys();
-                } catch (err) {
-                  flash(keysMsg, errorText(err), "bad");
-                }
-              }),
+                },
+                keysMsg,
+              ),
             );
-            return h("li", null, h("span.key-name", { title: k.name }, k.name), h("span.chip", null, k.role), h("span.muted", null, dateLabel(k.createdAt)), revoke);
+            return h("li", null, h("span.key-name", { title: k.name }, k.name), h("span.chip", null, apiKeyRoleLabel(k.role)), h("span.muted", null, dateLabel(k.createdAt)), revoke);
           })
         : [h("li.empty", null, "No keys yet.")]),
     );
   }
 
   create.addEventListener("click", () =>
-    void busy(create, async () => {
-      const name = keyName.value.trim();
-      if (!name) return flash(keysMsg, "Give the key a name.", "bad");
-      try {
-        const k = await uiRequest({ type: "account.keys.create", name, role: keyRole.value as "creator" | "runner" });
+    void busy(
+      create,
+      async () => {
+        const name = keyName.value.trim();
+        if (!name) return flash(keysMsg, "Give the key a name.", "bad");
+        const k = await uiRequest({ type: "account.keys.create", name, role: keyRole.value as KeyRole });
         keyName.value = "";
         $("key-value").textContent = k.key;
         $("key-new").hidden = false;
         flash(keysMsg, "");
         await loadKeys();
-      } catch (err) {
-        flash(keysMsg, errorText(err), "bad");
-      }
-    }),
+      },
+      keysMsg,
+    ),
   );
   const copy = $<HTMLButtonElement>("key-copy");
   copy.addEventListener("click", () =>
@@ -250,7 +224,7 @@ export function initAccountSection(opts: { onState(state: UiState): void; showBi
   return {
     signIn: signInWith,
     render(state) {
-      account = state.account ?? { signedIn: false, signInConfigured: false, apiBase: "", dashboardUrl: "" };
+      account = state.account ?? SIGNED_OUT;
       renderAccount(account);
       renderKeysCard(account);
     },

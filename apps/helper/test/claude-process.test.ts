@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -102,7 +102,8 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     const events: AgentEvent[] = [];
     const input = new UserInput();
     const run = brain().run(ctx(new AbortController().signal, log, events, input));
-    await new Promise((r) => setTimeout(r, 50));
+    // Claude Code is up (its init line came) and still answering the first message.
+    await vi.waitFor(() => expect(log.some((e) => e.type === "claude")).toBe(true));
     expect(input.push("also add a hashtag")).toBe(true);
     await run;
     const texts = events.filter((e) => e.type === "assistant_text").map((e) => (e as { text: string }).text);
@@ -129,12 +130,10 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     const persistent = new ClaudeCodeBrain({ claudePath: process.execPath, model: "sonnet", prefixArgs: [FAKE], persistent: true });
     expect(persistent.persistent).toBe(true);
     const run = persistent.run(c);
-    const t0 = Date.now();
-    while (idle < 1 && Date.now() - t0 < 10_000) await new Promise((r) => setTimeout(r, 20));
-    expect(idle).toBe(1);
+    await vi.waitFor(() => expect(idle).toBe(1), { timeout: 10_000 });
     expect(input.closed).toBe(false);
     input.push("Next message from the user: like it", "followup");
-    while (idle < 2 && Date.now() - t0 < 10_000) await new Promise((r) => setTimeout(r, 20));
+    await vi.waitFor(() => expect(idle).toBe(2), { timeout: 10_000 });
     input.close();
     await run;
     const texts = events.filter((e) => e.type === "assistant_text").map((e) => (e as { text: string }).text);
@@ -149,8 +148,7 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     const log: Record<string, any>[] = [];
     const ac = new AbortController();
     const run = brain().run(ctx(ac.signal, log, []));
-    const started = Date.now();
-    while (!log.some((e) => e.type === "claude") && Date.now() - started < 10_000) await new Promise((r) => setTimeout(r, 50));
+    await vi.waitFor(() => expect(log.some((e) => e.type === "claude")).toBe(true), { timeout: 10_000 });
     ac.abort(new Error("time limit"));
     await run;
     expect(log.some((e) => e.type === "claude_kill")).toBe(true);
@@ -172,7 +170,7 @@ describe("self-test", () => {
   };
 
   it("uses a one-turn headless call with no tools or settings", () => {
-    expect(selfTestArgs()).toEqual(["-p", "Reply with exactly: OK", "--tools", "", "--setting-sources", "", "--no-session-persistence", "--output-format", "json", "--model", "haiku"]);
+    expect(selfTestArgs()).toEqual(["-p", "Reply with exactly: OK", "--output-format", "json", "--tools", "", "--setting-sources", "", "--no-session-persistence", "--model", "haiku"]);
   });
 
   it("parses json output", () => {
@@ -181,7 +179,7 @@ describe("self-test", () => {
       ok: false,
       error: "Claude Code error: Invalid API key · Please run /login",
     });
-    expect(parseSelfTestOutput("", "boom", 3)).toEqual({ ok: false, error: "claude exited with code 3: boom" });
+    expect(parseSelfTestOutput("", "boom", 3)).toEqual({ ok: false, error: "Claude Code exited with code 3: boom" });
   });
 
   it("runs a fake claude: ok, error, and timeout", async () => {
@@ -194,7 +192,7 @@ describe("self-test", () => {
     const hang = script(`setInterval(() => {}, 1000)`);
     expect(await runSelfTest({ claudePath: process.execPath, prefixArgs: [hang], timeoutMs: 300 })).toMatchObject({
       ok: false,
-      error: "self-test timed out after 0 s",
+      error: "Self-test timed out after 0 s",
     });
   });
 
@@ -202,20 +200,20 @@ describe("self-test", () => {
     let runs = 0;
     const cacheFile = join(dir, "selftest.json");
     const run = async () => (runs++, { ok: true, ms: 5, at: new Date().toISOString() });
-    const a = new SelfTestCache({ claudePath: "C:\\claude.exe", cacheFile, run });
+    const a = new SelfTestCache({ brain: "claude", claudePath: "C:\\claude.exe", cacheFile, run });
     await a.get();
     await a.get();
     expect(runs).toBe(1);
-    const b = new SelfTestCache({ claudePath: "C:\\claude.exe", cacheFile, run });
+    const b = new SelfTestCache({ brain: "claude", claudePath: "C:\\claude.exe", cacheFile, run });
     expect(b.cached?.ok).toBe(true);
     await b.get();
     expect(runs).toBe(1);
     await b.get(true);
     expect(runs).toBe(2);
     // a different claude path does not reuse the cache
-    expect(new SelfTestCache({ claudePath: "D:\\other.exe", cacheFile, run }).cached).toBeUndefined();
-    expect((await new SelfTestCache({ claudePath: "scripted", cacheFile: null }).get()).ok).toBe(true);
-    expect(await new SelfTestCache({ claudePath: null, cacheFile: null }).get()).toMatchObject({ ok: false, error: expect.stringMatching(/not found/) });
+    expect(new SelfTestCache({ brain: "claude", claudePath: "D:\\other.exe", cacheFile, run }).cached).toBeUndefined();
+    expect((await new SelfTestCache({ brain: "scripted", claudePath: null, cacheFile }).get()).ok).toBe(true);
+    expect(await new SelfTestCache({ brain: "claude", claudePath: null, cacheFile: null }).get()).toMatchObject({ ok: false, error: expect.stringMatching(/not found/) });
   });
 });
 

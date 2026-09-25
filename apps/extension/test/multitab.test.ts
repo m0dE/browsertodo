@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { installChromeFake, type ChromeFake } from "./chrome-fake.js";
-import { AgentTab } from "../src/agent-tab.js";
-import { Cdp } from "../src/cdp.js";
-import { Driver } from "../src/driver.js";
+import type { ChromeFake } from "./chrome-fake.js";
+import { driverHarness, runInUserTab } from "./driver-harness.js";
+import type { AgentTab } from "../src/agent-tab.js";
+import { DEBUGGER_CANCELED, type Cdp } from "../src/cdp.js";
+import type { Driver } from "../src/driver.js";
 import { createBrowserCaller } from "../src/engine/browser-caller.js";
 import { BACKGROUND_SHOT_SKIPPED } from "../src/driver-common.js";
 import { FALLBACK_NOTE } from "../src/fallback-driver.js";
@@ -24,15 +25,10 @@ const snapOf = (tabId: number) => {
 };
 
 beforeEach(async () => {
-  chrome = installChromeFake();
-  cdp = new Cdp();
-  agent = new AgentTab();
   onSleep = () => {};
-  driver = new Driver(cdp, agent, { sleep: async () => onSleep() });
-  const win = await chrome.windows.create({ url: "https://mail.test/", focused: true, type: "normal" });
-  windowId = win.id;
-  mainTab = win.tabs[0]!.id;
-  await agent.prepare("current-tab");
+  const h = driverHarness(async () => onSleep());
+  ({ chrome, cdp, agent, driver } = h);
+  ({ windowId, tabId: mainTab } = await runInUserTab(h, "https://mail.test/"));
   chrome.debugger.respond = (method) => {
     const tabId = chrome.debugger.commands.at(-1)!.tabId;
     if (method === "Runtime.evaluate") return { result: { value: snapOf(tabId) } };
@@ -302,7 +298,7 @@ describe("Cdp with several tabs", () => {
     cdp.handleDetach({ tabId: other.id }, "canceled_by_user");
     expect(canceled).toBe(1);
     expect(cdp.attachedTabs).toEqual([]);
-    await expect(cdp.sendTo(mainTab, "Page.enable")).rejects.toThrow("debugger detached by user");
+    await expect(cdp.sendTo(mainTab, "Page.enable")).rejects.toThrow(DEBUGGER_CANCELED);
   });
 
   it("attaches a tab once when it is read in parallel", async () => {

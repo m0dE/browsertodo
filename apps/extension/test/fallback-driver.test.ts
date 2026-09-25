@@ -1,17 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { FOREIGN_FRAME_ERROR, installChromeFake, type ChromeFake } from "./chrome-fake.js";
-import { AgentTab } from "../src/agent-tab.js";
+import { FOREIGN_FRAME_ERROR, type ChromeFake } from "./chrome-fake.js";
+import { driverHarness, runInUserTab } from "./driver-harness.js";
+import type { AgentTab } from "../src/agent-tab.js";
 import { Cdp } from "../src/cdp.js";
 import { Driver } from "../src/driver.js";
-import { BACKGROUND_SHOT_SKIPPED } from "../src/driver-common.js";
-import {
-  FALLBACK_NOTE,
-  clickInPage,
-  insertTextInPage,
-  isDebuggerBlocked,
-  pressKeyInPage,
-  viewportInPage,
-} from "../src/fallback-driver.js";
+import { BACKGROUND_SHOT_SKIPPED, PAGE_MARKS, SCREENSHOT_JPEG_QUALITY } from "../src/driver-common.js";
+import { FALLBACK_NOTE } from "../src/fallback-driver.js";
+import { caretToEndInPage, clickInPage, insertTextInPage, pressKeyInPage, viewportInPage } from "../src/page-input.js";
+import { isDebuggerBlocked } from "../src/restricted.js";
 import { scrollProbeInPage } from "../src/scroll-probe.js";
 import { snapshotPage } from "../src/page-snapshot.js";
 
@@ -25,14 +21,9 @@ let windowId: number;
 const snap = { url: "https://mail.test/", title: "Inbox", text: "hi", elements: [], truncated: false };
 
 beforeEach(async () => {
-  chrome = installChromeFake();
-  cdp = new Cdp();
-  agent = new AgentTab();
-  driver = new Driver(cdp, agent, { sleep: async () => {} });
-  const win = await chrome.windows.create({ url: "https://mail.test/", focused: true, type: "normal" });
-  windowId = win.id;
-  tabId = win.tabs[0]!.id;
-  await agent.prepare("current-tab");
+  const h = driverHarness();
+  ({ chrome, cdp, agent, driver } = h);
+  ({ windowId, tabId } = await runInUserTab(h, "https://mail.test/"));
   chrome.debugger.respond = (method) => {
     if (method === "Runtime.evaluate") return { result: { value: snap } };
     if (method === "Page.captureScreenshot") return { data: "Q0RQ" };
@@ -80,28 +71,29 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
     const first = await driver.readPage();
     expect(first).toEqual({ ...snap, note: FALLBACK_NOTE });
     expect(driver.inFallback).toBe(true);
-    expect(chrome.scripting.calls[0]).toMatchObject({ tabId, func: snapshotPage, args: [8000, 300] });
+    expect(chrome.scripting.calls[0]).toMatchObject({ tabId, func: snapshotPage, args: [PAGE_MARKS, 8000, 300] });
     // Top frame only: no allFrames / other extensions' frames.
     expect(chrome.scripting.calls[0]!.frameIds).toBeUndefined();
 
     expect(await driver.screenshot()).toEqual({ base64: "RkFLRQ==", mimeType: "image/jpeg" });
-    expect(chrome.tabs.captureCalls).toEqual([{ windowId, opts: { format: "jpeg", quality: 70 } }]);
+    expect(chrome.tabs.captureCalls).toEqual([{ windowId, opts: { format: "jpeg", quality: SCREENSHOT_JPEG_QUALITY } }]);
     expect(await driver.click({ index: 3 })).toEqual({ ok: true });
     expect(await driver.type({ index: 4, text: "Ada" })).toEqual({ ok: true });
     expect(await driver.paste({ text: "!" })).toEqual({ ok: true });
     expect(await driver.pressKey({ key: "Control+Enter" })).toEqual({ ok: true });
     expect(await driver.scroll({ direction: "down", amount: 2, index: 1 })).toEqual({ ok: true, moved: 1280, target: "page", position: 1280, size: 5400, view: 800 });
 
-    expect(injected()).toEqual([snapshotPage, clickInPage, clickInPage, insertTextInPage, insertTextInPage, pressKeyInPage, viewportInPage, scrollProbeInPage]);
+    expect(injected()).toEqual([snapshotPage, clickInPage, clickInPage, caretToEndInPage, insertTextInPage, insertTextInPage, pressKeyInPage, viewportInPage, scrollProbeInPage]);
     const args = chrome.scripting.calls.map((c) => c.args);
     expect(args.slice(1)).toEqual([
-      [3],
-      [4],
-      [4, "Ada"],
-      [null, "!"],
+      [PAGE_MARKS, 3],
+      [PAGE_MARKS, 4],
+      [PAGE_MARKS, 4],
+      [PAGE_MARKS, 4, "Ada"],
+      [PAGE_MARKS, null, "!"],
       [{ key: "Enter", code: "Enter", keyCode: 13, text: "\r", alt: false, ctrl: true, meta: false, shift: false }],
       [],
-      ["scroll", 500, 400, 1, 0, 1280],
+      [PAGE_MARKS, "scroll", 500, 400, 1, 0, 1280],
     ]);
     expect(chrome.debugger.commands).toEqual([]);
   });
@@ -156,7 +148,7 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
     // The visible tab is captured with captureVisibleTab.
     await chrome.tabs.update(tabId, { active: true });
     expect(await driver.screenshot()).toMatchObject({ base64: "RkFLRQ==", mimeType: "image/jpeg" });
-    expect(chrome.tabs.captureCalls).toEqual([{ windowId, opts: { format: "jpeg", quality: 70 } }]);
+    expect(chrome.tabs.captureCalls).toEqual([{ windowId, opts: { format: "jpeg", quality: SCREENSHOT_JPEG_QUALITY } }]);
   });
 
   it("navigates with tabs.update, then tries the debugger again on the new page", async () => {
@@ -205,7 +197,7 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
 
 describe("page functions", () => {
   it("are self-contained so chrome.scripting can serialize them", () => {
-    for (const fn of [clickInPage, insertTextInPage, pressKeyInPage, viewportInPage, scrollProbeInPage, snapshotPage]) {
+    for (const fn of [clickInPage, caretToEndInPage, insertTextInPage, pressKeyInPage, viewportInPage, scrollProbeInPage, snapshotPage]) {
       const src = fn.toString();
       expect(src).not.toMatch(/__name|__vite|_interop|import\(|\bexports\b|require\(/);
       expect(() => new Function(`return (${src})`)).not.toThrow();

@@ -7,6 +7,7 @@
  * restarts, like the tabs themselves. A closed tab loses its binding, while
  * the session stays in the Activity Log.
  */
+import { Listeners } from "./listeners.js";
 import { tabExists } from "./chrome-tabs.js";
 
 const KEY = "tabChats";
@@ -20,7 +21,7 @@ export interface TabChatsLike {
 export class TabChats implements TabChatsLike {
   private cache: Map<number, string> | null = null;
   private loading: Promise<Map<number, string>> | null = null;
-  private readonly listeners = new Set<() => void>();
+  private readonly changes = new Listeners();
 
   constructor(private readonly opts: { exists?(tabId: number): Promise<boolean> } = {}) {}
 
@@ -64,8 +65,7 @@ export class TabChats implements TabChatsLike {
 
   /** Called after every change. */
   onChange(fn: () => void): () => void {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
+    return this.changes.add(fn);
   }
 
   private async map(): Promise<Map<number, string>> {
@@ -97,12 +97,6 @@ export class TabChats implements TabChatsLike {
 
   private async save(m: Map<number, string>): Promise<void> {
     await chrome.storage.session.set({ [KEY]: Object.fromEntries(m) });
-    for (const fn of this.listeners) {
-      try {
-        fn();
-      } catch {
-        /* a listener must not break the store */
-      }
-    }
+    this.changes.emit();
   }
 }

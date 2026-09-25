@@ -28,7 +28,7 @@
               <div class="box pad">
                 <p class="hint">Log in with Google to keep your TODO list in your account, run it on schedule, and use browsertodo AI without setting up Claude or Jev.</p>
                 <div class="row">
-                  <button id="acct-signin" type="button" class="primary">Log In with Google</button>
+                  <button id="acct-signin" type="button" class="primary">Log in with Google</button>
                   <span id="acct-signin-msg" class="msg"></span>
                 </div>
               </div>
@@ -50,10 +50,10 @@
               </div>
 
               <h2 class="group-title" id="h-plan">Plan and credit</h2>
-              <div class="box">
+              <div class="box" id="plan-box">
                 <div class="acct-facts">
                   <div class="fact"><span>Plan</span><b id="acct-plan"></b><small id="acct-plan-status"></small></div>
-                  <div class="fact"><span>Usage credit</span><b id="acct-credit"></b><small id="acct-credit-detail"></small></div>
+                  <div class="fact" id="credit-fact"><span>Usage credit</span><b id="acct-credit"></b><small id="acct-credit-detail"></small></div>
                 </div>
                 <div class="box-body">
                   <p id="acct-note" class="note" hidden></p>
@@ -78,7 +78,7 @@
 
           <div class="group" id="keys-card" hidden>
             <h2 class="group-title" id="h-keys">API keys</h2>
-            <p class="group-hint">For your own scripts (creator: adds tasks) or another browser (runner: works through them). Fair use: 60 requests a minute per key.</p>
+            <p class="group-hint">For your own scripts (Add tasks) or another browser that works through them (Run tasks). Fair use: <span id="keys-rate"></span> requests a minute per key.</p>
             <div class="box pad">
               <div id="keys-locked" class="row" hidden>
                 <span class="muted">API keys come with a paid plan.</span>
@@ -88,10 +88,7 @@
                 <ul id="keys-list" class="keys-list"></ul>
                 <div class="key-new-form">
                   <input id="key-name" type="text" placeholder="Key name, e.g. laptop scheduler" aria-label="Key name" autocomplete="off" spellcheck="false" />
-                  <select id="key-role" aria-label="Key role">
-                    <option value="creator">creator</option>
-                    <option value="runner">runner</option>
-                  </select>
+                  <select id="key-role" aria-label="What the key may do"></select>
                   <button id="key-create" type="button" class="small">Create key</button>
                 </div>
                 <div id="key-new" class="key-new" hidden>
@@ -215,7 +212,7 @@
                 </div>
                 <div class="srow">
                   <label class="srow-label" for="f-jevThreshold"><b>Confidence threshold</b><small>0 to 1. Below it, Claude picks the element instead.</small></label>
-                  <div class="srow-control"><input id="f-jevThreshold" type="number" min="0" max="1" step="0.05" aria-describedby="err-jevThreshold" /><small id="err-jevThreshold" class="field-error"></small></div>
+                  <div class="srow-control"><input id="f-jevThreshold" type="number" step="0.05" aria-describedby="err-jevThreshold" /><small id="err-jevThreshold" class="field-error"></small></div>
                 </div>
                 <div class="srow">
                   <div class="srow-label"><b>Check Jev</b><small>Sends one test request.</small></div>
@@ -229,23 +226,33 @@
         <!-- Tasks -->
         <section class="panel" id="panel-tasks" role="tabpanel" aria-labelledby="tab-tasks" tabindex="-1" hidden>
           <div class="group">
+            <h2 class="group-title">Keyboard shortcut</h2>
+            <div class="box">
+              <div class="srow">
+                <div class="srow-label"><b>Open browsertodo</b><small>Opens the side panel with the cursor in the chat, on any page while Chrome is in front. Pressed again there, it starts or stops voice input.</small></div>
+                <div class="srow-control shortcut"><kbd id="shortcut-key" class="shortcut-key">Not set</kbd><button id="shortcut-change" type="button" class="ghost small">Change</button></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="group">
             <h2 class="group-title">Schedule</h2>
             <div class="box">
               <div class="srow">
                 <label class="srow-label" for="f-intervalMinutes"><b>Check for due tasks every</b></label>
-                <div class="srow-control"><div class="num"><input id="f-intervalMinutes" type="number" min="1" max="1440" step="1" aria-describedby="err-intervalMinutes" /><span class="unit">min</span></div><small id="err-intervalMinutes" class="field-error"></small></div>
+                <div class="srow-control"><div class="num"><input id="f-intervalMinutes" type="number" step="1" aria-describedby="err-intervalMinutes" /><span class="unit">min</span></div><small id="err-intervalMinutes" class="field-error"></small></div>
               </div>
               <div class="srow">
                 <label class="srow-label" for="f-maxParallelTasks"><b>Tasks at once</b><small>1 to 4, each in its own tab. Tasks on X run one at a time.</small></label>
-                <div class="srow-control"><div class="num"><input id="f-maxParallelTasks" type="number" min="1" max="4" step="1" aria-describedby="err-maxParallelTasks" /><span class="unit">tasks</span></div><small id="err-maxParallelTasks" class="field-error"></small></div>
+                <div class="srow-control"><div class="num"><input id="f-maxParallelTasks" type="number" step="1" aria-describedby="err-maxParallelTasks" /><span class="unit">tasks</span></div><small id="err-maxParallelTasks" class="field-error"></small></div>
               </div>
               <div class="srow">
                 <label class="srow-label" for="f-delayMinSec"><b>Shortest pause between tasks</b></label>
-                <div class="srow-control"><div class="num"><input id="f-delayMinSec" type="number" min="0" max="3600" step="1" aria-describedby="err-delayMinSec" /><span class="unit">s</span></div><small id="err-delayMinSec" class="field-error"></small></div>
+                <div class="srow-control"><div class="num"><input id="f-delayMinSec" type="number" step="1" aria-describedby="err-delayMinSec" /><span class="unit">s</span></div><small id="err-delayMinSec" class="field-error"></small></div>
               </div>
               <div class="srow">
                 <label class="srow-label" for="f-delayMaxSec"><b>Longest pause between tasks</b><small>Each pause is a random time between the two.</small></label>
-                <div class="srow-control"><div class="num"><input id="f-delayMaxSec" type="number" min="0" max="3600" step="1" aria-describedby="err-delayMaxSec" /><span class="unit">s</span></div><small id="err-delayMaxSec" class="field-error"></small></div>
+                <div class="srow-control"><div class="num"><input id="f-delayMaxSec" type="number" step="1" aria-describedby="err-delayMaxSec" /><span class="unit">s</span></div><small id="err-delayMaxSec" class="field-error"></small></div>
               </div>
             </div>
           </div>
@@ -255,11 +262,11 @@
             <div class="box">
               <div class="srow">
                 <label class="srow-label" for="f-maxToolCalls"><b>Most tool calls</b></label>
-                <div class="srow-control"><div class="num"><input id="f-maxToolCalls" type="number" min="5" max="500" step="1" aria-describedby="err-maxToolCalls" /><span class="unit">calls</span></div><small id="err-maxToolCalls" class="field-error"></small></div>
+                <div class="srow-control"><div class="num"><input id="f-maxToolCalls" type="number" step="1" aria-describedby="err-maxToolCalls" /><span class="unit">calls</span></div><small id="err-maxToolCalls" class="field-error"></small></div>
               </div>
               <div class="srow">
                 <label class="srow-label" for="f-maxTaskMinutes"><b>Longest run</b></label>
-                <div class="srow-control"><div class="num"><input id="f-maxTaskMinutes" type="number" min="1" max="120" step="1" aria-describedby="err-maxTaskMinutes" /><span class="unit">min</span></div><small id="err-maxTaskMinutes" class="field-error"></small></div>
+                <div class="srow-control"><div class="num"><input id="f-maxTaskMinutes" type="number" step="1" aria-describedby="err-maxTaskMinutes" /><span class="unit">min</span></div><small id="err-maxTaskMinutes" class="field-error"></small></div>
               </div>
             </div>
           </div>
@@ -269,15 +276,15 @@
             <div class="box">
               <div class="srow">
                 <label class="srow-label" for="f-retryAfterMinutes"><b>Retry temporary failures after</b></label>
-                <div class="srow-control"><div class="num"><input id="f-retryAfterMinutes" type="number" min="1" max="1440" step="1" aria-describedby="err-retryAfterMinutes" /><span class="unit">min</span></div><small id="err-retryAfterMinutes" class="field-error"></small></div>
+                <div class="srow-control"><div class="num"><input id="f-retryAfterMinutes" type="number" step="1" aria-describedby="err-retryAfterMinutes" /><span class="unit">min</span></div><small id="err-retryAfterMinutes" class="field-error"></small></div>
               </div>
               <div class="srow">
                 <label class="srow-label" for="f-pauseRetryMinutes"><b>Retry tasks that needed you after</b></label>
-                <div class="srow-control"><div class="num"><input id="f-pauseRetryMinutes" type="number" min="1" max="1440" step="1" aria-describedby="err-pauseRetryMinutes" /><span class="unit">min</span></div><small id="err-pauseRetryMinutes" class="field-error"></small></div>
+                <div class="srow-control"><div class="num"><input id="f-pauseRetryMinutes" type="number" step="1" aria-describedby="err-pauseRetryMinutes" /><span class="unit">min</span></div><small id="err-pauseRetryMinutes" class="field-error"></small></div>
               </div>
               <div class="srow">
                 <label class="srow-label" for="f-maxConsecutiveFailures"><b>Pause runs after failures in a row</b><small>0 never pauses.</small></label>
-                <div class="srow-control"><div class="num"><input id="f-maxConsecutiveFailures" type="number" min="0" max="100" step="1" aria-describedby="err-maxConsecutiveFailures" /><span class="unit">failures</span></div><small id="err-maxConsecutiveFailures" class="field-error"></small></div>
+                <div class="srow-control"><div class="num"><input id="f-maxConsecutiveFailures" type="number" step="1" aria-describedby="err-maxConsecutiveFailures" /><span class="unit">failures</span></div><small id="err-maxConsecutiveFailures" class="field-error"></small></div>
               </div>
             </div>
           </div>

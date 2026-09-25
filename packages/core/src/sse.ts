@@ -4,7 +4,7 @@
  * message from the stream's events.
  * https://docs.anthropic.com/en/api/messages-streaming
  */
-import type { ContentBlock, MessagesResponse } from "./anthropic.js";
+import type { MessagesResponse } from "./anthropic.js";
 
 export interface SseEvent {
   event: string;
@@ -69,6 +69,20 @@ export class StreamError extends Error {
   }
 }
 
+/** The fields of a stream event's data the accumulator reads (untrusted JSON: each is checked before use). */
+interface StreamEventData {
+  type?: unknown;
+  index?: unknown;
+  message?: { content?: unknown; [k: string]: unknown };
+  content_block?: Record<string, unknown>;
+  delta?: Record<string, unknown>;
+  usage?: Record<string, unknown>;
+  error?: { type?: unknown; message?: unknown };
+}
+
+/** A content block being filled from the stream. */
+type OpenBlock = { type: string; [k: string]: unknown };
+
 /**
  * Rebuilds a MessagesResponse from stream events. Text deltas are passed to
  * onText as they come; tool_use input is the joined input_json_delta parts,
@@ -94,16 +108,17 @@ export class MessageAccumulator {
 
   apply(ev: SseEvent): void {
     if (ev.event === "ping") return;
-    let d: any;
+    let parsed: unknown;
     try {
-      d = JSON.parse(ev.data);
+      parsed = JSON.parse(ev.data);
     } catch {
       throw new StreamError(`unreadable stream event (${ev.event})`, "stream_error");
     }
-    const type = typeof d?.type === "string" ? d.type : ev.event;
+    const d = (parsed && typeof parsed === "object" ? parsed : {}) as StreamEventData;
+    const type = typeof d.type === "string" ? d.type : ev.event;
     if (type === "error") {
-      const e = d?.error ?? {};
-      throw new StreamError(`${e.type ? `${e.type}: ` : ""}${e.message ?? "stream error"}`, typeof e.type === "string" ? e.type : "error");
+      const e = d.error ?? {};
+      throw new StreamError(`${e.type ? `${String(e.type)}: ` : ""}${String(e.message ?? "stream error")}`, typeof e.type === "string" ? e.type : "error");
     }
     if (type === "message_start") {
       const m = d.message ?? {};
@@ -115,23 +130,26 @@ export class MessageAccumulator {
       if (type === "message_stop") this.stopped = true;
       return;
     }
+    const index = typeof d.index === "number" ? d.index : null;
+    const blockAt = (i: number) => msg.content[i] as OpenBlock | undefined;
     switch (type) {
       case "content_block_start": {
-        const block = { ...(d.content_block ?? {}) } as ContentBlock & Record<string, unknown>;
-        if (block.type === "tool_use") this.json.set(d.index, "");
-        msg.content[d.index] = block;
-        if (block.type === "text" && typeof block.text === "string" && block.text) this.onText?.(msg.id, d.index, block.text);
+        if (index === null) return;
+        const block: OpenBlock = { type: "", ...(d.content_block ?? {}) };
+        if (block.type === "tool_use") this.json.set(index, "");
+        msg.content[index] = block;
+        if (block.type === "text" && typeof block.text === "string" && block.text) this.onText?.(msg.id, index, block.text);
         return;
       }
       case "content_block_delta": {
-        const block = msg.content[d.index] as (ContentBlock & Record<string, any>) | undefined;
+        const block = index === null ? undefined : blockAt(index);
+        if (!block || index === null) return;
         const delta = d.delta ?? {};
-        if (!block) return;
         if (delta.type === "text_delta" && typeof delta.text === "string") {
           block.text = String(block.text ?? "") + delta.text;
-          if (delta.text) this.onText?.(msg.id, d.index, delta.text);
+          if (delta.text) this.onText?.(msg.id, index, delta.text);
         } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
-          this.json.set(d.index, (this.json.get(d.index) ?? "") + delta.partial_json);
+          this.json.set(index, (this.json.get(index) ?? "") + delta.partial_json);
         } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
           block.thinking = String(block.thinking ?? "") + delta.thinking;
         } else if (delta.type === "signature_delta" && typeof delta.signature === "string") {
@@ -142,10 +160,10 @@ export class MessageAccumulator {
         return;
       }
       case "content_block_stop": {
-        const block = msg.content[d.index] as (ContentBlock & Record<string, any>) | undefined;
-        const raw = this.json.get(d.index);
+        const block = index === null ? undefined : blockAt(index);
+        const raw = index === null ? undefined : this.json.get(index);
         if (block && raw !== undefined) {
-          this.json.delete(d.index);
+          this.json.delete(index!);
           try {
             block.input = raw.trim() ? JSON.parse(raw) : {};
           } catch {
@@ -155,7 +173,7 @@ export class MessageAccumulator {
         return;
       }
       case "message_delta": {
-        if (d.delta && "stop_reason" in d.delta) msg.stop_reason = d.delta.stop_reason ?? null;
+        if (d.delta && "stop_reason" in d.delta) msg.stop_reason = typeof d.delta.stop_reason === "string" ? d.delta.stop_reason : null;
         if (d.usage && typeof d.usage === "object") msg.usage = { ...(msg.usage ?? {}), ...d.usage };
         return;
       }

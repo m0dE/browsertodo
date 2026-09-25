@@ -5,15 +5,16 @@
 import { z } from "zod";
 import * as core from "@browsertodo/core";
 import type { ExtensionSettings } from "@browsertodo/shared";
-import { AccountService, browserTimeZone } from "./account/account.js";
+import { AccountService, browserTimeZone, type AccountServiceDeps } from "./account/account.js";
 import { AccountTodo, LocalTodo, type TodoSource } from "./account/todo-source.js";
 import { AgentSlots } from "./agent-slots.js";
 import { ApiClient } from "./api-client.js";
 import { Cdp } from "./cdp.js";
+import { tabUrl } from "./chrome-tabs.js";
 import { GOOGLE_CLIENT_ID } from "./build-config.js";
 import { ApiBrain } from "./engine/api-brain.js";
 import { hostedBackend } from "./engine/hosted-brain.js";
-import { resolveBrain } from "./engine/brain-resolver.js";
+import { needsHelper, resolveBrain } from "./engine/brain-resolver.js";
 import { registerBrowserHandlers } from "./engine/browser-caller.js";
 import { ClaudeCodeBrain } from "./engine/claude-code-brain.js";
 import { IdbKvDb } from "./engine/kv.js";
@@ -25,8 +26,10 @@ import { testClaude, testCloud, testJev } from "./engine/settings-tests.js";
 import { UiHub } from "./engine/ui-hub.js";
 import { UiRouter, type ExtraRequest } from "./engine/ui-router.js";
 import { HelperLink } from "./helper-link.js";
+import { logger } from "./log.js";
 import { notify } from "./notify.js";
-import { ALARM_NAME, ensureAlarm, getRunnerId, handleStorageChange, loadSettings, saveSettings, saveSettingsPatch } from "./settings-store.js";
+import { PanelCommands } from "./panel-command.js";
+import { ALARM_NAME, DUE_ALARM, ensureAlarm, getRunnerId, handleStorageChange, loadSettings, saveSettings, saveSettingsPatch } from "./settings-store.js";
 import type { UiRequest } from "./ui-protocol.js";
 import { TabChats } from "./tab-chats.js";
 import { Vault } from "./vault.js";
@@ -34,10 +37,13 @@ import { Vault } from "./vault.js";
 // MV3 forbids eval; stop zod from probing for it.
 z.config({ jitless: true });
 
-/** One-shot alarm for the next local task that becomes due (notBefore / retryAfter). */
-const DUE_ALARM = "browsertodo-due";
 /** Do not re-spawn the helper for every side panel open. */
 const HELPER_AUTOCONNECT_MS = 60_000;
+/** Due alarms this close count as the same; a new one is set at least this far ahead. */
+const DUE_ALARM_SLACK_MS = 1000;
+
+// Pushes to the side panel. Its state comes from the router below; nothing pushes before this module has run.
+const hub = new UiHub(() => router.getState());
 
 const cdp = new Cdp();
 const vault = new Vault();
@@ -54,29 +60,40 @@ const sessions = new SessionStore(db);
 const helper = new HelperLink({ registerHandlers: (peer) => registerBrowserHandlers(peer, (sessionId) => slots.browserFor(sessionId)) });
 const mediaFiles = new MediaFiles();
 // Which conversations still have their agent session open shows in the side panel.
-const claudeCodeBrain = new ClaudeCodeBrain(helper, { onSessionsChanged: () => hub?.pushState() });
-const apiBrain = new ApiBrain({ core, browser, onSessionsChanged: () => hub?.pushState() });
+const claudeCodeBrain = new ClaudeCodeBrain(helper, { onSessionsChanged: () => hub.pushState() });
+const apiBrain = new ApiBrain({ core, browser, onSessionsChanged: () => hub.pushState() });
 
-// The browsertodo account: Google sign-in, the account's TODO list, billing and the hosted AI.
-const account = new AccountService({
-  loadSettings,
+type SignInIdentity = { clientId: string; identity: NonNullable<AccountServiceDeps["identity"]> };
+/** Google sign-in: the built-in client and Chrome's auth flow (the e2e suite swaps in a fake Google, setIdentity). */
+let signInIdentity: SignInIdentity = {
   clientId: GOOGLE_CLIENT_ID,
   identity: {
     redirectUri: () => chrome.identity.getRedirectURL(),
     launch: (url) => chrome.identity.launchWebAuthFlow({ url, interactive: true }),
   },
+};
+
+// The browsertodo account: Google sign-in, the account's TODO list, billing and the hosted AI.
+const account = new AccountService({
+  loadSettings,
+  get clientId() {
+    return signInIdentity.clientId;
+  },
+  get identity() {
+    return signInIdentity.identity;
+  },
   localTasks: localStore,
   onChange: () => {
-    hub?.pushState();
-    hub?.push({ type: "tasks.changed" });
+    hub.pushState();
+    hub.push({ type: "tasks.changed" });
   },
-  log: (m) => console.log("[browsertodo] account:", m),
+  log: logger("account"),
 });
 void account.load().catch(() => {});
 const hostedBrain = new ApiBrain({
   core,
   browser,
-  onSessionsChanged: () => hub?.pushState(),
+  onSessionsChanged: () => hub.pushState(),
   backend: hostedBackend({
     core,
     session: () => account.session(),
@@ -89,14 +106,16 @@ function brainStatus(settings: ExtensionSettings) {
   return resolveBrain({ settings, helper: helper.info, helperError: helper.lastError, account: account.brainAccount() });
 }
 
+const brains = { "claude-code": claudeCodeBrain, "claude-api": apiBrain, browsertodo: hostedBrain } as const;
+
+/** The e2e suite's scripted brain (setBrainOverride); null: the real ones. */
+let brainOverride: ((settings: ExtensionSettings) => Promise<ResolvedBrain>) | null = null;
+
 async function resolveForRun(settings: ExtensionSettings): Promise<ResolvedBrain> {
+  if (brainOverride) return brainOverride(settings);
   await account.load().catch(() => undefined);
-  const hostedFirst = account.brainAccount().hostedUsable && settings.brain === "auto";
-  if (settings.brain !== "claude-api" && settings.brain !== "browsertodo" && !hostedFirst && !helper.connected) {
-    await helper.connect().catch(() => undefined);
-  }
+  if (needsHelper(settings, account.brainAccount()) && !helper.connected) await helper.connect().catch(() => undefined);
   const status = brainStatus(settings);
-  const brains = { "claude-code": claudeCodeBrain, "claude-api": apiBrain, browsertodo: hostedBrain } as const;
   const brain = status.effective && status.effective !== "scripted" ? brains[status.effective] : null;
   return { brain, status };
 }
@@ -105,8 +124,9 @@ async function resolveForRun(settings: ExtensionSettings): Promise<ResolvedBrain
 let accountNextDue: number | null = null;
 function noteAccountTasks(tasks?: { status: string; notBefore: string | null; retryAfter: string | null }[]): void {
   if (tasks) {
+    // Paused tasks wait for the user (or their retryAfter, which the server turns back into pending).
     const times = tasks
-      .filter((t) => t.status === "pending" || t.status === "paused")
+      .filter((t) => t.status === "pending")
       .map((t) => Math.max(Date.parse(t.notBefore ?? "") || 0, Date.parse(t.retryAfter ?? "") || 0));
     accountNextDue = times.length ? Math.min(...times) : null;
   } else {
@@ -121,13 +141,26 @@ async function todoSource(): Promise<TodoSource> {
   if (!account.session()) return new LocalTodo(localStore);
   return new AccountTodo(await account.api(), browserTimeZone(), (tasks) => {
     noteAccountTasks(tasks);
-    if (!tasks) hub?.push({ type: "tasks.changed" });
+    if (!tasks) hub.push({ type: "tasks.changed" });
   });
 }
 
 const createApi = (s: ExtensionSettings) => new ApiClient({ apiBase: s.apiBase, runnerKey: s.runnerKey });
 
-let hub: UiHub;
+/** A tab's address and title (no tabId: the tab the user is looking at); chrome.tabs works on every page. */
+async function pageOf(tabId?: number): Promise<{ url: string; title: string } | null> {
+  const tab =
+    tabId === undefined
+      ? (await chrome.tabs.query({ active: true, lastFocusedWindow: true, windowType: "normal" }))[0]
+      : await chrome.tabs.get(tabId).catch(() => undefined);
+  return tab ? { url: tabUrl(tab), title: tab.title ?? "" } : null;
+}
+
+// The keyboard shortcut: open the side panel with the cursor in the chat input (see panel-command.ts).
+const panelCommands = new PanelCommands({
+  open: (windowId) => chrome.sidePanel.open({ windowId }),
+  log: logger(),
+});
 
 const runner = new Runner({
   loadSettings,
@@ -137,6 +170,7 @@ const runner = new Runner({
   accountApi: () => account.runnerApi(),
   localStore,
   sessions,
+  pageOf,
   media: mediaFiles,
   resolveBrain: resolveForRun,
   core,
@@ -144,8 +178,8 @@ const runner = new Runner({
   tabChats,
   notify,
   keepAlive: () => chrome.runtime.getPlatformInfo(),
-  onStateChange: () => hub?.pushState(),
-  log: (m) => console.log("[browsertodo]", m),
+  onStateChange: () => hub.pushState(),
+  log: logger(),
 });
 cdp.onUserCancel = () => runner.onDebuggerCanceled();
 
@@ -167,8 +201,8 @@ async function scheduleDueAlarm(): Promise<void> {
     return;
   }
   const existing = await chrome.alarms.get(DUE_ALARM);
-  if (existing && Math.abs(existing.scheduledTime - next.getTime()) < 1000) return;
-  await chrome.alarms.create(DUE_ALARM, { when: Math.max(next.getTime(), Date.now() + 1000) });
+  if (existing && Math.abs(existing.scheduledTime - next.getTime()) < DUE_ALARM_SLACK_MS) return;
+  await chrome.alarms.create(DUE_ALARM, { when: Math.max(next.getTime(), Date.now() + DUE_ALARM_SLACK_MS) });
 }
 
 const router = new UiRouter({
@@ -207,8 +241,6 @@ const router = new UiRouter({
     return out;
   },
 });
-hub = new UiHub(() => router.getState());
-
 sessions.subscribe({ onEvent: (e) => hub.event(e), onSession: (s) => hub.session(s) });
 localStore.onChange(() => {
   hub.push({ type: "tasks.changed" });
@@ -258,6 +290,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     })
     .catch(() => {});
 });
+// Before anything is awaited: sidePanel.open() needs the key press as its user gesture.
+chrome.commands?.onCommand.addListener((command, tab) => void panelCommands.onCommand(command, tab));
 chrome.debugger.onDetach.addListener((source, reason) => cdp.handleDetach(source, String(reason)));
 chrome.runtime.onMessage.addListener((msg: UiRequest | ExtraRequest, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return false;
@@ -268,6 +302,7 @@ chrome.runtime.onMessage.addListener((msg: UiRequest | ExtraRequest, sender, sen
 chrome.runtime.onConnect.addListener((port) => {
   if (port.sender?.id && port.sender.id !== chrome.runtime.id) return;
   if (hub.attach(port)) {
+    panelCommands.attach(port);
     maybeConnectHelper();
     // Credit and plan may have changed elsewhere (dashboard, another browser).
     void account.refresh().catch(() => {});
@@ -294,4 +329,9 @@ onStart();
   agentTab,
   tabChats,
   scheduleDueAlarm,
+  panelCommands,
+  /** Runs use this brain instead of the real ones (null: back to the real ones). */
+  setBrainOverride: (fn: typeof brainOverride) => void (brainOverride = fn),
+  /** Google sign-in uses this client ID and auth flow (a fake Google). */
+  setIdentity: (next: SignInIdentity) => void (signInIdentity = next),
 };

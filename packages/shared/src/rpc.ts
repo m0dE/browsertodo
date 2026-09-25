@@ -9,14 +9,37 @@ export interface RpcMessage {
   method?: string;
   params?: unknown;
   result?: unknown;
-  error?: { message: string };
+  error?: { message: string; code?: string };
 }
 
 export type MethodMap = Record<string, { params: unknown; result: unknown }>;
 
 type Handler = (params: any) => unknown | Promise<unknown>;
 
-export class RpcError extends Error {}
+/** error.code of calls that failed because the connection is gone (closed, or closed while waiting). */
+export const RPC_CLOSED = "closed";
+/** error.code of calls that got no answer in time. */
+export const RPC_TIMEOUT = "timeout";
+
+/**
+ * A failed call. `code` is for callers that act on the kind of failure; it
+ * crosses the transport (a handler that throws an RpcError with a code
+ * rejects the caller's call with the same code).
+ */
+export class RpcError extends Error {
+  constructor(
+    message: string,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = "RpcError";
+  }
+}
+
+/** The code of a failed call, or undefined for other errors. */
+export function rpcErrorCode(e: unknown): string | undefined {
+  return e instanceof RpcError ? e.code : undefined;
+}
 
 export class RpcPeer<Outgoing extends MethodMap, Incoming extends MethodMap> {
   private nextId = 1;
@@ -45,7 +68,7 @@ export class RpcPeer<Outgoing extends MethodMap, Incoming extends MethodMap> {
     params: Outgoing[M]["params"],
     opts: { timeoutMs?: number } = {},
   ): Promise<Outgoing[M]["result"]> {
-    if (this.closed) return Promise.reject(new RpcError("RPC connection closed"));
+    if (this.closed) return Promise.reject(new RpcError("RPC connection closed", RPC_CLOSED));
     const id = `${this.idPrefix}${this.nextId++}`;
     return new Promise((resolve, reject) => {
       const entry: { resolve: (v: unknown) => void; reject: (e: Error) => void; timer?: ReturnType<typeof setTimeout> } = {
@@ -55,7 +78,7 @@ export class RpcPeer<Outgoing extends MethodMap, Incoming extends MethodMap> {
       if (opts.timeoutMs) {
         entry.timer = setTimeout(() => {
           this.pending.delete(id);
-          reject(new RpcError(`${method} timed out after ${opts.timeoutMs} ms`));
+          reject(new RpcError(`${method} timed out after ${opts.timeoutMs} ms`, RPC_TIMEOUT));
         }, opts.timeoutMs);
       }
       this.pending.set(id, entry);
@@ -102,7 +125,8 @@ export class RpcPeer<Outgoing extends MethodMap, Incoming extends MethodMap> {
         const result = await handler(msg.params ?? {});
         this.safeSend({ id: msg.id, result: result ?? null });
       } catch (err) {
-        this.safeSend({ id: msg.id, error: { message: err instanceof Error ? err.message : String(err) } });
+        const code = rpcErrorCode(err);
+        this.safeSend({ id: msg.id, error: { message: err instanceof Error ? err.message : String(err), ...(code ? { code } : {}) } });
       }
       return;
     }
@@ -111,7 +135,7 @@ export class RpcPeer<Outgoing extends MethodMap, Incoming extends MethodMap> {
       if (!entry) return;
       this.pending.delete(msg.id);
       if (entry.timer) clearTimeout(entry.timer);
-      if (msg.error) entry.reject(new RpcError(msg.error.message));
+      if (msg.error) entry.reject(new RpcError(msg.error.message, msg.error.code));
       else entry.resolve(msg.result);
     }
   }
@@ -121,7 +145,7 @@ export class RpcPeer<Outgoing extends MethodMap, Incoming extends MethodMap> {
     this.closed = true;
     for (const [id, entry] of this.pending) {
       if (entry.timer) clearTimeout(entry.timer);
-      entry.reject(new RpcError(reason));
+      entry.reject(new RpcError(reason, RPC_CLOSED));
       this.pending.delete(id);
     }
   }

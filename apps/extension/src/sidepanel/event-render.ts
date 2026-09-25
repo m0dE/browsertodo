@@ -1,8 +1,9 @@
-/** DOM for one conversation log entry (Chat and the Activity Log) (see event-format.ts for the pure view models). */
-import { TASK_END_TOOLS, type SessionInfo } from "@browsertodo/shared";
-import { h } from "./dom.js";
+/** DOM for one conversation log entry (Chat and the Activity log) (see event-format.ts for the pure view models). */
+import { chipHint, OUT_OF_CREDIT, TASK_END_TOOLS, type SessionInfo } from "@browsertodo/shared";
+import { h } from "../ui/dom.js";
 import type { EventView } from "./event-format.js";
-import { chipHint, sessionHeadline } from "./format.js";
+import { brainLabel } from "../ui/labels.js";
+import { sessionHeadline, sessionMeta } from "./format.js";
 import { MarkdownView } from "./markdown.js";
 
 let topupUrl: string | null = null;
@@ -12,8 +13,8 @@ export function setTopupUrl(url: string | null): void {
   topupUrl = url;
 }
 
-/** The hosted AI refused the run for lack of credit (core's OUT_OF_CREDIT reason). */
-const isOutOfCredit = (text: string | undefined) => !!text && /^Out of usage credit\b/.test(text);
+/** The hosted AI refused the run for lack of credit (a paused run's reason starts with OUT_OF_CREDIT). */
+const isOutOfCredit = (text: string | undefined) => !!text && text.startsWith(OUT_OF_CREDIT);
 
 /** onContinue: the run ended without finishing and can be continued (task_end cards). */
 export function renderEvent(v: EventView, onContinue?: () => void): HTMLElement {
@@ -51,7 +52,7 @@ export function renderEvent(v: EventView, onContinue?: () => void): HTMLElement 
         h("span.ms", null, `${v.ms} ms`),
       );
     case "user":
-      return h("div.ev-user", null, v.text);
+      return v.screen ? renderScreenHelp(v.text) : h("div.ev-user", null, v.text);
     case "end":
       return h(
         "div.ev-end",
@@ -150,6 +151,26 @@ export function renderSessionHead(s: SessionInfo): HTMLElement {
     { title: "The agent behind this conversation: brain · model · Jev (a faster helper for simple clicks and typing)" },
     sessionHeadline(s),
   );
+}
+
+/** A conversation's title button (opens its details) and meta line, over Chat and an open Activity log run. */
+export function renderSessionTitle(title: HTMLButtonElement, meta: HTMLElement, s: SessionInfo): void {
+  title.textContent = s.title;
+  title.title = `${s.title}
+Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
+  meta.textContent = sessionMeta(s);
+  meta.title = brainLabel(s.brain, s.jev);
+}
+
+/** An empty message in Chat, as the user's turn: quieter than a typed one, with an eye, so it does not read as blank. */
+export function renderScreenHelp(text: string): HTMLElement {
+  const eye = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  eye.setAttribute("viewBox", "0 0 16 16");
+  eye.setAttribute("width", "13");
+  eye.setAttribute("height", "13");
+  eye.setAttribute("aria-hidden", "true");
+  eye.innerHTML = '<path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8Z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2" fill="currentColor"/>';
+  return h("div.ev-user.screen", { title: "You sent an empty message: browsertodo looks at the page and works out what is needed" }, eye, h("span", null, text));
 }
 
 /** Continue belongs to the conversation's last turn only, and only when that turn ended the thread. */

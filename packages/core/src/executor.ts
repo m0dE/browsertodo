@@ -5,12 +5,15 @@
  * tool_result events (and one jev event per act decision). Never throws.
  */
 import {
-  ToolArgs,
-  TOOL_NAMES,
   clipEventText,
+  delay,
+  errorMessage,
   isXSite,
-  siteHost,
+  OUT_OF_CREDIT,
   picksText,
+  siteHost,
+  TOOL_NAMES,
+  ToolArgs,
   type AgentEvent,
   type BrowserMethod,
   type BrowserMethods,
@@ -20,11 +23,10 @@ import {
   type ToolName,
   type ToolResult,
 } from "@browsertodo/shared";
-import type { ToolExecutor, ToolExecutorOptions } from "./types.js";
+import type { BrowserCaller, ToolExecutor, ToolExecutorOptions } from "./types.js";
 import { createActGate, runAct } from "./act.js";
 import { formatScroll, formatSnapshot, formatTabs, formatTabSnapshots } from "./page-format.js";
 import { switchXAccount } from "./x-account.js";
-import { defaultSleep, errorMessage } from "./util.js";
 
 /** Answer of task_* tools when the executor has no task to end (mcp-server --attach). */
 export const NO_TASK_TO_END = "no task to end in an attached session";
@@ -46,9 +48,8 @@ function pathKey(p: string): string {
 }
 
 export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
-  const sleep = opts.sleep ?? defaultSleep;
+  const sleep = opts.sleep ?? delay;
   const allowedMedia = new Set(opts.mediaPaths.map(pathKey));
-  let count = 0;
   let nextId = 1;
   /** Jev on: read_page lists elements in words and act steps name indices only after Jev was unsure. */
   const jevOn = opts.jev !== null;
@@ -69,6 +70,7 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
     if (typeof note === "string" && note && !notes.includes(note)) notes.push(note);
     return r;
   };
+  const noted: BrowserCaller = { call: browser };
 
   const endTask = (r: TaskRunResult, reply: string): ToolResult => {
     if (!opts.onTaskEnd) return err(`${NO_TASK_TO_END}. Just tell the human what happened.`);
@@ -177,9 +179,18 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
         return { text: `username: ${r.username}\npassword: ${r.password}` };
       }
       case "switch_x_account":
-        return switchXAccount(opts.browser, (a as ToolArgsOf<"switch_x_account">).handle, { sleep });
+        return switchXAccount(noted, (a as ToolArgsOf<"switch_x_account">).handle, { sleep });
       case "act":
-        return runAct((a as ToolArgsOf<"act">).steps, { browser, jev: opts.jev, jevThreshold: opts.jevThreshold, sleep, emit, gate });
+        return runAct((a as ToolArgsOf<"act">).steps, {
+          browser,
+          jev: opts.jev,
+          jevThreshold: opts.jevThreshold,
+          sleep,
+          emit,
+          gate,
+          // The hosted Jev and the hosted AI share one credit: pause the task, like a 402 from the Messages API does.
+          outOfCredit: () => endTask({ outcome: "paused", reason: OUT_OF_CREDIT }, "Task paused: the account is out of usage credit. Stop now."),
+        });
       case "task_complete": {
         const { summary, url } = a as ToolArgsOf<"task_complete">;
         const r: TaskRunResult = { outcome: "done", summary };
@@ -194,16 +205,12 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
   }
 
   return {
-    get callCount() {
-      return count;
-    },
     takePicks() {
       const p = { ...gate.picks };
       gate.picks = { jev: 0, claude: 0 };
       return p;
     },
     async call(name: ToolName, args: unknown): Promise<ToolResult> {
-      count++;
       const id = `t${nextId++}`;
       // Candidates Jev left to the model stay valid only while the page is left alone.
       if (!KEEPS_PENDING.has(name)) gate.pending.clear();

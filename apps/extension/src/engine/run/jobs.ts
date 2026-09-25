@@ -2,8 +2,7 @@
  * Where a run's work comes from: due local tasks, cloud claims, one-off
  * requests ("do this now"), and the next turn of a conversation.
  */
-import { isXTask, type AgentTask, type ClaimResponse, type MediaInfo, type ResultInput, type SessionInfo } from "@browsertodo/shared";
-import { errText } from "../../errors.js";
+import { errorMessage, isXTask, SCREEN_HELP_TEXT, type AgentTask, type ClaimResponse, type MediaInfo, type ResultInput, type SessionInfo } from "@browsertodo/shared";
 import type { LocalStore } from "../local-store.js";
 import type { StoredLocalTask } from "../local-task-rules.js";
 import type { MediaSource } from "../media-files.js";
@@ -27,6 +26,11 @@ export interface AdhocInput {
   tabId?: number;
   account?: string | null;
   media?: { name: string; blob: Blob }[];
+  /**
+   * An empty message in Chat: look at the page and do what is needed. The
+   * request is SCREEN_HELP_TEXT (instructions are not used).
+   */
+  screen?: boolean;
 }
 
 export type LocalJob = { source: "local"; task: StoredLocalTask };
@@ -37,7 +41,12 @@ export type AdhocJob = { source: "adhoc"; input: AdhocInput };
 export interface TurnJob {
   source: "turn";
   from: SessionInfo;
+  /** The user's message (an empty one in Chat: SCREEN_HELP_TEXT). */
   text: string;
+  /** An empty message in Chat: look at the page now and continue. */
+  screen?: boolean;
+  /** The browser tab the message was sent from: the conversation now belongs to it. */
+  tabId?: number;
   /** The conversation's local task, when this turn continues its unfinished work (recorded on the task). */
   task: StoredLocalTask | null;
   /** The conversation's first request (for the fresh-session summary and the X rule). */
@@ -78,7 +87,9 @@ export async function openTask(
     const t = job.claim.task;
     return { task: { id: t.id, instructions: t.instructions, account: t.account }, taskId: t.id, isRetry: t.attempts > 1 };
   }
-  return { task: { id: sessionId, instructions: job.input.instructions.trim(), account: job.input.account?.trim() || null }, isRetry: false };
+  const account = job.input.account?.trim() || null;
+  if (job.input.screen) return { task: { id: sessionId, instructions: SCREEN_HELP_TEXT, account, screenHelp: true }, isRetry: false };
+  return { task: { id: sessionId, instructions: job.input.instructions.trim(), account }, isRetry: false };
 }
 
 /** The files a new session's task comes with. */
@@ -93,7 +104,12 @@ export async function mediaSources(job: FirstJob, localStore: LocalStore): Promi
 }
 
 /** The next turn of a conversation, checking that it can take one now. */
-export async function turnJob(stores: { sessions: SessionStore; localStore: LocalStore }, sessionId: string, text: string): Promise<TurnJob> {
+export async function turnJob(
+  stores: { sessions: SessionStore; localStore: LocalStore },
+  sessionId: string,
+  text: string,
+  opts: { screen?: boolean; tabId?: number } = {},
+): Promise<TurnJob> {
   const from = await stores.sessions.get(sessionId);
   if (!from) throw new Error(`No session ${sessionId}`);
   if (!from.endedAt) throw new Error("That conversation has not ended yet");
@@ -106,7 +122,10 @@ export async function turnJob(stores: { sessions: SessionStore; localStore: Loca
     // Only unfinished work is recorded on the task; after it is done, the conversation just goes on.
     if (t && t.status !== "done") task = t;
   }
-  return { source: "turn", from, text, task, first };
+  const job: TurnJob = { source: "turn", from, text, task, first };
+  if (opts.screen) job.screen = true;
+  if (opts.tabId !== undefined) job.tabId = opts.tabId;
+  return job;
 }
 
 /** The local task whose result this job records, if any. */
@@ -117,7 +136,7 @@ export function localTaskOf(job: Job): StoredLocalTask | null {
 /** Keeps a claimed cloud task's lease while it runs. Returns the function that stops it. */
 export function startHeartbeat(job: CloudJob, log: (message: string) => void): () => void {
   const t = setInterval(() => {
-    job.api.heartbeat(job.claim.task.id, job.runnerId).catch((err) => log(`heartbeat failed: ${errText(err)}`));
+    job.api.heartbeat(job.claim.task.id, job.runnerId).catch((err) => log(`heartbeat failed: ${errorMessage(err)}`));
   }, HEARTBEAT_MS);
   return () => clearInterval(t);
 }

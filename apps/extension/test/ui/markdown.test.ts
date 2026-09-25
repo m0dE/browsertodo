@@ -1,22 +1,20 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { box, installMiniDom, type MiniElement } from "./mini-dom.js";
-import { MarkdownView, closeDangling, parseBlocks, renderMarkdown, safeUrl } from "../../src/sidepanel/markdown.js";
+import { MarkdownView, closeDangling, parseBlocks, safeUrl } from "../../src/sidepanel/markdown.js";
 
 beforeAll(installMiniDom);
 
 /** Rendered HTML (as a browser would serialize the DOM the renderer built). */
 function md(text: string, streaming = false): string {
-  const b = box();
-  b.append(renderMarkdown(text, { streaming }) as unknown as MiniElement);
-  return b.innerHTML;
+  return tree(text, streaming).innerHTML;
 }
 function tree(text: string, streaming = false): MiniElement {
   const b = box();
-  b.append(renderMarkdown(text, { streaming }) as unknown as MiniElement);
+  new MarkdownView(b as unknown as HTMLElement).update(text, streaming);
   return b;
 }
 
-describe("renderMarkdown: blocks", () => {
+describe("Markdown: blocks", () => {
   it("paragraphs, and single newlines as line breaks", () => {
     expect(md("First line\nsecond line\n\nNext paragraph.")).toBe("<p>First line<br>second line</p><p>Next paragraph.</p>");
   });
@@ -66,7 +64,7 @@ describe("renderMarkdown: blocks", () => {
   });
 });
 
-describe("renderMarkdown: inline", () => {
+describe("Markdown: inline", () => {
   it("bold, italic, strike, code spans", () => {
     expect(md("**b** *i* _i2_ ~~s~~ `c` __b2__")).toBe("<p><strong>b</strong> <em>i</em> <em>i2</em> <del>s</del> <code>c</code> <strong>b2</strong></p>");
     expect(md("**bold with *italic* inside**")).toBe("<p><strong>bold with <em>italic</em> inside</strong></p>");
@@ -89,7 +87,7 @@ describe("renderMarkdown: inline", () => {
   });
 });
 
-describe("renderMarkdown: untrusted text stays text", () => {
+describe("Markdown: untrusted text stays text", () => {
   const hasTag = (t: MiniElement, tag: string) => t.all(tag).length > 0;
   it("HTML and <script> are shown as text, never as elements", () => {
     const t = tree('<script>alert(1)</script>\n<img src=x onerror="alert(2)">\n**<b>x</b>**\n```\n<script>y</script>\n```');

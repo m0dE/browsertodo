@@ -1,9 +1,10 @@
 /** Independent check that an X post exists and shows the expected text. */
-import { isXStatusUrl } from "@browsertodo/shared";
+import { errorMessage, isXStatusUrl, normalizeText } from "@browsertodo/shared";
 import type { BrowserCaller } from "./types.js";
-import { errorMessage, normalizeText } from "./util.js";
 
 export const VERIFY_SNIPPET_CHARS = 40;
+/** What X shows instead of a post that does not exist (or was deleted). */
+export const X_POST_MISSING = /this (post|page) (doesn.t|does not) exist|this post was deleted|hmm\.\.\.this page/i;
 
 /** The distinctive part of a post text that must appear on its page. */
 export function verifySnippet(expectedText: string): string {
@@ -16,8 +17,7 @@ export async function verifyXPost(browser: BrowserCaller, url: string, expectedT
   try {
     await browser.call("browser.navigate", { url });
     const page = await browser.call("browser.readPage", {});
-    const missing = /this (post|page) (doesn.t|does not) exist|this post was deleted|hmm\.\.\.this page/i;
-    if (missing.test(`${page.title} ${page.text}`)) return { ok: false, detail: `X says the post does not exist at ${page.url}` };
+    if (X_POST_MISSING.test(`${page.title} ${page.text}`)) return { ok: false, detail: `X says the post does not exist at ${page.url}` };
     if (!snippet) return { ok: true, detail: `opened ${page.url} (no text to compare)` };
     const haystack = normalizeText(`${page.text}\n${page.title}\n${page.elements.map((e) => `${e.name} ${e.text ?? ""}`).join("\n")}`);
     if (haystack.includes(snippet)) return { ok: true, detail: `found "${snippet}" on ${page.url}` };

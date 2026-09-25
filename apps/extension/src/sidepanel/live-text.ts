@@ -40,10 +40,6 @@ export class LiveTexts {
     return [...this.texts].filter(([, t]) => t.sessionId === sessionId).map(([id, t]) => [id, t.text]);
   }
 
-  has(id: string): boolean {
-    return this.texts.has(id);
-  }
-
   /**
    * Any other event of a conversation. assistant_text with an id completes
    * that stream (and drops live texts of earlier messages); task_end ends

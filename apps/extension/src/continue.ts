@@ -4,9 +4,8 @@
  * own session is gone (what was done so far, how it ended, the new message).
  * Pure; shared by the background runner and the side panel.
  */
-import type { SessionInfo, StampedAgentEvent, TaskOutcome } from "@browsertodo/shared";
-import { toolArgsSummary } from "./sidepanel/event-format.js";
-import { clip } from "./sidepanel/format.js";
+import { bareToolName, type SessionInfo, type StampedAgentEvent, type TaskOutcome } from "@browsertodo/shared";
+import { clip, toolArgsSummary } from "./text.js";
 
 /** How many earlier steps the continuation instructions list. */
 const CONTINUE_STEPS = 15;
@@ -17,8 +16,6 @@ const CONTINUABLE: readonly TaskOutcome[] = ["paused", "failed", "retry"];
 export function isContinuableOutcome(outcome: TaskOutcome | undefined): boolean {
   return !!outcome && CONTINUABLE.includes(outcome);
 }
-
-const bare = (name: string) => name.replace(/^mcp__browsertodo__/, "");
 
 function argsOf(name: string, args: unknown): string {
   const a = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
@@ -46,7 +43,7 @@ export function doneSoFar(events: readonly StampedAgentEvent[], max = CONTINUE_S
   const all: string[] = [];
   for (const e of events) {
     if (e.type === "tool_call") {
-      const name = bare(e.name);
+      const name = bareToolName(e.name);
       const args = argsOf(name, e.args);
       const r = results.get(e.id);
       const out = r ? ` → ${r.isError ? "error: " : ""}${r.text || "ok"}` : " → (no result)";

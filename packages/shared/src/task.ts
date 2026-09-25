@@ -6,16 +6,26 @@ export type TaskStatus = z.infer<typeof TaskStatus>;
 
 export const MAX_INSTRUCTIONS_CHARS = 8000;
 export const MAX_BATCH_TASKS = 100;
+/** Files one task can carry (images, videos, documents the agent uses). */
+export const MAX_MEDIA_PER_TASK = 10;
+/** Times a day a repeating task can run. */
+export const MAX_REPEAT_TIMES = 24;
+/** Length of a task's account label. */
+export const MAX_ACCOUNT_CHARS = 100;
+/** Lengths of a reported result's fields (ResultInput). */
+export const MAX_RESULT_SUMMARY = 4000;
+export const MAX_RESULT_URL = 2000;
+export const MAX_RESULT_REASON = 4000;
 
 /** An X-style handle or any account label the agent should switch to. */
-const Account = z.string().trim().min(1).max(100);
+const Account = z.string().trim().min(1).max(MAX_ACCOUNT_CHARS);
 
 /**
  * Repeat rule: run again every day at these local times ("HH:MM", 24 h).
  * Local tasks use the browser's time zone; cloud tasks use the task's `tz`.
  */
 export const RepeatRule = z.object({
-  dailyAt: z.array(z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)).min(1).max(24),
+  dailyAt: z.array(z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)).min(1).max(MAX_REPEAT_TIMES),
 });
 export type RepeatRule = z.infer<typeof RepeatRule>;
 
@@ -36,7 +46,7 @@ export const TimeZone = z.string().min(1).max(64).refine(isValidTimeZone, "unkno
 export const CreateTaskInput = z.object({
   instructions: z.string().trim().min(1).max(MAX_INSTRUCTIONS_CHARS),
   account: Account.optional(),
-  mediaIds: z.array(z.string().min(1)).max(10).optional(),
+  mediaIds: z.array(z.string().min(1)).max(MAX_MEDIA_PER_TASK).optional(),
   notBefore: z.iso.datetime({ offset: true }).optional(),
   priority: z.number().int().min(-1000).max(1000).optional(),
   /** Cloud only: when the task ends done or failed, the next occurrence is created. null = no repeat. */
@@ -139,9 +149,9 @@ export type TaskOutcome = z.infer<typeof TaskOutcome>;
 export const ResultInput = z.object({
   runnerId: z.string().min(1),
   outcome: TaskOutcome,
-  summary: z.string().max(4000).optional(),
-  url: z.string().max(2000).optional(),
-  reason: z.string().max(4000).optional(),
+  summary: z.string().max(MAX_RESULT_SUMMARY).optional(),
+  url: z.string().max(MAX_RESULT_URL).optional(),
+  reason: z.string().max(MAX_RESULT_REASON).optional(),
   screenshotId: z.string().optional(),
   /** Paused and retry tasks become claimable again after this many minutes. Default 15. */
   retryAfterMinutes: z.number().int().min(1).max(24 * 60).optional(),
@@ -151,18 +161,19 @@ export type ResultInput = z.infer<typeof ResultInput>;
 export const ApiKeyRole = z.enum(["admin", "creator", "runner"]);
 export type ApiKeyRole = z.infer<typeof ApiKeyRole>;
 
+/** The roles a new key can have (admin is the ADMIN_KEY's alone). */
+export const IssuableKeyRole = ApiKeyRole.exclude(["admin"]);
+export type IssuableKeyRole = z.infer<typeof IssuableKeyRole>;
+
 export const CreateKeyInput = z.object({
   name: z.string().trim().min(1).max(100),
-  role: z.enum(["creator", "runner"]),
+  role: IssuableKeyRole,
 });
 export type CreateKeyInput = z.infer<typeof CreateKeyInput>;
 
-/** Body of POST /v1/me/keys: a key scoped to the signed-in user's data. */
-export const CreateOwnKeyInput = z.object({
-  name: z.string().trim().min(1).max(100),
-  role: z.enum(["creator", "runner"]),
-});
-export type CreateOwnKeyInput = z.infer<typeof CreateOwnKeyInput>;
+/** Body of POST /v1/me/keys: a key scoped to the signed-in user's data (same shape as the admin's). */
+export const CreateOwnKeyInput = CreateKeyInput;
+export type CreateOwnKeyInput = CreateKeyInput;
 
 /** A signed-in user (Google account). */
 export const User = z.object({
@@ -222,3 +233,11 @@ export function isXTask(task: { instructions: string; account?: string | null })
   if (task.account?.trim()) return true;
   return X_HOST.test(task.instructions) || X_HANDLE.test(task.instructions);
 }
+
+/**
+ * An empty message in Chat: "look at the page and do what's needed". It is
+ * the request itself (AgentTask.instructions, with screenHelp set), so the
+ * chat shows it as the user's turn and the session title; @browsertodo/core
+ * buildTaskPrompt tells the agent what it means.
+ */
+export const SCREEN_HELP_TEXT = "Figure out what to do based on the current screen";

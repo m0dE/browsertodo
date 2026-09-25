@@ -3,12 +3,10 @@
  * https://docs.anthropic.com/en/api/messages, tool use and prompt caching.
  */
 import { z } from "zod";
-import { toolArgsSchema, toolDescription, type ToolName, type ToolResult } from "@browsertodo/shared";
-import { errorMessage } from "./util.js";
+import { ANTHROPIC_API_VERSION, ANTHROPIC_MESSAGES_URL, errorMessage, toolArgsSchema, toolDescription, type ToolName, type ToolResult } from "@browsertodo/shared";
+import { errorDetail, outOfCreditError } from "./api-errors.js";
 import { MessageAccumulator, StreamError, readSse } from "./sse.js";
 
-export const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
-export const ANTHROPIC_VERSION = "2023-06-01";
 export const MAX_TOKENS = 4096;
 
 export type CacheControl = { type: "ephemeral" };
@@ -120,18 +118,6 @@ export type PostResult =
   | { kind: "auth"; reason: string }
   | { kind: "error"; reason: string };
 
-function apiErrorMessage(body: string): string {
-  try {
-    const j = JSON.parse(body) as { error?: string | { type?: string; message?: string }; message?: string };
-    // The browsertodo API answers { error: "code or text", message? }.
-    if (typeof j.error === "string") return j.message ? `${j.error}: ${j.message}` : j.error;
-    if (j.error?.message) return `${j.error.type ? `${j.error.type}: ` : ""}${j.error.message}`;
-  } catch {
-    /* not JSON */
-  }
-  return body.slice(0, 300);
-}
-
 /**
  * Where Messages requests go and how they authenticate. Default: Anthropic
  * with x-api-key. The browsertodo hosted AI takes the same body at
@@ -147,21 +133,6 @@ export interface MessagesTransport {
   /** Name used in error reasons. Default "Claude API". */
   label?: string;
 }
-
-/** Reads { error, message, topupUrl } from a 402 body. */
-function creditInfo(body: string): { message?: string; topupUrl?: string } {
-  try {
-    const j = JSON.parse(body) as { message?: unknown; topupUrl?: unknown };
-    const out: { message?: string; topupUrl?: string } = {};
-    if (typeof j.message === "string" && j.message) out.message = j.message;
-    if (typeof j.topupUrl === "string" && j.topupUrl) out.topupUrl = j.topupUrl;
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-export const OUT_OF_CREDIT = "Out of usage credit";
 
 /** Streaming: text as it is written. `messageId:index` names the text block. */
 export interface StreamOptions {
@@ -192,7 +163,7 @@ export async function postMessages(
     if (transport.auth === "bearer") headers.authorization = `Bearer ${apiKey}`;
     else {
       headers["x-api-key"] = apiKey;
-      headers["anthropic-version"] = ANTHROPIC_VERSION;
+      headers["anthropic-version"] = ANTHROPIC_API_VERSION;
       headers["anthropic-dangerous-direct-browser-access"] = "true";
     }
     const init: RequestInit = { method: "POST", headers, body: JSON.stringify(stream ? { ...body, stream: true } : body) };
@@ -220,12 +191,12 @@ export async function postMessages(
     }
   }
   if (s === 402) {
-    const c = creditInfo(text);
-    const r: PostResult = { kind: "credit", reason: c.message ? `${OUT_OF_CREDIT}: ${c.message}` : OUT_OF_CREDIT };
-    if (c.topupUrl) r.topupUrl = c.topupUrl;
+    const credit = outOfCreditError(text);
+    const r: PostResult = { kind: "credit", reason: credit.message };
+    if (credit.topupUrl) r.topupUrl = credit.topupUrl;
     return r;
   }
-  const detail = apiErrorMessage(text);
+  const detail = errorDetail(text);
   const rejected = transport.auth === "bearer" ? `${label} rejected the sign-in` : `${label} key rejected`;
   if (s === 401 || s === 403) return { kind: "auth", reason: `${rejected} (HTTP ${s}: ${detail})` };
   if (s === 429) return { kind: "transient", reason: `${label} rate limit (HTTP 429: ${detail})` };

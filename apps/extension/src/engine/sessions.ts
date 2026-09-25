@@ -3,7 +3,8 @@
  * IndexedDB. New events and session changes are pushed live to listeners
  * (the UI ports).
  */
-import { MAX_ASSISTANT_TEXT, clipEventText, type AgentEvent, type SessionInfo, type StampedAgentEvent } from "@browsertodo/shared";
+import { MAX_ASSISTANT_TEXT, MAX_EVENT_TEXT, clipEventText, type AgentEvent, type SessionInfo, type StampedAgentEvent } from "@browsertodo/shared";
+import { Listeners } from "../listeners.js";
 import type { KvDb, KvStore } from "./kv.js";
 
 export const MAX_SESSIONS = 200;
@@ -39,7 +40,7 @@ function clipEvent(e: AgentEvent): AgentEvent {
     }
     case "tool_call": {
       const json = JSON.stringify(e.args ?? null);
-      return json && json.length > 4000 ? { ...e, args: clipEventText(json) } : e;
+      return json && json.length > MAX_EVENT_TEXT ? { ...e, args: clipEventText(json) } : e;
     }
     default:
       return e;
@@ -49,7 +50,7 @@ function clipEvent(e: AgentEvent): AgentEvent {
 export class SessionStore {
   private readonly sessions: KvStore<SessionInfo>;
   private readonly events: KvStore<StampedAgentEvent>;
-  private readonly listeners = new Set<SessionListener>();
+  private readonly listeners = new Listeners<[{ event: StampedAgentEvent } | { session: SessionInfo }]>();
   /** Next sequence number per live session. */
   private readonly seq = new Map<string, number>();
   private readonly now: () => Date;
@@ -63,8 +64,7 @@ export class SessionStore {
   }
 
   subscribe(l: SessionListener): () => void {
-    this.listeners.add(l);
-    return () => this.listeners.delete(l);
+    return this.listeners.add((change) => ("event" in change ? l.onEvent?.(change.event) : l.onSession?.(change.session)));
   }
 
   async create(info: SessionInfo): Promise<SessionInfo> {
@@ -85,7 +85,7 @@ export class SessionStore {
   append(sessionId: string, event: AgentEvent): StampedAgentEvent {
     if (event.type === "assistant_text_delta") {
       const live = { ...event, ts: this.now().toISOString(), sessionId } as StampedAgentEvent;
-      for (const l of this.listeners) safe(() => l.onEvent?.(live));
+      this.listeners.emit({ event: live });
       return live;
     }
     const stamped = { ...clipEvent(event), ts: this.now().toISOString(), sessionId } as StampedAgentEvent;
@@ -95,19 +95,18 @@ export class SessionStore {
       await this.events.put(seqKey(sessionId, n), stamped);
       if (n >= MAX_EVENTS_PER_SESSION) await this.events.delete(seqKey(sessionId, n - MAX_EVENTS_PER_SESSION));
     }).catch(() => {});
-    for (const l of this.listeners) safe(() => l.onEvent?.(stamped));
+    this.listeners.emit({ event: stamped });
     return stamped;
   }
 
   async update(sessionId: string, patch: Partial<SessionInfo>): Promise<SessionInfo | null> {
-    let out: SessionInfo | null = null;
-    await this.enqueue(async () => {
+    const s = await this.enqueue(async () => {
       const cur = await this.sessions.get(sessionId);
-      if (!cur) return;
-      out = { ...cur, ...patch, sessionId };
-      await this.sessions.put(sessionId, out);
+      if (!cur) return null;
+      const next: SessionInfo = { ...cur, ...patch, sessionId };
+      await this.sessions.put(sessionId, next);
+      return next;
     });
-    const s = out as SessionInfo | null;
     if (s) this.emitSession(s);
     if (s?.endedAt) this.seq.delete(sessionId);
     return s;
@@ -119,18 +118,17 @@ export class SessionStore {
    * summary, url, reason) are cleared, then `patch` applied. Null when unknown.
    */
   async reopen(sessionId: string, patch: Partial<SessionInfo> = {}): Promise<SessionInfo | null> {
-    let out: SessionInfo | null = null;
-    await this.enqueue(async () => {
+    const s = await this.enqueue(async () => {
       const cur = await this.sessions.get(sessionId);
-      if (!cur) return;
+      if (!cur) return null;
       const { endedAt: _e, outcome: _o, summary: _s, url: _u, reason: _r, ...rest } = cur;
-      out = { ...rest, ...patch, sessionId };
-      await this.sessions.put(sessionId, out);
+      const next: SessionInfo = { ...rest, ...patch, sessionId };
+      await this.sessions.put(sessionId, next);
       const last = (await this.events.keys(`${sessionId}:`)).at(-1);
       const n = last ? Number(last.slice(sessionId.length + 1)) + 1 : 0;
       this.seq.set(sessionId, Math.max(n, this.seq.get(sessionId) ?? 0));
+      return next;
     });
-    const s = out as SessionInfo | null;
     if (s) this.emitSession(s);
     return s;
   }
@@ -140,11 +138,11 @@ export class SessionStore {
     return (await this.sessions.get(sessionId)) ?? null;
   }
 
-  /** Newest first. */
-  async list(limit = 50): Promise<SessionInfo[]> {
+  /** Newest first; with taskId, only that task's runs. */
+  async list(limit = 50, taskId?: string): Promise<SessionInfo[]> {
     await this.chain.catch(() => {});
-    const all = (await this.sessions.list()).map((e) => e.value);
-    all.sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0));
+    const all = (await this.sessions.list()).map((e) => e.value).filter((s) => taskId === undefined || s.taskId === taskId);
+    all.sort((a, b) => byStart(b, a));
     return all.slice(0, Math.max(1, Math.min(MAX_SESSIONS, limit)));
   }
 
@@ -161,7 +159,7 @@ export class SessionStore {
   private async prune(): Promise<void> {
     const all = (await this.sessions.list()).map((e) => e.value);
     if (all.length <= MAX_SESSIONS) return;
-    all.sort((a, b) => (a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0));
+    all.sort(byStart);
     for (const s of all.slice(0, all.length - MAX_SESSIONS)) {
       await this.sessions.delete(s.sessionId);
       await this.events.deletePrefix(`${s.sessionId}:`);
@@ -169,20 +167,17 @@ export class SessionStore {
   }
 
   private emitSession(s: SessionInfo): void {
-    for (const l of this.listeners) safe(() => l.onSession?.(s));
+    this.listeners.emit({ session: s });
   }
 
-  private enqueue(fn: () => Promise<void>): Promise<void> {
+  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.chain.then(fn);
     this.chain = run.catch(() => {});
     return run;
   }
 }
 
-function safe(fn: () => void): void {
-  try {
-    fn();
-  } catch {
-    /* a listener must not break the store */
-  }
+/** Oldest first (ISO timestamps compare as text). */
+function byStart(a: SessionInfo, b: SessionInfo): number {
+  return a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0;
 }

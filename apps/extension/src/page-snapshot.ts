@@ -1,15 +1,9 @@
 import { MAX_SNAPSHOT_ELEMENTS, MAX_SNAPSHOT_TEXT, type PageSnapshot } from "@browsertodo/shared";
-
-const INDEX_ATTR = "data-browsertodo-index";
-
-/** Selector for the element with this index from the last snapshot. */
-export function indexSelector(index: number): string {
-  return `[${INDEX_ATTR}="${Math.trunc(index)}"]`;
-}
+import { PAGE_MARKS, type PageMarks } from "./driver-common.js";
 
 /** The Runtime.evaluate expression that runs snapshotPage in the page. */
 export function snapshotExpression(): string {
-  return `(${snapshotPage.toString()})(${MAX_SNAPSHOT_TEXT}, ${MAX_SNAPSHOT_ELEMENTS})`;
+  return `(${snapshotPage.toString()})(${JSON.stringify(PAGE_MARKS)}, ${MAX_SNAPSHOT_TEXT}, ${MAX_SNAPSHOT_ELEMENTS})`;
 }
 
 /**
@@ -17,8 +11,8 @@ export function snapshotExpression(): string {
  * no imports, no references to module scope, plain ES2020, because it is
  * serialized with Function.prototype.toString.
  */
-export function snapshotPage(maxText: number, maxElements: number): PageSnapshot {
-  var ATTR = "data-browsertodo-index";
+export function snapshotPage(marks: PageMarks, maxText: number, maxElements: number): PageSnapshot {
+  var ATTR = marks.attr;
   var old = document.querySelectorAll("[" + ATTR + "]");
   for (var i = 0; i < old.length; i++) old[i]!.removeAttribute(ATTR);
 

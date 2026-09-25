@@ -51,6 +51,7 @@ describe("detailsModel", () => {
     const m = detailsModel({ task: task(), listSource: "account", session: session() }, NOW, WHEN);
     expect(m.heading).toBe("Task details");
     expect(m.textLabel).toBe("Instructions");
+    expect(m.copyLabel).toBe("Copy instructions");
     expect(m.text).toBe("Reply to new mentions\nKeep it friendly: https://example.com/guide.");
     expect(m.textNote).toBeUndefined();
     expect(m.chip).toMatchObject({ label: "scheduled", tone: "muted" });
@@ -112,6 +113,8 @@ describe("detailsModel", () => {
     const m = detailsModel({ session: session({ source: "adhoc", taskId: undefined, instructions: text, account: "alpha", title: "Post on X from @alpha: our launch…", outcome: "paused", reason: "stopped by user", firstStartedAt: "2026-09-24T10:00:00Z", turns: 2 }) }, NOW, WHEN);
     expect(m.heading).toBe("Chat message");
     expect(m.textLabel).toBe("Message");
+    expect(m.copyLabel).toBe("Copy message");
+    expect(m.emptyText).toBe("No message was saved.");
     expect(m.text).toBe(text);
     expect(m.textNote).toBeUndefined();
     expect(m.chip?.label).toBe("needs you");

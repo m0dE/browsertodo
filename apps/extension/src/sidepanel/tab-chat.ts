@@ -17,7 +17,7 @@ export interface TabChatState {
 export interface TabChatLocal {
   /** A conversation just started from this tab (until the state shows it bound). */
   pending?: { tab: number; sessionId: string } | null;
-  /** Running sessions the user left with New Chat in a tab they act in (not bound to it). */
+  /** Running sessions the user left with New chat in a tab they act in (not bound to it). */
   left?: ReadonlyMap<number, string>;
 }
 

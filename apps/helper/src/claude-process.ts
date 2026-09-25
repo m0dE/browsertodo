@@ -7,8 +7,17 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { ENV } from "./env-names.js";
 
-export const CLAUDE_NOT_FOUND = "Claude Code was not found. Install it or set BROWSERTODO_CLAUDE_PATH.";
+export const CLAUDE_NOT_FOUND = `Claude Code was not found. Install it or set ${ENV.claudePath}.`;
+
+/**
+ * Flags of every Claude Code run the helper starts: none of Claude Code's
+ * own tools, no user or project settings, nothing saved, and the model.
+ */
+export function isolatedClaudeArgs(model: string): string[] {
+  return ["--tools", "", "--setting-sources", "", "--no-session-persistence", "--model", model];
+}
 
 /** BROWSERTODO_CLAUDE_PATH, else `where claude`, else %USERPROFILE%\.local\bin\claude.exe. */
 export function resolveClaudePath(
@@ -16,7 +25,7 @@ export function resolveClaudePath(
   deps: { where?: () => string; exists?: (p: string) => boolean } = {},
 ): string | null {
   const exists = deps.exists ?? existsSync;
-  const override = env.BROWSERTODO_CLAUDE_PATH?.trim();
+  const override = env[ENV.claudePath]?.trim();
   if (override) return override;
   const where =
     deps.where ??
@@ -73,7 +82,7 @@ export function killTree(child: ChildProcess): void {
 export function claudeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out = { ...env };
   for (const k of Object.keys(out)) {
-    if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_") || k === "BROWSERTODO_BRAIN") delete out[k];
+    if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_") || k === ENV.brain) delete out[k];
   }
   return out;
 }

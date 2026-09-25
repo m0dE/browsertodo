@@ -1,7 +1,8 @@
 /** File attachments: a picker with removable chips, and base64 conversion for the protocol. */
+import { formatBytes } from "@browsertodo/shared";
 import type { UiMediaUpload } from "../ui-protocol.js";
-import { h } from "./dom.js";
-import { bytesToBase64, formatBytes } from "./format.js";
+import { h } from "../ui/dom.js";
+import { bytesToBase64 } from "./format.js";
 
 export async function filesToUploads(files: File[]): Promise<UiMediaUpload[]> {
   return Promise.all(
@@ -19,9 +20,10 @@ export interface FilePicker {
 }
 
 /** Wire an <input type=file multiple> to a chip list; picking again adds to the selection. */
-export function filePicker(input: HTMLInputElement, list: HTMLElement): FilePicker {
+export function filePicker(input: HTMLInputElement, list: HTMLElement, onChange?: () => void): FilePicker {
   let files: File[] = [];
   const render = () => {
+    onChange?.();
     list.replaceChildren(
       ...files.map((f, i) =>
         h(

@@ -13,9 +13,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { NATIVE_HOST_NAME } from "@browsertodo/shared";
+import { errorMessage, NATIVE_HOST_NAME } from "@browsertodo/shared";
 import { loadConfig, repoRoot } from "./config.js";
-import { errorMessage } from "./logger.js";
 
 export const REGISTRY_KEYS = [
   `HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${NATIVE_HOST_NAME}`,

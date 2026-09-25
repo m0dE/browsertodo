@@ -9,7 +9,7 @@
  * runner key as a header, falling back to fetch + data: URL.
  */
 import { bytesToBase64 } from "../base64.js";
-import { errText } from "../errors.js";
+import { errorMessage } from "@browsertodo/shared";
 
 export type MediaSource =
   | { kind: "blob"; name: string; blob: Blob }
@@ -97,7 +97,7 @@ export class MediaFiles {
   }
 
   private get downloads(): DownloadsLike {
-    return this.opts.downloads ?? (chrome.downloads as unknown as DownloadsLike);
+    return this.opts.downloads ?? chrome.downloads;
   }
 
   async materialize(sessionId: string, sources: MediaSource[]): Promise<MaterializedMedia> {
@@ -125,7 +125,7 @@ export class MediaFiles {
           } catch (err) {
             // Some servers or header combinations fail inside the download manager; fetch it ourselves.
             const res = await this.fetchFn(src.url, { headers: Object.fromEntries((src.headers ?? []).map((h) => [h.name, h.value])) });
-            if (!res.ok) throw new Error(`Downloading ${src.name} failed: HTTP ${res.status} (${errText(err)})`);
+            if (!res.ok) throw new Error(`Downloading ${src.name} failed: HTTP ${res.status} (${errorMessage(err)})`);
             path = await this.write({ url: await blobToDataUrl(await res.blob()), filename }, ids);
           }
         }
@@ -140,20 +140,21 @@ export class MediaFiles {
     return { paths, cleanup };
   }
 
-  /** One download; resolves with the absolute path once complete. */
+  /** One download; resolves with the absolute path once complete (onChanged says when it ends; one search reads the path). */
   private async write(
     opts: { url: string; filename: string; headers?: { name: string; value: string }[] },
     ids: number[],
   ): Promise<string> {
     const dl = this.downloads;
-    const finished = new Map<number, DownloadDelta>();
-    let wake: (() => void) | null = null;
+    // Downloads that ended, and the one being waited for (it may end before download() even resolves).
+    const ended = new Map<number, DownloadDelta>();
+    let waiting: { id: number; done(): void } | null = null;
     const listener = (d: DownloadDelta) => {
-      if (d.state?.current && d.state.current !== "in_progress") {
-        finished.set(d.id, d);
-        wake?.();
-      }
+      if (!d.state?.current || d.state.current === "in_progress") return;
+      ended.set(d.id, d);
+      if (waiting?.id === d.id) waiting.done();
     };
+    let timer: ReturnType<typeof setTimeout> | undefined;
     dl.onChanged.addListener(listener);
     try {
       const id = await dl.download({
@@ -164,29 +165,24 @@ export class MediaFiles {
         ...(opts.headers?.length ? { headers: opts.headers } : {}),
       });
       ids.push(id);
-      const deadline = Date.now() + this.timeoutMs;
-      for (;;) {
-        const [item] = await dl.search({ id });
-        if (item?.state === "complete") {
-          if (!item.filename) throw new Error(`Download of ${opts.filename} finished without a file path`);
-          return item.filename;
+      let [item] = await dl.search({ id });
+      if (item?.state === "in_progress") {
+        if (!ended.has(id)) {
+          const finished = await new Promise<boolean>((resolve) => {
+            waiting = { id, done: () => resolve(true) };
+            timer = setTimeout(() => resolve(false), this.timeoutMs);
+          });
+          if (!finished) throw new Error(`Writing ${opts.filename} timed out`);
         }
-        if (item?.state === "interrupted" || !item) {
-          throw new Error(`Writing ${opts.filename} failed: ${item?.error ?? finished.get(id)?.error?.current ?? "download interrupted"}`);
-        }
-        const left = deadline - Date.now();
-        if (left <= 0) throw new Error(`Writing ${opts.filename} timed out`);
-        await new Promise<void>((resolve) => {
-          const t = setTimeout(resolve, Math.min(left, 1000));
-          wake = () => {
-            clearTimeout(t);
-            resolve();
-          };
-          if (finished.has(id)) wake();
-        });
-        wake = null;
+        [item] = await dl.search({ id });
       }
+      if (item?.state === "complete") {
+        if (!item.filename) throw new Error(`Download of ${opts.filename} finished without a file path`);
+        return item.filename;
+      }
+      throw new Error(`Writing ${opts.filename} failed: ${item?.error ?? ended.get(id)?.error?.current ?? "download interrupted"}`);
     } finally {
+      clearTimeout(timer);
       dl.onChanged.removeListener(listener);
     }
   }

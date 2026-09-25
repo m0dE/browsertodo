@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { AccountApi } from "../../src/account/account-api.js";
 import { AccountTodo, accountRow } from "../../src/account/todo-source.js";
-import { fakeApi, task } from "./fake-api.js";
+import { taskFixture as task } from "../fixtures.js";
+import { fakeApi } from "./fake-api.js";
 
 function setup() {
   const api = fakeApi();

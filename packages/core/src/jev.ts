@@ -3,20 +3,25 @@
  * element list, Jev picks one operation and one target element. Jev never
  * supplies text; typing text always comes from Claude.
  */
-import { TypeSafeClient, type Logger } from "@typesafe-ai/sdk";
+import { TypeSafeClient, type EntryType, type Logger } from "@typesafe-ai/sdk";
 import type { PageSnapshot } from "@browsertodo/shared";
+import { errorDetail, outOfCreditError, parseJsonBody } from "./api-errors.js";
 import type { JevDecision, JevLike, JevOperation } from "./types.js";
 
 export const JEV_OPERATIONS: readonly JevOperation[] = ["click", "type", "scroll", "press_key", "wait", "done", "blocked"];
 export const JEV_MAX_ELEMENTS = 250;
 export const JEV_TIMEOUT_MS = 15_000;
 
+/** One systemOne request: the step's state and the two questions Jev answers. */
+export interface JevRequest {
+  state: JevState;
+  questions: JevQuestions;
+  model?: string;
+}
+
 /** The subset of TypeSafeClient that Jev uses, so tests can fake it. */
 export interface JevClientLike {
-  systemOne(
-    request: { state: any; questions: Record<string, { type: "choice"; instructions?: any; criteria: Record<string, any> }>; model?: string },
-    options?: { signal?: AbortSignal; timeout?: number },
-  ): PromiseLike<{ answers: Record<string, any> }>;
+  systemOne(request: JevRequest, options?: { signal?: AbortSignal; timeout?: number }): PromiseLike<{ answers: Record<string, unknown> }>;
 }
 
 export interface JevElement {
@@ -139,6 +144,8 @@ const OPERATION_CRITERIA: Record<JevOperation, string> = {
   blocked: "The goal cannot be done here: login page, captcha, error page, or no element matches the goal.",
 };
 
+export type JevQuestions = ReturnType<typeof buildJevQuestions>;
+
 export function buildJevQuestions(state: JevState) {
   // Integer-like keys always enumerate first, so "none" ends up last.
   const targets: Record<string, string> = {};
@@ -162,7 +169,7 @@ export function buildJevQuestions(state: JevState) {
 }
 
 /** Turn a systemOne answer into a decision. Unknown operations become blocked. */
-export function parseJevAnswers(answers: Record<string, any>): JevDecision {
+export function parseJevAnswers(answers: Record<string, unknown>): JevDecision {
   const op = answers.operation as { choice?: string; confidence?: number } | undefined;
   const target = answers.target as { choice?: string; confidence?: number } | undefined;
   const operation = (JEV_OPERATIONS as readonly string[]).includes(op?.choice ?? "") ? (op!.choice as JevOperation) : "blocked";
@@ -190,7 +197,7 @@ export function jevFromClient(client: JevClientLike, opts: { model?: string } = 
       if (typesText !== undefined) step.typesText = typesText;
       if (previousStep !== undefined) step.previousStep = previousStep;
       const state = buildJevState(goal, snapshot, JEV_MAX_ELEMENTS, step);
-      const request: Parameters<JevClientLike["systemOne"]>[0] = { state, questions: buildJevQuestions(state) };
+      const request: JevRequest = { state, questions: buildJevQuestions(state) };
       if (opts.model) request.model = opts.model;
       const res = await client.systemOne(request, { timeout: JEV_TIMEOUT_MS });
       return parseJevAnswers(res.answers);
@@ -199,17 +206,6 @@ export function jevFromClient(client: JevClientLike, opts: { model?: string } = 
 }
 
 const quiet: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
-
-/** A hosted-AI request was refused with 402: the account has no usage credit left. */
-export class OutOfCreditError extends Error {
-  constructor(
-    message: string,
-    readonly topupUrl?: string,
-  ) {
-    super(message);
-    this.name = "OutOfCreditError";
-  }
-}
 
 export interface CreateJevOptions {
   fetch?: typeof fetch;
@@ -242,22 +238,14 @@ export function proxyJevClient(endpoint: string, apiKey: string, opts: { fetch?:
           signal: controller.signal,
         });
         const text = await res.text();
-        let body: { answers?: Record<string, any>; error?: unknown; message?: unknown; topupUrl?: unknown } = {};
-        try {
-          body = JSON.parse(text);
-        } catch {
-          /* not JSON */
-        }
-        if (res.status === 402) {
-          const msg = typeof body.message === "string" && body.message ? body.message : "out of credit";
-          throw new OutOfCreditError(`Jev: ${msg}`, typeof body.topupUrl === "string" ? body.topupUrl : undefined);
-        }
+        if (res.status === 402) throw outOfCreditError(text);
         if (!res.ok) {
-          const err = typeof body.error === "string" ? body.error : text.slice(0, 200);
-          throw new Error(`Jev HTTP ${res.status}${err ? `: ${err}` : ""}`);
+          const detail = errorDetail(text, 200);
+          throw new Error(`Jev HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
         }
-        if (!body.answers || typeof body.answers !== "object") throw new Error("Jev returned no answers");
-        return { answers: body.answers };
+        const answers = (parseJsonBody(text) as { answers?: unknown } | undefined)?.answers;
+        if (!answers || typeof answers !== "object") throw new Error("Jev returned no answers");
+        return { answers: answers as Record<string, unknown> };
       } finally {
         clearTimeout(timer);
         options?.signal?.removeEventListener("abort", onAbort);
@@ -285,7 +273,9 @@ export function createJev(apiKey: string, opts: CreateJevOptions = {}): JevLike 
     // Call through a wrapper so a browser fetch is never invoked with a foreign `this`.
     fetch: f ? (input, init) => f(input, init) : (input, init) => globalThis.fetch(input, init),
   });
+  // JevState is plain JSON; the SDK types state as EntryType, which an interface with optional fields cannot satisfy.
+  const sdk: JevClientLike = { systemOne: (request, options) => client.systemOne({ ...request, state: request.state as unknown as EntryType }, options) };
   const jevOpts: { model?: string } = {};
   if (opts.model) jevOpts.model = opts.model;
-  return jevFromClient(client as unknown as JevClientLike, jevOpts);
+  return jevFromClient(sdk, jevOpts);
 }

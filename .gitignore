@@ -9,3 +9,4 @@ playwright-report/
 *.pem
 apps/extension/test/ui/screenshots/
 apps/extension/config.json
+dist.building/

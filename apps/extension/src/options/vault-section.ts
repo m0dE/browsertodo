@@ -1,6 +1,6 @@
 /** Options page: the "Site logins" section (encrypted vault used by get_credential). */
 import { uiRequest } from "../ui-protocol.js";
-import { $, busy, errorText, flash, h } from "../sidepanel/dom.js";
+import { $, busy, flash, h, showError } from "../ui/dom.js";
 
 export function initVaultSection(): void {
   const locked = $("vault-locked");
@@ -19,13 +19,17 @@ export function initVaultSection(): void {
     list.replaceChildren(
       ...(v.sites.length
         ? v.sites.map((s) => {
-            const del = h("button", { type: "button", class: "small" }, "Remove");
+            const del = h("button.small", { type: "button" }, "Remove");
             del.addEventListener("click", () =>
-              void busy(del as HTMLButtonElement, async () => {
-                await uiRequest({ type: "vault.delete", site: s });
-                flash(msg, `Removed ${s}.`, "ok");
-                await refresh();
-              }),
+              void busy(
+                del,
+                async () => {
+                  await uiRequest({ type: "vault.delete", site: s });
+                  flash(msg, `Removed ${s}.`, "ok");
+                  await refresh();
+                },
+                msg,
+              ),
             );
             return h("li", {}, h("span", {}, s), del);
           })
@@ -35,16 +39,16 @@ export function initVaultSection(): void {
 
   const unlock = $<HTMLButtonElement>("vault-unlock");
   const doUnlock = () =>
-    void busy(unlock, async () => {
-      try {
+    void busy(
+      unlock,
+      async () => {
         await uiRequest({ type: "vault.unlock", passphrase: pass.value });
         pass.value = "";
         flash(msg, "Unlocked.", "ok");
         await refresh();
-      } catch (e) {
-        flash(msg, errorText(e), "bad");
-      }
-    });
+      },
+      msg,
+    );
   unlock.addEventListener("click", doUnlock);
   pass.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -55,30 +59,31 @@ export function initVaultSection(): void {
 
   const add = $<HTMLButtonElement>("vault-add");
   add.addEventListener("click", () =>
-    void busy(add, async () => {
-      if (!site.value.trim() || !user.value || !pw.value) {
-        flash(msg, "Fill in site, username and password.", "bad");
-        return;
-      }
-      try {
+    void busy(
+      add,
+      async () => {
+        if (!site.value.trim() || !user.value || !pw.value) return flash(msg, "Fill in site, username and password.", "bad");
         await uiRequest({ type: "vault.set", site: site.value.trim(), username: user.value, password: pw.value });
         flash(msg, `Saved the login for ${site.value.trim()}.`, "ok");
         site.value = user.value = pw.value = "";
         await refresh();
-      } catch (e) {
-        flash(msg, errorText(e), "bad");
-      }
-    }),
+      },
+      msg,
+    ),
   );
 
   const lock = $<HTMLButtonElement>("vault-lock");
   lock.addEventListener("click", () =>
-    void busy(lock, async () => {
-      await uiRequest({ type: "vault.lock" });
-      flash(msg, "Locked.", "ok");
-      await refresh();
-    }),
+    void busy(
+      lock,
+      async () => {
+        await uiRequest({ type: "vault.lock" });
+        flash(msg, "Locked.", "ok");
+        await refresh();
+      },
+      msg,
+    ),
   );
 
-  void refresh().catch((e) => flash(msg, errorText(e), "bad"));
+  void refresh().catch((err: unknown) => showError(msg, err));
 }

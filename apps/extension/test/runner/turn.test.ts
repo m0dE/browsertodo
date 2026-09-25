@@ -1,7 +1,8 @@
 /** Runner turns: results and their classification, post verification, pause URLs, preparation errors. */
 import { describe, expect, it, vi } from "vitest";
+import { DEBUGGER_CANCELED } from "../../src/cdp.js";
 import { typedTextsOf } from "../../src/engine/run/turn.js";
-import { env, harness, runAll, setupRunnerTests } from "./harness.js";
+import { AGENT_TAB, env, harness, runAll, setupRunnerTests } from "./harness.js";
 
 setupRunnerTests();
 
@@ -49,7 +50,7 @@ describe("Runner: one turn", () => {
     await vi.waitFor(() => expect(h.brain.starts).toHaveLength(1));
     await h.runner.onTabUpdated(99, { url: "https://x.com/i/flow/login" }); // not the agent tab
     expect(h.brain.ctls[0]!.aborts).toEqual([]);
-    await h.runner.onTabUpdated(7, { url: "https://x.com/i/flow/login" });
+    await h.runner.onTabUpdated(AGENT_TAB, { url: "https://x.com/i/flow/login" });
     await h.runner.idle();
     expect(h.brain.ctls[0]!.aborts).toEqual([{ reason: "X is asking to log in", outcome: "paused" }]);
     expect(await h.store.get(t.id)).toMatchObject({ status: "paused", pauseReason: "X is asking to log in" });
@@ -68,7 +69,7 @@ describe("Runner: one turn", () => {
       return { outcome: "done", url: "https://x.com/me/status/123" };
     };
     await runAll(h);
-    expect(h.verify).toHaveBeenCalledWith(h.deps.browser, "https://x.com/me/status/123", "hello world, this is the post body");
+    expect(h.verify).toHaveBeenCalledWith(h.browser, "https://x.com/me/status/123", "hello world, this is the post body");
     expect(await h.store.get(a.id)).toMatchObject({ status: "done" });
 
     h.brain.script = () => ({ outcome: "done", url: "https://x.com/me/status/123" });
@@ -93,7 +94,7 @@ describe("Runner: one turn", () => {
     await vi.waitFor(() => expect(h.brain.starts).toHaveLength(1));
     h.runner.onDebuggerCanceled();
     await h.runner.idle();
-    expect(await h.store.get(a.id)).toMatchObject({ status: "failed", failReason: "debugger detached by user" });
+    expect(await h.store.get(a.id)).toMatchObject({ status: "failed", failReason: DEBUGGER_CANCELED });
   });
 
   it("a preparation error (e.g. media) is recorded without starting the brain", async () => {

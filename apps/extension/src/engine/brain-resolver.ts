@@ -17,8 +17,12 @@ export interface BrainInputs {
   account?: { signedIn: boolean; hostedUsable: boolean; outOfCredit?: boolean } | null;
 }
 
-export const HOSTED_SIGN_IN = "Sign in to use browsertodo AI";
-export const HOSTED_NO_CREDIT = "Out of usage credit: subscribe or top up to use browsertodo AI";
+/** What the hosted brain is called. */
+export const HOSTED_LABEL = "browsertodo AI";
+export const HOSTED_SIGN_IN = `Sign in to use ${HOSTED_LABEL}`;
+export const HOSTED_NO_CREDIT = `Out of usage credit: subscribe or top up to use ${HOSTED_LABEL}`;
+/** No brain can run tasks (the status note says why, when there is one). */
+export const NO_AI = "No AI is set up to run tasks";
 
 /** Why the hosted AI cannot be used, or null when it can. */
 function hostedProblem(account: BrainInputs["account"]): string | null {
@@ -30,8 +34,8 @@ function hostedProblem(account: BrainInputs["account"]): string | null {
 /** Why local Claude Code cannot be used, or null when it can. */
 function claudeCodeProblem(helper: HelperInfo | null, helperError?: string | null): string | null {
   if (!helper) return `Helper not connected${helperError ? `: ${helperError}` : ""}`;
+  if (helper.brain === "scripted") return null;
   if (!helper.claudePath) return "Claude Code was not found on this computer";
-  if (helper.claudePath === "scripted") return null;
   if (!helper.selfTest) return "Claude Code self-test has not run yet";
   if (!helper.selfTest.ok) return `Claude Code self-test failed${helper.selfTest.error ? `: ${helper.selfTest.error}` : ""}`;
   return null;
@@ -45,6 +49,16 @@ function jevActiveFor(brain: BrainKind | null, inputs: BrainInputs): boolean {
   if (s.jevApiKey) return true;
   // The helper can fall back to TYPESAFE_API_KEY from its own environment.
   return brain === "claude-code" && !!inputs.helper?.jevAvailable;
+}
+
+/**
+ * Whether a run with these settings may use Claude Code, so the helper
+ * should be connected first: not when an API brain is chosen, nor when auto
+ * picks the hosted AI.
+ */
+export function needsHelper(settings: Pick<ExtensionSettings, "brain">, account: BrainInputs["account"]): boolean {
+  if (settings.brain === "claude-api" || settings.brain === "browsertodo") return false;
+  return !(settings.brain === "auto" && account?.hostedUsable);
 }
 
 export function resolveBrain(inputs: BrainInputs): BrainStatus {
@@ -65,7 +79,7 @@ export function resolveBrain(inputs: BrainInputs): BrainStatus {
       break;
     case "claude-api":
       if (hasApiKey) effective = "claude-api";
-      else note = "No Claude API key set. Add one in the options page.";
+      else note = "No Claude API key set. Add one in Settings.";
       break;
     default:
       if (!hosted) effective = "browsertodo";
@@ -76,7 +90,7 @@ export function resolveBrain(inputs: BrainInputs): BrainStatus {
       } else if (inputs.account?.signedIn) {
         note = `${HOSTED_NO_CREDIT}, or set a Claude API key, or install the helper and Claude Code (${ccProblem})`;
       } else {
-        note = `No brain available: sign in for browsertodo AI, set a Claude API key, or install the helper and Claude Code (${ccProblem})`;
+        note = `${NO_AI}: sign in for ${HOSTED_LABEL}, set a Claude API key, or install the helper and Claude Code (${ccProblem})`;
       }
   }
   const status: BrainStatus = {

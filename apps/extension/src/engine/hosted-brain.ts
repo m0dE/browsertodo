@@ -7,12 +7,10 @@
  * "Out of usage credit" and flags the account for the Top up link.
  */
 import { OutOfCreditError, type JevLike } from "@browsertodo/core";
-import { hostedModel } from "../account/types.js";
+import { hostedModel, SESSION_HEADER } from "@browsertodo/shared";
 import type { ApiBackend } from "./api-brain.js";
+import { HOSTED_LABEL } from "./brain-resolver.js";
 import type { CoreApi } from "./brains.js";
-
-export const SESSION_HEADER = "X-Browsertodo-Session";
-export const HOSTED_LABEL = "browsertodo AI";
 
 export interface HostedDeps {
   core: Pick<CoreApi, "createJev">;
@@ -28,9 +26,10 @@ export interface HostedDeps {
 export function hostedBackend(deps: HostedDeps): ApiBackend {
   const backend: ApiBackend = {
     kind: "browsertodo",
+    label: HOSTED_LABEL,
     connect(settings, sessionId) {
       const s = deps.session();
-      if (!s) throw new Error("Not signed in: sign in to use browsertodo AI");
+      if (!s) throw new Error(`Not signed in: sign in to use ${HOSTED_LABEL}`);
       const base = s.apiBase.replace(/\/+$/, "");
       const headers = { [SESSION_HEADER]: sessionId };
       let jev: JevLike | null = null;

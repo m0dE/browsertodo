@@ -1,77 +1,28 @@
 // Smoke test of the built extension in Playwright's Chromium.
 // Usage: pnpm --filter @browsertodo/extension build && node apps/extension/test/smoke.e2e.mjs [--headed]
-// The helper is not needed; the status must show it as not connected.
-import { chromium } from "@playwright/test";
+// The helper is not needed: without one the status shows no brain (a helper registered on this
+// machine is tolerated: Auto may then pick its Claude Code).
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { driverCall, EXTENSION_ID, launchExtension, pageUi, routerUi } from "../../../test/e2e/lib/extension.mjs";
+import { serveHtml } from "../../../test/e2e/lib/serve.mjs";
+import { createSuite, waitFor } from "../../../test/e2e/lib/suite.mjs";
+import { driverPage, findIndex, OTHER_PAGE } from "../../../test/fixtures/driver-page.mjs";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-// Output to the repo root so Chrome's "Load unpacked" points at <repo>/dist.
-const dist = join(root, "..", "..", "dist");
-const expectedId = readFileSync(join(root, "extension-id.txt"), "utf8").trim();
-const headed = process.argv.includes("--headed");
+const site = await serveHtml((path) => (path === "/other" ? OTHER_PAGE : driverPage({ title: "Smoke fixture", heading: "Driver smoke page" })));
+const { base } = site;
 
-const FIXTURE = `<!doctype html><html><head><title>Smoke fixture</title>
-<style>body{font-family:sans-serif} .tall{height:3000px} #gone{display:none}</style></head><body>
-<h1>Driver smoke page</h1>
-<a href="/other" data-testid="other-link">Other page</a>
-<button id="inc" data-testid="incButton" onclick="document.getElementById('count').textContent = String(++window.clicks)">Increment</button>
-<p>Count: <span id="count">0</span></p>
-<label for="name">Your name</label><input id="name" type="text">
-<div id="editor" role="textbox" contenteditable="true" aria-label="Compose text" style="border:1px solid #999;min-height:40px"></div>
-<input type="file" id="file" style="display:none" onchange="document.getElementById('files').textContent = [...this.files].map(f => f.name + ':' + f.size).join(',')">
-<p>Files: <span id="files">none</span></p>
-<p>Last key: <span id="lastkey">none</span></p>
-<p>ScrollY: <span id="scrolly">0</span></p>
-<button id="gone">Invisible button</button>
-<input type="hidden" name="secret" value="x">
-<div class="tall"></div>
-<script>
-window.clicks = 0;
-document.addEventListener('keydown', e => { document.getElementById('lastkey').textContent = (e.ctrlKey ? 'Control+' : '') + e.key; });
-addEventListener('scroll', () => { document.getElementById('scrolly').textContent = String(Math.round(scrollY)); });
-</script></body></html>`;
-
-const server = createServer((req, res) => {
-  res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-  res.end(req.url === "/other" ? "<title>Other</title><p>other page</p>" : FIXTURE);
-});
-await new Promise((r) => server.listen(0, "127.0.0.1", r));
-const base = `http://127.0.0.1:${server.address().port}`;
-
-const profile = mkdtempSync(join(tmpdir(), "browsertodo-smoke-"));
+const { step, finish } = createSuite("smoke");
+const ext = await launchExtension({ name: "smoke" });
+const { context, sw, extensionId, profile } = ext;
 const uploadFile = join(profile, "upload-me.txt");
 writeFileSync(uploadFile, "hello upload");
 
-const results = [];
-const step = async (name, fn) => {
-  try {
-    const detail = await fn();
-    results.push({ name, ok: true, detail });
-    console.log(`ok   ${name}${detail ? ` - ${detail}` : ""}`);
-  } catch (err) {
-    results.push({ name, ok: false, detail: err.message });
-    console.log(`FAIL ${name} - ${err.stack ?? err.message}`);
-  }
-};
-
-const context = await chromium.launchPersistentContext(profile, {
-  channel: "chromium", // new headless mode, which supports extensions
-  headless: !headed,
-  args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
-});
-
 try {
-  let [sw] = context.serviceWorkers();
-  if (!sw) sw = await context.waitForEvent("serviceworker", { timeout: 15_000 });
-  const extensionId = new URL(sw.url()).host;
-
   await step("extension loads with the pinned ID", async () => {
-    assert.equal(extensionId, expectedId);
+    assert.equal(extensionId, EXTENSION_ID);
     const hook = await sw.evaluate(() => Object.keys(globalThis.__browsertodo ?? {}));
     for (const k of ["driver", "runner", "localStore", "sessions", "helper", "settings"]) assert.ok(hook.includes(k), `hook has ${k}`);
     return extensionId;
@@ -86,29 +37,31 @@ try {
   // UI protocol requests, sent from an extension page like the side panel does.
   const page = await context.newPage();
   await page.goto(`chrome-extension://${extensionId}/sidepanel.html`);
-  const ui = async (msg) => {
-    const res = await page.evaluate((m) => chrome.runtime.sendMessage(m), msg);
-    if (!res?.ok) throw new Error(`${msg.type}: ${res?.error ?? "no response"}`);
-    return res.data;
-  };
+  const ui = pageUi(page);
 
   await step("state.get without helper or key: no brain, helper error shown", async () => {
-    const state = await ui({ type: "state.get" });
-    assert.equal(state.brain.effective, null);
-    assert.equal(state.settings.brain, "auto");
-    assert.ok(state.brain.note, "has a note");
-    return state.brain.note.slice(0, 120);
+    const { brain, settings } = await ui({ type: "state.get" });
+    assert.equal(settings.brain, "auto");
+    if (brain.helper) {
+      // A helper is registered on this machine (a developer's own install): Auto may pick its Claude Code.
+      assert.ok(brain.effective === "claude-code" || (brain.effective === null && brain.note), JSON.stringify(brain));
+      return `helper ${brain.helper.version} registered on this machine: ${brain.effective ?? brain.note}`;
+    }
+    assert.equal(brain.effective, null);
+    assert.ok(brain.note, "has a note");
+    return brain.note.slice(0, 120);
   });
 
   await step("settings.save: partial update, secrets redacted, alarm rescheduled", async () => {
     const state = await ui({ type: "settings.save", settings: { anthropicApiKey: "sk-smoke", intervalMinutes: 30, delayMinSec: 0, delayMaxSec: 1 } });
     assert.equal(state.settings.anthropicApiKey, "set");
-    assert.equal(state.brain.effective, "claude-api");
+    // Auto prefers a connected helper's Claude Code over the key (a helper registered on this machine).
+    const { effective, helper } = state.brain;
+    assert.ok(effective === "claude-api" || (helper && effective === "claude-code"), `brain ${effective}`);
     const stored = await sw.evaluate(() => chrome.storage.local.get("settings"));
     assert.equal(stored.settings.anthropicApiKey, "sk-smoke");
-    await page.waitForTimeout(200);
-    const alarm = await sw.evaluate(() => chrome.alarms.get("browsertodo-run"));
-    assert.equal(alarm?.periodInMinutes, 30);
+    // The alarm follows the saved settings (storage.onChanged).
+    await waitFor(async () => (await sw.evaluate(() => chrome.alarms.get("browsertodo-run")))?.periodInMinutes === 30, "the alarm to run every 30 min");
     await ui({ type: "settings.save", settings: { anthropicApiKey: "" } });
     return "key set then cleared, interval 30";
   });
@@ -149,8 +102,8 @@ try {
   });
 
   await step("vault via background requests, getCredential", async () => {
-    const send = (m) => sw.evaluate((x) => globalThis.__browsertodo.router.handle(x), m);
-    assert.deepEqual(await send({ type: "vault.unlock", passphrase: "smoke passphrase" }), { ok: true, data: { ok: true } });
+    const send = routerUi(sw);
+    assert.deepEqual(await send({ type: "vault.unlock", passphrase: "smoke passphrase" }), { ok: true });
     await send({ type: "vault.set", site: "example.com", username: "alice", password: "pw1" });
     const cred = await sw.evaluate(() => globalThis.__browsertodo.vault.getCredential("login.example.com"));
     assert.deepEqual(cred, { found: true, username: "alice", password: "pw1" });
@@ -175,13 +128,7 @@ try {
   });
 
   // Driver against the fixture page, in the agent tab.
-  const call = (method, params = {}) =>
-    sw.evaluate(async ([m, p]) => globalThis.__browsertodo.driver[m](p), [method, params]);
-  const findIndex = (snap, pred) => {
-    const el = snap.elements.find(pred);
-    if (!el) throw new Error(`element not found in ${JSON.stringify(snap.elements)}`);
-    return el.index;
-  };
+  const call = driverCall(sw);
 
   const counts = () =>
     sw.evaluate(async () => ({ windows: (await chrome.windows.getAll()).length, tabs: (await chrome.tabs.query({})).length }));
@@ -340,9 +287,10 @@ try {
   await step("navigate by clicking a link, then currentUrl", async () => {
     snap = await call("readPage");
     await call("click", { index: findIndex(snap, (e) => e.role === "link") });
-    await new Promise((r) => setTimeout(r, 800));
-    const { url } = await call("currentUrl");
-    assert.equal(url, `${base}/other`);
+    const url = await waitFor(async () => {
+      const { url } = await call("currentUrl");
+      return url === `${base}/other` && url;
+    }, "the link's page");
     return url;
   });
 
@@ -374,11 +322,8 @@ try {
     return "user tab driven, closed-tab error readable";
   });
 } finally {
-  await context.close();
-  server.close();
-  rmSync(profile, { recursive: true, force: true });
+  await ext.close();
+  await site.close();
 }
 
-const failed = results.filter((r) => !r.ok);
-console.log(`\n${results.length - failed.length}/${results.length} smoke steps passed`);
-process.exit(failed.length ? 1 : 0);
+finish();

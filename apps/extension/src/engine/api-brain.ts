@@ -5,23 +5,29 @@
  * (browsertodo, see hosted-brain.ts).
  */
 import type { AgentSession, ApiAgentOptions, BrowserCaller, JevLike } from "@browsertodo/core";
-import type { AgentEvent, ExtensionSettings } from "@browsertodo/shared";
-import { errText } from "../errors.js";
+import { errorMessage, type AgentEvent, type ExtensionSettings } from "@browsertodo/shared";
+import { callSafely } from "../listeners.js";
 import { endedRun, failedRun, type Brain, type BrainContinueOptions, type BrainRun, type BrainStartOptions, type CoreApi } from "./brains.js";
+
+/** Where a conversation's current turn goes: the runner's event handler and the turn's tab. */
+interface TurnRoute {
+  sink: (e: AgentEvent) => void;
+  browser: BrowserCaller;
+}
 
 /** A conversation's Claude API agent, kept in memory between turns. */
 interface ApiConversation {
   agent: AgentSession;
-  /** Where the agent's events go: the runner's handler for the current turn. */
-  sink: (e: AgentEvent) => void;
-  /** The current turn's tab. */
-  browser: BrowserCaller;
+  /** Changed at every turn; the agent reaches the turn through it. */
+  route: TurnRoute;
   lastUsed: number;
 }
 
 /** Where an API brain's requests go and how they authenticate. */
 export interface ApiBackend {
   readonly kind: "claude-api" | "browsertodo";
+  /** What the brain is called in messages. */
+  readonly label: string;
   /** The agent options for a new session. Throws when the backend cannot be used. */
   connect(
     settings: ExtensionSettings,
@@ -35,6 +41,7 @@ export interface ApiBackend {
 export function claudeApiBackend(core: Pick<CoreApi, "createJev">, fetchFn?: typeof fetch): ApiBackend {
   return {
     kind: "claude-api",
+    label: "Claude API",
     connect(s) {
       const jev = s.jevEnabled && s.jevApiKey ? core.createJev(s.jevApiKey, fetchFn ? { fetch: fetchFn } : undefined) : null;
       return { agent: { apiKey: s.anthropicApiKey, model: s.anthropicModel }, jev };
@@ -44,7 +51,7 @@ export function claudeApiBackend(core: Pick<CoreApi, "createJev">, fetchFn?: typ
 
 /** Like the helper's kept-open Claude Code sessions: a few, for 30 idle minutes. */
 const API_KEEP_CONVERSATIONS = 3;
-const API_IDLE_MS = 30 * 60_000;
+export const API_IDLE_MS = 30 * 60_000;
 
 /** The agent loop inside the extension (core.startApiAgent), on the backend's endpoint. */
 export class ApiBrain implements Brain {
@@ -71,24 +78,28 @@ export class ApiBrain implements Brain {
   start(opts: BrainStartOptions): BrainRun {
     try {
       const { agent, jev } = this.backend.connect(opts.settings, opts.sessionId);
-      const conv = { sink: opts.onEvent, browser: opts.browser ?? this.deps.browser, lastUsed: this.now() } as ApiConversation;
-      conv.agent = this.deps.core.startApiAgent({
-        ...agent,
-        sessionId: opts.sessionId,
-        task: opts.task,
-        mediaPaths: opts.mediaPaths,
-        config: opts.config,
-        // Every turn acts in its own run's tab.
-        browser: { call: (method, params) => conv.browser.call(method, params) },
-        jev,
-        onEvent: (e) => conv.sink(e),
-        ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}),
-      });
+      const route: TurnRoute = { sink: opts.onEvent, browser: opts.browser ?? this.deps.browser };
+      const conv: ApiConversation = {
+        route,
+        lastUsed: this.now(),
+        agent: this.deps.core.startApiAgent({
+          ...agent,
+          sessionId: opts.sessionId,
+          task: opts.task,
+          mediaPaths: opts.mediaPaths,
+          config: opts.config,
+          // Every turn acts in its own run's tab.
+          browser: { call: (method, params) => route.browser.call(method, params) },
+          jev,
+          onEvent: (e) => route.sink(e),
+          ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}),
+        }),
+      };
       if (conv.agent.continueWith) this.keep(opts.sessionId, conv);
       this.touchWhenDone(conv);
       return this.runOf(conv.agent);
     } catch (err) {
-      return failedRun(`Could not start the ${this.kind === "browsertodo" ? "browsertodo AI" : "Claude API"} agent: ${errText(err)}`);
+      return failedRun(`Could not start the ${this.backend.label} agent: ${errorMessage(err)}`);
     }
   }
 
@@ -97,11 +108,11 @@ export class ApiBrain implements Brain {
     if (!conv?.agent.continueWith) return endedRun();
     let agent: AgentSession;
     try {
-      conv.sink = opts.onEvent;
-      conv.browser = opts.browser ?? this.deps.browser;
+      conv.route.sink = opts.onEvent;
+      conv.route.browser = opts.browser ?? this.deps.browser;
       agent = conv.agent.continueWith(opts.text, { config: opts.config });
     } catch (err) {
-      return failedRun(errText(err));
+      return failedRun(errorMessage(err));
     }
     conv.agent = agent;
     conv.lastUsed = this.now();
@@ -127,11 +138,7 @@ export class ApiBrain implements Brain {
     void agent.done.then(
       () => {
         if (conv.agent === agent) conv.lastUsed = this.now();
-        try {
-          this.backend.afterTurn?.();
-        } catch {
-          /* best effort */
-        }
+        callSafely(this.backend.afterTurn);
       },
       () => {},
     );
@@ -152,7 +159,8 @@ export class ApiBrain implements Brain {
     this.conversations.delete(sessionId);
     this.conversations.set(sessionId, conv);
     // Oldest first (Map order): drop the oldest beyond the limit.
-    while (this.conversations.size > API_KEEP_CONVERSATIONS) this.conversations.delete(this.conversations.keys().next().value!);
+    const excess = this.conversations.size - API_KEEP_CONVERSATIONS;
+    for (const id of [...this.conversations.keys()].slice(0, Math.max(0, excess))) this.conversations.delete(id);
     this.changed();
   }
 
@@ -172,10 +180,6 @@ export class ApiBrain implements Brain {
   }
 
   private changed(): void {
-    try {
-      this.deps.onSessionsChanged?.();
-    } catch {
-      /* UI push errors are not the brain's problem */
-    }
+    callSafely(this.deps.onSessionsChanged);
   }
 }

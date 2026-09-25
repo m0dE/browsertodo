@@ -2,31 +2,25 @@
  * Background side of ui-protocol.ts: answers every UiRequest. The pushes to
  * the side panel are in ui-hub.ts.
  */
-import { redactSettings, type ExtensionSettings, type HelperInfo, type HelperMethods, type SessionInfo } from "@browsertodo/shared";
-import type { AccountView, ApiKeyInfo, BrainStatus, PlanId, UiRequest, UiResponse, UiResults, UiState } from "../ui-protocol.js";
+import { errorMessage, IssuableKeyRole, redactSettings, type ExtensionSettings, type HelperInfo, type HelperMethods } from "@browsertodo/shared";
+import type { AccountService } from "../account/account.js";
 import { LocalTodo, type TodoSource } from "../account/todo-source.js";
-import { errText } from "../errors.js";
+import { BILLING_ACTIONS } from "../account/types.js";
+import { HELPER_CALL_TIMEOUT_MS } from "../helper-link.js";
+import type { BrainStatus, UiRequest, UiResponse, UiResults, UiState } from "../ui-protocol.js";
+import { transcribeForPanel, type VoiceAccount } from "../voice/transcribe.js";
 import type { LocalStore } from "./local-store.js";
 import { uploadToBlob } from "./local-store.js";
 import type { AdhocInput } from "./run/jobs.js";
-import type { RunnerState } from "./run/state.js";
+import type { Runner } from "./runner.js";
 import type { SessionStore } from "./sessions.js";
 import type { TestResult } from "./settings-tests.js";
 
-export interface RouterRunner {
-  readonly running: SessionInfo | null;
-  readonly runningSessions: SessionInfo[];
-  state(): Promise<RunnerState>;
-  runDue(trigger: "alarm" | "manual"): Promise<{ started: boolean; detail?: string }>;
-  runAdhoc(input: AdhocInput): Promise<{ sessionId: string }>;
-  continueSession(sessionId: string, note?: string): Promise<{ sessionId: string }>;
-  message(sessionId: string | undefined, text: string, opts?: { tabId?: number }): Promise<UiResults["run.message"]>;
-  newChat(sessionId?: string): Promise<{ ok: boolean }>;
-  stop(sessionId?: string): boolean;
-  say(text: string, sessionId?: string): Promise<boolean>;
-  pauseSchedule(reason?: string): Promise<void>;
-  resumeSchedule(): Promise<void>;
-}
+/** The runner as the router uses it. */
+export type RouterRunner = Pick<
+  Runner,
+  "running" | "runningSessions" | "state" | "runDue" | "runAdhoc" | "continueSession" | "message" | "newChat" | "stop" | "say" | "pauseSchedule" | "resumeSchedule"
+>;
 
 export interface RouterVault {
   unlock(passphrase: string): Promise<void>;
@@ -36,19 +30,12 @@ export interface RouterVault {
   delete(site: string): Promise<void>;
 }
 
-/** The account side the router uses (AccountService). */
-export interface RouterAccount {
-  view(): Promise<AccountView>;
-  signIn(): Promise<void>;
-  signOut(): Promise<void>;
-  refresh(force?: boolean): Promise<void>;
-  migrateLocalTasks(): Promise<{ moved: number; failed: number; errors: string[] }>;
-  dismissMigration(): Promise<void>;
-  billingLink(req: { action: "checkout" | "topup" | "portal"; plan?: PlanId; amountCents?: number; returnUrl: string }): Promise<string>;
-  listKeys(): Promise<ApiKeyInfo[]>;
-  createKey(name: string, role: "creator" | "runner"): Promise<{ id: string; name: string; role: string; key: string }>;
-  revokeKey(id: string): Promise<void>;
-}
+/** The account side the router uses, and voice input (one WAV clip to text). */
+export type RouterAccount = Pick<
+  AccountService,
+  "view" | "signIn" | "signOut" | "refresh" | "migrateLocalTasks" | "dismissMigration" | "billingLink" | "listKeys" | "createKey" | "revokeKey"
+> &
+  VoiceAccount;
 
 export interface UiRouterDeps {
   loadSettings(): Promise<ExtensionSettings>;
@@ -89,6 +76,10 @@ export interface UiRouterDeps {
   focusTab?(tabId: number): Promise<boolean>;
 }
 
+/** The helper log's last lines for helper.getLog: by default, and at most. */
+const DEFAULT_LOG_LINES = 200;
+const MAX_LOG_LINES = 2000;
+
 /** A request outside ui-protocol.ts that the router also answers (the e2e suite reads the helper log with it). */
 export type ExtraRequest = { type: "helper.getLog"; lines: number };
 
@@ -125,12 +116,6 @@ export class UiRouter {
     return this.deps.account;
   }
 
-  /** The conversation belongs to the browser tab its request came from. */
-  private async bindTab(tabId: unknown, sessionId: string | undefined): Promise<void> {
-    const tab = optTab(tabId);
-    if (tab !== undefined && sessionId && this.deps.tabChats) await this.deps.tabChats.bind(tab, sessionId);
-  }
-
   private async todo(): Promise<TodoSource> {
     if (this.deps.todo) return this.deps.todo();
     return new LocalTodo(this.deps.localStore);
@@ -141,7 +126,7 @@ export class UiRouter {
     try {
       return { ok: true, data: await this.dispatch(msg) };
     } catch (err) {
-      return { ok: false, error: errText(err) };
+      return { ok: false, error: errorMessage(err) };
     }
   }
 
@@ -166,27 +151,29 @@ export class UiRouter {
         return this.getState();
       case "run.adhoc": {
         const input: AdhocInput = {
-          instructions: msg.instructions,
+          instructions: typeof msg.instructions === "string" ? msg.instructions : "",
           account: msg.account ?? null,
           media: (msg.media ?? []).map((m) => ({ name: m.name, blob: uploadToBlob(m) })),
         };
         const tab = optTab(msg.tabId);
         if (tab !== undefined) input.tabId = tab;
+        if (msg.screen === true) input.screen = true;
         return d.runner.runAdhoc(input) satisfies Promise<UiResults["run.adhoc"]>;
       }
       case "run.continue": {
         if (typeof msg.sessionId !== "string" || !msg.sessionId) throw new Error("sessionId is required");
         const note = typeof msg.text === "string" ? msg.text.trim() : "";
-        // Continued from a tab: the conversation goes on there.
-        await this.bindTab(msg.tabId, msg.sessionId);
-        return d.runner.continueSession(msg.sessionId, note || undefined) satisfies Promise<UiResults["run.continue"]>;
+        const tab = optTab(msg.tabId);
+        // Continued from a tab: the conversation goes on there (the runner binds it once the turn is taken).
+        return d.runner.continueSession(msg.sessionId, note || undefined, tab === undefined ? {} : { tabId: tab }) satisfies Promise<UiResults["run.continue"]>;
       }
       case "run.message": {
         const text = typeof msg.text === "string" ? msg.text : "";
         const sessionId = optId(msg.sessionId);
         const tab = optTab(msg.tabId);
-        if (sessionId && text.trim()) await this.bindTab(tab, sessionId);
-        return d.runner.message(sessionId, text, tab === undefined ? {} : { tabId: tab }) satisfies Promise<UiResults["run.message"]>;
+        const screen = msg.screen === true;
+        // Sent from a tab: the runner binds the conversation to it once the message is taken.
+        return d.runner.message(sessionId, text, { ...(tab === undefined ? {} : { tabId: tab }), ...(screen ? { screen } : {}) }) satisfies Promise<UiResults["run.message"]>;
       }
       case "run.newChat": {
         const tab = optTab(msg.tabId);
@@ -213,7 +200,7 @@ export class UiRouter {
         if (!session) throw new Error(`No session ${String(msg.sessionId)}`);
         if (!session.logPath) throw new Error("This session has no run log (only Claude Code sessions do)");
         if (!d.helper.info) throw new Error("The helper is not connected");
-        const log = await d.helper.call("helper.runLog", { path: session.logPath }, { timeoutMs: 15_000 });
+        const log = await d.helper.call("helper.runLog", { path: session.logPath }, { timeoutMs: HELPER_CALL_TIMEOUT_MS });
         return { path: session.logPath, ...log } satisfies UiResults["session.log"];
       }
       case "run.due":
@@ -269,7 +256,7 @@ export class UiRouter {
         await this.account().dismissMigration();
         return this.getState();
       case "account.billing": {
-        if (!["checkout", "topup", "portal"].includes(msg.action)) throw new Error(`Unknown billing action ${String(msg.action)}`);
+        if (!BILLING_ACTIONS.includes(msg.action)) throw new Error(`Unknown billing action ${String(msg.action)}`);
         const req: Parameters<RouterAccount["billingLink"]>[0] = { action: msg.action, returnUrl: String(msg.returnUrl ?? "") };
         if (msg.plan) req.plan = msg.plan;
         if (typeof msg.amountCents === "number") req.amountCents = msg.amountCents;
@@ -280,14 +267,14 @@ export class UiRouter {
       case "account.keys.create": {
         const name = String(msg.name ?? "").trim();
         if (!name) throw new Error("Give the key a name");
-        if (msg.role !== "creator" && msg.role !== "runner") throw new Error("The role must be creator or runner");
+        if (!IssuableKeyRole.safeParse(msg.role).success) throw new Error(`The role must be ${IssuableKeyRole.options.join(" or ")}`);
         return this.account().createKey(name, msg.role) satisfies Promise<UiResults["account.keys.create"]>;
       }
       case "account.keys.revoke":
         await this.account().revokeKey(String(msg.id ?? ""));
         return { ok: true } satisfies UiResults["account.keys.revoke"];
       case "sessions.list":
-        return { sessions: await d.sessions.list(msg.limit ?? 50) } satisfies UiResults["sessions.list"];
+        return { sessions: await d.sessions.list(msg.limit ?? 50, msg.taskId) } satisfies UiResults["sessions.list"];
       case "sessions.events": {
         const session = await d.sessions.get(msg.sessionId);
         if (!session) throw new Error(`No session ${msg.sessionId}`);
@@ -295,7 +282,7 @@ export class UiRouter {
       }
       case "helper.getLog":
         if (!d.helper.info) return { text: "" };
-        return d.helper.call("helper.getLog", { lines: Math.max(1, Math.min(2000, Math.trunc(msg.lines) || 200)) }, { timeoutMs: 10_000 });
+        return d.helper.call("helper.getLog", { lines: Math.max(1, Math.min(MAX_LOG_LINES, Math.trunc(msg.lines) || DEFAULT_LOG_LINES)) }, { timeoutMs: HELPER_CALL_TIMEOUT_MS });
       case "vault.unlock":
         await d.vault.unlock(msg.passphrase);
         return { ok: true };
@@ -310,6 +297,13 @@ export class UiRouter {
       case "vault.delete":
         await d.vault.delete(msg.site);
         return { ok: true };
+      case "voice.transcribe":
+        return transcribeForPanel(d.account, {
+          wav: String(msg.wav ?? ""),
+          speechMs: Number(msg.speechMs) || 0,
+          ...(typeof msg.context === "string" ? { context: msg.context } : {}),
+          ...(typeof msg.sessionId === "string" ? { sessionId: msg.sessionId } : {}),
+        }) satisfies Promise<UiResults["voice.transcribe"]>;
       default:
         throw new Error(`Unknown request type: ${String((msg as { type?: unknown }).type)}`);
     }

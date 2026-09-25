@@ -1,17 +1,21 @@
 /**
- * Activity Log tab: every run, newest first. Picking a finished one opens it
+ * Activity log tab: every run, newest first. Picking a finished one opens it
  * read-only here (with a way back to the list, its raw log, and "Open in
  * Chat" when the conversation can be continued); a running one opens in Chat.
  */
-import type { SessionInfo, StampedAgentEvent } from "@browsertodo/shared";
+import { chipHint, errorMessage, type SessionInfo, type StampedAgentEvent } from "@browsertodo/shared";
 import { isContinuableOutcome } from "../continue.js";
 import { uiRequest } from "../ui-protocol.js";
 import { canOpenInChat, chatActions } from "./chat-actions.js";
-import { $, busy, errorText, h } from "./dom.js";
+import { $, h } from "../ui/dom.js";
 import { describeEvent, turnPicks } from "./event-format.js";
-import { placeEvent, pruneContinue, renderEvent, renderSessionHead } from "./event-render.js";
-import { brainLabel, chipHint, clockLabel, outcomeChip, sessionMeta } from "./format.js";
-import { openRawLog } from "./raw-log.js";
+import { placeEvent, pruneContinue, renderEvent, renderSessionHead, renderSessionTitle } from "./event-render.js";
+import { clockLabel, outcomeChip } from "./format.js";
+import { brainLabel } from "../ui/labels.js";
+import { wireRawLog } from "./raw-log.js";
+
+/** The list shows this many runs, newest first. */
+const RUNS_SHOWN = 30;
 
 export interface HistoryView {
   /** The tab was opened: reload the list (the open run stays open). */
@@ -64,12 +68,12 @@ export function initHistory(opts: {
   async function loadList(): Promise<void> {
     const ticket = ++loading;
     try {
-      const { sessions } = await uiRequest({ type: "sessions.list", limit: 30 });
+      const { sessions } = await uiRequest({ type: "sessions.list", limit: RUNS_SHOWN });
       if (ticket !== loading) return;
       ul.replaceChildren(...sessions.map((s) => historyRow(s, pick)));
       empty.hidden = sessions.length > 0;
     } catch (err) {
-      ul.replaceChildren(h("li.ev-error", null, errorText(err)));
+      ul.replaceChildren(h("li.ev-error", null, errorMessage(err)));
     }
   }
 
@@ -81,11 +85,7 @@ export function initHistory(opts: {
   }
 
   function header(s: SessionInfo): void {
-    title.textContent = s.title;
-    title.title = `${s.title}
-Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
-    meta.textContent = sessionMeta(s);
-    meta.title = brainLabel(s.brain, s.jev);
+    renderSessionTitle(title, meta, s);
     openBtn.hidden = !canOpenInChat(s);
     rawLog.hidden = chatActions(s, new Set()).rawLog.disabled;
   }
@@ -115,7 +115,7 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
       header(open);
       renderLog(open, res.events);
     } catch (err) {
-      log.replaceChildren(h("p.ev-error", null, errorText(err)));
+      log.replaceChildren(h("p.ev-error", null, errorMessage(err)));
     }
   }
 
@@ -132,17 +132,7 @@ Show the full ${s.source === "adhoc" ? "message" : "task"} and its details`;
   openBtn.addEventListener("click", () => {
     if (open) opts.onOpenInChat(open);
   });
-  rawLog.addEventListener("click", () => {
-    const s = open;
-    if (!s) return;
-    void busy(rawLog, async () => {
-      try {
-        await openRawLog(s.sessionId);
-      } catch (err) {
-        log.append(h("p.ev-error", null, `Raw log: ${errorText(err)}`));
-      }
-    });
-  });
+  wireRawLog(rawLog, () => open, (message) => log.append(h("p.ev-error", null, message)));
 
   return {
     refresh() {

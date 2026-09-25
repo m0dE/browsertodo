@@ -1,7 +1,19 @@
-import { MAX_SNAPSHOT_ELEMENTS, MAX_SNAPSHOT_TEXT, type PageSnapshot, type Screenshot } from "@browsertodo/shared";
-import { BACKGROUND_SHOT_SKIPPED, defaultSleep, NAV_TIMEOUT_MS, POLL_MS, SCROLL_SETTLE_MS, SETTLE_MS, type Params as P, type Result as R, type Sleep } from "./driver-common.js";
-import { errText } from "./errors.js";
+import { delay, MAX_SNAPSHOT_ELEMENTS, MAX_SNAPSHOT_TEXT, type PageSnapshot, type Screenshot, type Sleep } from "@browsertodo/shared";
+import { isTabLoaded } from "./chrome-tabs.js";
+import {
+  BACKGROUND_SHOT_SKIPPED,
+  PAGE_MARKS,
+  POLL_MS,
+  pollUntil,
+  SCREENSHOT_JPEG_QUALITY,
+  SCROLL_SETTLE_MS,
+  scrollDelta,
+  SETTLE_MS,
+  type Params as P,
+  type Result as R,
+} from "./driver-common.js";
 import { parseKeyCombo } from "./keys.js";
+import { caretToEndInPage, clickInPage, insertTextInPage, pressKeyInPage, viewportInPage } from "./page-input.js";
 import { snapshotPage } from "./page-snapshot.js";
 import { scrollProbeInPage, scrollReport, type PageResult, type ScrollProbe } from "./scroll-probe.js";
 
@@ -18,18 +30,6 @@ const FALLBACK_UPLOAD_ERROR =
   "or disable the other extension on this site and try again.";
 
 /**
- * True for the error Chrome gives when a tab contains a frame of another
- * extension (Streak in Gmail, password managers, ...). chrome.debugger then
- * refuses the whole tab: attach and every command fail, and an existing
- * session is detached ("target_closed") as soon as such a frame appears.
- */
-export function isDebuggerBlocked(err: unknown): boolean {
-  const msg = errText(err);
-  return /Cannot access a chrome-extension:\/\/ URL of different extension|debugger_access_denied/i.test(msg);
-}
-
-
-/**
  * The browser.* methods without chrome.debugger, for tabs where Chrome refuses
  * it: chrome.scripting in the top frame and chrome.tabs.captureVisibleTab.
  * Events are untrusted (isTrusted false), so some sites may ignore them, and
@@ -39,7 +39,7 @@ export class FallbackDriver {
   private readonly sleep: Sleep;
 
   constructor(opts: { sleep?: Sleep } = {}) {
-    this.sleep = opts.sleep ?? defaultSleep;
+    this.sleep = opts.sleep ?? delay;
   }
 
   async navigate(tabId: number, { url }: P<"browser.navigate">): Promise<R<"browser.navigate">> {
@@ -49,21 +49,16 @@ export class FallbackDriver {
 
   /** Waits until the tab finished loading, then returns its url and title. */
   async waitForLoad(tabId: number, url: string): Promise<R<"browser.navigate">> {
-    const deadline = Date.now() + NAV_TIMEOUT_MS;
     // tabs.update resolves before the old page starts unloading; give it a moment.
     await this.sleep(POLL_MS);
-    for (;;) {
-      const tab = await chrome.tabs.get(tabId);
-      if ((tab.status === "complete" && !tab.pendingUrl) || Date.now() >= deadline) break;
-      await this.sleep(POLL_MS);
-    }
+    await pollUntil(async () => isTabLoaded(await chrome.tabs.get(tabId)), this.sleep);
     await this.sleep(SETTLE_MS);
     const tab = await chrome.tabs.get(tabId);
     return { url: tab.url ?? url, title: tab.title ?? "" };
   }
 
   async readPage(tabId: number): Promise<PageSnapshot> {
-    const [res] = await chrome.scripting.executeScript({ target: { tabId }, func: snapshotPage, args: [MAX_SNAPSHOT_TEXT, MAX_SNAPSHOT_ELEMENTS] });
+    const [res] = await chrome.scripting.executeScript({ target: { tabId }, func: snapshotPage, args: [PAGE_MARKS, MAX_SNAPSHOT_TEXT, MAX_SNAPSHOT_ELEMENTS] });
     const snap = res?.result as PageSnapshot | undefined;
     if (!snap) throw new Error("Page script failed: no page snapshot (the page may be navigating); try again");
     return snap;
@@ -74,23 +69,24 @@ export class FallbackDriver {
     // captureVisibleTab only sees the visible tab; the tab is never brought to the front.
     const minimized = await chrome.windows.get(tab.windowId).then((w) => w.state === "minimized", () => false);
     if (!tab.active || minimized) throw new Error(BACKGROUND_SHOT_SKIPPED);
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 70 });
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: SCREENSHOT_JPEG_QUALITY });
     return { base64: dataUrl.replace(/^data:[^,]*,/, ""), mimeType: "image/jpeg" };
   }
 
   async click(tabId: number, { index }: P<"browser.click">): Promise<R<"browser.click">> {
-    await this.exec(tabId, clickInPage, [index]);
+    await this.exec(tabId, clickInPage, [PAGE_MARKS, index]);
     return { ok: true };
   }
 
   async type(tabId: number, { index, text }: P<"browser.type">): Promise<R<"browser.type">> {
-    await this.exec(tabId, clickInPage, [index]);
-    await this.exec(tabId, insertTextInPage, [index, text]);
+    await this.exec(tabId, clickInPage, [PAGE_MARKS, index]);
+    await this.exec(tabId, caretToEndInPage, [PAGE_MARKS, index]);
+    await this.exec(tabId, insertTextInPage, [PAGE_MARKS, index, text]);
     return { ok: true };
   }
 
   async paste(tabId: number, { text }: P<"browser.paste">): Promise<R<"browser.paste">> {
-    await this.exec(tabId, insertTextInPage, [null, text]);
+    await this.exec(tabId, insertTextInPage, [PAGE_MARKS, null, text]);
     return { ok: true };
   }
 
@@ -104,11 +100,8 @@ export class FallbackDriver {
   /** Scrolls like a wheel at the viewport center (or over element `index`) and reports what moved. */
   async scroll(tabId: number, { direction, amount = 1, index }: P<"browser.scroll">): Promise<R<"browser.scroll">> {
     const view = await this.exec(tabId, viewportInPage, []);
-    const dy = Math.round(amount * 0.8 * view.h);
-    const dx = Math.round(amount * 0.8 * view.w);
-    const top = direction === "down" ? dy : direction === "up" ? -dy : 0;
-    const left = direction === "right" ? dx : direction === "left" ? -dx : 0;
-    const r = (await this.exec(tabId, scrollProbeInPage, ["scroll", view.w / 2, view.h / 2, index ?? null, left, top])) as {
+    const { dx, dy } = scrollDelta(direction, amount, view);
+    const r = (await this.exec(tabId, scrollProbeInPage, [PAGE_MARKS, "scroll", view.w / 2, view.h / 2, index ?? null, dx, dy])) as {
       before: ScrollProbe;
       after: ScrollProbe;
     };
@@ -130,174 +123,4 @@ export class FallbackDriver {
     if (!out.ok) throw new Error(out.error);
     return out.value;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Page functions. They run in the page through chrome.scripting.executeScript,
-// which serializes them with Function.prototype.toString: keep them
-// self-contained (no imports, no module scope), plain ES2020.
-// ---------------------------------------------------------------------------
-
-export function clickInPage(index: number): PageResult<true> {
-  var el = document.querySelector('[data-browsertodo-index="' + Math.trunc(index) + '"]') as HTMLElement | null;
-  if (!el) return { ok: false, error: "element " + index + " not found; call read_page again" };
-  el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" as ScrollBehavior });
-  var r = el.getBoundingClientRect();
-  var x = r.left + r.width / 2;
-  var y = r.top + r.height / 2;
-  // Like a real click, hit the topmost element at that point when it is part of the target.
-  var hit = document.elementFromPoint(x, y) as HTMLElement | null;
-  var target: HTMLElement = hit && (hit === el || el.contains(hit)) ? hit : el;
-  var common = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: window, button: 0 };
-  var pointer = { pointerId: 1, pointerType: "mouse", isPrimary: true };
-  target.dispatchEvent(new PointerEvent("pointerover", Object.assign({}, common, pointer)));
-  target.dispatchEvent(new MouseEvent("mouseover", common));
-  target.dispatchEvent(new PointerEvent("pointerdown", Object.assign({ buttons: 1 }, common, pointer)));
-  var downOk = target.dispatchEvent(new MouseEvent("mousedown", Object.assign({ buttons: 1 }, common)));
-  // Untrusted mousedown does not move focus; do it like the browser would.
-  if (downOk) {
-    var focusable = target.closest('a[href],button,input,textarea,select,[tabindex],[contenteditable=""],[contenteditable="true"],[contenteditable="plaintext-only"]') as HTMLElement | null;
-    (focusable || el).focus({ preventScroll: true });
-  }
-  target.dispatchEvent(new PointerEvent("pointerup", Object.assign({ buttons: 0 }, common, pointer)));
-  target.dispatchEvent(new MouseEvent("mouseup", Object.assign({ buttons: 0 }, common)));
-  // A dispatched click runs activation behavior: links navigate, buttons submit, checkboxes toggle.
-  target.dispatchEvent(new MouseEvent("click", Object.assign({ buttons: 0, detail: 1 }, common)));
-  return { ok: true, value: true };
-}
-
-/**
- * Inserts text at the end of element `index`, or at the focus when index is
- * null. execCommand("insertText") fires beforeinput/input like typing and works
- * in inputs, textareas and rich editors; else the value is set directly.
- */
-export function insertTextInPage(index: number | null, text: string): PageResult<true> {
-  var el: HTMLElement | null;
-  if (index == null) {
-    el = document.activeElement as HTMLElement | null;
-    if (!el || el === document.body) return { ok: false, error: "nothing is focused to paste into; click a field first" };
-  } else {
-    el = document.querySelector('[data-browsertodo-index="' + Math.trunc(index) + '"]') as HTMLElement | null;
-    if (!el) return { ok: false, error: "element " + index + " not found; call read_page again" };
-  }
-  var isField = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
-  if (index != null) {
-    if (isField) {
-      el.focus();
-      try {
-        var n = (el as HTMLInputElement).value.length;
-        (el as HTMLInputElement).setSelectionRange(n, n);
-      } catch (e) {
-        /* some input types have no selection */
-      }
-    } else if (el.isContentEditable) {
-      if (!el.contains(document.activeElement)) el.focus();
-      var sel = getSelection();
-      // Keep a selection the agent made inside the editor; otherwise append at the end.
-      if (sel && !(sel.anchorNode && el.contains(sel.anchorNode) && !sel.isCollapsed)) {
-        var range = document.createRange();
-        range.selectNodeContents(el);
-        range.collapse(false);
-        sel.removeAllRanges();
-        sel.addRange(range);
-      }
-    } else {
-      el.focus();
-    }
-  }
-  var target = (index == null ? el : el.isContentEditable || isField ? el : (document.activeElement as HTMLElement | null)) || el;
-  var before = isField ? (target as HTMLInputElement).value : target.textContent;
-  var done = false;
-  try {
-    done = document.execCommand("insertText", false, text);
-  } catch (e) {
-    done = false;
-  }
-  var after = isField ? (target as HTMLInputElement).value : target.textContent;
-  if (done && after !== before) return { ok: true, value: true };
-  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
-    // Use the prototype setter so frameworks that track the value (React) see the change.
-    var proto = target instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
-    var setter = Object.getOwnPropertyDescriptor(proto, "value");
-    var next = target.value + text;
-    if (setter && setter.set) setter.set.call(target, next);
-    else target.value = next;
-    target.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
-    target.dispatchEvent(new Event("change", { bubbles: true }));
-    return { ok: true, value: true };
-  }
-  if (target.isContentEditable) {
-    target.appendChild(document.createTextNode(text));
-    target.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
-    return { ok: true, value: true };
-  }
-  return { ok: false, error: "the element does not accept text" };
-}
-
-interface PageKey {
-  key: string;
-  code: string;
-  keyCode: number;
-  text?: string | null;
-  alt: boolean;
-  ctrl: boolean;
-  meta: boolean;
-  shift: boolean;
-}
-
-/**
- * Dispatches keydown/keypress/keyup at the focus. Untrusted key events have no
- * default action, so the common ones are performed here when the page does not
- * cancel keydown: typing a character, Backspace/Delete, Enter (new line in
- * editors, form.requestSubmit() in a single-line input), Control/Meta+A.
- * Other defaults (Tab focus moves, arrows, shortcuts of the browser) do not happen.
- */
-export function pressKeyInPage(k: PageKey): PageResult<true> {
-  var target = (document.activeElement as HTMLElement | null) || document.body;
-  // Chrome may drop null arguments' fields; treat a missing text as no text.
-  var text = typeof k.text === "string" ? k.text : null;
-  var init = {
-    key: k.key,
-    code: k.code,
-    keyCode: k.keyCode,
-    which: k.keyCode,
-    altKey: k.alt,
-    ctrlKey: k.ctrl,
-    metaKey: k.meta,
-    shiftKey: k.shift,
-    bubbles: true,
-    cancelable: true,
-    composed: true,
-  };
-  var down = target.dispatchEvent(new KeyboardEvent("keydown", init));
-  if (down && text !== null) {
-    var charCode = k.key === "Enter" ? 13 : text.charCodeAt(0);
-    down = target.dispatchEvent(new KeyboardEvent("keypress", Object.assign({}, init, { keyCode: charCode, which: charCode, charCode: charCode })));
-  }
-  if (down) {
-    var editable = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable;
-    var shortcut = k.ctrl || k.meta || k.alt;
-    if (k.key === "Enter" && !shortcut) {
-      if (target instanceof HTMLInputElement) {
-        if (target.form) target.form.requestSubmit();
-      } else if (target instanceof HTMLTextAreaElement || target.isContentEditable) {
-        document.execCommand(target.isContentEditable ? "insertParagraph" : "insertText", false, "\n");
-      } else if (target instanceof HTMLAnchorElement || target instanceof HTMLButtonElement) {
-        target.click();
-      }
-    } else if ((k.ctrl || k.meta) && k.key.toLowerCase() === "a") {
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) target.select();
-      else document.execCommand("selectAll");
-    } else if (editable && !shortcut && (k.key === "Backspace" || k.key === "Delete")) {
-      document.execCommand(k.key === "Backspace" ? "delete" : "forwardDelete");
-    } else if (editable && !shortcut && text !== null) {
-      document.execCommand("insertText", false, text);
-    }
-  }
-  target.dispatchEvent(new KeyboardEvent("keyup", init));
-  return { ok: true, value: true };
-}
-
-export function viewportInPage(): PageResult<{ w: number; h: number }> {
-  return { ok: true, value: { w: window.innerWidth, h: window.innerHeight } };
 }

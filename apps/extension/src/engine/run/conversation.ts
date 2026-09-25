@@ -6,8 +6,9 @@
  * session, so the Activity view shows one thread.
  */
 import type { AgentTask, ExtensionSettings, SessionInfo, StampedAgentEvent, TaskRunResult } from "@browsertodo/shared";
+import { buildFollowUpMessage } from "@browsertodo/core";
 import { buildFollowUpInstructions, isContinuableOutcome } from "../../continue.js";
-import { SessionEndedError, type Brain } from "../brains.js";
+import { isContinuable, SessionEndedError, type Brain } from "../brains.js";
 import type { LocalStore } from "../local-store.js";
 import { mediaSources, type TurnJob } from "./jobs.js";
 import { runConfig, type ActiveSession, type Cleanup, type TurnRunner } from "./turn.js";
@@ -48,14 +49,19 @@ export async function runNextTurn(
   settings: ExtensionSettings,
   cleanups: Cleanup[],
 ): Promise<TaskRunResult> {
-  const { from, text } = job;
+  const { from } = job;
   const sessionId = from.sessionId;
   const tab = await turns.tabOf(sessionId);
+  // The conversation's tab may now show a page Chrome keeps extensions out of: the turn goes on in a tab next to it.
+  const restricted = tab === null ? null : await turns.restrictedPage(tab);
   if (tab === null) await active.slot.prepare({ mode: "own-tab" });
-  else await turns.follow(active, tab, await active.slot.prepare({ mode: "current-tab", tabId: tab }));
+  else await turns.follow(active, tab, await active.slot.prepare({ mode: "current-tab", tabId: tab }), restricted);
   if (active.forced) throw new Error(active.forced.reason);
-  const same = from.brain === brain.kind && !!brain.continue && brain.isOpen?.(sessionId) !== false;
-  if (same) {
+  // What the agent gets: the message (for an empty one: look at the page again), and what a restricted page means.
+  const text = buildFollowUpMessage({ text: job.text, ...(job.screen ? { screenHelp: true } : {}), ...(restricted ? { restrictedPage: restricted } : {}) });
+  // The brain echoes the message it got; the chat already shows the user's own words.
+  active.said.push(text);
+  if (from.brain === brain.kind && isContinuable(brain) && brain.isOpen?.(sessionId) !== false) {
     turns.emit(active, { type: "status", text: SAME_SESSION[brain.kind] ?? "Continuing the same agent session" });
     try {
       const run = turns.continue(active, brain, { text, config: runConfig(settings, false), settings });

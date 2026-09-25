@@ -2,21 +2,6 @@
 
 export const TAB_GROUP_TITLE = "browsertodo";
 
-/** URLs the debugger cannot attach to (browser pages, other extensions, the Web Store). */
-export function isControllableUrl(url: string | undefined): boolean {
-  if (!url) return false;
-  if (url === "about:blank") return true;
-  if (/^(chrome|chrome-extension|chrome-untrusted|edge|brave|opera|vivaldi|devtools|view-source|about|data|file):/i.test(url)) return false;
-  try {
-    const u = new URL(url);
-    if (u.hostname === "chromewebstore.google.com") return false;
-    if (u.hostname === "chrome.google.com" && u.pathname.startsWith("/webstore")) return false;
-    return u.protocol === "http:" || u.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Puts the tabs (all in one window) in the window's "browsertodo" tab group
  * (creating it if needed), like Claude's own "Claude" group. Best effort:
@@ -71,6 +56,16 @@ export async function createWindowTab(focused = true): Promise<number> {
   const tabId = win?.tabs?.[0]?.id;
   if (tabId === undefined) throw new Error("Could not open a browser window for the agent");
   return tabId;
+}
+
+/** The tab finished loading (nothing pending). */
+export function isTabLoaded(tab: Pick<chrome.tabs.Tab, "status" | "pendingUrl">): boolean {
+  return tab.status === "complete" && !tab.pendingUrl;
+}
+
+/** The address a tab shows, or the one it is loading ("" when neither is known). */
+export function tabUrl(tab: Pick<chrome.tabs.Tab, "url" | "pendingUrl">): string {
+  return tab.url || tab.pendingUrl || "";
 }
 
 export function mustId(tab: chrome.tabs.Tab | undefined): number {

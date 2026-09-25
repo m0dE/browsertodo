@@ -1,6 +1,6 @@
-// Bundles the extension into dist/: background.js, options.js, static files and icons.
+// Bundles the extension into dist/: background.js, options.js, sidepanel.js, the voice pages, static files and icons.
 import { build } from "esbuild";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
@@ -8,9 +8,12 @@ import { deflateSync } from "node:zlib";
 const root = dirname(fileURLToPath(import.meta.url));
 // Output to the repo root so Chrome's "Load unpacked" points at <repo>/dist.
 const dist = join(root, "..", "..", "dist");
+// Built in a staging folder and swapped in only when complete, so a failed
+// build never leaves the loaded extension half-written.
+const staging = `${dist}.building`;
 const iconDir = join(root, "static", "icons");
 
-rmSync(dist, { recursive: true, force: true });
+rmSync(staging, { recursive: true, force: true });
 mkdirSync(iconDir, { recursive: true });
 for (const size of [16, 48, 128]) {
   const file = join(iconDir, `icon${size}.png`);
@@ -47,10 +50,21 @@ const common = {
   logLevel: "info",
   define: { __BROWSERTODO_GOOGLE_CLIENT_ID__: JSON.stringify(config.googleClientId) },
 };
-await build({ ...common, entryPoints: [join(root, "src/background.ts")], outfile: join(dist, "background.js") });
-await build({ ...common, entryPoints: [join(root, "src/options/options.ts")], outfile: join(dist, "options.js") });
-await build({ ...common, entryPoints: [join(root, "src/sidepanel/sidepanel.ts")], outfile: join(dist, "sidepanel.js") });
-cpSync(join(root, "static"), dist, { recursive: true });
+await build({
+  ...common,
+  entryPoints: {
+    background: join(root, "src/background.ts"),
+    options: join(root, "src/options/options.ts"),
+    sidepanel: join(root, "src/sidepanel/sidepanel.ts"),
+    // Voice input: the microphone permission page and the PCM capture worklet.
+    "mic-permission": join(root, "src/voice/mic-permission.ts"),
+    "pcm-worklet": join(root, "src/voice/pcm-worklet.ts"),
+  },
+  outdir: staging,
+});
+cpSync(join(root, "static"), staging, { recursive: true });
+rmSync(dist, { recursive: true, force: true });
+renameSync(staging, dist);
 
 /** Solid rounded-ish square icon: indigo with a white check-box stripe. */
 function iconPng(size) {

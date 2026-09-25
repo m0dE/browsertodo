@@ -1,10 +1,12 @@
 /** Shared fakes for the Runner tests: a scripted brain, a harness around a Runner, agent slots. */
 import { afterEach, beforeEach, expect, vi } from "vitest";
 import { DEFAULT_SETTINGS, type AgentEvent, type ClaimResponse, type ExtensionSettings, type ResultInput, type TaskRunResult } from "@browsertodo/shared";
+import type { BrowserCaller } from "@browsertodo/core";
 import { installChromeFake, type ChromeFake } from "../chrome-fake.js";
-import type { AgentSlot, SlotPool } from "../../src/agent-slots.js";
+import { MAX_SLOTS, type AgentSlot, type SlotPool } from "../../src/agent-slots.js";
+import type { TabMode } from "../../src/agent-tab.js";
 import { SessionEndedError, type Brain, type BrainContinueOptions, type BrainRun, type BrainStartOptions } from "../../src/engine/brains.js";
-import { MemoryKvDb } from "../../src/engine/kv.js";
+import { MemoryKvDb } from "../memory-kv.js";
 import { LocalStore } from "../../src/engine/local-store.js";
 import type { MediaSource } from "../../src/engine/media-files.js";
 import { Runner, type RunnerDeps } from "../../src/engine/runner.js";
@@ -128,7 +130,28 @@ export interface Harness {
   uploads: string[];
   verify: ReturnType<typeof vi.fn>;
   noBrain: boolean;
-  prepared: Parameters<NonNullable<RunnerDeps["prepareTab"]>>[0][];
+  /** How the run's tab was picked, for each run (the one-slot harness). */
+  prepared: { mode?: TabMode; tabId?: number }[];
+  /** The one slot's browser calls (the API brain, post verification). */
+  browser: BrowserCaller;
+}
+
+/** The one-slot harness's agent tab. */
+export const AGENT_TAB = 7;
+
+/** One agent slot: one session runs at a time, in AGENT_TAB (or the tab it was started from). */
+function oneSlot(h: Harness): SlotPool {
+  const slot: AgentSlot = {
+    index: 0,
+    prepare: async (opts) => {
+      h.prepared.push(opts);
+      return opts.tabId ?? AGENT_TAB;
+    },
+    browser: h.browser,
+    isAgentTab: async (tabId) => tabId === AGENT_TAB,
+    screenshot: async () => ({ base64: btoa("JPG"), mimeType: "image/jpeg" }),
+  };
+  return { size: 1, take: () => slot, release: () => {} };
 }
 
 export function harness(overrides: Partial<ExtensionSettings> = {}): Harness {
@@ -153,6 +176,7 @@ export function harness(overrides: Partial<ExtensionSettings> = {}): Harness {
     verify: vi.fn(async () => ({ ok: true, detail: "found" })),
     noBrain: false,
     prepared: [],
+    browser: { call: async () => ({}) as never },
   } as unknown as Harness;
   let sid = 0;
   h.deps = {
@@ -188,10 +212,7 @@ export function harness(overrides: Partial<ExtensionSettings> = {}): Harness {
       verifyXPost: h.verify as never,
       classifyFailure: (reason: string) => (/limit|network|timeout/i.test(reason) ? "transient" : "permanent"),
     },
-    browser: { call: async () => ({}) as never },
-    prepareTab: async (opts) => void h.prepared.push(opts),
-    isAgentTab: async (tabId) => tabId === 7,
-    screenshot: async () => ({ base64: btoa("JPG"), mimeType: "image/jpeg" }),
+    slots: oneSlot(h),
     notify: (title, message) => void h.notifications.push({ title, message }),
     keepAlive: () => env.chrome.runtime.getPlatformInfo(),
     sleep: async (ms) => void h.sleeps.push(ms),
@@ -211,6 +232,7 @@ export async function runAll(h: Harness, trigger: "alarm" | "manual" = "manual")
 
 /** Agent slots for parallel runs: slot i's main tab is 100 + i. */
 export class FakePool implements SlotPool {
+  readonly size = MAX_SLOTS;
   readonly slots = new Map<number, AgentSlot>();
   readonly log: string[] = [];
   readonly owner = new Map<number, string>();
@@ -248,7 +270,6 @@ export function parallel(overrides: Partial<ExtensionSettings> = {}) {
   const h = harness({ maxParallelTasks: 2, ...overrides });
   const pool = new FakePool();
   h.deps.slots = pool;
-  delete h.deps.prepareTab;
   h.runner = new Runner(h.deps);
   const live = new Set<string>();
   const overlaps: string[][] = [];

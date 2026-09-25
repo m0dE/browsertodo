@@ -145,6 +145,12 @@ export function mcpToolName(name: ToolName): string {
   return `mcp__${MCP_SERVER_NAME}__${name}`;
 }
 
+/** A tool name without the MCP prefix Claude Code adds (mcpToolName); other names are returned as they are. */
+export function bareToolName(name: string): string {
+  const prefix = `mcp__${MCP_SERVER_NAME}__`;
+  return name.startsWith(prefix) ? name.slice(prefix.length) : name;
+}
+
 /** Result of a tool call as returned to Claude. */
 export interface ToolResult {
   text?: string;
@@ -168,11 +174,9 @@ export const INTERACTIVE_TOOL_NAMES: ToolName[] = TOOL_NAMES.filter((n) => !TASK
 /**
  * Tools offered to the model. act (batched steps) always replaces click and
  * type: steps that name an element index run directly; with Jev, steps may
- * instead describe the element in words. The jev flag is kept for callers.
+ * instead describe the element in words. interactive: the user's own Claude
+ * Code (INTERACTIVE_TOOL_NAMES, no task to end).
  */
-export function toolsFor(opts: { jev: boolean; interactive?: boolean }): ToolName[] {
-  return TOOL_NAMES.filter((n) => {
-    if (opts.interactive && TASK_END_TOOLS.includes(n)) return false;
-    return n !== "click" && n !== "type";
-  });
+export function toolsFor(opts: { interactive?: boolean } = {}): ToolName[] {
+  return (opts.interactive ? INTERACTIVE_TOOL_NAMES : TOOL_NAMES).filter((n) => n !== "click" && n !== "type");
 }

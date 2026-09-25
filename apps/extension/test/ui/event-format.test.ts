@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@browsertodo/shared";
-import { describeEvent, isNearBottom, shortUrl, toolArgsSummary, turnPicks } from "../../src/sidepanel/event-format.js";
+import { describeEvent, isNearBottom, turnPicks } from "../../src/sidepanel/event-format.js";
+import { shortUrl, toolArgsSummary } from "../../src/text.js";
 
 describe("toolArgsSummary", () => {
   it("summarizes the known tools", () => {

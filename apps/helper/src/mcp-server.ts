@@ -18,12 +18,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { INTERACTIVE_TOOL_NAMES, MCP_SERVER_NAME, toolArgsSchema, toolDescription, type ToolName } from "@browsertodo/shared";
+import { errorMessage, INTERACTIVE_TOOL_NAMES, MCP_SERVER_NAME, RPC_CLOSED, rpcErrorCode, toolArgsSchema, toolDescription, type ToolName } from "@browsertodo/shared";
 import { connectPipe, type PipeClient } from "./pipe-server.js";
-import { INTERACTIVE_TASK_ID, TOOL_CALL_TIMEOUT_MS, toMcpResult, toolsFromEnv } from "./mcp-tools.js";
+import { INTERACTIVE_TASK_ID, TOOL_CALL_TIMEOUT_MS, TOOL_LIST_TIMEOUT_MS, toMcpResult, toolsFromEnv } from "./mcp-tools.js";
 import { HELPER_VERSION, loadConfig } from "./config.js";
+import { ENV } from "./env-names.js";
 import { isPidAlive, readHelperFile } from "./helper-file.js";
-import { errorMessage } from "./logger.js";
 
 const NOT_RUNNING =
   "browsertodo helper is not running: open Chrome with the browsertodo extension (it starts the helper), then restart this MCP server.";
@@ -58,12 +58,12 @@ async function main(): Promise<void> {
     taskId = INTERACTIVE_TASK_ID;
     tools = [...INTERACTIVE_TOOL_NAMES];
   } else {
-    const p = process.env.BROWSERTODO_PIPE;
-    if (!p) fail("BROWSERTODO_PIPE is not set (use --attach to connect to the running helper)", 2);
+    const p = process.env[ENV.pipe];
+    if (!p) fail(`${ENV.pipe} is not set (use --attach to connect to the running helper)`, 2);
     pipePath = p;
-    taskId = process.env.BROWSERTODO_TASK || INTERACTIVE_TASK_ID;
-    tools = toolsFromEnv(process.env.BROWSERTODO_TOOLS);
-    jev = process.env.BROWSERTODO_JEV === "1";
+    taskId = process.env[ENV.task] || INTERACTIVE_TASK_ID;
+    tools = toolsFromEnv(process.env[ENV.tools]);
+    jev = process.env[ENV.jev] === "1";
   }
 
   let pipe: PipeClient;
@@ -73,13 +73,13 @@ async function main(): Promise<void> {
     fail(attach ? NOT_RUNNING : `cannot connect to ${pipePath}: ${errorMessage(e)}`);
   }
   if (attach) {
-    // Ask the helper which tools this session allows.
+    // Ask the helper which tools this session allows; a helper that does not answer cannot run them either.
     try {
-      const list = await pipe.peer.call("tool.list", { taskId }, { timeoutMs: 5000 });
+      const list = await pipe.peer.call("tool.list", { taskId }, { timeoutMs: TOOL_LIST_TIMEOUT_MS });
       if (list.names.length) tools = tools.filter((n) => list.names.includes(n));
       jev = list.jev === true;
-    } catch {
-      /* older helper: keep the full interactive list */
+    } catch (e) {
+      fail(`${NOT_RUNNING} (${errorMessage(e)})`);
     }
   }
 
@@ -90,8 +90,7 @@ async function main(): Promise<void> {
         const r = await pipe.peer.call("tool.call", { taskId, name, args: args ?? {} }, { timeoutMs: TOOL_CALL_TIMEOUT_MS });
         return toMcpResult(r);
       } catch (e) {
-        const msg = errorMessage(e);
-        return toMcpResult({ text: `${name} failed: ${/closed/i.test(msg) ? NOT_RUNNING : msg}`, isError: true });
+        return toMcpResult({ text: `${name} failed: ${rpcErrorCode(e) === RPC_CLOSED ? NOT_RUNNING : errorMessage(e)}`, isError: true });
       }
     });
   }

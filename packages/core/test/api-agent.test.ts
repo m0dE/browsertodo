@@ -1,57 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent, RunConfig } from "@browsertodo/shared";
 import { startApiAgentWith } from "../src/api-agent.js";
-import { ANTHROPIC_MESSAGES_URL } from "../src/anthropic.js";
+import { ENDED_WITHOUT_RESULT } from "../src/failures.js";
 import type { ApiAgentOptions, BrowserCaller, JevLike } from "../src/types.js";
 import { FakeX } from "./fake-x.js";
-import { CONFIG, collect, fakeJev, noSleep, smartJev } from "./helpers.js";
+import { CONFIG, collect, fakeJev, fakeMessagesServer, noSleep, smartJev, type FakeReplySource } from "./helpers.js";
 
 type Block = Record<string, any>;
-type Reply = { status?: number; body?: unknown; throws?: string } | ((req: any) => { status?: number; body?: unknown; throws?: string });
-
-/** A fake Anthropic server: plays replies in order and records every request. */
-function fakeAnthropic(replies: Reply[]) {
-  const requests: { url: string; headers: Record<string, string>; body: any }[] = [];
-  let i = 0;
-  const fetchImpl = (async (url: string, init?: RequestInit) => {
-    // Answer asynchronously, like a real server (and so reply functions can use the session).
-    await new Promise((r) => setTimeout(r, 0));
-    const body = JSON.parse(String(init?.body));
-    // Snapshot the request: the agent mutates its message list afterwards.
-    requests.push({ url: String(url), headers: init?.headers as Record<string, string>, body: structuredClone(body) });
-    const r0 = replies[Math.min(i++, replies.length - 1)]!;
-    const r = typeof r0 === "function" ? r0(body) : r0;
-    if (r.throws) throw new TypeError(r.throws);
-    const status = r.status ?? 200;
-    // Like the real API: a streaming request that succeeds gets server-sent events.
-    if (body.stream === true && status === 200) return new Response(toSse(r.body as any), { status, headers: { "content-type": "text/event-stream" } });
-    return new Response(JSON.stringify(r.body ?? {}), { status, headers: { "content-type": "application/json" } });
-  }) as unknown as typeof fetch;
-  return { fetchImpl, requests, get served() { return i; } };
-}
-
-/** A message as the Messages API streams it: text in small deltas, tool input in input_json_delta parts. */
-function sseEvents(m: { id: string; content: Block[]; stop_reason: string | null }): [string, unknown][] {
-  const out: [string, unknown][] = [["message_start", { type: "message_start", message: { ...m, content: [], stop_reason: null } }], ["ping", { type: "ping" }]];
-  m.content.forEach((b, index) => {
-    if (b.type === "text") {
-      out.push(["content_block_start", { type: "content_block_start", index, content_block: { type: "text", text: "" } }]);
-      for (const part of (b.text as string).match(/.{1,5}/gs) ?? []) out.push(["content_block_delta", { type: "content_block_delta", index, delta: { type: "text_delta", text: part } }]);
-    } else if (b.type === "tool_use") {
-      out.push(["content_block_start", { type: "content_block_start", index, content_block: { ...b, input: {} } }]);
-      const json = JSON.stringify(b.input ?? {});
-      const cut = Math.floor(json.length / 2);
-      for (const part of [json.slice(0, cut), json.slice(cut)]) out.push(["content_block_delta", { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: part } }]);
-    } else {
-      out.push(["content_block_start", { type: "content_block_start", index, content_block: b }]);
-    }
-    out.push(["content_block_stop", { type: "content_block_stop", index }]);
-  });
-  out.push(["message_delta", { type: "message_delta", delta: { stop_reason: m.stop_reason, stop_sequence: null }, usage: { output_tokens: 10 } }], ["message_stop", { type: "message_stop" }]);
-  return out;
-}
-
-const toSse = (m: any) => sseEvents(m).map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join("");
 
 let nextId = 1;
 const msg = (...content: Block[]) => ({
@@ -62,7 +17,7 @@ const text = (t: string): Block => ({ type: "text", text: t });
 
 function start(
   x: FakeX,
-  replies: Reply[],
+  replies: FakeReplySource[],
   over: {
     jev?: JevLike | null;
     config?: Partial<RunConfig>;
@@ -72,7 +27,7 @@ function start(
     browser?: BrowserCaller;
   } = {},
 ) {
-  const server = fakeAnthropic(replies);
+  const server = fakeMessagesServer(replies);
   const { events, onEvent } = collect();
   const opts: ApiAgentOptions = {
     sessionId: "S1",
@@ -107,7 +62,7 @@ describe("startApiAgent", () => {
     expect(x.posts).toHaveLength(1);
 
     const first = server.requests[0]!;
-    expect(first.url).toBe(ANTHROPIC_MESSAGES_URL);
+    expect(first.url).toBe("https://api.anthropic.com/v1/messages");
     expect(first.headers).toMatchObject({
       "x-api-key": "sk-test",
       "anthropic-version": "2023-06-01",
@@ -246,7 +201,7 @@ describe("startApiAgent", () => {
 
   it("ending without a task_* tool is a failure", async () => {
     const { session, events } = start(new FakeX(), [msg(text("All done!"))]);
-    expect(await session.done).toEqual({ outcome: "failed", reason: "agent ended without reporting a result" });
+    expect(await session.done).toEqual({ outcome: "failed", reason: ENDED_WITHOUT_RESULT });
     expect(events.at(-1)).toMatchObject({ type: "task_end", outcome: "failed" });
   });
 
@@ -285,7 +240,7 @@ describe("startApiAgent", () => {
     const x = new FakeX();
     const { session, server } = start(x, [msg(tool("read_page"))], { config: { maxToolCalls: 5 } });
     const r = await session.done;
-    expect(r).toEqual({ outcome: "failed", reason: "tool call limit exceeded (5 calls)" });
+    expect(r).toEqual({ outcome: "failed", reason: "Tool call limit exceeded (5 calls)" });
     expect(x.calls).toHaveLength(5);
     expect(lastUser(server.requests.at(-1)!).content[0].content[0].text).toMatch(/Tool call limit of 5 reached/);
   });
@@ -296,7 +251,7 @@ describe("startApiAgent", () => {
     const { session } = start(x, [msg(tool("read_page"))], { config: { maxTaskMinutes: 0.002, maxToolCalls: 500 }, browser: slow });
     // 0.002 min = 120 ms; the loop keeps reading the page until the timer fires.
     const r = await session.done;
-    expect(r).toEqual({ outcome: "failed", reason: "task time limit of 0.002 minutes reached" });
+    expect(r).toEqual({ outcome: "failed", reason: "Task time limit of 0.002 minutes reached" });
   });
 
   it("abort resolves done with the given outcome and stops the loop", async () => {

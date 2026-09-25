@@ -4,21 +4,20 @@
  * brain's events into the session, and the checks on the result (X post
  * verification, failure classification). Next turns: conversation.ts.
  */
-import { isXStatusUrl, type AgentEvent, type AgentTask, type ExtensionSettings, type RunConfig, type SessionInfo, type TaskRunResult } from "@browsertodo/shared";
+import { bareToolName, errorMessage, isXStatusUrl, type AgentEvent, type AgentTask, type ExtensionSettings, type RestrictedPage, type RunConfig, type SessionInfo, type TaskRunResult } from "@browsertodo/shared";
 import type { AgentSlot } from "../../agent-slots.js";
-import { errText } from "../../errors.js";
-import { SessionEndedError, type AbortOutcome, type Brain, type BrainRun, type CoreApi } from "../brains.js";
+import { SessionEndedError, type Brain, type BrainRun, type ContinuableBrain, type CoreApi } from "../brains.js";
 import type { LocalStore } from "../local-store.js";
 import type { MaterializedMedia, MediaSource } from "../media-files.js";
 import type { SessionStore } from "../sessions.js";
 import type { TabChatsLike } from "../../tab-chats.js";
+import { isRestrictedUrl, RESTRICTED_STATUS } from "../../restricted.js";
+import type { ForcedStop } from "./active.js";
+import { ABORT_GRACE_MS, safetyTimeoutMinutes } from "./deadline.js";
 import { mediaSources, type FirstJob } from "./jobs.js";
 
 /** Said in the thread when a conversation's tab could not be used and it moved to a new one. */
 export const MOVED_TAB_STATUS = "That tab cannot be controlled (a browser page) or another run is using it: working in a new tab next to it";
-
-/** Extra wait after aborting a stuck brain before giving up on it. */
-const ABORT_GRACE_MS = 30_000;
 
 /** A session running right now. */
 export interface ActiveSession {
@@ -26,7 +25,8 @@ export interface ActiveSession {
   /** The agent slot (tab) the session acts in. */
   slot: AgentSlot;
   run: BrainRun | null;
-  forced: { outcome: AbortOutcome; reason: string } | null;
+  /** Set when the runner stopped the session (Stop, a pause URL, ...): the outcome it ends with. */
+  forced: ForcedStop | null;
   /** Texts the user typed, to drop the brain's echo of them. */
   said: string[];
   /** Texts the agent typed or pasted into the page; the longest is the post body to verify. */
@@ -56,7 +56,7 @@ export async function runCleanups(cleanups: Cleanup[]): Promise<void> {
 export function typedTextsOf(e: AgentEvent): string[] {
   if (e.type !== "tool_call") return [];
   const args = (e.args ?? {}) as { text?: unknown; steps?: { text?: unknown }[] };
-  const name = e.name.replace(/^mcp__browsertodo__/, "");
+  const name = bareToolName(e.name);
   if ((name === "type" || name === "paste") && typeof args.text === "string") return [args.text];
   if (name === "act" && Array.isArray(args.steps)) {
     return args.steps.map((s) => s?.text).filter((t): t is string => typeof t === "string" && t.trim().length > 0);
@@ -91,6 +91,11 @@ export interface TurnDeps {
   localStore: LocalStore;
   media: { materialize(sessionId: string, sources: MediaSource[]): Promise<MaterializedMedia> };
   core: Pick<CoreApi, "verifyXPost" | "classifyFailure">;
+  /**
+   * The address and title of a browser tab (no tabId: the tab the user is
+   * looking at), from chrome.tabs, which works on every page. Absent: not known.
+   */
+  pageOf?(tabId?: number): Promise<{ url: string; title: string } | null>;
   log(message: string): void;
 }
 
@@ -118,18 +123,23 @@ export class TurnRunner {
   ): Promise<TaskRunResult> {
     const adhoc = job.source === "adhoc";
     const origin = adhoc ? job.input.tabId : undefined;
+    // The user's tab may be a page Chrome keeps extensions out of: the run still starts, in a tab next to it.
+    const restricted = adhoc ? await this.restrictedPage(origin) : null;
     if (origin === undefined) {
       await active.slot.prepare({ mode: adhoc ? "current-tab" : "own-tab" });
+      if (restricted) this.emit(active, { type: "status", text: RESTRICTED_STATUS });
     } else {
       // Not brought to the front: the user may have moved on to another tab already.
-      await this.follow(active, origin, await active.slot.prepare({ mode: "current-tab", tabId: origin }));
+      await this.follow(active, origin, await active.slot.prepare({ mode: "current-tab", tabId: origin }), restricted);
     }
+    // The agent is told about the page it cannot see (buildTaskPrompt).
+    const task: AgentTask = restricted ? { ...opened.task, restrictedPage: restricted } : opened.task;
     const sources = await mediaSources(job, this.deps.localStore);
     if (sources.length) this.emit(active, { type: "status", text: `Preparing ${sources.length} file(s)` });
     const mediaPaths = await this.materialize(active, sources, cleanups);
     const config = runConfig(settings, opened.isRetry);
     if (active.forced) throw new Error(active.forced.reason);
-    const run = this.start(active, brain, { task: opened.task, mediaPaths, config, settings });
+    const run = this.start(active, brain, { task, mediaPaths, config, settings });
     return this.drive(active, run, settings, cleanups);
   }
 
@@ -138,11 +148,31 @@ export class TurnRunner {
     return this.deps.tabChats ? this.deps.tabChats.tabOf(sessionId).catch(() => null) : null;
   }
 
-  /** The conversation's run went to another tab than its own (e.g. its tab shows a chrome:// page): it now belongs there. */
-  async follow(active: ActiveSession, origin: number, picked: number | void): Promise<void> {
-    if (typeof picked !== "number" || picked === origin || !this.deps.tabChats) return;
-    this.emit(active, { type: "status", text: MOVED_TAB_STATUS });
-    await this.deps.tabChats.bind(picked, active.session.sessionId).catch((err: unknown) => this.deps.log(`binding the chat to its new tab failed: ${errText(err)}`));
+  /**
+   * The user's tab (no tabId: the one they are looking at) when it is a page
+   * Chrome does not let extensions see or control, else null.
+   */
+  async restrictedPage(tabId?: number): Promise<RestrictedPage | null> {
+    const page = await this.deps.pageOf?.(tabId).catch(() => null);
+    return page && isRestrictedUrl(page.url) ? { url: page.url, title: page.title } : null;
+  }
+
+  /**
+   * The conversation's run went to another tab than its own (e.g. its tab
+   * shows a chrome:// page): it now belongs there. restricted: the reason was
+   * a page Chrome keeps extensions out of (said in a quiet line).
+   */
+  async follow(active: ActiveSession, origin: number, picked: number, restricted: RestrictedPage | null = null): Promise<void> {
+    if (picked === origin) return;
+    if (restricted) this.emit(active, { type: "status", text: RESTRICTED_STATUS });
+    if (!this.deps.tabChats) return;
+    if (!restricted) this.emit(active, { type: "status", text: MOVED_TAB_STATUS });
+    await this.bindChat(picked, active.session.sessionId);
+  }
+
+  /** The conversation now belongs to this browser tab (the side panel shows it there). A failure is logged, not thrown. */
+  async bindChat(tabId: number, sessionId: string): Promise<void> {
+    await this.deps.tabChats?.bind(tabId, sessionId).catch((err: unknown) => this.deps.log(`binding the chat to tab ${tabId} failed: ${errorMessage(err)}`));
   }
 
   /** Writes the files to disk for the brain; they are deleted with the cleanups. */
@@ -163,8 +193,8 @@ export class TurnRunner {
   }
 
   /** The next turn in the conversation's own agent session (the brain has continue()). */
-  continue(active: ActiveSession, brain: Brain, opts: { text: string; config: RunConfig; settings: ExtensionSettings }): BrainRun {
-    return brain.continue!({
+  continue(active: ActiveSession, brain: ContinuableBrain, opts: { text: string; config: RunConfig; settings: ExtensionSettings }): BrainRun {
+    return brain.continue({
       sessionId: active.session.sessionId,
       ...opts,
       browser: active.slot.browser,
@@ -179,7 +209,7 @@ export class TurnRunner {
    */
   async drive(active: ActiveSession, run: BrainRun, settings: ExtensionSettings, cleanups: Cleanup[], throwEnded = false): Promise<TaskRunResult> {
     active.run = run;
-    const forced = active.forced as ActiveSession["forced"];
+    const forced = active.forced;
     if (forced) run.abort(forced.reason, forced.outcome);
     try {
       return await withSafetyTimer(run, settings, cleanups, throwEnded);
@@ -201,7 +231,7 @@ export class TurnRunner {
         ok = v.ok;
         detail = v.detail;
       } catch (err) {
-        detail = errText(err);
+        detail = errorMessage(err);
       }
       if (!ok) {
         this.emit(active, { type: "status", text: `Post not verified: ${detail}` });
@@ -214,7 +244,7 @@ export class TurnRunner {
       try {
         kind = this.deps.core.classifyFailure(result.reason);
       } catch (err) {
-        this.deps.log(`classifyFailure failed: ${errText(err)}`);
+        this.deps.log(`classifyFailure failed: ${errorMessage(err)}`);
       }
       if (kind === "transient") return { ...result, outcome: "retry" };
     }
@@ -237,9 +267,9 @@ export class TurnRunner {
 }
 
 function withSafetyTimer(run: BrainRun, settings: ExtensionSettings, cleanups: Cleanup[], throwEnded: boolean): Promise<TaskRunResult> {
-  const minutes = settings.maxTaskMinutes + 2;
+  const minutes = safetyTimeoutMinutes(settings.maxTaskMinutes);
   const safety = new Promise<TaskRunResult>((resolve) => {
-    const reason = `no result after ${minutes} minutes`;
+    const reason = `No result after ${minutes} minutes`;
     const t1 = setTimeout(() => {
       run.abort(reason, "failed");
       const t2 = setTimeout(() => resolve({ outcome: "failed", reason }), ABORT_GRACE_MS);
@@ -249,7 +279,7 @@ function withSafetyTimer(run: BrainRun, settings: ExtensionSettings, cleanups: C
   });
   const done = run.done.catch((err: unknown): TaskRunResult => {
     if (throwEnded && err instanceof SessionEndedError) throw err;
-    return { outcome: "failed", reason: errText(err) };
+    return { outcome: "failed", reason: errorMessage(err) };
   });
   return Promise.race([done, safety]);
 }

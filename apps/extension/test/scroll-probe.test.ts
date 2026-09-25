@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { PAGE_MARKS } from "../src/driver-common.js";
 import { scrollProbeInPage, scrollReport, type ScrollEntry, type ScrollProbe } from "../src/scroll-probe.js";
 
 /** Just enough DOM for scrollProbeInPage: elements with scroll boxes and overflow styles. */
@@ -66,7 +67,7 @@ afterEach(() => {
 
 type Both = { before: ScrollProbe; after: ScrollProbe };
 const run = (dy: number, index: number | null = null) => {
-  const r = scrollProbeInPage("scroll", 50, 400, index, 0, dy);
+  const r = scrollProbeInPage(PAGE_MARKS, "scroll", 50, 400, index, 0, dy);
   if (!r.ok) throw new Error(r.error);
   return r.value as Both;
 };
@@ -127,9 +128,9 @@ describe("scrollProbeInPage + scrollReport (fallback path)", () => {
   it("measure then read (debugger path) sees what a wheel moved", () => {
     const inner = new FakeEl("DIV", 2000, 500, { overflowX: "hidden", overflowY: "scroll" });
     page({ pageHeight: 5400, inner });
-    const m = scrollProbeInPage("measure", 50, 400, null, 0, 0);
+    const m = scrollProbeInPage(PAGE_MARKS, "measure", 50, 400, null, 0, 0);
     inner.scrollTop = 300; // the wheel
-    const r = scrollProbeInPage("read", 0, 0, null, 0, 0);
+    const r = scrollProbeInPage(PAGE_MARKS, "read", 0, 0, null, 0, 0);
     if (!m.ok || !r.ok) throw new Error("probe failed");
     expect(scrollReport("down", m.value as ScrollProbe, r.value as ScrollProbe)).toEqual({ moved: 300, target: "container", position: 300, size: 2000, view: 500 });
   });

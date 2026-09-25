@@ -1,10 +1,12 @@
-import type { AgentTabInfo, PageSnapshot, Screenshot } from "@browsertodo/shared";
+import { delay, type AgentTabInfo, type PageSnapshot, type Screenshot, type Sleep } from "@browsertodo/shared";
 import type { AgentTab } from "./agent-tab.js";
 import type { Cdp } from "./cdp.js";
 import { CdpActions } from "./cdp-actions.js";
-import { BACKGROUND_SHOT_SKIPPED, defaultSleep, NAV_TIMEOUT_MS, OPENABLE_URL, POLL_MS, type Params as P, type Result as R, type Sleep } from "./driver-common.js";
-import { FALLBACK_NOTE, FallbackDriver, isDebuggerBlocked } from "./fallback-driver.js";
+import { isTabLoaded, tabUrl } from "./chrome-tabs.js";
+import { assertOpenable, BACKGROUND_SHOT_SKIPPED, NAV_TIMEOUT_MS, pollUntil, type Params as P, type Result as R } from "./driver-common.js";
+import { FALLBACK_NOTE, FallbackDriver } from "./fallback-driver.js";
 import { keyEvents } from "./keys.js";
+import { isDebuggerBlocked, isRestrictedError, restrictedToolError } from "./restricted.js";
 
 /** A result that may carry FALLBACK_NOTE, once, for the caller to show. */
 export type WithNote<T> = T & { note?: string };
@@ -54,7 +56,7 @@ export class Driver {
     private readonly agent: AgentTab,
     opts: { sleep?: Sleep; fallback?: FallbackDriver; knownTabs?: () => Promise<number[]> } = {},
   ) {
-    this.sleep = opts.sleep ?? defaultSleep;
+    this.sleep = opts.sleep ?? delay;
     this.viaCdp = new CdpActions(cdp, this.sleep);
     this.fallback = opts.fallback ?? new FallbackDriver({ sleep: this.sleep });
     this.knownTabs = opts.knownTabs ?? (() => this.agent.tabIds());
@@ -78,8 +80,8 @@ export class Driver {
     return tabId;
   }
 
-  navigate({ url }: P<"browser.navigate">): Promise<WithNote<R<"browser.navigate">>> {
-    if (!OPENABLE_URL.test(url)) return Promise.reject(new Error(`Only http(s) URLs can be opened, got "${url}"`));
+  async navigate({ url }: P<"browser.navigate">): Promise<WithNote<R<"browser.navigate">>> {
+    assertOpenable(url);
     let started = false;
     return this.use(
       (tabId) => this.viaCdp.navigate(tabId, url, () => (started = true)),
@@ -170,7 +172,7 @@ export class Driver {
   async currentUrl(): Promise<R<"browser.currentUrl">> {
     const tabId = await this.agent.ensureTab();
     const tab = await chrome.tabs.get(tabId);
-    return { url: tab.url ?? tab.pendingUrl ?? "" };
+    return { url: tabUrl(tab) };
   }
 
   /**
@@ -179,8 +181,7 @@ export class Driver {
    * with `error`. Reading them later does not need them to be active.
    */
   async openTabs({ urls, background }: P<"browser.openTabs">): Promise<R<"browser.openTabs">> {
-    const bad = urls.find((u) => !OPENABLE_URL.test(u));
-    if (bad !== undefined) throw new Error(`Only http(s) URLs can be opened, got "${bad}"`);
+    urls.forEach(assertOpenable);
     const created = await this.agent.open(urls, { current: background === false });
     const current = await this.agent.tabId();
     const tabs = await Promise.all(
@@ -196,8 +197,13 @@ export class Driver {
 
   /** Makes a tab current and attaches to it. The browser's active tab does not change. */
   async switchTab({ tab }: P<"browser.switchTab">): Promise<R<"browser.switchTab">> {
-    await this.agent.setCurrent(tab);
-    await this.ready();
+    const tabId = await this.agent.setCurrent(tab);
+    try {
+      await this.ready();
+    } catch (err) {
+      if (!isRestrictedError(err)) throw err;
+      throw new Error(restrictedToolError(await chrome.tabs.get(tabId).then((t) => t.url, () => undefined)));
+    }
     const info = (await this.listTabs()).tabs.find((t) => t.current);
     if (!info) throw new Error(`tab ${tab} was closed`);
     return info;
@@ -208,7 +214,7 @@ export class Driver {
     const infos = await Promise.all(
       tabs.map(async (t): Promise<AgentTabInfo | null> => {
         const tab = await chrome.tabs.get(t.tabId).catch(() => null);
-        return tab ? { id: t.id, url: tab.url || tab.pendingUrl || "", title: tab.title ?? "", current: t.current } : null;
+        return tab ? { id: t.id, url: tabUrl(tab), title: tab.title ?? "", current: t.current } : null;
       }),
     );
     return { tabs: infos.filter((t): t is AgentTabInfo => t !== null) };
@@ -238,24 +244,31 @@ export class Driver {
     viaFallback: (tabId: number) => Promise<T>,
     target?: number,
   ): Promise<WithNote<T>> {
-    let tabId: number;
-    if (target === undefined) {
-      tabId = await this.ready();
-    } else {
-      tabId = target;
-      await this.attachOrFallback(tabId, false);
-    }
-    if (!this.fallbackTabs.has(tabId)) {
-      try {
-        return await viaCdp(tabId);
-      } catch (err) {
-        if (!isDebuggerBlocked(err)) throw err;
-        this.enterFallback(tabId);
+    let tabId: number | undefined = target;
+    try {
+      if (tabId === undefined) {
+        tabId = await this.ready();
+      } else {
+        await this.attachOrFallback(tabId, false);
       }
+      if (!this.fallbackTabs.has(tabId)) {
+        try {
+          return await viaCdp(tabId);
+        } catch (err) {
+          if (!isDebuggerBlocked(err)) throw err;
+          this.enterFallback(tabId);
+        }
+      }
+      const result: WithNote<T> = await viaFallback(tabId);
+      if (this.pendingNotes.delete(tabId)) result.note = FALLBACK_NOTE;
+      return result;
+    } catch (err) {
+      // A page Chrome keeps extensions out of (Web Store, chrome://): one plain sentence, not Chrome's raw error.
+      if (!isRestrictedError(err)) throw err;
+      const id = tabId ?? (await this.agent.tabId());
+      const url = id === null ? undefined : await chrome.tabs.get(id).then(tabUrl, () => undefined);
+      throw new Error(restrictedToolError(url));
     }
-    const result: WithNote<T> = await viaFallback(tabId);
-    if (this.pendingNotes.delete(tabId)) result.note = FALLBACK_NOTE;
-    return result;
   }
 
   /** Attaches the debugger to the tab (current: and makes it cdp's current tab), or marks the tab for fallback. */
@@ -308,17 +321,15 @@ export class Driver {
 
   /** Waits until a new tab finished loading; `error` when it did not within NAV_TIMEOUT_MS. */
   private async waitForTab(tabId: number): Promise<{ url: string; title: string; error?: string }> {
-    const deadline = Date.now() + NAV_TIMEOUT_MS;
-    for (;;) {
-      const tab = await chrome.tabs.get(tabId).catch(() => null);
-      if (!tab) return { url: "", title: "", error: "the tab was closed while loading" };
-      const done = tab.status === "complete" && !tab.pendingUrl;
-      if (done || Date.now() >= deadline) {
-        const r: { url: string; title: string; error?: string } = { url: tab.url || tab.pendingUrl || "", title: tab.title ?? "" };
-        if (!done) r.error = `still loading after ${NAV_TIMEOUT_MS / 1000} s`;
-        return r;
-      }
-      await this.sleep(POLL_MS);
-    }
+    const read = () => chrome.tabs.get(tabId).catch(() => null);
+    const loaded = await pollUntil(async () => {
+      const tab = await read();
+      return !tab || isTabLoaded(tab);
+    }, this.sleep);
+    const tab = await read();
+    if (!tab) return { url: "", title: "", error: "the tab was closed while loading" };
+    const r: { url: string; title: string; error?: string } = { url: tabUrl(tab), title: tab.title ?? "" };
+    if (!loaded) r.error = `still loading after ${NAV_TIMEOUT_MS / 1000} s`;
+    return r;
   }
 }

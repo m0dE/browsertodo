@@ -3,25 +3,40 @@
  * browser (the local store, used when signed out). Both answer with the
  * same row shape, so the tab's UI does not change.
  */
-import type { LocalTask, RepeatRule, Task } from "@browsertodo/shared";
-import type { LocalMediaInfo, UiMediaUpload } from "../ui-protocol.js";
+import type { CreateTaskInput, LocalTask, RepeatRule, Task } from "@browsertodo/shared";
+import type { LocalMediaInfo, TaskPatch } from "../ui-protocol.js";
 import { uploadToBlob, type LocalStore, type NewLocalTask } from "../engine/local-store.js";
 import type { AccountApi } from "./account-api.js";
 
 export type TodoRow = LocalTask & { media: LocalMediaInfo[] };
 
-export interface TodoPatch {
-  instructions?: string;
-  account?: string | null;
-  notBefore?: string | null;
-  repeat?: RepeatRule | null;
+/**
+ * A task for the account from a local task's fields (a new one, or one
+ * moving in): its files are uploaded first; a repeat runs in timeZone.
+ */
+export async function accountTaskInput(
+  api: Pick<AccountApi, "uploadMedia">,
+  t: { instructions: string; account?: string | null; notBefore?: string | null; repeat?: RepeatRule | null },
+  files: { name: string; blob: Blob }[],
+  timeZone: string,
+): Promise<CreateTaskInput> {
+  const mediaIds: string[] = [];
+  for (const f of files) mediaIds.push((await api.uploadMedia(f.blob, f.name)).id);
+  const account = t.account?.trim();
+  return {
+    instructions: t.instructions,
+    ...(account ? { account } : {}),
+    ...(t.notBefore ? { notBefore: t.notBefore } : {}),
+    ...(mediaIds.length ? { mediaIds } : {}),
+    ...(t.repeat?.dailyAt.length ? { repeat: { dailyAt: t.repeat.dailyAt }, tz: timeZone } : {}),
+  };
 }
 
 export interface TodoSource {
   readonly kind: "local" | "account";
   list(): Promise<TodoRow[]>;
   add(input: NewLocalTask): Promise<LocalTask>;
-  update(id: string, patch: TodoPatch): Promise<LocalTask>;
+  update(id: string, patch: TaskPatch): Promise<LocalTask>;
   delete(id: string): Promise<boolean>;
   retry(id: string): Promise<LocalTask>;
   cancel(id: string): Promise<LocalTask>;
@@ -55,19 +70,13 @@ export class AccountTodo implements TodoSource {
   }
 
   async add(input: NewLocalTask): Promise<LocalTask> {
-    const mediaIds = await this.upload(input.media ?? []);
-    const task = await this.api.createTask({
-      instructions: input.instructions,
-      ...(input.account?.trim() ? { account: input.account.trim() } : {}),
-      ...(input.notBefore ? { notBefore: input.notBefore } : {}),
-      ...(mediaIds.length ? { mediaIds } : {}),
-      ...(input.repeat?.dailyAt.length ? { repeat: input.repeat, tz: this.timeZone } : {}),
-    });
+    const files = (input.media ?? []).map((m) => ({ name: m.name, blob: uploadToBlob(m) }));
+    const task = await this.api.createTask(await accountTaskInput(this.api, input, files, this.timeZone));
     this.onChange();
     return asLocal(task);
   }
 
-  async update(id: string, patch: TodoPatch): Promise<LocalTask> {
+  async update(id: string, patch: TaskPatch): Promise<LocalTask> {
     const body: Record<string, unknown> = {};
     if (patch.instructions !== undefined) body.instructions = patch.instructions;
     // null (or an empty account) clears it on the server.
@@ -77,7 +86,6 @@ export class AccountTodo implements TodoSource {
       body.repeat = patch.repeat;
       if (patch.repeat) body.tz = this.timeZone;
     }
-    for (const k of Object.keys(body)) if (body[k] === undefined) delete body[k];
     const task = await this.api.updateTask(id, body);
     this.onChange();
     return asLocal(task);
@@ -100,12 +108,6 @@ export class AccountTodo implements TodoSource {
     this.onChange();
     return asLocal(task);
   }
-
-  private async upload(files: UiMediaUpload[]): Promise<string[]> {
-    const ids: string[] = [];
-    for (const f of files) ids.push((await this.api.uploadMedia(uploadToBlob(f), f.name)).id);
-    return ids;
-  }
 }
 
 /** This browser's tasks (signed out). */
@@ -122,7 +124,7 @@ export class LocalTodo implements TodoSource {
     return this.store.add(input);
   }
 
-  update(id: string, patch: TodoPatch): Promise<LocalTask> {
+  update(id: string, patch: TaskPatch): Promise<LocalTask> {
     return this.store.update(id, patch);
   }
 

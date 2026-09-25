@@ -3,12 +3,25 @@
  * one tab. Driver decides which tab, and when a tab needs FallbackDriver
  * instead (errors that isDebuggerBlocked() recognizes pass through).
  */
-import type { PageSnapshot, Screenshot } from "@browsertodo/shared";
+import { type Sleep, type PageSnapshot, type Screenshot } from "@browsertodo/shared";
 import type { Cdp } from "./cdp.js";
-import { NAV_TIMEOUT_MS, notFound, POLL_MS, SCROLL_SETTLE_MS, SETTLE_MS, type Params as P, type Result as R, type Sleep } from "./driver-common.js";
-import { isDebuggerBlocked } from "./fallback-driver.js";
+import {
+  indexSelector,
+  notFound,
+  PAGE_MARKS,
+  POLL_MS,
+  pollUntil,
+  SCREENSHOT_JPEG_QUALITY,
+  SCROLL_SETTLE_MS,
+  scrollDelta,
+  SETTLE_MS,
+  type Params as P,
+  type Result as R,
+} from "./driver-common.js";
 import type { keyEvents } from "./keys.js";
-import { indexSelector, snapshotExpression } from "./page-snapshot.js";
+import { caretToEndInPage } from "./page-input.js";
+import { snapshotExpression } from "./page-snapshot.js";
+import { isDebuggerBlocked } from "./restricted.js";
 import { sameProbe, scrollProbeExpression, scrollReport, type PageResult, type ScrollProbe } from "./scroll-probe.js";
 
 /** Extra readings after a wheel while the position still changes (smooth scrolling). */
@@ -30,15 +43,12 @@ export class CdpActions {
     const nav = await this.send<{ errorText?: string }>(tabId, "Page.navigate", { url });
     if (nav.errorText) throw new Error(`Navigation to ${url} failed: ${nav.errorText}`);
     onStarted();
-    const deadline = Date.now() + NAV_TIMEOUT_MS;
-    for (;;) {
-      const state = await this.evaluate<string>(tabId, "document.readyState").catch((err: unknown) => {
+    const readyState = () =>
+      this.evaluate<string>(tabId, "document.readyState").catch((err: unknown) => {
         if (isDebuggerBlocked(err)) throw err;
         return "loading";
       });
-      if (state === "complete" || Date.now() >= deadline) break;
-      await this.sleep(POLL_MS);
-    }
+    await pollUntil(async () => (await readyState()) === "complete", this.sleep);
     await this.sleep(SETTLE_MS);
     return this.evaluate<{ url: string; title: string }>(tabId, "({ url: location.href, title: document.title })");
   }
@@ -48,7 +58,7 @@ export class CdpActions {
   }
 
   async screenshot(tabId: number): Promise<Screenshot> {
-    const shot = await this.send<{ data: string }>(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 70 });
+    const shot = await this.send<{ data: string }>(tabId, "Page.captureScreenshot", { format: "jpeg", quality: SCREENSHOT_JPEG_QUALITY });
     return { base64: shot.data, mimeType: "image/jpeg" };
   }
 
@@ -62,17 +72,8 @@ export class CdpActions {
 
   async type(tabId: number, { index, text }: P<"browser.type">): Promise<R<"browser.type">> {
     await this.click(tabId, index);
-    // Put the caret at the end so text is appended rather than inserted mid-way.
-    await this.evaluate(
-      tabId,
-      `(() => { const el = document.querySelector(${JSON.stringify(indexSelector(index))}); if (!el) return false;
-        if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-          el.focus(); try { const n = el.value.length; el.setSelectionRange(n, n); } catch (e) {} return true; }
-        if (el.isContentEditable && el.contains(document.activeElement)) {
-          const sel = getSelection(); if (sel && !(sel.anchorNode && el.contains(sel.anchorNode) && !sel.isCollapsed)) {
-            const r = document.createRange(); r.selectNodeContents(el); r.collapse(false); sel.removeAllRanges(); sel.addRange(r); } }
-        return true; })()`,
-    ).catch((err: unknown) => {
+    // Text is appended rather than inserted mid-way (best effort: the click already focused it).
+    await this.evaluate(tabId, `(${caretToEndInPage.toString()})(${JSON.stringify(PAGE_MARKS)}, ${Math.trunc(index)})`).catch((err: unknown) => {
       if (isDebuggerBlocked(err)) throw err;
       return undefined;
     });
@@ -94,10 +95,7 @@ export class CdpActions {
   async scroll(tabId: number, { direction, amount = 1, index }: P<"browser.scroll">): Promise<R<"browser.scroll">> {
     const view = await this.evaluate<{ w: number; h: number }>(tabId, "({ w: window.innerWidth, h: window.innerHeight })");
     const at = index === undefined ? { x: view.w / 2, y: view.h / 2 } : await this.centerOf(tabId, index);
-    const dy = Math.round(amount * 0.8 * view.h);
-    const dx = Math.round(amount * 0.8 * view.w);
-    const deltaY = direction === "down" ? dy : direction === "up" ? -dy : 0;
-    const deltaX = direction === "right" ? dx : direction === "left" ? -dx : 0;
+    const { dx: deltaX, dy: deltaY } = scrollDelta(direction, amount, view);
     // What could move under the wheel, measured before and after (never fails the scroll itself).
     const probe = (mode: "measure" | "read") =>
       this.evaluate<PageResult<ScrollProbe>>(tabId, scrollProbeExpression(mode, at.x, at.y, index ?? null)).then(

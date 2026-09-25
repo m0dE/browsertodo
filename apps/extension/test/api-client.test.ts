@@ -1,19 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
-import { ApiClient, ApiRequestError } from "../src/api-client.js";
+import { describe, expect, it } from "vitest";
+import { ApiClient } from "../src/api-client.js";
+import { ApiRequestError } from "../src/http-client.js";
+import { fakeFetch, jsonResponse as json } from "./fake-fetch.js";
 import { claimFixture } from "./fixtures.js";
-
-function fakeFetch(handler: (url: string, init: RequestInit) => Response | Promise<Response>) {
-  const calls: { url: string; init: RequestInit }[] = [];
-  const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    calls.push({ url, init: init ?? {} });
-    return handler(url, init ?? {});
-  });
-  return { fn: fn as unknown as typeof fetch, calls };
-}
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 describe("ApiClient", () => {
   it("claims a task with auth header and runnerId body", async () => {

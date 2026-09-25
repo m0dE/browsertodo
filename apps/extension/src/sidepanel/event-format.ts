@@ -1,6 +1,7 @@
-/** Pure view models for agent events in Chat and the Activity Log. */
-import { picksText, type AgentEvent, type ElementPicks } from "@browsertodo/shared";
-import { clip, outcomeChip, type Chip } from "./format.js";
+/** Pure view models for agent events in Chat and the Activity log. */
+import { picksText, SCREEN_HELP_TEXT, type AgentEvent, type Chip, type ElementPicks } from "@browsertodo/shared";
+import { clip, isLongSummary, toolArgsSummary } from "../text.js";
+import { outcomeChip } from "./format.js";
 
 export type EventView =
   /** picks: the end-of-turn "Jev chose ..." line, shown in the end card instead of on its own. */
@@ -10,75 +11,14 @@ export type EventView =
   | { kind: "tool"; id: string; name: string; args: string }
   | { kind: "result"; id: string; name: string; preview: string; full: string; isError: boolean; thumbnail?: string }
   | { kind: "jev"; label: string; ms: number; executed: boolean; title: string }
-  | { kind: "user"; text: string }
+  /** screen: an empty message, "look at the page and do what is needed" (shown quieter, with an eye). */
+  | { kind: "user"; text: string; screen?: true }
   /**
    * picks: who picked the turn's elements ("Jev chose 9 of 11 element picks ...").
    * long: the text is an answer (several lines or long), shown as a message above the outcome line.
    */
   | { kind: "end"; chip: Chip; text: string; url?: string; picks?: string; long?: true }
   | { kind: "error"; text: string };
-
-const obj = (v: unknown): Record<string, unknown> =>
-  v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
-
-/** Shorten a URL for display: drop the scheme and "www.". */
-export function shortUrl(url: string): string {
-  return url.replace(/^https?:\/\//, "").replace(/^www\./, "");
-}
-
-/** One-line summary of a tool call's arguments. */
-export function toolArgsSummary(name: string, args: unknown, max = 70): string {
-  const a = obj(args);
-  const q = (s: unknown) => `"${clip(String(s), max - 2)}"`;
-  switch (name) {
-    case "navigate":
-      return clip(shortUrl(String(a.url ?? "")), max);
-    case "read_page":
-    case "screenshot":
-      return "";
-    case "act": {
-      const steps = Array.isArray(a.steps) ? a.steps.map(obj) : [];
-      if (!steps.length) return "";
-      const first = clip(String(steps[0]?.goal ?? ""), max);
-      return steps.length > 1 ? `${first} (+${steps.length - 1} more)` : first;
-    }
-    case "click":
-      return `#${String(a.index)}`;
-    case "type":
-      return clip(`#${String(a.index)} ${q(a.text)}`, max);
-    case "paste":
-      return q(a.text);
-    case "press_key":
-      return String(a.key ?? "");
-    case "scroll":
-      return [a.direction, a.amount ? `×${String(a.amount)}` : "", a.index !== undefined ? `in #${String(a.index)}` : ""]
-        .filter(Boolean)
-        .join(" ");
-    case "upload":
-      return clip(
-        `#${String(a.index)} ${(Array.isArray(a.paths) ? a.paths : []).map((p) => String(p).split(/[\\/]/).pop()).join(", ")}`,
-        max,
-      );
-    case "switch_x_account":
-      return String(a.handle ?? "");
-    case "get_credential":
-      return String(a.site ?? "");
-    case "task_complete": {
-      // A long summary (an answer) is shown in the end card; the step stays one quiet line.
-      const summary = String(a.summary ?? "");
-      return isLongSummary(summary) ? "" : clip(summary, max);
-    }
-    case "task_fail":
-    case "task_pause":
-      return clip(String(a.reason ?? ""), max);
-    default: {
-      if (args === undefined || args === null) return "";
-      if (typeof args !== "object") return clip(String(args), max);
-      const parts = Object.entries(a).map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`);
-      return clip(parts.join(" "), max);
-    }
-  }
-}
 
 /**
  * The element picks of the turn that `events[endIndex]` (a task_end) closes:
@@ -130,7 +70,7 @@ export function describeEvent(ev: AgentEvent, picks?: ElementPicks): EventView {
       };
     }
     case "user_message":
-      return { kind: "user", text: ev.text };
+      return isScreenHelp(ev.text) ? { kind: "user", text: ev.text, screen: true } : { kind: "user", text: ev.text };
     case "task_end": {
       const text = (ev.summary || ev.reason || "").trim();
       return {
@@ -147,9 +87,9 @@ export function describeEvent(ev: AgentEvent, picks?: ElementPicks): EventView {
   }
 }
 
-/** A task_end text that is really an answer: several lines, or longer than a one-line summary. */
-export function isLongSummary(text: string): boolean {
-  return text.includes("\n") || text.length > 160;
+/** The user's turn was an empty message in Chat: look at the page (SCREEN_HELP_TEXT). */
+export function isScreenHelp(text: string | undefined): boolean {
+  return text?.trim() === SCREEN_HELP_TEXT;
 }
 
 /** Should a scroll container keep following new content? (within `slack` px of the bottom) */

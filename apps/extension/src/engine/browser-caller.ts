@@ -6,7 +6,7 @@ type Impl = { [M in BrowserMethod]: (params: BrowserMethods[M]["params"]) => Pro
 
 export interface DriverLike {
   navigate(p: BrowserMethods["browser.navigate"]["params"]): Promise<BrowserMethods["browser.navigate"]["result"]>;
-  readPage(): Promise<BrowserMethods["browser.readPage"]["result"]>;
+  readPage(p?: BrowserMethods["browser.readPage"]["params"]): Promise<BrowserMethods["browser.readPage"]["result"]>;
   screenshot(): Promise<BrowserMethods["browser.screenshot"]["result"]>;
   click(p: BrowserMethods["browser.click"]["params"]): Promise<BrowserMethods["browser.click"]["result"]>;
   type(p: BrowserMethods["browser.type"]["params"]): Promise<BrowserMethods["browser.type"]["result"]>;
@@ -15,6 +15,10 @@ export interface DriverLike {
   scroll(p: BrowserMethods["browser.scroll"]["params"]): Promise<BrowserMethods["browser.scroll"]["result"]>;
   upload(p: BrowserMethods["browser.upload"]["params"]): Promise<BrowserMethods["browser.upload"]["result"]>;
   currentUrl(): Promise<BrowserMethods["browser.currentUrl"]["result"]>;
+  openTabs(p: BrowserMethods["browser.openTabs"]["params"]): Promise<BrowserMethods["browser.openTabs"]["result"]>;
+  switchTab(p: BrowserMethods["browser.switchTab"]["params"]): Promise<BrowserMethods["browser.switchTab"]["result"]>;
+  listTabs(): Promise<BrowserMethods["browser.listTabs"]["result"]>;
+  closeTabs(p: BrowserMethods["browser.closeTabs"]["params"]): Promise<BrowserMethods["browser.closeTabs"]["result"]>;
 }
 
 export interface VaultLike {
@@ -25,7 +29,7 @@ export interface VaultLike {
 export function browserMethods(driver: DriverLike, vault: VaultLike): Impl {
   return {
     "browser.navigate": (p) => driver.navigate(p),
-    "browser.readPage": () => driver.readPage(),
+    "browser.readPage": (p) => driver.readPage(p ?? {}),
     "browser.screenshot": () => driver.screenshot(),
     "browser.click": (p) => driver.click(p),
     "browser.type": (p) => driver.type(p),
@@ -34,6 +38,10 @@ export function browserMethods(driver: DriverLike, vault: VaultLike): Impl {
     "browser.scroll": (p) => driver.scroll(p),
     "browser.upload": (p) => driver.upload(p),
     "browser.currentUrl": () => driver.currentUrl(),
+    "browser.openTabs": (p) => driver.openTabs(p),
+    "browser.switchTab": (p) => driver.switchTab(p),
+    "browser.listTabs": () => driver.listTabs(),
+    "browser.closeTabs": (p) => driver.closeTabs(p),
     "vault.getCredential": (p) => vault.getCredential(p.site),
   };
 }

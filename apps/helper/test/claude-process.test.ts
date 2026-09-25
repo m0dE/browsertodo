@@ -99,6 +99,29 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     expect(log.at(-1)).toMatchObject({ type: "claude_exit", code: 0 });
   });
 
+  it("persistent: keeps stdin open after the turn (idle), sends follow-ups as-is, exits when the input closes", async () => {
+    const log: Record<string, any>[] = [];
+    const events: AgentEvent[] = [];
+    const input = new UserInput();
+    let idle = 0;
+    const c = { ...ctx(new AbortController().signal, log, events, input), idle: () => idle++ };
+    const persistent = new ClaudeCodeBrain({ claudePath: process.execPath, model: "sonnet", prefixArgs: [FAKE], persistent: true, startStatus: "headless" });
+    expect(persistent.persistent).toBe(true);
+    const run = persistent.run(c);
+    const t0 = Date.now();
+    while (idle < 1 && Date.now() - t0 < 10_000) await new Promise((r) => setTimeout(r, 20));
+    expect(idle).toBe(1);
+    expect(input.closed).toBe(false);
+    input.push("Next message from the user: like it", "followup");
+    while (idle < 2 && Date.now() - t0 < 10_000) await new Promise((r) => setTimeout(r, 20));
+    input.close();
+    await run;
+    const texts = events.filter((e) => e.type === "assistant_text").map((e) => (e as { text: string }).text);
+    expect(texts).toEqual([`got: ${c.prompt}`, "got: Next message from the user: like it"]);
+    expect(events[0]).toEqual({ type: "status", text: "headless" });
+    expect(log.at(-1)).toMatchObject({ type: "claude_exit", code: 0 });
+  });
+
   it("kills the process tree on abort", async () => {
     process.env.FAKE_CLAUDE_HANG = "1";
     const log: Record<string, any>[] = [];

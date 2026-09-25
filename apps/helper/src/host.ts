@@ -27,6 +27,7 @@ import { TaskRunner } from "./task-runner.js";
 import { ClaudeCodeBrain, claudeEnv, resolveClaudePath } from "./brains/claude-code.js";
 import { ScriptedBrain } from "./brains/scripted.js";
 import type { Brain } from "./brains/brain.js";
+import { ClaudePtyBrain } from "./brains/claude-pty.js";
 import { SelfTestCache } from "./self-test.js";
 import { fakePtyFactory, loadNodePty, TerminalBacklog, TerminalManager } from "./terminal.js";
 import { removeHelperFile, writeHelperFile } from "./helper-file.js";
@@ -67,7 +68,12 @@ async function main(): Promise<void> {
   const makeBrain = (): Brain => {
     if (scripted) return new ScriptedBrain((t, n, a) => router.call(t, n, a));
     if (!claudePath) throw new Error("Claude Code was not found. Install it or set BROWSERTODO_CLAUDE_PATH.");
-    return new ClaudeCodeBrain({ claudePath, model: config.model });
+    // A real interactive session in a task terminal (visible in the Terminal tab); headless without node-pty.
+    if (terminal.available && ptyFactory !== fakePtyFactory) {
+      mkdirSync(config.workspaceDir, { recursive: true });
+      return new ClaudePtyBrain({ claudePath, model: config.model, terminals: terminal, cwd: config.workspaceDir });
+    }
+    return new ClaudeCodeBrain({ claudePath, model: config.model, persistent: true, startStatus: "Claude Code is running headless (terminal unavailable)" });
   };
   runner = new TaskRunner({
     runsDir: config.runsDir,
@@ -101,7 +107,7 @@ async function main(): Promise<void> {
     };
   };
   setInteractiveJev(envJev);
-  const router: ToolRouter = new ToolRouter({ getSession: () => runner.session(), getInteractive: () => interactive });
+  const router: ToolRouter = new ToolRouter({ getSession: (taskId) => runner.session(taskId), getInteractive: () => interactive });
 
   const selfTest = new SelfTestCache({
     claudePath: scripted ? "scripted" : claudePath,
@@ -157,6 +163,7 @@ async function main(): Promise<void> {
       backlog.clear(terminalId);
       notify("helper.terminal.exit", { terminalId, exitCode });
     },
+    onOpened: (info) => notify("helper.terminal.opened", info),
     log: logLine,
   });
   logLine(`node-pty ${terminal.available ? "loaded" : "not available"}`);
@@ -189,6 +196,7 @@ async function main(): Promise<void> {
       claudePath: scripted ? "scripted" : claudePath,
       logDir: config.logDir,
       ptyAvailable: terminal.available,
+      terminals: terminal.list(),
       selfTest: st,
     };
   });
@@ -200,6 +208,13 @@ async function main(): Promise<void> {
     logLine(`runTask ${params.sessionId} -> ${result.outcome}${result.reason ? `: ${result.reason}` : ""}`);
     return result;
   });
+  peer.handle("helper.continueSession", async (params) => {
+    logLine(`continueSession ${params.sessionId} chars=${params.text.length}`);
+    const result = await runner.continueSession(params);
+    logLine(`continueSession ${params.sessionId} -> ${result.outcome}${result.reason ? `: ${result.reason}` : ""}`);
+    return result;
+  });
+  peer.handle("helper.endSession", ({ sessionId }) => ({ ok: runner.endSession(sessionId) }));
   peer.handle("helper.sendUserMessage", ({ sessionId, text }) => ({ ok: runner.sendUserMessage(sessionId, text) }));
   peer.handle("helper.forcePause", ({ sessionId, reason }) => {
     runner.forcePause(sessionId, reason);
@@ -215,6 +230,7 @@ async function main(): Promise<void> {
     setInteractiveJev(key ? makeJev(key) : null);
     return terminal.start(cols, rows);
   });
+  peer.handle("helper.terminal.list", () => ({ terminals: terminal.list() }));
   peer.handle("helper.terminal.backlog", ({ terminalId }) => ({ data: backlog.get(terminalId) }));
   peer.handle("helper.terminal.input", ({ terminalId, data }) => {
     terminal.input(terminalId, data);
@@ -252,7 +268,7 @@ async function main(): Promise<void> {
     removeHelperFile(config.helperFilePath, process.pid);
     // Give the brain a moment to kill its process tree.
     const deadline = Date.now() + 5000;
-    while (runner.busy && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    while ((runner.busy || runner.openSessions.length > 0) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
     await pipe?.close().catch(() => {});
     process.exit(0);
   };

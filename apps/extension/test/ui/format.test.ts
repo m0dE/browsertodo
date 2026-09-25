@@ -30,6 +30,7 @@ function state(over: Partial<UiState> = {}, brain: Partial<UiState["brain"]> = {
     paused: false,
     terminal: null,
     ...over,
+    terminals: over.terminals ?? [],
   };
 }
 

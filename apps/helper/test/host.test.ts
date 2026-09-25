@@ -46,6 +46,7 @@ const decodeErrors: string[] = [];
 const events: HelperNotifications["helper.event"][] = [];
 const termData: HelperNotifications["helper.terminal.data"][] = [];
 const termExits: HelperNotifications["helper.terminal.exit"][] = [];
+const termOpened: HelperNotifications["helper.terminal.opened"][] = [];
 let stderr = "";
 
 beforeAll(() => {
@@ -67,6 +68,7 @@ beforeAll(() => {
   ext.onNotification<HelperNotifications["helper.event"]>("helper.event", (p) => events.push(p));
   ext.onNotification<HelperNotifications["helper.terminal.data"]>("helper.terminal.data", (p) => termData.push(p));
   ext.onNotification<HelperNotifications["helper.terminal.exit"]>("helper.terminal.exit", (p) => termExits.push(p));
+  ext.onNotification<HelperNotifications["helper.terminal.opened"]>("helper.terminal.opened", (p) => termOpened.push(p));
   const decoder = new NativeDecoder();
   child.stdout.on("data", (chunk: Buffer) => {
     try {
@@ -101,6 +103,7 @@ describe("dist/host.js over native messaging", () => {
       claudePath: "scripted",
       logDir: join(home, "logs"),
       ptyAvailable: true,
+      terminals: [],
       selfTest: { ok: true, ms: 0, at: expect.any(String) },
     });
     const again = await ext.call("helper.hello", { selfTest: true }, { timeoutMs: 10_000 });
@@ -143,6 +146,11 @@ describe("dist/host.js over native messaging", () => {
     expect(mine.filter((e) => e.type === "tool_call").map((e) => (e as { name: string }).name)).toContain("upload");
   });
 
+  it("continueSession on a session that is not kept open rejects with 'session ended'; endSession of an unknown one is ok: false", async () => {
+    await expect(ext.call("helper.continueSession", { sessionId: "S-HOST", text: "again", config: CONFIG }, { timeoutMs: 5000 })).rejects.toThrow(/session ended/);
+    expect(await ext.call("helper.endSession", { sessionId: "S-HOST" }, { timeoutMs: 5000 })).toEqual({ ok: false });
+  });
+
   it("forcePause/abortTask for an unknown session are harmless", async () => {
     expect(await ext.call("helper.forcePause", { sessionId: "nope", reason: "r" }, { timeoutMs: 5000 })).toEqual({ ok: true });
     expect(await ext.call("helper.abortTask", { sessionId: "nope", reason: "r" }, { timeoutMs: 5000 })).toEqual({ ok: true });
@@ -150,6 +158,11 @@ describe("dist/host.js over native messaging", () => {
 
   it("runs the terminal: start, data, input, resize, exit", async () => {
     const { terminalId } = await ext.call("helper.terminal.start", { cols: 100, rows: 30 }, { timeoutMs: 5000 });
+    const user = { terminalId, kind: "user", title: "Claude Code" };
+    await waitFor(() => termOpened.length > 0);
+    expect(termOpened).toEqual([user]);
+    expect(await ext.call("helper.terminal.list", {}, { timeoutMs: 5000 })).toEqual({ terminals: [user] });
+    expect((await ext.call("helper.hello", {}, { timeoutMs: 5000 })).terminals).toEqual([user]);
     await waitFor(() => termData.some((d) => d.terminalId === terminalId && d.data.includes("fake-pty:")));
     const banner = termData.find((d) => d.data.includes("fake-pty:"))!.data;
     expect(banner).toContain("--mcp-config");
@@ -162,6 +175,7 @@ describe("dist/host.js over native messaging", () => {
     await ext.call("helper.terminal.input", { terminalId, data: "exit\r" }, { timeoutMs: 5000 });
     await waitFor(() => termExits.length > 0);
     expect(termExits).toEqual([{ terminalId, exitCode: 0 }]);
+    expect(await ext.call("helper.terminal.list", {}, { timeoutMs: 5000 })).toEqual({ terminals: [] });
     await expect(ext.call("helper.terminal.input", { terminalId, data: "x" }, { timeoutMs: 5000 })).rejects.toThrow(/no running terminal/);
     // the interactive MCP config was written with the interactive tools
     const cfg = JSON.parse(readFileSync(join(home, "interactive-mcp-config.json"), "utf8"));

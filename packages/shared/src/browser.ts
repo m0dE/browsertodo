@@ -51,10 +51,30 @@ export interface Screenshot {
 
 export type ScrollDirection = "up" | "down" | "left" | "right";
 
+/**
+ * One tab the agent works in during a run. `id` is a short per-run id ("t1" is
+ * the tab the run started on, tabs opened by open_tabs are "t2", "t3", ...).
+ */
+export interface AgentTabInfo {
+  id: string;
+  url: string;
+  title: string;
+  /** The tab the single-tab tools (read_page, act, navigate, ...) act on. */
+  current: boolean;
+  /** Set when the tab did not finish loading (e.g. the 30 s cap was hit). */
+  error?: string;
+}
+
+/** Most URLs one open_tabs / read_page call handles. */
+export const MAX_TABS_PER_CALL = 8;
+/** Most tabs the agent may have open at once in one run (including the first). */
+export const MAX_AGENT_TABS = 20;
+
 /** Params and results of every browser RPC method. */
 export type BrowserMethods = {
   "browser.navigate": { params: { url: string }; result: { url: string; title: string } };
-  "browser.readPage": { params: Record<string, never>; result: PageSnapshot };
+  /** tab: short tab id ("t2"); default the current tab. Reading never activates the tab. */
+  "browser.readPage": { params: { tab?: string }; result: PageSnapshot };
   "browser.screenshot": { params: Record<string, never>; result: Screenshot };
   "browser.click": { params: { index: number }; result: { ok: true } };
   "browser.type": { params: { index: number; text: string }; result: { ok: true } };
@@ -67,6 +87,17 @@ export type BrowserMethods = {
   };
   "browser.upload": { params: { index: number; paths: string[] }; result: { ok: true } };
   "browser.currentUrl": { params: Record<string, never>; result: { url: string } };
+  /**
+   * Opens each URL in a new tab of the agent's window, loading in parallel, and
+   * waits for all of them (30 s cap each). background false shows the first new
+   * tab and makes it the current tab; otherwise the current tab is unchanged.
+   */
+  "browser.openTabs": { params: { urls: string[]; background?: boolean }; result: { tabs: AgentTabInfo[] } };
+  /** Makes a tab the current tab (the one the single-tab methods act on). */
+  "browser.switchTab": { params: { tab: string }; result: AgentTabInfo };
+  "browser.listTabs": { params: Record<string, never>; result: { tabs: AgentTabInfo[] } };
+  /** Closes tabs the agent opened. The run's first tab is never closed. */
+  "browser.closeTabs": { params: { tabs: string[] }; result: { closed: string[]; tabs: AgentTabInfo[] } };
   "vault.getCredential": {
     params: { site: string };
     result: { found: false; locked?: boolean } | { found: true; username: string; password: string };

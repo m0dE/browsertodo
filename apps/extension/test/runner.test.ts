@@ -527,6 +527,127 @@ describe("Runner: adhoc sessions", () => {
   });
 });
 
+describe("Runner: continue a stopped run", () => {
+  const POST = "Cats are the best coworkers: they nap through every meeting.";
+
+  /** A run that opens X, types the post, then waits until stopped. */
+  function typeThenHang(opts: BrainStartOptions): "hang" {
+    opts.onEvent({ type: "tool_call", id: "1", name: "navigate", args: { url: "https://x.com/home" } });
+    opts.onEvent({ type: "tool_result", id: "1", name: "navigate", text: "Opened https://x.com/home\nmore lines" });
+    opts.onEvent({ type: "tool_call", id: "2", name: "mcp__browsertodo__type", args: { index: 12, text: POST } });
+    opts.onEvent({ type: "tool_result", id: "2", name: "type", text: "typed 61 chars" });
+    opts.onEvent({ type: "assistant_text", text: "The post is typed; now I'll press Post." });
+    return "hang";
+  }
+
+  async function stopAfterStart(h: Harness, n: number) {
+    await vi.waitFor(() => expect(h.brain.starts).toHaveLength(n));
+    h.runner.stop();
+    await h.runner.idle();
+    await h.sessions.flush();
+  }
+
+  it("continues a one-off run stopped by the user: done steps, note, no double post, isRetry, same agent tab", async () => {
+    const h = harness();
+    h.brain.script = typeThenHang;
+    const first = await h.runner.runAdhoc({ instructions: "Make a post on X about cats", account: "@me" });
+    await stopAfterStart(h, 1);
+    expect(await h.sessions.get(first.sessionId)).toMatchObject({ outcome: "paused", reason: "stopped by user", instructions: "Make a post on X about cats", account: "@me" });
+
+    h.brain.script = () => ({ outcome: "done", summary: "posted", url: "https://x.com/me/status/123" });
+    const next = await h.runner.continueSession(first.sessionId, "  just press Post  ");
+    expect(next.sessionId).not.toBe(first.sessionId);
+    await h.runner.idle();
+    await h.sessions.flush();
+
+    const start = h.brain.starts[1]!;
+    const text = start.task.instructions;
+    expect(text.startsWith("Make a post on X about cats\n")).toBe(true);
+    expect(text).toContain("Continuing a stopped run");
+    expect(text).toContain("reason: stopped by user");
+    expect(text).toContain("- navigate x.com/home → Opened https://x.com/home");
+    expect(text).toContain(`- type #12 "${POST}" → typed 61 chars`);
+    expect(text).toContain(`Its last message: "The post is typed; now I'll press Post."`);
+    expect(text).toContain("The user adds: just press Post");
+    expect(text).toMatch(/first look at the current page/i);
+    expect(text).toMatch(/do not type it again/);
+    expect(text).toMatch(/Never post twice/);
+    expect(start.task.account).toBe("@me");
+    expect(start.config.isRetry).toBe(true);
+    // The first run used the user's tab; the continuation keeps using that agent tab.
+    expect(h.prepared).toEqual([
+      { show: true, mode: "current-tab" },
+      { show: true, mode: "own-tab" },
+    ]);
+    // The post is verified against the text typed in the stopped run.
+    expect(h.verify).toHaveBeenCalledWith(expect.anything(), "https://x.com/me/status/123", POST);
+    expect(await h.sessions.get(next.sessionId)).toMatchObject({
+      source: "adhoc",
+      title: "Continue: Make a post on X about cats",
+      continuedFrom: first.sessionId,
+      // The original instructions, so a continuation can be continued again.
+      instructions: "Make a post on X about cats",
+      outcome: "done",
+    });
+    expect(await h.store.list()).toEqual([]);
+  });
+
+  it("continues a local task as the same task: attempts keep counting, status recorded", async () => {
+    const h = harness();
+    const t = await h.store.add({ instructions: "Post hello", media: [{ name: "a.png", type: "image/png", dataBase64: btoa("A") }] });
+    h.brain.script = typeThenHang;
+    await h.runner.runDue("manual");
+    await stopAfterStart(h, 1);
+    expect(await h.store.get(t.id)).toMatchObject({ status: "paused", attempts: 1 });
+    const [old] = await h.sessions.list();
+
+    h.brain.script = async (opts) => {
+      expect(await h.store.get(t.id)).toMatchObject({ status: "running", attempts: 2 });
+      expect(opts.task.id).toBe(t.id);
+      return { outcome: "done", summary: "posted" };
+    };
+    const next = await h.runner.continueSession(old!.sessionId);
+    await h.runner.idle();
+    await h.sessions.flush();
+
+    const start = h.brain.starts[1]!;
+    expect(start.config.isRetry).toBe(true);
+    expect(start.task.instructions).toContain("Continuing a stopped run");
+    expect(start.task.instructions).not.toContain("The user adds");
+    expect(start.mediaPaths).toEqual(["C:\\dl\\a.png"]);
+    expect(h.prepared[1]).toEqual({ show: true, mode: "own-tab" });
+    expect(await h.store.get(t.id)).toMatchObject({ status: "done", attempts: 2, resultSummary: "posted" });
+    expect(await h.sessions.get(next.sessionId)).toMatchObject({ source: "local", taskId: t.id, title: "Continue: Post hello", continuedFrom: old!.sessionId });
+    // Local runs read their instructions from the task, not the session.
+    expect((await h.sessions.get(next.sessionId))!.instructions).toBeUndefined();
+  });
+
+  it("refuses runs that cannot be continued, without getting busy", async () => {
+    const h = harness();
+    const done = await h.runner.runAdhoc({ instructions: "x" });
+    await h.runner.idle();
+    await h.sessions.flush();
+    await expect(h.runner.continueSession(done.sessionId)).rejects.toThrow(/already finished/);
+    await expect(h.runner.continueSession("nope")).rejects.toThrow(/No session nope/);
+    await h.sessions.create({ sessionId: "c1", source: "cloud", taskId: "ct", title: "cloud", brain: "claude-api", jev: false, startedAt: "x", endedAt: "y", outcome: "paused" });
+    await expect(h.runner.continueSession("c1")).rejects.toThrow("Cloud tasks continue from the queue; use Retry on the server");
+    await h.sessions.create({ sessionId: "l1", source: "local", taskId: "gone", title: "l", brain: "claude-api", jev: false, startedAt: "x", endedAt: "y", outcome: "failed" });
+    await expect(h.runner.continueSession("l1")).rejects.toThrow(/no longer exists/);
+    expect(h.runner.busy).toBe(false);
+
+    // A running session, and anything while a run is active.
+    h.brain.script = () => "hang";
+    const live = await h.runner.runAdhoc({ instructions: "y" });
+    await vi.waitFor(() => expect(h.brain.starts).toHaveLength(2));
+    await expect(h.runner.continueSession(live.sessionId)).rejects.toThrow(/already running/);
+    h.runner.stop();
+    await h.runner.idle();
+    await h.sessions.create({ sessionId: "r1", source: "adhoc", title: "r", brain: "claude-api", jev: false, startedAt: "x" });
+    await expect(h.runner.continueSession("r1")).rejects.toThrow(/not ended/);
+    expect(h.brain.starts).toHaveLength(2);
+  });
+});
+
 describe("typedTextsOf", () => {
   it("collects text from type, paste and act steps only", () => {
     expect(typedTextsOf({ type: "tool_call", id: "1", name: "type", args: { index: 1, text: "a" } })).toEqual(["a"]);

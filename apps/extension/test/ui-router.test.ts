@@ -22,6 +22,7 @@ function setup() {
     state: vi.fn(async () => ({ ...rstate })),
     runDue: vi.fn(async () => ({ started: true })),
     runAdhoc: vi.fn(async (_i: AdhocInput) => ({ sessionId: "adhoc-1" })),
+    continueSession: vi.fn(async (_id: string, _note?: string) => ({ sessionId: "cont-1" })),
     stop: vi.fn(() => true),
     say: vi.fn(async () => true),
     pauseSchedule: vi.fn(async () => {
@@ -37,6 +38,8 @@ function setup() {
     input: vi.fn(async () => true),
     resize: vi.fn(async () => true),
     stop: vi.fn(async () => true),
+    list: vi.fn(() => [{ terminalId: "task-1", kind: "task" as const, title: "Post hi", sessionId: "S1" }]),
+    backlog: vi.fn(async (id: string) => `screen of ${id}`),
   };
   const helper = {
     info: null as HelperInfo | null,
@@ -129,6 +132,22 @@ describe("UiRouter", () => {
     expect(t.runner.say).toHaveBeenCalledWith("hello");
   });
 
+  it("run.continue passes the session id and the trimmed note; errors come back as { ok: false }", async () => {
+    const t = setup();
+    expect(await t.req({ type: "run.continue", sessionId: "s-old", text: "  it's typed already, just post  " })).toEqual({ sessionId: "cont-1" });
+    expect(t.runner.continueSession).toHaveBeenLastCalledWith("s-old", "it's typed already, just post");
+    await t.req({ type: "run.continue", sessionId: "s-old", text: "   " });
+    expect(t.runner.continueSession).toHaveBeenLastCalledWith("s-old", undefined);
+    await t.req({ type: "run.continue", sessionId: "s-old" });
+    expect(t.runner.continueSession).toHaveBeenLastCalledWith("s-old", undefined);
+    expect(await t.router.handle({ type: "run.continue" } as never)).toEqual({ ok: false, error: "sessionId is required" });
+    t.runner.continueSession.mockRejectedValueOnce(new Error("Cloud tasks continue from the queue; use Retry on the server"));
+    expect(await t.router.handle({ type: "run.continue", sessionId: "c" })).toEqual({
+      ok: false,
+      error: "Cloud tasks continue from the queue; use Retry on the server",
+    });
+  });
+
   it("run.adhoc errors come back as { ok: false, error }", async () => {
     const t = setup();
     t.runner.runAdhoc.mockRejectedValueOnce(new Error("A task is already running"));
@@ -173,6 +192,21 @@ describe("UiRouter", () => {
     expect(await t.req({ type: "terminal.input", data: "ls\r" })).toEqual({ ok: true });
     expect(await t.req({ type: "terminal.resize", cols: 90, rows: 20 })).toEqual({ ok: true });
     expect(await t.req({ type: "terminal.stop" })).toEqual({ ok: true });
+    // No terminalId: the user's session.
+    expect(t.terminal.input).toHaveBeenLastCalledWith("ls\r", undefined);
+    expect(t.terminal.stop).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it("terminal.* take a terminalId for task sessions; state lists every terminal", async () => {
+    const t = setup();
+    await t.req({ type: "terminal.input", data: "y", terminalId: "task-1" });
+    await t.req({ type: "terminal.resize", cols: 90, rows: 20, terminalId: "task-1" });
+    await t.req({ type: "terminal.stop", terminalId: "task-1" });
+    expect(t.terminal.input).toHaveBeenLastCalledWith("y", "task-1");
+    expect(t.terminal.resize).toHaveBeenLastCalledWith(90, 20, "task-1");
+    expect(t.terminal.stop).toHaveBeenLastCalledWith("task-1");
+    expect(await t.req({ type: "terminal.backlog", terminalId: "task-1" })).toEqual({ data: "screen of task-1" });
+    expect((await t.req({ type: "state.get" })).terminals).toEqual([{ terminalId: "task-1", kind: "task", title: "Post hi", sessionId: "S1" }]);
   });
 
   it("terminal.start passes the Jev key only when Jev is on", async () => {

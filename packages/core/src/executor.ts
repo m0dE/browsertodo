@@ -18,7 +18,7 @@ import {
   type ToolResult,
 } from "@browsertodo/shared";
 import type { JevDecision, ToolExecutor, ToolExecutorOptions } from "./types.js";
-import { formatCompact, formatElement, formatSnapshot } from "./page-format.js";
+import { formatCompact, formatElement, formatSnapshot, formatTabs, formatTabSnapshots } from "./page-format.js";
 import { switchXAccount } from "./x-account.js";
 import { defaultSleep, errorMessage, isXSite, siteHost } from "./util.js";
 
@@ -83,11 +83,11 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
         try {
           if (step.text !== undefined && step.text !== "") {
             await browser("browser.type", { index: step.index, text: step.text });
-            lines.push(`step ${n}: typed ${step.text.length} characters into [${step.index}] (direct)`);
+            lines.push(`step ${n}: typed ${step.text.length} characters into [${step.index}] (picked by Claude)`);
             await sleep(300);
           } else {
             await browser("browser.click", { index: step.index });
-            lines.push(`step ${n}: clicked [${step.index}] (direct)`);
+            lines.push(`step ${n}: clicked [${step.index}] (picked by Claude)`);
             await sleep(500);
           }
         } catch (e) {
@@ -123,7 +123,7 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
           }
           await browser("browser.click", { index: target.index });
           jevEvent(true);
-          lines.push(`step ${n}: clicked ${formatElement(target)}`);
+          lines.push(`step ${n}: clicked ${formatElement(target)} (picked by Jev, ${d.confidence.toFixed(2)}, ${ms} ms)`);
           await sleep(500);
           break;
         }
@@ -138,14 +138,14 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
           }
           await browser("browser.type", { index: target.index, text: step.text });
           jevEvent(true);
-          lines.push(`step ${n}: typed ${step.text.length} characters into ${formatElement(target)}`);
+          lines.push(`step ${n}: typed ${step.text.length} characters into ${formatElement(target)} (picked by Jev, ${d.confidence.toFixed(2)}, ${ms} ms)`);
           await sleep(300);
           break;
         }
         case "scroll":
           await browser("browser.scroll", { direction: "down" });
           jevEvent(true);
-          lines.push(`step ${n}: scrolled down`);
+          lines.push(`step ${n}: scrolled down (picked by Jev)`);
           break;
         case "press_key":
           jevEvent(false);
@@ -172,8 +172,42 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
         const r = await browser("browser.navigate", { url: (a as ToolArgsOf<"navigate">).url });
         return { text: `Navigated to ${r.url}\nTitle: ${r.title}` };
       }
-      case "read_page":
-        return { text: formatSnapshot(await readPage()) };
+      case "read_page": {
+        const { tabs } = a as ToolArgsOf<"read_page">;
+        if (!tabs) return { text: formatSnapshot(await readPage()) };
+        // Every tab is read at the same time; one failing tab does not hide the others.
+        const ids = [...new Set(tabs)];
+        const reads = await Promise.all(
+          ids.map((tab) =>
+            browser("browser.readPage", { tab }).then(
+              (snap) => ({ tab, snap }),
+              (e: unknown) => ({ tab, error: errorMessage(e) }),
+            ),
+          ),
+        );
+        const text = formatTabSnapshots(reads);
+        return reads.every((r) => "error" in r) ? err(text) : { text };
+      }
+      case "open_tabs": {
+        const { urls, background } = a as ToolArgsOf<"open_tabs">;
+        const params: BrowserMethods["browser.openTabs"]["params"] = { urls };
+        if (background !== undefined) params.background = background;
+        const r = await browser("browser.openTabs", params);
+        const ids = r.tabs.map((t) => t.id);
+        return {
+          text: `Opened ${r.tabs.length} tab(s):\n${formatTabs(r.tabs)}\nRead them together with read_page {"tabs": ${JSON.stringify(ids)}}; use switch_tab to act in one.`,
+        };
+      }
+      case "switch_tab": {
+        const t = await browser("browser.switchTab", { tab: (a as ToolArgsOf<"switch_tab">).tab });
+        return { text: `Current tab is now ${t.id}: ${t.url}\nTitle: ${t.title}` };
+      }
+      case "list_tabs":
+        return { text: formatTabs((await browser("browser.listTabs", {})).tabs) };
+      case "close_tabs": {
+        const r = await browser("browser.closeTabs", { tabs: (a as ToolArgsOf<"close_tabs">).tabs });
+        return { text: `Closed ${r.closed.length ? r.closed.join(", ") : "no tabs"}. Open tabs:\n${formatTabs(r.tabs)}` };
+      }
       case "screenshot": {
         const shot = await browser("browser.screenshot", {});
         return { image: { base64: shot.base64, mimeType: shot.mimeType } };

@@ -1,10 +1,14 @@
 /**
- * The interactive Claude Code terminal: one node-pty process at a time,
- * bytes piped both ways (the side panel's xterm.js is the terminal emulator
- * and answers the app's capability queries). Output is batched into
- * helper.terminal.data notifications.
+ * Terminals over node-pty: the user's interactive Claude Code session (one at
+ * a time) and the Claude Code session of each running task, side by side.
+ * Bytes are piped both ways; output is batched into helper.terminal.data
+ * notifications. For the user's session the side panel's xterm.js is the
+ * terminal emulator. Task terminals may run with no panel attached, so the
+ * helper answers their capability queries itself (TerminalResponder).
  */
+import type { TerminalInfo } from "@browsertodo/shared";
 import { killPid } from "./brains/claude-code.js";
+import { stripQueryReplies, TerminalResponder } from "./terminal-responder.js";
 
 export interface PtyLike {
   readonly pid: number;
@@ -25,13 +29,41 @@ export interface PtySpawnOptions {
 
 export type PtyFactory = (file: string, args: string[], opts: PtySpawnOptions) => PtyLike;
 
+/**
+ * One Windows command line from argv, quoted the way the C runtime (and
+ * claude.exe) splits it: empty args and args with spaces, tabs, newlines or
+ * quotes are wrapped in quotes, with backslashes before a quote doubled.
+ * node-pty's own quoting leaves an arg alone when it already starts and ends
+ * with a quote, which would break a prompt like `"hello there"`.
+ */
+export function windowsCommandLine(args: string[]): string {
+  return args
+    .map((a) => {
+      if (a !== "" && !/[\s"]/.test(a)) return a;
+      let out = '"';
+      let slashes = 0;
+      for (const ch of a) {
+        if (ch === "\\") {
+          slashes++;
+          continue;
+        }
+        if (ch === '"') out += "\\".repeat(slashes * 2 + 1) + '"';
+        else out += "\\".repeat(slashes) + ch;
+        slashes = 0;
+      }
+      return out + "\\".repeat(slashes * 2) + '"';
+    })
+    .join(" ");
+}
+
 /** node-pty's spawn, or null when the native module cannot be loaded. */
 export async function loadNodePty(): Promise<PtyFactory | null> {
   try {
     const mod: any = await import("node-pty");
     const spawn = mod.spawn ?? mod.default?.spawn;
     if (typeof spawn !== "function") return null;
-    return (file, args, opts) => spawn(file, args, { ...opts, useConpty: true }) as PtyLike;
+    return (file, args, opts) =>
+      spawn(file, process.platform === "win32" ? windowsCommandLine(args) : args, { ...opts, useConpty: true }) as PtyLike;
   } catch {
     return null;
   }
@@ -39,13 +71,23 @@ export async function loadNodePty(): Promise<PtyFactory | null> {
 
 export const FLUSH_MS = 16;
 export const MAX_CHUNK = 32 * 1024;
+export const USER_TERMINAL_TITLE = "Claude Code";
+
+export interface TerminalCommand {
+  file: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, string>;
+}
 
 export interface TerminalDeps {
   factory: PtyFactory | null;
-  /** Command and args to run; called on each start (writes the MCP config, builds the prompt). */
-  command: () => { file: string; args: string[]; cwd: string; env: Record<string, string> };
+  /** The user's session: command and args, called on each start (writes the MCP config, builds the prompt). */
+  command: () => TerminalCommand;
   onData: (terminalId: string, data: string) => void;
   onExit: (terminalId: string, exitCode: number | null) => void;
+  /** A terminal started (helper.terminal.opened). */
+  onOpened?: (info: TerminalInfo) => void;
   log?: (line: string) => void;
   flushMs?: number;
   maxChunk?: number;
@@ -53,16 +95,42 @@ export interface TerminalDeps {
   killTree?: (pid: number) => void;
 }
 
+/** A task's terminal, as the brain that runs in it sees it. */
+export interface TaskTerminal {
+  readonly terminalId: string;
+  readonly pid: number;
+  /** Writes to the program, as if typed. */
+  write(data: string): void;
+  /** Raw output, unbatched, as it arrives. */
+  onData(cb: (data: string) => void): void;
+  /** Called once, when the program exits or the terminal is stopped. */
+  onExit(cb: (exitCode: number | null) => void): void;
+  /** Kills the process tree. */
+  kill(): void;
+}
+
+export interface TaskTerminalSpec extends TerminalCommand {
+  title: string;
+  sessionId: string;
+  cols?: number;
+  rows?: number;
+}
+
 interface Running {
-  id: string;
+  info: TerminalInfo;
   pty: PtyLike;
   buffer: string;
   timer: ReturnType<typeof setTimeout> | null;
   exited: boolean;
+  /** Task terminals answer the TUI's queries in the helper. */
+  responder: TerminalResponder | null;
+  dataListeners: ((data: string) => void)[];
+  exitListeners: ((exitCode: number | null) => void)[];
 }
 
 export class TerminalManager {
-  private current: Running | null = null;
+  private readonly terminals = new Map<string, Running>();
+  private userId: string | null = null;
   private seq = 0;
 
   constructor(private readonly deps: TerminalDeps) {}
@@ -71,42 +139,48 @@ export class TerminalManager {
     return this.deps.factory !== null;
   }
 
+  /** The user's own session, when running. */
   get runningId(): string | null {
-    return this.current?.id ?? null;
+    return this.userId;
   }
 
-  /** Starts a terminal; an already running one is stopped first (one at a time). */
+  list(): TerminalInfo[] {
+    return [...this.terminals.values()].map((t) => ({ ...t.info }));
+  }
+
+  /** Starts the user's session; an already running one is stopped first (one at a time). */
   start(cols: number, rows: number): { terminalId: string } {
-    const factory = this.deps.factory;
-    if (!factory) throw new Error("the interactive terminal is not available: node-pty could not be loaded");
-    if (this.current) this.stop(this.current.id);
-    const cmd = this.deps.command();
-    const id = `term-${Date.now().toString(36)}-${++this.seq}`;
-    const pty = factory(cmd.file, cmd.args, {
-      name: "xterm-256color",
-      cols: clampSize(cols, 80),
-      rows: clampSize(rows, 24),
-      cwd: cmd.cwd,
-      env: cmd.env,
-    });
-    const t: Running = { id, pty, buffer: "", timer: null, exited: false };
-    this.current = t;
-    this.deps.log?.(`terminal ${id} started pid=${pty.pid} ${cmd.file}`);
-    pty.onData((data) => this.push(t, data));
-    pty.onExit(({ exitCode }) => {
-      if (t.exited) return;
-      t.exited = true;
-      this.flush(t);
-      if (this.current === t) this.current = null;
-      this.deps.log?.(`terminal ${id} exited code=${exitCode}`);
-      this.deps.onExit(id, typeof exitCode === "number" ? exitCode : null);
-    });
-    return { terminalId: id };
+    if (!this.deps.factory) throw new Error("the interactive terminal is not available: node-pty could not be loaded");
+    if (this.userId) this.stop(this.userId);
+    const t = this.spawn({ kind: "user", title: USER_TERMINAL_TITLE }, this.deps.command(), cols, rows, false);
+    this.userId = t.info.terminalId;
+    return { terminalId: t.info.terminalId };
+  }
+
+  /** Starts a task's Claude Code session. It runs beside the user's session. */
+  openTask(spec: TaskTerminalSpec): TaskTerminal {
+    if (!this.deps.factory) throw new Error("the task terminal is not available: node-pty could not be loaded");
+    const t = this.spawn({ kind: "task", title: spec.title, sessionId: spec.sessionId }, spec, spec.cols ?? 120, spec.rows ?? 40, true);
+    const id = t.info.terminalId;
+    return {
+      terminalId: id,
+      pid: t.pty.pid,
+      write: (data) => {
+        if (!t.exited) t.pty.write(data);
+      },
+      onData: (cb) => void t.dataListeners.push(cb),
+      onExit: (cb) => {
+        if (t.exited) cb(null);
+        else t.exitListeners.push(cb);
+      },
+      kill: () => this.stop(id),
+    };
   }
 
   input(terminalId: string, data: string): void {
     const t = this.get(terminalId);
-    t.pty.write(data);
+    const clean = t.responder ? stripQueryReplies(data) : data;
+    if (clean) t.pty.write(clean);
   }
 
   resize(terminalId: string, cols: number, rows: number): void {
@@ -120,30 +194,94 @@ export class TerminalManager {
 
   /** Kills the process tree. Unknown or finished terminals are ignored. */
   stop(terminalId: string): void {
-    const t = this.current;
-    if (!t || t.id !== terminalId) return;
-    this.flush(t);
-    this.current = null;
+    const t = this.terminals.get(terminalId);
+    if (!t) return;
     (this.deps.killTree ?? killPid)(t.pty.pid);
     try {
       t.pty.kill();
     } catch {
       /* already gone */
     }
-    // Some PTYs do not report an exit after kill; make sure the panel hears about it.
-    if (!t.exited) {
-      t.exited = true;
-      this.deps.onExit(t.id, null);
-    }
+    // Some PTYs do not report an exit after kill; make sure everyone hears about it.
+    this.finish(t, null);
   }
 
   stopAll(): void {
-    if (this.current) this.stop(this.current.id);
+    for (const id of [...this.terminals.keys()]) this.stop(id);
+  }
+
+  private spawn(meta: Omit<TerminalInfo, "terminalId">, cmd: TerminalCommand, cols: number, rows: number, respond: boolean): Running {
+    const factory = this.deps.factory!;
+    const id = `${meta.kind === "task" ? "task" : "term"}-${Date.now().toString(36)}-${++this.seq}`;
+    const pty = factory(cmd.file, cmd.args, {
+      name: "xterm-256color",
+      cols: clampSize(cols, 80),
+      rows: clampSize(rows, 24),
+      cwd: cmd.cwd,
+      env: cmd.env,
+    });
+    const info: TerminalInfo = { terminalId: id, ...meta };
+    const t: Running = {
+      info,
+      pty,
+      buffer: "",
+      timer: null,
+      exited: false,
+      responder: respond ? new TerminalResponder() : null,
+      dataListeners: [],
+      exitListeners: [],
+    };
+    this.terminals.set(id, t);
+    this.deps.log?.(`terminal ${id} (${meta.kind}) started pid=${pty.pid} ${cmd.file}`);
+    pty.onData((data) => {
+      if (t.exited) return;
+      const reply = t.responder?.feed(data);
+      if (reply) {
+        try {
+          pty.write(reply);
+        } catch {
+          /* exiting */
+        }
+      }
+      // Buffer first: a listener may stop the terminal, which flushes what was seen.
+      this.push(t, data);
+      for (const fn of t.dataListeners) {
+        try {
+          fn(data);
+        } catch (e) {
+          this.deps.log?.(`terminal ${id} listener failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    });
+    pty.onExit(({ exitCode }) => this.finish(t, typeof exitCode === "number" ? exitCode : null));
+    try {
+      this.deps.onOpened?.({ ...info });
+    } catch {
+      /* the extension may be gone */
+    }
+    return t;
+  }
+
+  private finish(t: Running, exitCode: number | null): void {
+    if (t.exited) return;
+    t.exited = true;
+    this.flush(t);
+    this.terminals.delete(t.info.terminalId);
+    if (this.userId === t.info.terminalId) this.userId = null;
+    this.deps.log?.(`terminal ${t.info.terminalId} exited code=${exitCode}`);
+    this.deps.onExit(t.info.terminalId, exitCode);
+    for (const fn of t.exitListeners.splice(0)) {
+      try {
+        fn(exitCode);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   private get(terminalId: string): Running {
-    const t = this.current;
-    if (!t || t.id !== terminalId) throw new Error(`no running terminal ${terminalId}`);
+    const t = this.terminals.get(terminalId);
+    if (!t) throw new Error(`no running terminal ${terminalId}`);
     return t;
   }
 
@@ -165,7 +303,7 @@ export class TerminalManager {
     while (t.buffer) {
       const chunk = t.buffer.slice(0, max);
       t.buffer = t.buffer.slice(max);
-      this.deps.onData(t.id, chunk);
+      this.deps.onData(t.info.terminalId, chunk);
     }
   }
 }

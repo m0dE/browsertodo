@@ -52,6 +52,11 @@ export interface SessionInfo {
   summary?: string;
   url?: string;
   reason?: string;
+  /** Adhoc runs: the full instructions and account, so the run can be continued later. */
+  instructions?: string;
+  account?: string;
+  /** Set when this run continues an earlier stopped one ("Continue"). */
+  continuedFrom?: string;
 }
 
 /** Keep text in events bounded so storage and native messages stay small. */

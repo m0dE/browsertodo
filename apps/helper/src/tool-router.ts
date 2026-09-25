@@ -42,7 +42,8 @@ const err = (text: string): ToolResult => ({ text, isError: true });
 export class ToolRouter {
   constructor(
     private readonly deps: {
-      getSession: () => ToolSession | null;
+      /** No id: the running turn's session. With an id: that task session (running or idle). */
+      getSession: (taskId?: string) => ToolSession | null;
       /** The interactive terminal's tools; null when not available. */
       getInteractive?: () => InteractiveTools | null;
     },
@@ -72,7 +73,7 @@ export class ToolRouter {
 
   private target(taskId: string): ToolSession | InteractiveTools | null {
     if (taskId === INTERACTIVE_TASK_ID) return this.deps.getInteractive?.() ?? null;
-    const s = this.deps.getSession();
+    const s = this.deps.getSession(taskId);
     return s && s.taskId === taskId ? s : null;
   }
 }

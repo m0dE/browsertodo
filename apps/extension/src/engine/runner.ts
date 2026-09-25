@@ -16,10 +16,13 @@ import {
   type RunConfig,
   type Screenshot,
   type SessionInfo,
+  type StampedAgentEvent,
   type TaskRunResult,
   type TaskSource,
+  MAX_INSTRUCTIONS_CHARS,
 } from "@browsertodo/shared";
 import type { BrowserCaller } from "@browsertodo/core";
+import { buildContinueInstructions, continueTitle, isContinuableOutcome } from "../continue.js";
 import type { BrainStatus } from "../ui-protocol.js";
 import type { AbortOutcome, Brain, BrainRun, CoreApi } from "./brains.js";
 import type { LocalStore, StoredLocalTask } from "./local-store.js";
@@ -100,10 +103,17 @@ export interface AdhocInput {
   media?: { name: string; blob: Blob }[];
 }
 
+/** A run that continues an earlier stopped session. */
+interface Continuation {
+  from: SessionInfo;
+  events: StampedAgentEvent[];
+  note?: string;
+}
+
 type Job =
-  | { source: "local"; task: StoredLocalTask }
+  | { source: "local"; task: StoredLocalTask; cont?: Continuation }
   | { source: "cloud"; claim: ClaimResponse; api: RunnerApi; runnerId: string }
-  | { source: "adhoc"; input: AdhocInput };
+  | { source: "adhoc"; input: AdhocInput; cont?: Continuation };
 
 interface Active {
   session: SessionInfo;
@@ -194,11 +204,49 @@ export class Runner {
   /** Starts a one-off task now. Resolves once its session exists. */
   async runAdhoc(input: AdhocInput): Promise<{ sessionId: string }> {
     if (!input.instructions?.trim()) throw new Error("Instructions are empty");
+    return this.startOne(async () => ({ source: "adhoc", input }));
+  }
+
+  /**
+   * Continues a run that ended paused, failed or retry (e.g. stopped by the
+   * user) in a new session: same local task (attempts keep counting) or a new
+   * one-off session, in the agent's tab as it was left. The agent is told what
+   * was already done so it does not repeat it. Cloud runs continue from the
+   * server's queue instead.
+   */
+  async continueSession(sessionId: string, note?: string): Promise<{ sessionId: string }> {
+    return this.startOne(async () => {
+      const from = await this.deps.sessions.get(sessionId);
+      if (!from) throw new Error(`No session ${sessionId}`);
+      if (!from.endedAt) throw new Error("That run has not ended yet");
+      if (!isContinuableOutcome(from.outcome)) {
+        throw new Error(from.outcome === "done" ? "That run already finished; start a new task instead" : "That run cannot be continued");
+      }
+      if (from.source === "cloud") throw new Error("Cloud tasks continue from the queue; use Retry on the server");
+      const cont: Continuation = { from, events: await this.deps.sessions.eventsOf(sessionId) };
+      const t = note?.trim();
+      if (t) cont.note = t;
+      if (from.source === "local") {
+        const task = from.taskId ? await this.deps.localStore.get(from.taskId) : null;
+        if (!task) throw new Error("The task of that run no longer exists");
+        if (task.status === "running") throw new Error("The task is already running");
+        if (task.status === "done") throw new Error("That task is already done");
+        return { source: "local", task, cont };
+      }
+      const input: AdhocInput = { instructions: from.instructions ?? from.title, account: from.account ?? null };
+      return { source: "adhoc", input, cont };
+    });
+  }
+
+  /** Runs one job now (not the due loop). Resolves once its session exists. */
+  private async startOne(makeJob: () => Promise<Job>): Promise<{ sessionId: string }> {
     if (this.isBusy) throw new Error("A task is already running. Stop it or wait for it to finish.");
     this.begin();
     let settings: ExtensionSettings;
     let resolved: ResolvedBrain;
+    let job: Job;
     try {
+      job = await makeJob();
       settings = await this.deps.loadSettings();
       resolved = await this.deps.resolveBrain(settings);
       if (!resolved.brain) throw new Error(resolved.status.note ?? "No brain available");
@@ -209,9 +257,9 @@ export class Runner {
     const sessionId = this.newId();
     let created!: () => void;
     const sessionReady = new Promise<void>((r) => (created = r));
-    this.current = this.runJob({ source: "adhoc", input }, resolved, settings, sessionId, created)
+    this.current = this.runJob(job, resolved, settings, sessionId, created)
       .then(() => {})
-      .catch((err) => this.log(`adhoc run failed: ${errText(err)}`))
+      .catch((err) => this.log(`${job.source} run failed: ${errText(err)}`))
       .finally(() => {
         created();
         this.end();
@@ -388,17 +436,35 @@ export class Runner {
     } else {
       task = { id: sessionId, instructions: job.input.instructions.trim(), account: job.input.account?.trim() || null };
     }
+    const original = task.instructions;
+    const cont = job.source === "cloud" ? undefined : job.cont;
 
     const info: SessionInfo = {
       sessionId,
       source,
-      title: titleOf(task.instructions),
+      title: cont ? continueTitle(cont.from.title) : titleOf(task.instructions),
       brain: brain.kind,
       jev: resolved.status.jevActive,
       startedAt: this.now().toISOString(),
     };
     if (taskId) info.taskId = taskId;
+    if (job.source === "adhoc") {
+      // Kept so this run can be continued later with its full instructions.
+      info.instructions = original.slice(0, MAX_INSTRUCTIONS_CHARS);
+      if (task.account) info.account = task.account;
+    }
+    if (cont) {
+      info.continuedFrom = cont.from.sessionId;
+      task = {
+        ...task,
+        instructions: buildContinueInstructions({ instructions: original, session: cont.from, events: cont.events, note: cont.note ?? null }),
+      };
+      // The agent checks for an already-made post before acting.
+      isRetry = true;
+    }
     const active: Active = { session: info, run: null, forced: null, said: [], typed: [] };
+    // Text typed in the stopped run is still in the page: verify the post against it too.
+    if (cont) for (const e of cont.events) active.typed.push(...typedTextsOf(e));
     this.active = active;
     await this.deps.sessions.create(info);
     onSessionCreated?.();
@@ -415,7 +481,10 @@ export class Runner {
 
     let result: TaskRunResult;
     try {
-      await this.deps.prepareTab({ show: job.source === "adhoc", mode: job.source === "adhoc" ? "current-tab" : "own-tab" });
+      // A continuation keeps acting in the agent tab the stopped run used (own-tab reuses it).
+      await this.deps.prepareTab(
+        cont ? { show: true, mode: "own-tab" } : { show: job.source === "adhoc", mode: job.source === "adhoc" ? "current-tab" : "own-tab" },
+      );
       const sources = await this.mediaSources(job);
       if (sources.length) this.emit(active, { type: "status", text: `Preparing ${sources.length} file(s)` });
       const media = await this.deps.media.materialize(sessionId, sources);

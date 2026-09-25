@@ -13,6 +13,7 @@ import type {
   RepeatRule,
   SessionInfo,
   StampedAgentEvent,
+  TerminalInfo,
 } from "@browsertodo/shared";
 
 export const UI_PORT_NAME = "browsertodo-ui";
@@ -53,7 +54,10 @@ export interface UiState {
   lastRunAt?: string;
   lastError?: string;
   nextRunAt?: string;
+  /** The user's own Claude Code session, when running. */
   terminal: { terminalId: string } | null;
+  /** Every running terminal: task sessions (Claude Code running a task) and the user's session. */
+  terminals: TerminalInfo[];
 }
 
 export type UiRequest =
@@ -69,6 +73,11 @@ export type UiRequest =
   /** Run everything that is due now (local, then cloud if enabled). */
   | { type: "run.due" }
   | { type: "run.stop" }
+  /**
+   * Continue a run that ended paused, failed or retry (e.g. stopped by the
+   * user) in a new session, from where it stopped. text: an optional note.
+   */
+  | { type: "run.continue"; sessionId: string; text?: string }
   /** Bring the agent's window to the front. */
   | { type: "agent.show" }
   /** Type into the running agent session. */
@@ -90,9 +99,12 @@ export type UiRequest =
   | { type: "sessions.list"; limit?: number }
   | { type: "sessions.events"; sessionId: string }
   | { type: "terminal.start"; cols: number; rows: number }
-  | { type: "terminal.input"; data: string }
-  | { type: "terminal.resize"; cols: number; rows: number }
-  | { type: "terminal.stop" }
+  /** terminalId (input, resize, stop): one of UiState.terminals; omitted means the user's session. */
+  | { type: "terminal.input"; data: string; terminalId?: string }
+  | { type: "terminal.resize"; cols: number; rows: number; terminalId?: string }
+  | { type: "terminal.stop"; terminalId?: string }
+  /** Recent output of a running terminal, to repaint it when the panel (re)attaches. */
+  | { type: "terminal.backlog"; terminalId: string }
   /** Site logins for get_credential (never used for X). Encrypted; unlocked per browser session. */
   | { type: "vault.list" }
   | { type: "vault.unlock"; passphrase: string }
@@ -113,6 +125,8 @@ export interface UiResults {
   "run.adhoc": { sessionId: string };
   "run.due": { started: boolean; detail?: string };
   "run.stop": { ok: boolean };
+  /** The new session's id. */
+  "run.continue": { sessionId: string };
   "agent.show": { ok: boolean };
   "run.say": { ok: boolean };
   "schedule.pause": UiState;
@@ -126,6 +140,7 @@ export interface UiResults {
   "sessions.events": { session: SessionInfo; events: StampedAgentEvent[] };
   /** backlog: recent output when attaching to an already running terminal. */
   "terminal.start": { terminalId: string; backlog?: string };
+  "terminal.backlog": { data: string };
   "terminal.input": { ok: boolean };
   "terminal.resize": { ok: boolean };
   "terminal.stop": { ok: boolean };
@@ -142,6 +157,8 @@ export type UiPush =
   | { type: "event"; event: StampedAgentEvent }
   | { type: "session"; session: SessionInfo }
   | { type: "tasks.changed" }
+  /** A terminal started; for kind "task", Claude Code is running a task in it. */
+  | { type: "terminal.opened"; terminal: TerminalInfo }
   | { type: "terminal.data"; terminalId: string; data: string }
   | { type: "terminal.exit"; terminalId: string; exitCode: number | null };
 

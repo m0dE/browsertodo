@@ -139,7 +139,7 @@ export class HelperLink {
     }
     const peer: HelperPeer = new RpcPeer<Methods<HelperMethods>, Methods<BrowserMethods>>((msg) => port.postMessage(msg), "e");
     this.opts.registerHandlers(peer);
-    for (const method of ["helper.event", "helper.terminal.data", "helper.terminal.exit"] as const) {
+    for (const method of ["helper.event", "helper.terminal.opened", "helper.terminal.data", "helper.terminal.exit"] as const) {
       peer.onNotification(method, (params) => {
         for (const fn of this.notificationListeners.get(method) ?? []) {
           try {

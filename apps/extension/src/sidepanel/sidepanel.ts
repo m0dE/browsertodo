@@ -1,4 +1,6 @@
 /** Side panel entry: status line, tabs, and the push port to the background. */
+import type { SessionInfo } from "@browsertodo/shared";
+import { isContinuable } from "../continue.js";
 import { UI_PORT_NAME, uiRequest, type UiPush, type UiState } from "../ui-protocol.js";
 import { initActivity } from "./activity.js";
 import { initComposer } from "./composer.js";
@@ -10,11 +12,43 @@ import { initTerminal } from "./terminal.js";
 type TabName = "tasks" | "activity" | "terminal";
 
 let state: UiState | null = null;
+let currentTab: TabName = "tasks";
+/** The session the Activity tab shows. */
+let focused: SessionInfo | null = null;
 
-const tasks = initTasks({ onStarted: () => showTab("activity") });
-const composer = initComposer({ onStarted: () => showTab("activity"), onState: (s) => applyState(s) });
-const activity = initActivity();
+/** A stopped run was continued: show its new session. */
+const followNew = () => {
+  showTab("activity");
+  activity.followLive();
+};
+const tasks = initTasks({ onStarted: () => showTab("activity"), onContinued: followNew });
+const composer = initComposer({ onStarted: () => showTab("activity"), onState: (s) => applyState(s), onContinued: followNew });
+const activity = initActivity({
+  onContinue: (sessionId) => void composer.continueRun(sessionId),
+  onFocus: (s) => {
+    focused = s;
+    updateContinue();
+    updateWatch();
+  },
+});
+
+/** The composer continues the run the Activity tab shows when it stopped before finishing and nothing runs. */
+function updateContinue(): void {
+  const can = currentTab === "activity" && !state?.running && isContinuable(focused);
+  composer.setContinueTarget(can ? focused : null);
+}
 const terminal = initTerminal();
+
+/** "Watch in Terminal" in the Activity header: the shown run is a Claude Code task whose terminal session is open. */
+const watchBtn = $<HTMLButtonElement>("act-watch");
+function updateWatch(): void {
+  watchBtn.hidden = !(focused && focused.brain === "claude-code" && terminal.taskTerminalOf(focused.sessionId));
+}
+watchBtn.addEventListener("click", () => {
+  if (!focused) return;
+  showTab("terminal");
+  terminal.watch(focused.sessionId);
+});
 
 function showTab(name: TabName): void {
   for (const btn of document.querySelectorAll<HTMLButtonElement>(".tabs [role=tab]")) {
@@ -27,9 +61,12 @@ function showTab(name: TabName): void {
   } catch {
     // Storage may be unavailable; the tab just is not remembered.
   }
+  currentTab = name;
+  updateContinue();
   // The terminal has its own input; the composer serves Tasks and Activity.
   composer.setVisible(name !== "terminal");
   if (name === "terminal") terminal.onShow();
+  else terminal.onHide();
   if (name === "tasks") void tasks.refresh();
 }
 
@@ -80,8 +117,10 @@ function applyState(s: UiState): void {
   renderStatus(s);
   activity.setRunning(s.running);
   composer.setRunning(!!s.running);
+  updateContinue();
   composer.setState(s);
   terminal.onState(s);
+  updateWatch();
 }
 
 function onPush(msg: UiPush): void {
@@ -99,11 +138,16 @@ function onPush(msg: UiPush): void {
     case "tasks.changed":
       void tasks.refresh();
       break;
+    case "terminal.opened":
+      terminal.onOpened(msg.terminal);
+      updateWatch();
+      break;
     case "terminal.data":
       terminal.onData(msg.terminalId, msg.data);
       break;
     case "terminal.exit":
       terminal.onExit(msg.terminalId, msg.exitCode);
+      updateWatch();
       break;
   }
 }

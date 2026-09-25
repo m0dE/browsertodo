@@ -3,7 +3,7 @@
  * and a parser for it (used by the helper's scripted brain, which only sees
  * tool text).
  */
-import type { ElementInfo, PageSnapshot } from "@browsertodo/shared";
+import type { AgentTabInfo, ElementInfo, PageSnapshot } from "@browsertodo/shared";
 
 export function formatElement(el: ElementInfo): string {
   const parts: string[] = [el.tag];
@@ -37,6 +37,33 @@ export function formatSnapshot(snap: PageSnapshot): string {
 /** URL, title and the element list, without the page text (used when act stops). */
 export function formatCompact(snap: PageSnapshot): string {
   return [`URL: ${snap.url}`, `Title: ${snap.title}`, formatElements(snap.elements, snap.truncated)].join("\n");
+}
+
+/** Elements listed per tab when read_page reads several tabs (the full list is one switch_tab + read_page away). */
+export const MULTI_TAB_ELEMENTS = 80;
+
+/** One line per agent tab: "t2 (current) https://... "Title"". */
+export function formatTabs(tabs: AgentTabInfo[]): string {
+  if (!tabs.length) return "(no tabs)";
+  return tabs
+    .map((t) => `${t.id}${t.current ? " (current)" : ""} ${t.url} ${JSON.stringify(t.title)}${t.error ? ` [${t.error}]` : ""}`)
+    .join("\n");
+}
+
+/** read_page with `tabs`: each tab's snapshot (or error) under its own header. */
+export function formatTabSnapshots(reads: ({ tab: string; snap: PageSnapshot } | { tab: string; error: string })[]): string {
+  return reads
+    .map((r) => {
+      const header = `===== Tab ${r.tab} =====`;
+      if ("error" in r) return `${header}\nCould not read this tab: ${r.error}`;
+      const { snap } = r;
+      const extra = snap.elements.length - MULTI_TAB_ELEMENTS;
+      if (extra <= 0) return `${header}\n${formatSnapshot(snap)}`;
+      const note = `(${extra} more elements; switch_tab to ${r.tab} and call read_page for the full list)`;
+      const body = [`URL: ${snap.url}`, `Title: ${snap.title}`, formatElements(snap.elements.slice(0, MULTI_TAB_ELEMENTS)), note, "--- visible text ---", snap.text];
+      return `${header}\n${body.join("\n")}`;
+    })
+    .join("\n\n");
 }
 
 /** What a scripted brain can recover from read_page text. */

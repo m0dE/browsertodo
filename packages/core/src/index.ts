@@ -69,7 +69,7 @@ export function startApiAgent(opts: ApiAgentOptions): AgentSession {
 
 // Extras used by the helper (and handy for the extension).
 export { NOT_CONFIDENT, NO_TASK_TO_END } from "./executor.js";
-export { formatElement, formatElements, formatCompact, parseSnapshotText, type ParsedPage } from "./page-format.js";
+export { formatElement, formatElements, formatCompact, formatTabs, formatTabSnapshots, parseSnapshotText, type ParsedPage } from "./page-format.js";
 export { switchXAccount, normalizeHandle, mentionsHandle, SWITCHER_TEST_ID } from "./x-account.js";
 export { jevFromClient, buildJevState, buildJevQuestions, parseJevAnswers, type JevClientLike } from "./jev.js";
 export { isXSite, isXUrl, isXStatusUrl, siteHost } from "./util.js";

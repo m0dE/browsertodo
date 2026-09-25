@@ -158,7 +158,7 @@ describe("createToolExecutor: act", () => {
     const page = (await exec.call("read_page", {})).text ?? "";
     const box = Number(/\[(\d+)\] textbox/.exec(page)![1]);
     const direct = await exec.call("act", { steps: [{ goal: "type the post", index: box, text: "direct gm" }] });
-    expect(direct.text).toMatch(/typed 9 characters into \[\d+\] \(direct\)/);
+    expect(direct.text).toMatch(/typed 9 characters into \[\d+\] \(picked by Claude\)/);
   });
 
   it("runs several steps: type uses the step text, click, then returns the final page", async () => {
@@ -270,5 +270,150 @@ describe("browser notes", () => {
     expect(events.find((e) => e.type === "tool_result")!.text).toMatch(/^\(Using fallback mode/);
     const r2 = await exec.call("read_page", {});
     expect(r2.text).not.toMatch(/fallback/);
+  });
+});
+
+/** A browser with several tabs: each tab has a URL, the current tab gets the single-tab calls. */
+class FakeTabs {
+  tabs = [{ id: "t1", url: "https://mail.test/search" }];
+  current = "t1";
+  next = 2;
+  calls: { method: string; params: any; tab: string }[] = [];
+  failRead = new Set<string>();
+  caller(): BrowserCaller {
+    return {
+      call: async (method: string, params: any): Promise<any> => {
+        this.calls.push({ method, params, tab: this.current });
+        const info = (t: { id: string; url: string }) => ({ id: t.id, url: t.url, title: `Title ${t.url}`, current: t.id === this.current });
+        switch (method) {
+          case "browser.openTabs": {
+            const made = params.urls.map((url: string) => ({ id: `t${this.next++}`, url }));
+            this.tabs.push(...made);
+            if (params.background === false) this.current = made[0].id;
+            return { tabs: made.map(info) };
+          }
+          case "browser.switchTab": {
+            const t = this.tabs.find((x) => x.id === params.tab);
+            if (!t) throw new Error(`unknown tab "${params.tab}"; call list_tabs`);
+            this.current = t.id;
+            return info(t);
+          }
+          case "browser.listTabs":
+            return { tabs: this.tabs.map(info) };
+          case "browser.closeTabs": {
+            this.tabs = this.tabs.filter((t) => !params.tabs.includes(t.id));
+            if (!this.tabs.some((t) => t.id === this.current)) this.current = "t1";
+            return { closed: params.tabs, tabs: this.tabs.map(info) };
+          }
+          case "browser.readPage": {
+            const id = params.tab ?? this.current;
+            if (this.failRead.has(id)) throw new Error(`tab ${id} was closed`);
+            const t = this.tabs.find((x) => x.id === id)!;
+            const elements = Array.from({ length: id === "t3" ? 100 : 1 }, (_, i) => ({ index: i, tag: "a", role: "link", name: `link ${i}`, inViewport: true }));
+            return { url: t.url, title: `Title ${t.url}`, text: `body of ${t.url}`, elements, truncated: false };
+          }
+          default:
+            return { ok: true };
+        }
+      },
+    } as BrowserCaller;
+  }
+}
+
+describe("createToolExecutor: several tabs", () => {
+  const multi = () => {
+    const tabs = new FakeTabs();
+    const { exec, events } = setup(new FakeX(), { browser: tabs.caller() });
+    return { tabs, exec, events };
+  };
+
+  it("open_tabs returns the new tab ids and how to read them together", async () => {
+    const { tabs, exec, events } = multi();
+    const r = await exec.call("open_tabs", { urls: ["https://mail.test/m/1", "https://mail.test/m/2"] });
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toContain("Opened 2 tab(s):");
+    expect(r.text).toContain('t2 https://mail.test/m/1 "Title https://mail.test/m/1"');
+    expect(r.text).toContain('read_page {"tabs": ["t2","t3"]}');
+    expect(tabs.calls[0]).toMatchObject({ method: "browser.openTabs", params: { urls: ["https://mail.test/m/1", "https://mail.test/m/2"] } });
+    expect(tabs.calls[0]!.params).not.toHaveProperty("background");
+    expect(events.map((e) => e.type)).toEqual(["tool_call", "tool_result"]);
+    await exec.call("open_tabs", { urls: ["https://mail.test/m/3"], background: false });
+    expect(tabs.calls[1]!.params).toEqual({ urls: ["https://mail.test/m/3"], background: false });
+    expect(tabs.current).toBe("t4");
+  });
+
+  it("read_page with tabs reads every tab in one result, each under its own header", async () => {
+    const { tabs, exec } = multi();
+    await exec.call("open_tabs", { urls: ["https://mail.test/m/1", "https://mail.test/m/2", "https://mail.test/m/3"] });
+    const r = await exec.call("read_page", { tabs: ["t2", "t3", "t4", "t2"] });
+    expect(r.isError).toBeUndefined();
+    const reads = tabs.calls.filter((c) => c.method === "browser.readPage");
+    expect(reads.map((c) => c.params)).toEqual([{ tab: "t2" }, { tab: "t3" }, { tab: "t4" }]);
+    const text = r.text!;
+    expect(text.indexOf("===== Tab t2 =====")).toBeLessThan(text.indexOf("===== Tab t3 ====="));
+    expect(text.indexOf("===== Tab t3 =====")).toBeLessThan(text.indexOf("===== Tab t4 ====="));
+    expect(text).toContain("body of https://mail.test/m/1");
+    expect(text).toContain("body of https://mail.test/m/3");
+    // A long element list is cut per tab, with a pointer to the full list.
+    expect(text).toContain("(20 more elements; switch_tab to t3 and call read_page for the full list)");
+    expect(text).not.toContain('"link 80"');
+    // The default read_page is unchanged: the current tab, no header.
+    const plain = await exec.call("read_page", {});
+    expect(tabs.calls.at(-1)!.params).toEqual({});
+    expect(plain.text).toMatch(/^URL: https:\/\/mail\.test\/search/);
+  });
+
+  it("read_page with tabs shows a failing tab's error next to the others, and errors only when all fail", async () => {
+    const { tabs, exec } = multi();
+    await exec.call("open_tabs", { urls: ["https://mail.test/m/1", "https://mail.test/m/2"] });
+    tabs.failRead.add("t3");
+    const r = await exec.call("read_page", { tabs: ["t2", "t3"] });
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toContain("===== Tab t3 =====\nCould not read this tab: tab t3 was closed");
+    expect(r.text).toContain("body of https://mail.test/m/1");
+    tabs.failRead.add("t2");
+    expect((await exec.call("read_page", { tabs: ["t2", "t3"] })).isError).toBe(true);
+  });
+
+  it("switch_tab makes later tools act on that tab", async () => {
+    const { tabs, exec } = multi();
+    await exec.call("open_tabs", { urls: ["https://mail.test/m/1"] });
+    const r = await exec.call("switch_tab", { tab: "t2" });
+    expect(r.text).toBe("Current tab is now t2: https://mail.test/m/1\nTitle: Title https://mail.test/m/1");
+    await exec.call("act", { steps: [{ goal: "open reply", index: 0 }] });
+    await exec.call("scroll", { direction: "down" });
+    const after = tabs.calls.filter((c) => c.method === "browser.click" || c.method === "browser.scroll");
+    expect(after.map((c) => c.tab)).toEqual(["t2", "t2"]);
+    const bad = await exec.call("switch_tab", { tab: "t9" });
+    expect(bad).toMatchObject({ isError: true, text: expect.stringContaining('unknown tab "t9"') });
+  });
+
+  it("list_tabs and close_tabs", async () => {
+    const { tabs, exec } = multi();
+    await exec.call("open_tabs", { urls: ["https://mail.test/m/1", "https://mail.test/m/2"] });
+    await exec.call("switch_tab", { tab: "t3" });
+    const list = await exec.call("list_tabs", {});
+    expect(list.text!.split("\n")).toEqual([
+      't1 https://mail.test/search "Title https://mail.test/search"',
+      't2 https://mail.test/m/1 "Title https://mail.test/m/1"',
+      't3 (current) https://mail.test/m/2 "Title https://mail.test/m/2"',
+    ]);
+    const closed = await exec.call("close_tabs", { tabs: ["t2", "t3"] });
+    expect(closed.text).toBe('Closed t2, t3. Open tabs:\nt1 (current) https://mail.test/search "Title https://mail.test/search"');
+    expect(tabs.current).toBe("t1");
+    expect((await exec.call("close_tabs", { tabs: [] })).isError).toBe(true);
+  });
+
+  it("the prompts tell the model to open several pages at once", async () => {
+    const { buildSystemPrompt } = await import("../src/index.js");
+    const { TOOL_NAMES, INTERACTIVE_TOOL_NAMES } = await import("@browsertodo/shared");
+    const task = buildSystemPrompt({ tools: TOOL_NAMES, jev: true });
+    expect(task).toContain("- open_tabs:");
+    expect(task).toMatch(/open them together with open_tabs .* one read_page call using `tabs`/);
+    expect(task).toMatch(/tabs you opened are also closed when the task ends/);
+    const terminal = buildSystemPrompt({ tools: INTERACTIVE_TOOL_NAMES, jev: true, interactive: true });
+    expect(terminal).toMatch(/When a request needs several pages/);
+    expect(terminal).not.toMatch(/when the task ends/);
+    expect(buildSystemPrompt({ tools: ["navigate", "read_page"], jev: false })).not.toContain("open_tabs");
   });
 });

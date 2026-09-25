@@ -24,7 +24,7 @@ export interface TasksView {
   tick(): void;
 }
 
-export function initTasks(opts: { onStarted: () => void }): TasksView {
+export function initTasks(opts: { onStarted: () => void; onContinued?: () => void }): TasksView {
   let tasks: Row[] = [];
 
   // Add form
@@ -109,6 +109,19 @@ export function initTasks(opts: { onStarted: () => void }): TasksView {
     }
   }
 
+  /** Continues a paused or failed task from its latest run. */
+  async function continueTask(t: Row): Promise<void> {
+    try {
+      const { sessions } = await uiRequest({ type: "sessions.list", limit: 200 });
+      const last = sessions.find((s) => s.taskId === t.id && s.source === "local" && s.endedAt);
+      if (!last) return flash(tasksMsg, "No earlier run of this task to continue. Use Run again.", "bad");
+      await uiRequest({ type: "run.continue", sessionId: last.sessionId });
+      (opts.onContinued ?? opts.onStarted)();
+    } catch (err) {
+      flash(tasksMsg, errorText(err), "bad");
+    }
+  }
+
   function row(t: Row, now: number): HTMLLIElement {
     const chip = taskChip(t, now);
     const meta: (HTMLElement | string)[] = [];
@@ -127,6 +140,9 @@ export function initTasks(opts: { onStarted: () => void }): TasksView {
     const reason = t.status === "failed" ? t.failReason : t.status === "paused" ? t.pauseReason : null;
 
     const items: HTMLButtonElement[] = [];
+    if ((t.status === "paused" || t.status === "failed") && t.attempts > 0) {
+      items.push(h("button", { type: "button", title: "Pick up where the last run stopped", onclick: () => void continueTask(t) }, "Continue"));
+    }
     if (t.status !== "running" && t.status !== "pending") {
       items.push(h("button", { type: "button", onclick: () => void act({ type: "tasks.retry", id: t.id }) }, "Run again"));
     }

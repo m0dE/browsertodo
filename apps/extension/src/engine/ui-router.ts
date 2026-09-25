@@ -2,7 +2,7 @@
  * Background side of ui-protocol.ts: answers every UiRequest and pushes
  * UiPush messages to the side panel ports.
  */
-import { redactSettings, type ExtensionSettings, type HelperInfo, type SessionInfo, type StampedAgentEvent } from "@browsertodo/shared";
+import { redactSettings, type ExtensionSettings, type HelperInfo, type SessionInfo, type StampedAgentEvent, type TerminalInfo } from "@browsertodo/shared";
 import {
   UI_PORT_NAME,
   type BrainStatus,
@@ -23,6 +23,7 @@ export interface RouterRunner {
   state(): Promise<RunnerState>;
   runDue(trigger: "alarm" | "manual"): Promise<{ started: boolean; detail?: string }>;
   runAdhoc(input: AdhocInput): Promise<{ sessionId: string }>;
+  continueSession(sessionId: string, note?: string): Promise<{ sessionId: string }>;
   stop(): boolean;
   say(text: string): Promise<boolean>;
   pauseSchedule(reason?: string): Promise<void>;
@@ -30,11 +31,16 @@ export interface RouterRunner {
 }
 
 export interface RouterTerminal {
+  /** The user's own session. */
   readonly current: { terminalId: string } | null;
+  /** Every running terminal (task sessions and the user's). Optional so older wiring and tests keep working. */
+  list?(): TerminalInfo[];
   start(cols: number, rows: number, jevApiKey?: string): Promise<{ terminalId: string; backlog?: string }>;
-  input(data: string): Promise<boolean>;
-  resize(cols: number, rows: number): Promise<boolean>;
-  stop(): Promise<boolean>;
+  backlog?(terminalId: string): Promise<string>;
+  /** terminalId omitted: the user's session. */
+  input(data: string, terminalId?: string): Promise<boolean>;
+  resize(cols: number, rows: number, terminalId?: string): Promise<boolean>;
+  stop(terminalId?: string): Promise<boolean>;
 }
 
 export interface RouterVault {
@@ -91,6 +97,7 @@ export class UiRouter {
       running: d.runner.running,
       paused: settings.paused,
       terminal: d.terminal.current,
+      terminals: d.terminal.list?.() ?? (d.terminal.current ? [{ ...d.terminal.current, kind: "user", title: "Claude Code" }] : []),
     };
     if (settings.paused && rs.pausedReason) state.pausedReason = rs.pausedReason;
     if (rs.lastRunAt) state.lastRunAt = rs.lastRunAt;
@@ -136,6 +143,11 @@ export class UiRouter {
         };
         return d.runner.runAdhoc(input) satisfies Promise<UiResults["run.adhoc"]>;
       }
+      case "run.continue": {
+        if (typeof msg.sessionId !== "string" || !msg.sessionId) throw new Error("sessionId is required");
+        const note = typeof msg.text === "string" ? msg.text.trim() : "";
+        return d.runner.continueSession(msg.sessionId, note || undefined) satisfies Promise<UiResults["run.continue"]>;
+      }
       case "run.due":
         return d.runner.runDue("manual");
       case "run.stop":
@@ -180,12 +192,14 @@ export class UiRouter {
           const s = await d.loadSettings();
           return d.terminal.start(msg.cols, msg.rows, s.jevEnabled && s.jevApiKey ? s.jevApiKey : undefined);
         }
+      case "terminal.backlog":
+        return { data: (await d.terminal.backlog?.(String(msg.terminalId ?? ""))) ?? "" } satisfies UiResults["terminal.backlog"];
       case "terminal.input":
-        return { ok: await d.terminal.input(String(msg.data ?? "")) };
+        return { ok: await d.terminal.input(String(msg.data ?? ""), termId(msg.terminalId)) };
       case "terminal.resize":
-        return { ok: await d.terminal.resize(msg.cols, msg.rows) };
+        return { ok: await d.terminal.resize(msg.cols, msg.rows, termId(msg.terminalId)) };
       case "terminal.stop":
-        return { ok: await d.terminal.stop() };
+        return { ok: await d.terminal.stop(termId(msg.terminalId)) };
       case "helper.getLog":
         if (!d.helper.info || !d.helper.call) return { text: "" };
         return d.helper.call("helper.getLog", { lines: Math.max(1, Math.min(2000, Math.trunc(msg.lines) || 200)) }, { timeoutMs: 10_000 });
@@ -279,4 +293,9 @@ export class UiHub {
       this.ports.delete(port);
     }
   }
+}
+
+/** A terminal id from a UI message, or undefined (the user's session). */
+function termId(v: unknown): string | undefined {
+  return typeof v === "string" && v ? v : undefined;
 }

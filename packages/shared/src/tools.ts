@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_TABS_PER_CALL } from "./browser.js";
 
 /**
  * MCP tools exposed to Claude Code. The MCP server registers these, the helper
@@ -8,7 +9,14 @@ export const MCP_SERVER_NAME = "browsertodo";
 
 export const ToolArgs = {
   navigate: z.object({ url: z.string().describe("Absolute URL to open") }),
-  read_page: z.object({}),
+  read_page: z.object({
+    tabs: z
+      .array(z.string())
+      .min(1)
+      .max(MAX_TABS_PER_CALL)
+      .optional()
+      .describe("Tab ids (from open_tabs or list_tabs) to read together in one call. Default: the current tab"),
+  }),
   screenshot: z.object({}),
   act: z.object({
     steps: z
@@ -45,6 +53,16 @@ export const ToolArgs = {
     index: z.number().int().describe("Index of an <input type=file> from read_page"),
     paths: z.array(z.string()).min(1).describe("Local file paths from the task's media list"),
   }),
+  open_tabs: z.object({
+    urls: z.array(z.string().describe("Absolute URL")).min(1).max(MAX_TABS_PER_CALL).describe("URLs to open, each in its own new tab"),
+    background: z
+      .boolean()
+      .optional()
+      .describe("Default true: open without showing them and keep the current tab. false: show the first new tab and make it the current tab"),
+  }),
+  switch_tab: z.object({ tab: z.string().describe("Tab id from open_tabs or list_tabs, e.g. t2") }),
+  list_tabs: z.object({}),
+  close_tabs: z.object({ tabs: z.array(z.string()).min(1).describe("Tab ids to close") }),
   switch_x_account: z.object({ handle: z.string().describe("Account handle, e.g. @myhandle") }),
   get_credential: z.object({ site: z.string().describe("Hostname, e.g. example.com") }),
   task_complete: z.object({
@@ -60,9 +78,10 @@ export const TOOL_NAMES = Object.keys(ToolArgs) as ToolName[];
 export type ToolArgsOf<N extends ToolName> = z.infer<(typeof ToolArgs)[N]>;
 
 export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
-  navigate: "Open a URL in the agent tab and wait for it to load.",
-  read_page: "Get the page URL, title, visible text and an indexed list of interactive elements.",
-  screenshot: "Capture the visible part of the page as an image.",
+  navigate: "Open a URL in the current tab and wait for it to load.",
+  read_page:
+    "Get the page URL, title, visible text and an indexed list of interactive elements. Give `tabs` to read several tabs in one call (each under its own header) without switching to them.",
+  screenshot: "Capture the visible part of the current tab as an image (brings that tab to the front first if it is in the background).",
   act: "Do up to 8 small steps in order, in one call. For each step either describe it in plain words (a fast model picks the element) or give the element index you already know (runs directly). Give text for steps that type. Stops at the first step the fast model is not confident about and returns the page's element list, so you can retry that step with an index.",
   click: "Click an element by index from read_page.",
   type: "Focus an element by index and insert text into it.",
@@ -70,6 +89,11 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   press_key: "Press a key or key combination.",
   scroll: "Scroll the page or an element.",
   upload: "Attach local files to a file input by index.",
+  open_tabs:
+    "Open up to 8 URLs at once, each in a new tab, loading in parallel. Waits until all are loaded and returns their tab ids and titles. The current tab stays the same unless background is false.",
+  switch_tab: "Make another tab the current tab: read_page, act, navigate, scroll, screenshot and the other tools then act on it.",
+  list_tabs: "List this task's tabs with id, URL, title, and which one is current.",
+  close_tabs: "Close tabs you opened and no longer need. The tab the task started on is never closed.",
   switch_x_account: "Switch X (Twitter) to another signed-in account using X's account switcher. Verify with a screenshot afterwards.",
   get_credential: "Get the stored username and password for a site. Never use this for X.",
   task_complete: "Finish the task successfully. Call exactly once when the task is fully done.",

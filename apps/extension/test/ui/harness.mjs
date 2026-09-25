@@ -90,8 +90,21 @@ function scenario(kind) {
     nextRunAt: iso(12),
     lastRunAt: iso(-3),
     terminal: null,
+    terminals: [],
   };
   if (kind === "idle" || kind === "empty") state.running = null;
+  // Claude Code runs the task in its own terminal session, beside the user's session.
+  if (kind === "claude-task" || kind === "claude-idle") {
+    running.brain = "claude-code";
+    state.brain = { ...state.brain, effective: "claude-code" };
+    state.terminal = { terminalId: "term-user" };
+    state.terminals = [
+      { terminalId: "task-1", kind: "task", title: running.title, sessionId: "s-live" },
+      { terminalId: "term-user", kind: "user", title: "Claude Code" },
+    ];
+  }
+  // The task's session is not open yet (it opens while the panel watches).
+  if (kind === "claude-idle") state.terminals = state.terminals.filter((t) => t.kind === "user");
   if (kind === "nobrain") {
     state.brain = { effective: null, note: "No brain available: add a Claude API key, or install the helper for Claude Code.", helper: null, helperError: "Specified native messaging host not found.", hasApiKey: false, jevActive: false };
     state.running = null;
@@ -144,7 +157,39 @@ function scenario(kind) {
   ];
   if (kind === "idle") tasks[0] = { ...tasks[0], status: "pending", notBefore: iso(40) };
   if (kind === "empty") tasks.splice(0, tasks.length);
-  return { state, tasks, events, sessions, pastEvents: events.slice(0, 6).map((e) => ({ ...e, sessionId: "s-2" })) };
+  const eventsBySession = {};
+  if (kind === "stopped") {
+    // The user pressed Stop after the agent typed the post: the run ends paused "stopped by user".
+    const stopped = {
+      sessionId: "s-stop", source: "adhoc", title: "make a post on X for me about how browsertodo keeps posting while the laptop sleeps",
+      brain: "claude-code", jev: false, startedAt: iso(-3),
+    };
+    const post = "Close the laptop lid, and browsertodo still posts on time. Your todo list runs in your own browser, on a schedule, with your own accounts. Try it";
+    const sev = (minutes, e) => ({ ...e, ts: iso(minutes), sessionId: "s-stop" });
+    eventsBySession["s-stop"] = [
+      sev(-3, { type: "status", text: "Started with Claude Code" }),
+      sev(-3, { type: "assistant_text", text: "I'll open X and write the post." }),
+      sev(-3, { type: "tool_call", id: "1", name: "navigate", args: { url: "https://x.com/home" } }),
+      sev(-3, { type: "tool_result", id: "1", name: "navigate", text: "Opened https://x.com/home (title: Home / X)" }),
+      sev(-2, { type: "tool_call", id: "2", name: "click", args: { index: 31 } }),
+      sev(-2, { type: "tool_result", id: "2", name: "click", text: "clicked [31] textbox \"Post text\"" }),
+      sev(-2, { type: "tool_call", id: "3", name: "type", args: { index: 31, text: post } }),
+      sev(-2, { type: "tool_result", id: "3", name: "type", text: `typed ${post.length} characters` }),
+    ];
+    eventsBySession["s-3"] = [
+      { type: "assistant_text", text: "Searching flights to Lisbon for next weekend." },
+      { type: "tool_call", id: "1", name: "navigate", args: { url: "https://www.google.com/travel/flights" } },
+      { type: "tool_result", id: "1", name: "navigate", text: "Opened https://www.google.com/travel/flights" },
+      { type: "task_end", outcome: "paused", reason: "Needs you to pick dates" },
+    ].map((e) => ({ ...e, ts: iso(-395), sessionId: "s-3" }));
+    state.running = stopped;
+    tasks[0] = { ...tasks[0], status: "pending", notBefore: iso(40) };
+    tasks[4] = { ...tasks[4], attempts: 1 };
+    sessions.unshift({ ...stopped, endedAt: iso(-1), outcome: "paused", reason: "stopped by user" });
+    sessions.splice(1, 1);
+    sessions.push({ sessionId: "s-5", source: "local", taskId: "t5", title: tasks[4].instructions, brain: "claude-api", jev: true, startedAt: iso(-70), endedAt: iso(-60), outcome: "paused", reason: "Needs a one-time code sent by SMS" });
+  }
+  return { state, tasks, events, sessions, eventsBySession, taskScreen: TASK_SCREEN, userScreen: TERM_DATA.join(""), pastEvents: events.slice(0, 6).map((e) => ({ ...e, sessionId: "s-2" })) };
 }
 
 /** Runs in the page before any script: a minimal chrome.runtime. */
@@ -165,6 +210,7 @@ function installChromeStub(data) {
     "run.adhoc": () => ({ sessionId: "s-new" }),
     "run.due": () => ({ started: false, detail: "Nothing is due right now." }),
     "run.stop": () => ({ ok: true }),
+    "run.continue": () => ({ sessionId: "s-cont" }),
     "run.say": () => ({ ok: true }),
     "agent.show": () => ({ ok: true }),
     "schedule.pause": () => ({ ...data.state, paused: true }),
@@ -175,10 +221,13 @@ function installChromeStub(data) {
     "tasks.retry": () => ({ task: data.tasks[0] }),
     "sessions.list": () => ({ sessions: data.sessions }),
     "sessions.events": (req) =>
-      req.sessionId === "s-live"
+      data.eventsBySession?.[req.sessionId]
+        ? { session: data.sessions.find((s) => s.sessionId === req.sessionId) ?? data.state.running, events: data.eventsBySession[req.sessionId] }
+        : req.sessionId === "s-live"
         ? { session: data.sessions[0], events: data.events }
         : { session: data.sessions.find((s) => s.sessionId === req.sessionId), events: data.pastEvents },
     "terminal.start": () => ({ terminalId: "term-1" }),
+    "terminal.backlog": (req) => ({ data: (req.terminalId.startsWith("task") ? data.taskScreen : data.userScreen) ?? "" }),
     "terminal.input": () => ({ ok: true }),
     "terminal.resize": () => ({ ok: true }),
     "terminal.stop": () => ({ ok: true }),
@@ -223,6 +272,20 @@ const TERM_DATA = [
   "\x1b[2m────────────────────────────────────────────\x1b[0m\r\n> \x1b[7m \x1b[0m\r\n",
 ];
 
+// Fake Claude Code TUI of a task session.
+const TASK_SCREEN = [
+  "\x1b[38;5;208m ▐▛███▜▌\x1b[0m   \x1b[1mClaude Code\x1b[0m v2.1.282\r\n",
+  "\x1b[38;5;208m▝▜█████▛▘\x1b[0m  Sonnet 5 · Claude Max\r\n",
+  "\x1b[38;5;208m  ▘▘ ▝▝\x1b[0m    ~\\AppData\\Local\\browsertodo\\workspace\r\n\r\n",
+  "\x1b[2m> \x1b[0mPost the launch thread on X from @browsertodo and reply to the first comment\r\n\r\n",
+  "\x1b[32m●\x1b[0m \x1b[1mbrowsertodo - switch_x_account\x1b[0m (MCP)(handle: \"@browsertodo\")\r\n",
+  "  \x1b[2m⎿  Already on @browsertodo\x1b[0m\r\n\r\n",
+  "\x1b[32m●\x1b[0m \x1b[1mbrowsertodo - navigate\x1b[0m (MCP)(url: \"https://x.com/compose/post\")\r\n",
+  "  \x1b[2m⎿  Opened https://x.com/compose/post\x1b[0m\r\n\r\n",
+  "\x1b[37m●\x1b[0m Writing the first post of the thread.\r\n\r\n",
+  "\x1b[38;5;174m✻ Composing… \x1b[2m(12s · esc to interrupt)\x1b[0m\r\n",
+].join("");
+
 const SIZES = [
   { w: 360, h: 800 },
   { w: 480, h: 900 },
@@ -247,13 +310,18 @@ async function shoot(page, name, size, scheme) {
 async function openPanel(ctx, kind, waitFor = ".task") {
   const page = await ctx.newPage();
   const errors = [];
-  page.on("pageerror", (e) => errors.push(String(e)));
+  page.on("pageerror", (e) => errors.push(String(e.stack ?? e)));
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
   await page.addInitScript(installChromeStub, scenario(kind));
   await page.goto(`${base}/sidepanel.html`);
   await page.evaluate(() => localStorage.clear());
   await page.reload();
-  await page.waitForSelector(waitFor);
+  try {
+    await page.waitForSelector(waitFor);
+  } catch (err) {
+    console.error(`panel did not load (${kind}):`, errors);
+    throw err;
+  }
   page.errors = errors;
   return page;
 }
@@ -448,6 +516,72 @@ for (const size of SIZES) {
       await page.close();
     }
 
+    // A Claude Code task runs in its own terminal session beside the user's: switcher, live dots, Watch in Terminal.
+    const taskShots = ["panel-terminal-task", "panel-terminal-user", "panel-activity-watch"];
+    if (wantAny(taskShots, size, scheme)) {
+      const p = await openPanel(ctx, "claude-task");
+      const fail = (what) => {
+        console.error(`${what} (${label})`);
+        failures++;
+      };
+      await p.click("#tab-btn-terminal");
+      // Not typing in the user's session: the task session is shown.
+      await p.waitForSelector('.term-chip[data-id="task-1"][aria-pressed="true"]');
+      await p.waitForFunction(() => document.querySelector("#term .xterm-rows")?.textContent.includes("switch_x_account"));
+      const task = await p.evaluate(() => ({
+        switcher: !document.getElementById("term-sessions").hidden,
+        tabDot: !document.getElementById("term-live-dot").hidden,
+        startHidden: document.getElementById("term-start").hidden && document.getElementById("term-stop").hidden,
+        chipFits: (() => {
+          const row = document.getElementById("term-sessions").getBoundingClientRect();
+          return [...document.querySelectorAll(".term-chip")].every((c) => c.getBoundingClientRect().right <= row.right + 0.5);
+        })(),
+      }));
+      if (!task.switcher || !task.tabDot || !task.startHidden || !task.chipFits) fail(`task terminal view ${JSON.stringify(task)}`);
+      await checkLayout(p, `terminal-task ${label}`);
+      await shoot(p, "panel-terminal-task", size, scheme);
+
+      await p.click('.term-chip[data-id="user"]');
+      await p.waitForFunction(() => document.querySelector("#term .xterm-rows")?.textContent.includes("Welcome to Claude Code"));
+      if (await p.locator("#term-stop").isHidden()) fail("Stop hidden for the running user session");
+      await shoot(p, "panel-terminal-user", size, scheme);
+      // Typing goes to the selected terminal.
+      await p.locator("#term .xterm-helper-textarea").focus();
+      await p.keyboard.type("hi");
+      const inputs = await p.evaluate(() => window.__requests.filter((r) => r.type === "terminal.input").map((r) => r.terminalId));
+      if (!inputs.length || inputs.some((id) => id !== "term-user")) fail(`input went to ${JSON.stringify(inputs)}`);
+
+      await p.click("#tab-btn-activity");
+      await p.waitForSelector("#act-watch:not([hidden])");
+      await checkLayout(p, `activity-watch ${label}`);
+      await shoot(p, "panel-activity-watch", size, scheme);
+      await p.click("#act-watch");
+      await p.waitForSelector('#tab-terminal:not([hidden]) .term-chip[data-id="task-1"][aria-pressed="true"]');
+      reportErrors(p, `claude-task ${label}`);
+      await p.close();
+    }
+    if (want("panel-terminal-autoswitch", size, scheme)) {
+      const p = await openPanel(ctx, "claude-idle");
+      await p.click("#tab-btn-terminal");
+      const pressed = () => p.evaluate(() => document.getElementById("term-sessions").hidden ? "no-switcher" : (document.querySelector('.term-chip[aria-pressed="true"]')?.dataset.id ?? "none"));
+      if ((await pressed()) !== "no-switcher") console.error(`switcher shown without task sessions (${label})`), failures++;
+      // A task session opens while the Terminal tab is visible: it takes over.
+      await p.evaluate(() => window.__push({ type: "terminal.opened", terminal: { terminalId: "task-9", kind: "task", title: "Like the three newest posts", sessionId: "s-live" } }));
+      await p.evaluate((d) => window.__push({ type: "terminal.data", terminalId: "task-9", data: d }), TASK_SCREEN);
+      if ((await pressed()) !== "task-9") console.error(`no auto-switch to the new task session (${label}): ${await pressed()}`), failures++;
+      await shoot(p, "panel-terminal-autoswitch", size, scheme);
+      // It ends: back to the user's session, the switcher goes away.
+      await p.evaluate(() => window.__push({ type: "terminal.exit", terminalId: "task-9", exitCode: 0 }));
+      if ((await pressed()) !== "no-switcher") console.error(`task chip left behind (${label})`), failures++;
+      // Typing in the user's session: a new task session does not steal the view.
+      await p.locator("#term .xterm-helper-textarea").focus();
+      await p.keyboard.type("x");
+      await p.evaluate(() => window.__push({ type: "terminal.opened", terminal: { terminalId: "task-10", kind: "task", title: "Another", sessionId: "s-other" } }));
+      if ((await pressed()) !== "user") console.error(`task session took over while typing (${label}): ${await pressed()}`), failures++;
+      reportErrors(p, `autoswitch ${label}`);
+      await p.close();
+    }
+
     // Warning states.
     if (wantAny(["panel-nobrain-tasks", "panel-model-menu-nojev", "panel-nobrain-terminal"], size, scheme)) {
       const p = await openPanel(ctx, "nobrain");
@@ -477,6 +611,95 @@ for (const size of SIZES) {
       await checkLayout(p, `paused ${label}`);
       await shoot(p, "panel-paused-idle-activity", size, scheme);
       reportErrors(p, `paused ${label}`);
+      await p.close();
+    }
+
+    // Stopped by the user after typing the post: Continue in the end card and in the composer.
+    if (wantAny(["panel-continue", "panel-continue-note", "panel-continue-newtask", "panel-continue-task-menu", "panel-continue-past"], size, scheme)) {
+      const p = await openPanel(ctx, "stopped");
+      await p.click("#tab-btn-activity");
+      await p.waitForSelector(".ev-tool");
+      const data = scenario("stopped");
+      const ended = data.sessions[0];
+      await p.evaluate((s) => {
+        window.__push({ type: "event", event: { type: "task_end", outcome: "paused", reason: "stopped by user", ts: s.endedAt, sessionId: s.sessionId } });
+        window.__push({ type: "session", session: s });
+      }, ended);
+      await p.evaluate((st) => window.__push({ type: "state", state: st }), { ...data.state, running: null });
+      await p.waitForSelector(".ev-continue");
+      const mode = () =>
+        p.evaluate(() => ({
+          placeholder: document.getElementById("now-text").placeholder,
+          submit: document.getElementById("now-submit").textContent,
+          newTask: !document.getElementById("now-new").hidden,
+          attach: !document.getElementById("now-attach").hidden,
+        }));
+      const expectMode = async (want, what) => {
+        const got = await mode();
+        if (got.placeholder !== want.placeholder || got.submit !== want.submit || got.newTask !== want.newTask || got.attach !== want.attach) {
+          console.error(`composer ${what} (${label}):`, got);
+          failures++;
+        }
+      };
+      const CONTINUE = { placeholder: "Continue with a note (optional)…", submit: "Continue", newTask: true, attach: false };
+      const NEW = { placeholder: "Do this now, e.g. “Post ‘good morning’ on X”", submit: "Run", newTask: false, attach: true };
+      const lastContinue = () => p.evaluate(() => window.__requests.filter((r) => r.type === "run.continue").at(-1) ?? null);
+      await expectMode(CONTINUE, "not in continue mode after the stop");
+      await checkLayout(p, `continue ${label}`);
+      await shoot(p, "panel-continue", size, scheme);
+
+      // The card's Continue with an empty box: no note.
+      await p.click(".ev-continue");
+      let req = await lastContinue();
+      if (req?.sessionId !== "s-stop" || "text" in req) {
+        console.error(`card Continue sent ${JSON.stringify(req)} (${label})`);
+        failures++;
+      }
+
+      // A note, sent with Enter.
+      await p.click("#now-text");
+      await p.keyboard.insertText("It's already typed, just press Post");
+      await checkLayout(p, `continue-note ${label}`);
+      await shoot(p, "panel-continue-note", size, scheme);
+      await p.keyboard.press("Enter");
+      await p.waitForFunction(() => window.__requests.filter((r) => r.type === "run.continue").length === 2);
+      req = await lastContinue();
+      if (req?.text !== "It's already typed, just press Post") {
+        console.error(`composer Continue sent ${JSON.stringify(req)} (${label})`);
+        failures++;
+      }
+
+      // "New task" goes back to "Do this now".
+      await p.click("#now-new");
+      await expectMode(NEW, "still continuing after New task");
+      await checkLayout(p, `continue-newtask ${label}`);
+      await shoot(p, "panel-continue-newtask", size, scheme);
+
+      // A past stopped run from History offers Continue too.
+      if (want("panel-continue-past", size, scheme)) {
+        await p.click("#act-history");
+        await p.waitForSelector(".sessions li");
+        await p.locator(".sessions li button", { hasText: "cheapest flight" }).click();
+        await p.waitForSelector("#act-log .ev-continue");
+        await expectMode(CONTINUE, "not in continue mode for a past stopped run");
+        await checkLayout(p, `continue-past ${label}`);
+        await shoot(p, "panel-continue-past", size, scheme);
+      }
+
+      // Tasks tab: the paused task's menu continues its latest run; the composer is back to "Do this now".
+      await p.click("#tab-btn-tasks");
+      await expectMode(NEW, "continue mode on the Tasks tab");
+      const menu = p.locator("#task-list li", { hasText: "September invoice" }).locator(".menu");
+      await menu.locator("summary").click();
+      await shoot(p, "panel-continue-task-menu", size, scheme);
+      await menu.locator("button", { hasText: "Continue" }).click();
+      await p.waitForFunction(() => window.__requests.filter((r) => r.type === "run.continue").length === 3);
+      req = await lastContinue();
+      if (req?.sessionId !== "s-5") {
+        console.error(`task menu Continue sent ${JSON.stringify(req)} (${label})`);
+        failures++;
+      }
+      reportErrors(p, `continue ${label}`);
       await p.close();
     }
     await ctx.close();

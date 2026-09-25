@@ -95,7 +95,7 @@ describe("startApiAgent", () => {
     expect(toolNames(first)).toContain("act");
     expect(toolNames(first)).not.toContain("click");
     expect(toolNames(first)).not.toContain("type");
-    expect(toolNames(first)).toHaveLength(13);
+    expect(toolNames(first)).toHaveLength(17);
     expect(first.body.tools.filter((t: any) => t.cache_control)).toEqual([first.body.tools.at(-1)]);
     const actTool = first.body.tools.find((t: any) => t.name === "act");
     expect(actTool.input_schema).toMatchObject({ type: "object", required: ["steps"] });

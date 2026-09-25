@@ -96,7 +96,8 @@ export function describeEvent(ev: AgentEvent): EventView {
       const target = ev.index === null ? "" : ` #${ev.index}`;
       return {
         kind: "jev",
-        label: `Jev ${ev.operation}${target} · ${ev.confidence.toFixed(2)}`,
+        // Say plainly who made the decision: Jev did it, or Jev was unsure and Claude takes over.
+        label: ev.executed ? `Jev: ${ev.operation}${target} · ${ev.confidence.toFixed(2)}` : `Jev unsure (${ev.confidence.toFixed(2)}) · Claude decides`,
         ms: ev.ms,
         executed: ev.executed,
         title: `${ev.goal}${ev.executed ? "" : " (not confident, left to Claude)"}`,

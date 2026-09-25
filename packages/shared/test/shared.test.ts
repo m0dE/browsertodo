@@ -3,11 +3,16 @@ import {
   BatchCreateInput,
   CreateTaskInput,
   DEFAULT_SETTINGS,
+  INTERACTIVE_TOOL_NAMES,
+  MAX_TABS_PER_CALL,
   RpcPeer,
+  TOOL_DESCRIPTIONS,
+  ToolArgs,
   mcpToolName,
   parseSettings,
   pauseReasonForUrl,
   pickDelayMs,
+  toolsFor,
   type RpcMessage,
 } from "../src/index.js";
 
@@ -122,5 +127,41 @@ describe("RpcPeer", () => {
     silent.close("gone");
     await expect(p).rejects.toThrow("gone");
     await expect(silent.call("b.echo", { v: 1 })).rejects.toThrow("closed");
+  });
+});
+
+describe("multi-tab tools", () => {
+  it("open_tabs takes 1..8 URLs and an optional background flag", () => {
+    expect(ToolArgs.open_tabs.safeParse({ urls: ["https://a.test/"] }).success).toBe(true);
+    expect(ToolArgs.open_tabs.safeParse({ urls: ["https://a.test/"], background: false }).success).toBe(true);
+    expect(ToolArgs.open_tabs.safeParse({ urls: [] }).success).toBe(false);
+    expect(ToolArgs.open_tabs.safeParse({ urls: Array(MAX_TABS_PER_CALL + 1).fill("https://a.test/") }).success).toBe(false);
+  });
+
+  it("read_page keeps the no-argument form and accepts 1..8 tabs", () => {
+    expect(ToolArgs.read_page.safeParse({}).success).toBe(true);
+    expect(ToolArgs.read_page.safeParse({ tabs: ["t2", "t3"] }).success).toBe(true);
+    expect(ToolArgs.read_page.safeParse({ tabs: [] }).success).toBe(false);
+    expect(ToolArgs.read_page.safeParse({ tabs: Array(9).fill("t2") }).success).toBe(false);
+  });
+
+  it("switch_tab, list_tabs and close_tabs validate their arguments", () => {
+    expect(ToolArgs.switch_tab.safeParse({ tab: "t2" }).success).toBe(true);
+    expect(ToolArgs.switch_tab.safeParse({}).success).toBe(false);
+    expect(ToolArgs.list_tabs.safeParse({}).success).toBe(true);
+    expect(ToolArgs.close_tabs.safeParse({ tabs: ["t2"] }).success).toBe(true);
+    expect(ToolArgs.close_tabs.safeParse({ tabs: [] }).success).toBe(false);
+  });
+
+  it("are offered to tasks and the interactive terminal, with descriptions", () => {
+    for (const n of ["open_tabs", "switch_tab", "list_tabs", "close_tabs"] as const) {
+      expect(TOOL_DESCRIPTIONS[n].length).toBeGreaterThan(10);
+      expect(toolsFor({ jev: false })).toContain(n);
+      expect(toolsFor({ jev: true, interactive: true })).toContain(n);
+      expect(INTERACTIVE_TOOL_NAMES).toContain(n);
+    }
+    // toolsFor semantics are unchanged: act replaces click/type, no task_* in the terminal.
+    expect(toolsFor({ jev: false })).not.toContain("click");
+    expect(toolsFor({ jev: true, interactive: true })).not.toContain("task_complete");
   });
 });

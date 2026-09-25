@@ -161,6 +161,13 @@ describe("TaskRunner with ScriptedBrain", () => {
     expect(await first).toMatchObject({ outcome: "failed", reason: "test over" });
   });
 
+  it("single-turn brains end with their turn: continueSession says the session ended", async () => {
+    const { runner } = setup(new FakeX());
+    expect(await runner.run(params())).toMatchObject({ outcome: "done" });
+    expect(runner.openSessions).toEqual([]);
+    await expect(runner.continueSession({ sessionId: "S1", text: "again", config: CONFIG })).rejects.toThrow("session ended");
+  });
+
   it("refuses the reserved interactive session id", async () => {
     await expect(setup(new FakeX()).runner.run(params({}, { sessionId: INTERACTIVE_TASK_ID }))).rejects.toThrow(/reserved/);
   });

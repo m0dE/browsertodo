@@ -1,5 +1,6 @@
 /** Activity tab: live agent session, history, read-only past sessions. */
 import type { SessionInfo, StampedAgentEvent } from "@browsertodo/shared";
+import { isContinuableOutcome } from "../continue.js";
 import { uiRequest } from "../ui-protocol.js";
 import { $, busy, errorText, h } from "./dom.js";
 import { describeEvent, isNearBottom, type EventView } from "./event-format.js";
@@ -12,18 +13,22 @@ export interface ActivityView {
   setRunning(session: SessionInfo | null): void;
   onEvent(ev: StampedAgentEvent): void;
   onSession(session: SessionInfo): void;
+  /** Show the live session (e.g. the run just continued). */
+  followLive(): void;
 }
 
 const eventKey = (e: StampedAgentEvent) => JSON.stringify(e);
 
-export function renderEvent(v: EventView): HTMLElement {
+/** onContinue: the run ended without finishing and can be continued (task_end cards). */
+export function renderEvent(v: EventView, onContinue?: () => void): HTMLElement {
   switch (v.kind) {
     case "status":
       return h("div.ev-status", null, v.text);
     case "text":
       return h("p.ev-text", null, v.text);
     case "tool":
-      return h("div.ev-tool", { title: `${v.name} ${v.args}` }, "› ", h("b", null, v.name), v.args ? ` ${v.args}` : "");
+      // Every tool call is Claude's decision; Jev's own decisions show as Jev lines below it.
+      return h("div.ev-tool", { title: `Claude chose: ${v.name} ${v.args}` }, h("span.who", null, "Claude"), h("b", null, v.name), v.args ? ` ${v.args}` : "");
     case "result": {
       const cls = v.isError ? "err" : "";
       // Long results collapse behind their preview; short ones are just the line.
@@ -56,13 +61,27 @@ export function renderEvent(v: EventView): HTMLElement {
         null,
         h("div", null, h("span.chip", { "data-tone": v.chip.tone }, v.chip.label), v.text ? ` ${v.text}` : ""),
         v.url ? h("a", { href: v.url, target: "_blank", rel: "noopener" }, v.url) : null,
+        onContinue
+          ? h(
+              "div.ev-actions",
+              null,
+              h("button.primary.small.ev-continue", { type: "button", title: "Pick up where it stopped (uses the note in the box below, if any)", onclick: () => onContinue() }, "Continue"),
+            )
+          : null,
       );
     case "error":
       return h("div.ev-error", null, v.text);
   }
 }
 
-export function initActivity(): ActivityView {
+export interface ActivityOptions {
+  /** The Continue button in a task_end card. */
+  onContinue?(sessionId: string): void;
+  /** The session the tab is showing changed (null: the list or nothing). */
+  onFocus?(session: SessionInfo | null): void;
+}
+
+export function initActivity(opts: ActivityOptions = {}): ActivityView {
   const log = $("act-log");
   const list = $("act-list");
   const title = $("act-title");
@@ -77,6 +96,8 @@ export function initActivity(): ActivityView {
   let liveEvents: StampedAgentEvent[] = [];
   let backfilling = false;
   let buffered: StampedAgentEvent[] = [];
+  /** onFocus starts after init: the first view (nothing focused) needs no notice, and callers may not be wired yet. */
+  let ready = false;
 
   function header(s: SessionInfo | null, readOnly: boolean): void {
     if (!s) {
@@ -91,8 +112,25 @@ export function initActivity(): ActivityView {
     meta.textContent = parts.join(" · ");
   }
 
+  /** The SessionInfo the view has for an event's session. */
+  function sessionOf(sessionId: string): SessionInfo | null {
+    if (mode.kind === "past" && mode.session.sessionId === sessionId) return mode.session;
+    return live?.sessionId === sessionId ? live : null;
+  }
+
+  function renderOne(e: StampedAgentEvent): HTMLElement {
+    const s = e.type === "task_end" ? sessionOf(e.sessionId) : null;
+    const canContinue = !!opts.onContinue && e.type === "task_end" && isContinuableOutcome(e.outcome) && s?.source !== "cloud";
+    return renderEvent(describeEvent(e), canContinue ? () => opts.onContinue?.(e.sessionId) : undefined);
+  }
+
+  function focused(): SessionInfo | null {
+    if (mode.kind === "past") return mode.session;
+    return mode.kind === "live" ? live : null;
+  }
+
   function renderLog(events: StampedAgentEvent[], emptyText: string): void {
-    log.replaceChildren(...events.map((e) => renderEvent(describeEvent(e))));
+    log.replaceChildren(...events.map(renderOne));
     if (!events.length) log.append(h("p.empty", null, emptyText));
     log.scrollTop = log.scrollHeight;
   }
@@ -117,6 +155,7 @@ export function initActivity(): ActivityView {
     }
     if (listMode) void loadHistory();
     else if (mode.kind === "live") renderLog(liveEvents, "Waiting for the agent…");
+    if (ready) opts.onFocus?.(focused());
   }
 
   async function loadHistory(): Promise<void> {
@@ -163,6 +202,7 @@ export function initActivity(): ActivityView {
         mode = { kind: "past", session: res.session };
         header(res.session, true);
         renderLog(res.events, "No events were recorded for this run.");
+        opts.onFocus?.(res.session);
       }
     } catch (err) {
       log.replaceChildren(h("p.ev-error", null, errorText(err)));
@@ -193,7 +233,7 @@ export function initActivity(): ActivityView {
     if (mode.kind !== "live" || backfilling) return;
     const follow = isNearBottom(log);
     log.querySelector(":scope > p.empty")?.remove();
-    log.append(renderEvent(describeEvent(ev)));
+    log.append(renderOne(ev));
     if (follow) log.scrollTop = log.scrollHeight;
   }
 
@@ -216,9 +256,12 @@ export function initActivity(): ActivityView {
     show();
   });
   show();
+  ready = true;
 
   return {
     setRunning(session) {
+      // Continue buttons wait until nothing runs.
+      log.classList.toggle("busy", !!session);
       if (session && session.sessionId !== live?.sessionId) void adopt(session);
       else if (session && live) {
         live = session;
@@ -234,9 +277,14 @@ export function initActivity(): ActivityView {
         live = s;
         if (mode.kind === "live") header(live, false);
         if (s.endedAt && mode.kind === "live") log.scrollTop = log.scrollHeight;
+        if (mode.kind === "live") opts.onFocus?.(live);
       } else if (!s.endedAt) {
         void adopt(s);
       }
+    },
+    followLive() {
+      mode = { kind: "live" };
+      show();
     },
   };
 }

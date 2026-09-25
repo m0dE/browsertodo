@@ -81,6 +81,99 @@ describe("TerminalRelay", () => {
     await expect(t.relay.start(80, 24)).rejects.toThrow(/node-pty/);
   });
 
+  it("tracks task terminals the helper opens beside the user's session, each with its own input, resize, backlog and exit", async () => {
+    const t = setup();
+    const opened: unknown[] = [];
+    const pushed = t.pushed;
+    const notif2 = new Map<string, (p: any) => void>();
+    let disc2: ((r: string) => void) | null = null;
+    let info2: ((i: HelperInfo | null) => void) | null = null;
+    const relay = new TerminalRelay(
+      {
+        connect: async () => INFO,
+        call: (async (method: string, params: any) => {
+          t.calls.push({ method, params });
+          if (method === "helper.terminal.start") return { terminalId: "U1" };
+          if (method === "helper.terminal.backlog") return { data: `screen of ${params.terminalId}` };
+          return { ok: true };
+        }) as TerminalHelper["call"],
+        onNotification: ((m: string, fn: (p: any) => void) => {
+          notif2.set(m, fn);
+          return () => {};
+        }) as TerminalHelper["onNotification"],
+        onDisconnect: (fn) => {
+          disc2 = fn;
+          return () => {};
+        },
+        onInfo: (fn) => {
+          info2 = fn;
+          return () => {};
+        },
+      },
+      { ...t.push, opened: (x) => opened.push(x) },
+    );
+    const n = (m: string, p: unknown) => notif2.get(m)!(p);
+
+    await relay.start(80, 24);
+    n("helper.terminal.opened", { terminalId: "U1", kind: "user", title: "Claude Code" }); // after start: no duplicate
+    n("helper.terminal.opened", { terminalId: "K1", kind: "task", title: "Post hi", sessionId: "S1" });
+    expect(opened).toEqual([
+      { terminalId: "U1", kind: "user", title: "Claude Code" },
+      { terminalId: "K1", kind: "task", title: "Post hi", sessionId: "S1" },
+    ]);
+    expect(relay.list()).toEqual([
+      { terminalId: "K1", kind: "task", title: "Post hi", sessionId: "S1" },
+      { terminalId: "U1", kind: "user", title: "Claude Code" },
+    ]);
+    expect(relay.current).toEqual({ terminalId: "U1" });
+
+    t.calls.length = 0;
+    expect(await relay.input("y", "K1")).toBe(true);
+    expect(await relay.input("u")).toBe(true);
+    expect(await relay.resize(100, 30, "K1")).toBe(true);
+    expect(await relay.backlog("K1")).toBe("screen of K1");
+    expect(await relay.input("x", "GONE")).toBe(false);
+    expect(t.calls.map((c) => [c.method, c.params.terminalId])).toEqual([
+      ["helper.terminal.input", "K1"],
+      ["helper.terminal.input", "U1"],
+      ["helper.terminal.resize", "K1"],
+      ["helper.terminal.backlog", "K1"],
+    ]);
+
+    n("helper.terminal.data", { terminalId: "K1", data: "task out" });
+    n("helper.terminal.data", { terminalId: "U1", data: "user out" });
+    n("helper.terminal.exit", { terminalId: "K1", exitCode: 0 });
+    expect(pushed).toEqual([
+      { type: "terminal.data", terminalId: "K1", data: "task out" },
+      { type: "terminal.data", terminalId: "U1", data: "user out" },
+      { type: "terminal.exit", terminalId: "K1", exitCode: 0 },
+    ]);
+    expect(relay.list().map((x) => x.terminalId)).toEqual(["U1"]);
+
+    // A reconnect's HelperInfo lists terminals already running.
+    info2!({ ...INFO, terminals: [{ terminalId: "K2", kind: "task", title: "Later", sessionId: "S2" }] });
+    expect(relay.list().map((x) => x.terminalId)).toEqual(["K2", "U1"]);
+    disc2!("gone");
+    expect(relay.list()).toEqual([]);
+    expect(pushed.slice(-2)).toEqual(
+      expect.arrayContaining([
+        { type: "terminal.exit", terminalId: "K2", exitCode: null },
+        { type: "terminal.exit", terminalId: "U1", exitCode: null },
+      ]),
+    );
+  });
+
+  it("stop takes a terminal id (a task session) and defaults to the user's", async () => {
+    const t = setup();
+    await t.relay.start(80, 24);
+    t.notify("helper.terminal.opened", { terminalId: "K1", kind: "task", title: "T", sessionId: "S1" });
+    expect(await t.relay.stop("K1")).toBe(true);
+    expect(t.calls.at(-1)).toEqual({ method: "helper.terminal.stop", params: { terminalId: "K1" } });
+    expect(await t.relay.stop()).toBe(true);
+    expect(t.calls.at(-1)).toEqual({ method: "helper.terminal.stop", params: { terminalId: "T1" } });
+    expect(t.relay.list()).toEqual([]);
+  });
+
   it("passes the Jev key on start and returns the backlog when reattaching", async () => {
     const t = setup();
     expect(await t.relay.start(80, 24, "jk")).toEqual({ terminalId: "T1" });

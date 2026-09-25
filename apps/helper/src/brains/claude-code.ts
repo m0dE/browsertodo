@@ -1,9 +1,12 @@
 /**
- * Runs Claude Code headless for one task, with stream-json in and out. The
- * task prompt is the first stdin message; stdin stays open so the human can
- * add messages while it runs, and is closed after a task_* tool call (or
- * when Claude ends its turn without one). Claude only gets the browsertodo
- * MCP tools: no shell, file or web access.
+ * Runs Claude Code headless for one task, with stream-json in and out (the
+ * fallback when node-pty is not available; claude-pty.ts runs the usual
+ * terminal session). The task prompt is the first stdin message; stdin stays
+ * open so the human can add messages while it runs. Single-turn: stdin is
+ * closed after a task_* tool call (or when Claude ends its turn without
+ * one). Persistent: stdin stays open for follow-up turns until the runner
+ * ends the session. Claude only gets the browsertodo MCP tools: no shell,
+ * file or web access.
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -139,8 +142,20 @@ export class ClaudeCodeBrain implements Brain {
       model: string;
       /** Extra leading args, for tests that run a fake claude script with node. */
       prefixArgs?: string[];
+      /** Status event at start (the fallback says why the task is not in the Terminal tab). */
+      startStatus?: string;
+      /**
+       * Keep stdin open after a turn (follow-up messages continue the same
+       * session); the runner closes the input to end it. Otherwise stdin is
+       * closed once every message has its result, so claude exits.
+       */
+      persistent?: boolean;
     },
   ) {}
+
+  get persistent(): boolean {
+    return this.opts.persistent === true;
+  }
 
   run(ctx: BrainContext): Promise<void> {
     // The extension's model setting wins over BROWSERTODO_MODEL / "sonnet".
@@ -151,7 +166,8 @@ export class ClaudeCodeBrain implements Brain {
       allowedTools: ctx.allowedTools,
       model,
     });
-    ctx.log({ type: "claude_start", claudePath: this.opts.claudePath, model, allowedTools: ctx.allowedTools });
+    ctx.log({ type: "claude_start", mode: "headless", claudePath: this.opts.claudePath, model, allowedTools: ctx.allowedTools });
+    if (this.opts.startStatus) ctx.emit({ type: "status", text: this.opts.startStatus });
     return new Promise<void>((resolve, reject) => {
       if (ctx.signal.aborted) return resolve();
       let child: ChildProcess;
@@ -179,9 +195,10 @@ export class ClaudeCodeBrain implements Brain {
         stdin.write(userMessageLine(text));
       };
       send(ctx.prompt);
-      ctx.input.onMessage((text) => {
-        ctx.log({ type: "claude_user_message", chars: text.length });
-        send(`Message from the human (they are watching this run): ${text}`);
+      ctx.input.onMessage((text, kind) => {
+        ctx.log({ type: "claude_user_message", kind, chars: text.length });
+        // Follow-ups come framed by the runner; messages typed mid-turn get their own framing.
+        send(kind === "followup" ? text : `Message from the human (they are watching this run): ${text}`);
       });
       ctx.input.onClose(() => {
         if (!stdin.destroyed && !stdin.writableEnded) stdin.end();
@@ -215,7 +232,8 @@ export class ClaudeCodeBrain implements Brain {
             results++;
             if (results >= sent && !ctx.input.closed) {
               ctx.log({ type: "claude_turns_done", sent, results });
-              ctx.input.close();
+              if (this.persistent) ctx.idle?.();
+              else ctx.input.close();
             }
           }
         }

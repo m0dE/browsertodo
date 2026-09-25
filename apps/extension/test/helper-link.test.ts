@@ -90,7 +90,10 @@ describe("HelperLink", () => {
     const data: unknown[] = [];
     link.onNotification("helper.event", (p) => events.push(p));
     link.onNotification("helper.terminal.data", (p) => data.push(p));
+    const opened: unknown[] = [];
+    link.onNotification("helper.terminal.opened", (p) => opened.push(p));
     await link.connect();
+    chrome.runtime.ports[0]!.deliver({ method: "helper.terminal.opened", params: { terminalId: "K", kind: "task", title: "t", sessionId: "s1" } });
     chrome.runtime.ports[0]!.deliver({ method: "helper.event", params: { sessionId: "s1", event: { type: "status", text: "hi" } } });
     chrome.runtime.ports[0]!.deliver({ method: "helper.terminal.data", params: { terminalId: "T", data: "x" } });
     chrome.runtime.ports[0]!.hostDisconnect("bye");
@@ -101,6 +104,7 @@ describe("HelperLink", () => {
       { sessionId: "s2", event: { type: "status", text: "again" } },
     ]);
     expect(data).toEqual([{ terminalId: "T", data: "x" }]);
+    expect(opened).toEqual([{ terminalId: "K", kind: "task", title: "t", sessionId: "s1" }]);
   });
 
   it("hello asks for the self-test when requested, also on an open connection", async () => {

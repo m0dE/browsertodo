@@ -84,13 +84,29 @@ const runner = new Runner({
   screenshot: () => driver.screenshot(),
   notify,
   keepAlive: () => chrome.runtime.getPlatformInfo(),
-  onStateChange: () => hub?.pushState(),
+  onStateChange: () => {
+    hub?.pushState();
+    closeTabsAfterRun();
+  },
   log: (m) => console.log("[browsertodo]", m),
 });
 cdp.onUserCancel = () => runner.onDebuggerCanceled();
 
+/** The session running at the last state change; the tabs it opened are closed once it ends. */
+let lastRunningSession: string | null = null;
+function closeTabsAfterRun(): void {
+  try {
+    const now = runner.running?.sessionId ?? null;
+    if (lastRunningSession !== null && now !== lastRunningSession) void driver.closeOpenedTabs().catch(() => 0);
+    lastRunningSession = now;
+  } catch {
+    /* called while the runner is still being constructed */
+  }
+}
+
 const terminal = new TerminalRelay(helper, {
-  data: (terminalId, data) => hub.push({ type: "terminal.data", terminalId, data }),
+  opened: (t) => hub.push({ type: "terminal.opened", terminal: t }),
+  data:(terminalId, data) => hub.push({ type: "terminal.data", terminalId, data }),
   exit: (terminalId, exitCode) => hub.push({ type: "terminal.exit", terminalId, exitCode }),
   changed: () => hub.pushState(),
 });

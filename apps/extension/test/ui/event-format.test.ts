@@ -39,9 +39,9 @@ describe("describeEvent", () => {
   });
   it("jev decisions become badges with ms", () => {
     const v = describeEvent({ type: "jev", goal: "click Post", operation: "click", index: 7, confidence: 0.934, executed: true, ms: 182 });
-    expect(v).toEqual({ kind: "jev", label: "Jev click #7 · 0.93", ms: 182, executed: true, title: "click Post" });
+    expect(v).toEqual({ kind: "jev", label: "Jev: click #7 · 0.93", ms: 182, executed: true, title: "click Post" });
     const n = describeEvent({ type: "jev", goal: "g", operation: "type", index: null, confidence: 0.4, executed: false, ms: 90 });
-    expect(n).toMatchObject({ label: "Jev type · 0.40", executed: false });
+    expect(n).toMatchObject({ label: "Jev unsure (0.40) · Claude decides", executed: false });
     if (n.kind === "jev") expect(n.title).toContain("left to Claude");
   });
   it("task_end carries outcome, text and url", () => {

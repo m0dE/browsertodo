@@ -153,6 +153,9 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 }
 .log .ev-end { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 4px; display: flex; flex-direction: column; gap: 4px; }
 .log .ev-end a { overflow-wrap: anywhere; }
+.log .ev-actions { display: flex; gap: 6px; margin-top: 2px; }
+/* Continue waits until nothing runs. */
+.log.busy .ev-actions { display: none; }
 .log .ev-error { color: var(--bad); font-size: 12px; overflow-wrap: anywhere; }
 .log .empty { margin: auto; max-width: 240px; }
 
@@ -195,6 +198,13 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .now-bar { display: flex; align-items: center; gap: 4px; margin-left: -4px; cursor: default; }
 .now-bar button { height: 28px; padding: 0 12px; }
 .now.blank #now-submit { opacity: 0.45; }
+/* Continuing needs no text: the note is optional. */
+.now.continue.blank #now-submit { opacity: 1; }
+.now-bar .now-new {
+  flex: none; padding: 0 8px; border: 0; border-radius: 7px; background: none;
+  color: var(--muted); font-size: 12px; font-weight: 500;
+}
+.now-bar .now-new:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
 .now-tool {
   flex: none; width: 28px; height: 28px; display: grid; place-items: center;
   border-radius: 7px; color: var(--muted); cursor: pointer;
@@ -257,7 +267,27 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .terminal { display: flex; flex-direction: column; background: var(--bg); }
 .term-bar { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .term-bar .meta { min-width: 0; }
-.term { flex: 1; min-height: 0; background: #16161c; padding: 6px 0 0 8px; }
+.term-sessions {
+  display: flex; gap: 6px; padding: 6px 12px; overflow-x: auto; scrollbar-width: none;
+  border-bottom: 1px solid var(--border); background: var(--surface);
+}
+.term-sessions::-webkit-scrollbar { display: none; }
+.term-chip {
+  flex: 0 1 auto; min-width: 0; max-width: 100%; display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  border: 1px solid var(--border); background: transparent; color: var(--muted);
+}
+.term-chip.user { flex: none; }
+.term-chip:hover { color: var(--text); }
+.term-chip[aria-pressed="true"] { color: var(--text); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); background: var(--accent-soft); }
+.term-chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.term-chip .live-dot { margin: 0; flex: none; }
+.term-chip .idle-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; border: 1px solid var(--faint); box-sizing: border-box; }
+/* Activity header: the meta line with its "Watch in Terminal" link */
+.act-sub { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.act-sub .meta { min-width: 0; }
+.act-sub .link { flex: none; font-size: 12px; white-space: nowrap; }
+.term { flex: 1; min-height: 0; min-width: 0; overflow: hidden; background: #16161c; padding: 6px 0 0 8px; }
 .term .xterm { height: 100%; }
 .term .xterm-viewport { background: #16161c !important; }
 .missing { margin: 12px; }
@@ -267,3 +297,17 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   flex: 1; min-width: 0; display: block; padding: 6px 8px; border-radius: 6px;
   background: var(--bg); border: 1px solid var(--border); word-break: break-all; user-select: all;
 }
+
+/* Who made each decision: Claude (tool calls) or Jev (element picks) */
+.log .ev-tool .who {
+  font-family: var(--sans, inherit);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 5px;
+  margin-right: 6px;
+  border-radius: 4px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  vertical-align: 1px;
+}
+.log .ev-jev .chip[data-tone="accent"] { font-weight: 600; }

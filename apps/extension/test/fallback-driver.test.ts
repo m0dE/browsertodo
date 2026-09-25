@@ -129,11 +129,13 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
     expect((await driver.readPage()).note).toBe(FALLBACK_NOTE);
   });
 
-  it("screenshot needs the agent tab to be visible", async () => {
+  it("screenshot brings a background agent tab to the front first", async () => {
     chrome.debugger.blocked.add(tabId);
     await chrome.tabs.create({ windowId, url: "https://other.test/", active: true });
-    await expect(driver.screenshot()).rejects.toThrow(/visible tab/);
-    expect(chrome.tabs.captureCalls).toEqual([]);
+    expect(await driver.screenshot()).toMatchObject({ base64: "RkFLRQ==", mimeType: "image/jpeg" });
+    expect(chrome.tabs.updateCalls).toContainEqual({ id: tabId, props: { active: true } });
+    expect((await chrome.tabs.get(tabId)).active).toBe(true);
+    expect(chrome.tabs.captureCalls).toEqual([{ windowId, opts: { format: "jpeg", quality: 70 } }]);
   });
 
   it("navigates with tabs.update, then tries the debugger again on the new page", async () => {

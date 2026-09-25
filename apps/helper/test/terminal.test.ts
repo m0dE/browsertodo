@@ -164,3 +164,136 @@ describe("ToolRouter interactive guard", () => {
     expect(calls).toEqual(["read_page"]);
   });
 });
+
+describe("TerminalManager with task terminals", () => {
+  function multi() {
+    const ptys: FakePty[] = [];
+    const spawned: { file: string; args: string[]; opts: any }[] = [];
+    const opened: unknown[] = [];
+    const data: [string, string][] = [];
+    const exits: [string, number | null][] = [];
+    const tm = new TerminalManager({
+      factory: (file, args, opts) => {
+        spawned.push({ file, args, opts });
+        const p = new FakePty();
+        p.pid = 100 + ptys.length;
+        ptys.push(p);
+        return p;
+      },
+      command: () => ({ file: "claude.exe", args: [], cwd: "C:/ws", env: {} }),
+      onData: (id, d) => data.push([id, d]),
+      onExit: (id, c) => exits.push([id, c]),
+      onOpened: (info) => opened.push(info),
+      killTree: () => {},
+      flushMs: 1000,
+    });
+    return { tm, ptys, spawned, opened, data, exits };
+  }
+  const task = { title: "Post hello", sessionId: "S1", file: "claude.exe", args: ["--model", "sonnet", "go"], cwd: "C:/ws", env: { A: "1" } };
+
+  it("runs a task terminal beside the user's session; list and opened carry kind, title and session", () => {
+    const { tm, ptys, spawned, opened } = multi();
+    const user = tm.start(80, 24).terminalId;
+    const t = tm.openTask(task);
+    expect(spawned[1]!.opts).toEqual({ name: "xterm-256color", cols: 120, rows: 40, cwd: "C:/ws", env: { A: "1" } });
+    expect(tm.list()).toEqual([
+      { terminalId: user, kind: "user", title: "Claude Code" },
+      { terminalId: t.terminalId, kind: "task", title: "Post hello", sessionId: "S1" },
+    ]);
+    expect(opened).toEqual(tm.list());
+    expect(t.terminalId).toMatch(/^task-/);
+    // A new user session replaces the old one but leaves the task alone.
+    const user2 = tm.start(80, 24).terminalId;
+    expect(ptys[0]!.killed).toBe(true);
+    expect(ptys[1]!.killed).toBe(false);
+    expect(tm.list().map((i) => i.terminalId)).toEqual([t.terminalId, user2]);
+    expect(tm.runningId).toBe(user2);
+  });
+
+  it("answers the TUI's queries on task terminals only, and drops xterm.js answers from their input", () => {
+    const { tm, ptys } = multi();
+    const user = tm.start(80, 24).terminalId;
+    const t = tm.openTask(task);
+    ptys[0]!.dataCb("\x1b[>0q\x1b[?u");
+    ptys[1]!.dataCb("\x1b[>0q\x1b[?u");
+    expect(ptys[0]!.written).toEqual([]);
+    expect(ptys[1]!.written).toEqual(["\x1bP>|xterm(1)\x1b\x5c\x1b[?0u"]);
+    tm.input(user, "\x1b[?62;22c");
+    tm.input(t.terminalId, "\x1b[?62;22c");
+    tm.input(t.terminalId, "hi\r");
+    expect(ptys[0]!.written).toEqual(["\x1b[?62;22c"]);
+    expect(ptys[1]!.written.slice(1)).toEqual(["hi\r"]);
+  });
+
+  it("gives the task handle raw output and one exit; the manager batches and reports it too", () => {
+    const { tm, ptys, data, exits } = multi();
+    const t = tm.openTask(task);
+    const got: string[] = [];
+    const ended: (number | null)[] = [];
+    t.onData((d) => got.push(d));
+    t.onExit((c) => ended.push(c));
+    ptys[0]!.dataCb("a");
+    ptys[0]!.dataCb("b");
+    expect(got).toEqual(["a", "b"]);
+    expect(data).toEqual([]);
+    t.write("typed");
+    expect(ptys[0]!.written).toEqual(["typed"]);
+    ptys[0]!.exitCb({ exitCode: 0 });
+    ptys[0]!.exitCb({ exitCode: 0 });
+    expect(data).toEqual([[t.terminalId, "ab"]]);
+    expect(exits).toEqual([[t.terminalId, 0]]);
+    expect(ended).toEqual([0]);
+    expect(tm.list()).toEqual([]);
+    t.write("after exit"); // ignored
+    expect(ptys[0]!.written).toEqual(["typed"]);
+    const late: (number | null)[] = [];
+    t.onExit((c) => late.push(c));
+    expect(late).toEqual([null]);
+  });
+
+  it("kill and stopAll end every terminal once", () => {
+    const { tm, ptys, exits } = multi();
+    const t = tm.openTask(task);
+    const u = tm.start(80, 24).terminalId;
+    t.kill();
+    expect(ptys[0]!.killed).toBe(true);
+    tm.stopAll();
+    expect(exits).toEqual([
+      [t.terminalId, null],
+      [u, null],
+    ]);
+    expect(tm.list()).toEqual([]);
+  });
+});
+
+describe("windowsCommandLine", () => {
+  const TRICKY = ["--tools", "", "a b", '"quoted all"', "C:\\dir\\", 'x\\"y', "line1\nline2", "tab\there", "plain", "end\\\\"];
+
+  it("quotes empty args, whitespace and quotes, doubling backslashes before a quote", async () => {
+    const { windowsCommandLine } = await import("../src/terminal.js");
+    expect(windowsCommandLine(["", "a b", "plain", 'say "hi"', "C:\\dir\\", "C:\\x y\\"])).toBe(
+      ['""', '"a b"', "plain", '"say \\"hi\\""', "C:\\dir\\", '"C:\\x y\\\\"'].join(" "),
+    );
+  });
+
+  it.runIf(process.platform === "win32")("round-trips through node-pty to a real process's argv", async () => {
+    const factory = await loadNodePty();
+    const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "bt-argv-"));
+    const out = join(dir, "argv.json");
+    const script = "require('fs').writeFileSync(process.env.ARGV_OUT, JSON.stringify(process.argv.slice(1)))";
+    await new Promise<void>((resolve) => {
+      const env = { ...process.env, ARGV_OUT: out } as Record<string, string>;
+      const p = factory!(process.execPath, ["-e", script, "--", ...TRICKY], { name: "xterm-256color", cols: 120, rows: 24, cwd: dir, env });
+      p.onData(() => {});
+      p.onExit(() => resolve());
+    });
+    try {
+      expect(JSON.parse(readFileSync(out, "utf8"))).toEqual(TRICKY);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -118,10 +118,10 @@ export type PipeMethods = {
   "tool.list": { params: { taskId: string }; result: { names: ToolName[] } };
 }
 
-/** Tools that end a task. Not offered in the interactive terminal. */
+/** Tools that end a task. Not offered to the user's own Claude Code (mcp-server --attach). */
 export const TASK_END_TOOLS: readonly ToolName[] = ["task_complete", "task_fail", "task_pause"];
 
-/** Tools offered to the interactive Claude Code terminal (no task to end). */
+/** Tools offered to the user's own Claude Code through mcp-server --attach (no task to end). */
 export const INTERACTIVE_TOOL_NAMES: ToolName[] = TOOL_NAMES.filter((n) => !TASK_END_TOOLS.includes(n));
 
 /**

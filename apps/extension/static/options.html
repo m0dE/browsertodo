@@ -34,12 +34,7 @@
             <input id="f-anthropicModel" type="text" spellcheck="false" list="model-ids" aria-describedby="model-hint" />
             <small id="model-hint" class="field-hint">Used by both brains: local Claude Code and the Claude API. You can also pick it from the side panel.</small>
           </label>
-          <datalist id="model-ids">
-            <option value="claude-sonnet-5">Sonnet 5</option>
-            <option value="claude-opus-5-5">Opus 5.5</option>
-            <option value="claude-fable-5-1">Fable 5.1</option>
-            <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
-          </datalist>
+          <datalist id="model-ids"></datalist>
         </div>
         <div class="row">
           <button id="test-claude" type="button" class="small">Test Claude key</button>
@@ -132,6 +127,7 @@
           <label class="field"><span>Pause between tasks, max (s)</span><input id="f-delayMaxSec" type="number" min="0" step="1" /></label>
           <label class="field"><span>Max tool calls per task</span><input id="f-maxToolCalls" type="number" min="5" step="1" /></label>
           <label class="field"><span>Max minutes per task</span><input id="f-maxTaskMinutes" type="number" min="1" step="1" /></label>
+          <label class="field"><span>Tasks at once (1-4; X tasks one at a time)</span><input id="f-maxParallelTasks" type="number" min="1" max="4" step="1" /></label>
           <label class="field"><span>Retry temporary failures after (min)</span><input id="f-retryAfterMinutes" type="number" min="1" step="1" /></label>
           <label class="field"><span>Retry tasks that needed you after (min)</span><input id="f-pauseRetryMinutes" type="number" min="1" step="1" /></label>
           <label class="field"><span>Pause runs after N failures in a row (0 = never)</span><input id="f-maxConsecutiveFailures" type="number" min="0" step="1" /></label>

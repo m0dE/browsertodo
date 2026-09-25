@@ -36,13 +36,13 @@ export interface JevLike {
 
 export interface ToolExecutorOptions {
   browser: BrowserCaller;
-  /** null turns act off (it then answers with an error telling the model to use click/type). */
+  /** null = Jev off: act steps then need an element index. */
   jev: JevLike | null;
   jevThreshold: number;
   onEvent: (e: AgentEvent) => void;
   /**
    * Receives task_complete / task_fail / task_pause. When undefined
-   * (interactive terminal), task_* tools answer that there is no task to end.
+   * (mcp-server --attach), task_* tools answer that there is no task to end.
    */
   onTaskEnd?: (r: TaskRunResult) => void;
   /** Absolute local paths the task may upload. upload rejects other paths. */
@@ -65,6 +65,13 @@ export interface AgentSession {
   /** Stops the agent; done resolves with this outcome and reason. */
   abort(reason: string, outcome?: "paused" | "failed" | "retry"): void;
   readonly done: Promise<TaskRunResult>;
+  /**
+   * The user's next message after this turn ended (done resolved), as a new
+   * turn of the same conversation: Claude sees the whole history. Returns the
+   * new turn (same sessionId). config: that turn's limits (default: the
+   * first turn's). Throws "busy" while a turn runs.
+   */
+  continueWith?(text: string, opts?: { config?: RunConfig }): AgentSession;
 }
 
 export interface ApiAgentOptions {
@@ -76,7 +83,7 @@ export interface ApiAgentOptions {
   mediaPaths: string[];
   config: RunConfig;
   browser: BrowserCaller;
-  /** null = Jev off. When set, the loop is Jev-first (see spec "Jev-first loop"). */
+  /** null = Jev off: act steps then need an element index. */
   jev: JevLike | null;
   onEvent: (e: AgentEvent) => void;
   /** Default globalThis.fetch. */

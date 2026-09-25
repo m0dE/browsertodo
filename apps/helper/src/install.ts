@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NATIVE_HOST_NAME } from "@browsertodo/shared";
 import { loadConfig, repoRoot } from "./config.js";
+import { errorMessage } from "./logger.js";
 
 export const REGISTRY_KEYS = [
   `HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${NATIVE_HOST_NAME}`,
@@ -132,7 +133,7 @@ if (entry && (process.platform === "win32" ? entry.toLowerCase() === self.toLowe
   try {
     main();
   } catch (e) {
-    console.error(`install failed: ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`install failed: ${errorMessage(e)}`);
     process.exit(1);
   }
 }

@@ -27,6 +27,12 @@ export const ExtensionSettings = z.object({
   delayMaxSec: z.number().min(0).max(3600).default(180),
   maxToolCalls: z.number().int().min(5).max(500).default(60),
   maxTaskMinutes: z.number().min(1).max(120).default(10),
+  /**
+   * Due tasks that may run at the same time, each in its own tab (tasks that
+   * act as an X account still run one at a time). One-off runs from the side
+   * panel run beside them.
+   */
+  maxParallelTasks: z.number().int().min(1).max(4).default(2),
   jevEnabled: z.boolean().default(true),
   jevThreshold: z.number().min(0).max(1).default(0.8),
   /** When true, scheduled runs are skipped. */

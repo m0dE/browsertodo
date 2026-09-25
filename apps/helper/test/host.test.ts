@@ -1,7 +1,7 @@
 /**
  * Spawns dist/host.js as Chrome would and speaks native messaging to it,
  * answering the browser.* calls from a fake X page. Proves the host end to
- * end without Chrome or a model (BROWSERTODO_BRAIN=scripted, BROWSERTODO_FAKE_PTY=1).
+ * end without Chrome or a model (BROWSERTODO_BRAIN=scripted).
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -16,6 +16,7 @@ import {
   type HelperNotifications,
   type RpcMessage,
   type RunConfig,
+  type TaskRunResult,
 } from "@browsertodo/shared";
 import { encodeNativeMessage, NativeDecoder } from "../src/native-framing.js";
 import type { BrowserMap, HelperMap } from "../src/rpc-types.js";
@@ -44,15 +45,13 @@ let x: FakeX;
 let gate: Promise<void> | null = null;
 const decodeErrors: string[] = [];
 const events: HelperNotifications["helper.event"][] = [];
-const termData: HelperNotifications["helper.terminal.data"][] = [];
-const termExits: HelperNotifications["helper.terminal.exit"][] = [];
-const termOpened: HelperNotifications["helper.terminal.opened"][] = [];
 let stderr = "";
+let lastResult: TaskRunResult | null = null;
 
 beforeAll(() => {
   home = mkdtempSync(join(tmpdir(), "bt-host-"));
   child = spawn(process.execPath, [HOST_JS], {
-    env: { ...process.env, BROWSERTODO_BRAIN: "scripted", BROWSERTODO_HOME: home, TYPESAFE_API_KEY: "", BROWSERTODO_FAKE_PTY: "1" },
+    env: { ...process.env, BROWSERTODO_BRAIN: "scripted", BROWSERTODO_HOME: home, TYPESAFE_API_KEY: "" },
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -66,9 +65,6 @@ beforeAll(() => {
     });
   }
   ext.onNotification<HelperNotifications["helper.event"]>("helper.event", (p) => events.push(p));
-  ext.onNotification<HelperNotifications["helper.terminal.data"]>("helper.terminal.data", (p) => termData.push(p));
-  ext.onNotification<HelperNotifications["helper.terminal.exit"]>("helper.terminal.exit", (p) => termExits.push(p));
-  ext.onNotification<HelperNotifications["helper.terminal.opened"]>("helper.terminal.opened", (p) => termOpened.push(p));
   const decoder = new NativeDecoder();
   child.stdout.on("data", (chunk: Buffer) => {
     try {
@@ -95,15 +91,14 @@ async function waitFor(pred: () => boolean, ms = 10_000): Promise<void> {
 }
 
 describe("dist/host.js over native messaging", () => {
-  it("answers helper.hello with pty and self-test info, and writes helper.json", async () => {
+  it("answers helper.hello with self-test info, and writes helper.json", async () => {
     const info = await ext.call("helper.hello", {}, { timeoutMs: 10_000 });
     expect(info).toEqual({
       version: "0.2.0",
       jevAvailable: false,
       claudePath: "scripted",
       logDir: join(home, "logs"),
-      ptyAvailable: true,
-      terminals: [],
+      openSessions: [],
       selfTest: { ok: true, ms: 0, at: expect.any(String) },
     });
     const again = await ext.call("helper.hello", { selfTest: true }, { timeoutMs: 10_000 });
@@ -132,6 +127,7 @@ describe("dist/host.js over native messaging", () => {
     gate = null;
     open();
     const result = await run;
+    lastResult = result;
     expect(result).toMatchObject({ outcome: "done", url: "https://x.com/alice/status/1000", summary: "Posted: hello from the host test" });
     expect(result.logPath).toContain(join(home, "runs", "S-HOST-"));
     expect(x.posts).toEqual([{ account: "alice", text: "hello from the host test", files: [media], url: "https://x.com/alice/status/1000" }]);
@@ -156,32 +152,18 @@ describe("dist/host.js over native messaging", () => {
     expect(await ext.call("helper.abortTask", { sessionId: "nope", reason: "r" }, { timeoutMs: 5000 })).toEqual({ ok: true });
   });
 
-  it("runs the terminal: start, data, input, resize, exit", async () => {
-    const { terminalId } = await ext.call("helper.terminal.start", { cols: 100, rows: 30 }, { timeoutMs: 5000 });
-    const user = { terminalId, kind: "user", title: "Claude Code" };
-    await waitFor(() => termOpened.length > 0);
-    expect(termOpened).toEqual([user]);
-    expect(await ext.call("helper.terminal.list", {}, { timeoutMs: 5000 })).toEqual({ terminals: [user] });
-    expect((await ext.call("helper.hello", {}, { timeoutMs: 5000 })).terminals).toEqual([user]);
-    await waitFor(() => termData.some((d) => d.terminalId === terminalId && d.data.includes("fake-pty:")));
-    const banner = termData.find((d) => d.data.includes("fake-pty:"))!.data;
-    expect(banner).toContain("--mcp-config");
-    expect(banner).toContain("--append-system-prompt");
-    expect(banner).toContain("--allowedTools mcp__browsertodo__navigate");
-    expect(await ext.call("helper.terminal.input", { terminalId, data: "echo hi\r" }, { timeoutMs: 5000 })).toEqual({ ok: true });
-    await ext.call("helper.terminal.resize", { terminalId, cols: 90, rows: 20 }, { timeoutMs: 5000 });
-    await waitFor(() => termData.map((d) => d.data).join("").includes("[resized 90x20]"));
-    expect(termData.map((d) => d.data).join("")).toContain("echo hi\r");
-    await ext.call("helper.terminal.input", { terminalId, data: "exit\r" }, { timeoutMs: 5000 });
-    await waitFor(() => termExits.length > 0);
-    expect(termExits).toEqual([{ terminalId, exitCode: 0 }]);
-    expect(await ext.call("helper.terminal.list", {}, { timeoutMs: 5000 })).toEqual({ terminals: [] });
-    await expect(ext.call("helper.terminal.input", { terminalId, data: "x" }, { timeoutMs: 5000 })).rejects.toThrow(/no running terminal/);
-    // the interactive MCP config was written with the interactive tools
-    const cfg = JSON.parse(readFileSync(join(home, "interactive-mcp-config.json"), "utf8"));
-    expect(cfg.mcpServers.browsertodo.env.BROWSERTODO_TASK).toBe("");
-    expect(cfg.mcpServers.browsertodo.env.BROWSERTODO_TOOLS.split(",")).not.toContain("task_complete");
-    expect(existsSync(join(home, "workspace"))).toBe(true);
+  it("serves a session's run log, and nothing outside the runs folder", async () => {
+    const path = lastResult!.logPath!;
+    const log = await ext.call("helper.runLog", { path }, { timeoutMs: 5000 });
+    expect(log.truncated).toBe(false);
+    const lines = log.text.trim().split("\n").map((l) => JSON.parse(l) as { type: string });
+    expect(lines[0]).toMatchObject({ type: "task_start" });
+    expect(lines.map((l) => l.type)).toContain("task_result");
+    const tail = await ext.call("helper.runLog", { path, maxBytes: 200 }, { timeoutMs: 5000 });
+    expect(tail.truncated).toBe(true);
+    expect(tail.text.length).toBeLessThanOrEqual(200);
+    await expect(ext.call("helper.runLog", { path: join(home, "helper.json") }, { timeoutMs: 5000 })).rejects.toThrow(/not a browsertodo run log/);
+    await expect(ext.call("helper.runLog", { path: join(home, "runs", "..", "selftest.json") }, { timeoutMs: 5000 })).rejects.toThrow(/not a browsertodo run log/);
   });
 
   it("returns the live log tail", async () => {

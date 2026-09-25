@@ -24,7 +24,6 @@ const out = mkdtempSync(join(tmpdir(), "browsertodo-ui-"));
 const common = { bundle: true, platform: "browser", target: "chrome120", format: "esm", logLevel: "warning" };
 await build({ ...common, entryPoints: [join(root, "src/sidepanel/sidepanel.ts")], outfile: join(out, "sidepanel.js") });
 await build({ ...common, entryPoints: [join(root, "src/options/options.ts")], outfile: join(out, "options.js") });
-cpSync(join(root, "node_modules/@xterm/xterm/css/xterm.css"), join(out, "xterm.css"));
 for (const f of ["sidepanel.html", "options.html", "ui.css", "sidepanel.css", "options.css"]) {
   cpSync(join(root, "static", f), join(out, f));
 }
@@ -64,7 +63,6 @@ function scenario(kind) {
     jevAvailable: true,
     claudePath: "C:\\Users\\me\\.local\\bin\\claude.exe",
     logDir: "C:\\Users\\me\\AppData\\Local\\browsertodo\\logs",
-    ptyAvailable: true,
     selfTest: { ok: true, ms: 5300, at: iso(-30) },
   };
   const running = {
@@ -74,12 +72,13 @@ function scenario(kind) {
     title: "Post the launch thread on X from @browsertodo and reply to the first comment",
     brain: "claude-api",
     jev: true,
+    model: "claude-sonnet-5",
     startedAt: iso(-2),
   };
   const settings = {
     brain: "auto", anthropicApiKey: "set", anthropicModel: "claude-sonnet-5", jevApiKey: "", cloudEnabled: false,
     apiBase: "", runnerKey: "", maxConsecutiveFailures: 3, retryAfterMinutes: 10, intervalMinutes: 15,
-    delayMinSec: 60, delayMaxSec: 180, maxToolCalls: 60, maxTaskMinutes: 10, jevEnabled: true, jevThreshold: 0.8,
+    delayMinSec: 60, delayMaxSec: 180, maxToolCalls: 60, maxTaskMinutes: 10, maxParallelTasks: 2, jevEnabled: true, jevThreshold: 0.8,
     paused: false, pauseRetryMinutes: 15,
   };
   const state = {
@@ -89,22 +88,9 @@ function scenario(kind) {
     paused: false,
     nextRunAt: iso(12),
     lastRunAt: iso(-3),
-    terminal: null,
-    terminals: [],
+    openConversations: [],
   };
   if (kind === "idle" || kind === "empty") state.running = null;
-  // Claude Code runs the task in its own terminal session, beside the user's session.
-  if (kind === "claude-task" || kind === "claude-idle") {
-    running.brain = "claude-code";
-    state.brain = { ...state.brain, effective: "claude-code" };
-    state.terminal = { terminalId: "term-user" };
-    state.terminals = [
-      { terminalId: "task-1", kind: "task", title: running.title, sessionId: "s-live" },
-      { terminalId: "term-user", kind: "user", title: "Claude Code" },
-    ];
-  }
-  // The task's session is not open yet (it opens while the panel watches).
-  if (kind === "claude-idle") state.terminals = state.terminals.filter((t) => t.kind === "user");
   if (kind === "nobrain") {
     state.brain = { effective: null, note: "No brain available: add a Claude API key, or install the helper for Claude Code.", helper: null, helperError: "Specified native messaging host not found.", hasApiKey: false, jevActive: false };
     state.running = null;
@@ -158,6 +144,56 @@ function scenario(kind) {
   if (kind === "idle") tasks[0] = { ...tasks[0], status: "pending", notBefore: iso(40) };
   if (kind === "empty") tasks.splice(0, tasks.length);
   const eventsBySession = {};
+  if (kind === "parallel") {
+    // Two due tasks run at once, each in its own tab.
+    const second = {
+      sessionId: "s-par2", source: "local", taskId: "t3", title: "Post the photo of the week with the caption from the doc",
+      brain: "claude-api", jev: true, model: "claude-sonnet-5", startedAt: iso(-1),
+    };
+    const pev = (minutes, e) => ({ ...e, ts: iso(minutes), sessionId: "s-par2" });
+    eventsBySession["s-par2"] = [
+      pev(-1, { type: "status", text: "Claude API (claude-sonnet-5) with Jev" }),
+      pev(-1, { type: "assistant_text", text: "Opening the doc to copy the caption." }),
+      pev(-1, { type: "tool_call", id: "1", name: "navigate", args: { url: "https://docs.example.com/d/week38" } }),
+      pev(-1, { type: "tool_result", id: "1", name: "navigate", text: "Opened https://docs.example.com/d/week38 (title: Week 38 caption)" }),
+    ];
+    state.runningSessions = [running, second];
+    sessions.unshift(second);
+    tasks[2] = { ...tasks[2], status: "running" };
+  }
+  if (kind === "conversation") {
+    // A one-off conversation with two turns: the second started with the user's message.
+    const conv = {
+      sessionId: "s-conv", source: "adhoc", title: "Post on X from @alpha: our launch is live", brain: "claude-code", jev: false,
+      model: "claude-sonnet-5", startedAt: iso(-2), endedAt: iso(-1), firstStartedAt: iso(-6), outcome: "done", turns: 2,
+      summary: "Liked the first reply", url: "https://x.com/alpha/status/1838912345678901299",
+      logPath: "C:\\Users\\me\\AppData\\Local\\browsertodo\\runs\\s-conv-2026\\log.jsonl",
+    };
+    const cev = (minutes, e) => ({ ...e, ts: iso(minutes), sessionId: "s-conv" });
+    eventsBySession["s-conv"] = [
+      cev(-6, { type: "status", text: "Claude Code started (claude-sonnet-5)" }),
+      cev(-6, { type: "assistant_text", text: "I'll switch to @alpha and post it." }),
+      cev(-6, { type: "tool_call", id: "1", name: "switch_x_account", args: { handle: "@alpha" } }),
+      cev(-6, { type: "tool_result", id: "1", name: "switch_x_account", text: "Switched to @alpha" }),
+      cev(-5, { type: "tool_call", id: "2", name: "act", args: { steps: [{ goal: "focus the composer", index: 14 }, { goal: "type the post", index: 14, text: "Our launch is live" }, { goal: "click Post", index: 22 }] } }),
+      cev(-5, { type: "tool_result", id: "2", name: "act", text: "step 1 ok\nstep 2 ok\nstep 3 ok" }),
+      cev(-5, { type: "status", text: "Post verified" }),
+      cev(-5, { type: "task_end", outcome: "done", summary: "Posted from @alpha", url: "https://x.com/alpha/status/1838912345678901234" }),
+      cev(-2, { type: "user_message", text: "Now like the first reply to it" }),
+      cev(-2, { type: "status", text: "Continuing the same Claude Code session" }),
+      cev(-2, { type: "assistant_text", text: "Opening the post and liking the first reply." }),
+      cev(-2, { type: "tool_call", id: "3", name: "navigate", args: { url: "https://x.com/alpha/status/1838912345678901234" } }),
+      cev(-2, { type: "tool_result", id: "3", name: "navigate", text: "Opened https://x.com/alpha/status/1838912345678901234" }),
+      cev(-1, { type: "tool_call", id: "4", name: "act", args: { steps: [{ goal: "like the first reply", index: 31 }] } }),
+      cev(-1, { type: "tool_result", id: "4", name: "act", text: "step 1 ok" }),
+      cev(-1, { type: "task_end", outcome: "done", summary: "Liked the first reply", url: "https://x.com/alpha/status/1838912345678901299" }),
+    ];
+    state.running = null;
+    state.brain = { ...state.brain, effective: "claude-code", jevActive: false };
+    state.openConversations = ["s-conv"];
+    sessions.unshift(conv);
+    sessions.splice(1, 1);
+  }
   if (kind === "stopped") {
     // The user pressed Stop after the agent typed the post: the run ends paused "stopped by user".
     const stopped = {
@@ -189,7 +225,7 @@ function scenario(kind) {
     sessions.splice(1, 1);
     sessions.push({ sessionId: "s-5", source: "local", taskId: "t5", title: tasks[4].instructions, brain: "claude-api", jev: true, startedAt: iso(-70), endedAt: iso(-60), outcome: "paused", reason: "Needs a one-time code sent by SMS" });
   }
-  return { state, tasks, events, sessions, eventsBySession, taskScreen: TASK_SCREEN, userScreen: TERM_DATA.join(""), pastEvents: events.slice(0, 6).map((e) => ({ ...e, sessionId: "s-2" })) };
+  return { state, tasks, events, sessions, eventsBySession, pastEvents: events.slice(0, 6).map((e) => ({ ...e, sessionId: "s-2" })) };
 }
 
 /** Runs in the page before any script: a minimal chrome.runtime. */
@@ -210,8 +246,10 @@ function installChromeStub(data) {
     "run.adhoc": () => ({ sessionId: "s-new" }),
     "run.due": () => ({ started: false, detail: "Nothing is due right now." }),
     "run.stop": () => ({ ok: true }),
-    "run.continue": () => ({ sessionId: "s-cont" }),
-    "run.say": () => ({ ok: true }),
+    "run.continue": (req) => ({ sessionId: req.sessionId }),
+    "run.message": (req) => ({ sessionId: req.sessionId ?? "s-new", mode: req.sessionId ? "turn" : "new" }),
+    "run.newChat": () => ({ ok: true }),
+    "session.log": () => ({ path: "C:\\runs\\s-conv\\log.jsonl", text: '{"type":"task_start"}\n', truncated: false }),
     "agent.show": () => ({ ok: true }),
     "schedule.pause": () => ({ ...data.state, paused: true }),
     "schedule.resume": () => ({ ...data.state, paused: false }),
@@ -226,11 +264,6 @@ function installChromeStub(data) {
         : req.sessionId === "s-live"
         ? { session: data.sessions[0], events: data.events }
         : { session: data.sessions.find((s) => s.sessionId === req.sessionId), events: data.pastEvents },
-    "terminal.start": () => ({ terminalId: "term-1" }),
-    "terminal.backlog": (req) => ({ data: (req.terminalId.startsWith("task") ? data.taskScreen : data.userScreen) ?? "" }),
-    "terminal.input": () => ({ ok: true }),
-    "terminal.resize": () => ({ ok: true }),
-    "terminal.stop": () => ({ ok: true }),
     "vault.list": () => ({ locked: false, sites: ["example.com", "news.ycombinator.com"] }),
     "vault.unlock": () => ({ ok: true }),
     "vault.lock": () => ({ ok: true }),
@@ -256,35 +289,6 @@ function installChromeStub(data) {
     },
   };
 }
-
-// Fake Claude Code TUI output.
-const TERM_DATA = [
-  "\x1b[38;5;208m╭───────────────────────────────────────────╮\x1b[0m\r\n",
-  "\x1b[38;5;208m│\x1b[0m \x1b[1m✻ Welcome to Claude Code!\x1b[0m                 \x1b[38;5;208m│\x1b[0m\r\n",
-  "\x1b[38;5;208m│\x1b[0m   cwd: ~\\AppData\\Local\\browsertodo\\workspace\x1b[38;5;208m│\x1b[0m\r\n",
-  "\x1b[38;5;208m╰───────────────────────────────────────────╯\x1b[0m\r\n\r\n",
-  "\x1b[2m> \x1b[0mopen x.com and tell me my newest notification\r\n\r\n",
-  "\x1b[32m●\x1b[0m \x1b[1mbrowsertodo:navigate\x1b[0m(url: \"https://x.com/notifications\")\r\n",
-  "  \x1b[2m⎿  Opened https://x.com/notifications\x1b[0m\r\n\r\n",
-  "\x1b[32m●\x1b[0m \x1b[1mbrowsertodo:read_page\x1b[0m\r\n",
-  "  \x1b[2m⎿  84 elements\x1b[0m\r\n\r\n",
-  "\x1b[37m●\x1b[0m Your newest notification: \x1b[1m@anthropic\x1b[0m liked your post “We just shipped…”.\r\n\r\n",
-  "\x1b[2m────────────────────────────────────────────\x1b[0m\r\n> \x1b[7m \x1b[0m\r\n",
-];
-
-// Fake Claude Code TUI of a task session.
-const TASK_SCREEN = [
-  "\x1b[38;5;208m ▐▛███▜▌\x1b[0m   \x1b[1mClaude Code\x1b[0m v2.1.282\r\n",
-  "\x1b[38;5;208m▝▜█████▛▘\x1b[0m  Sonnet 5 · Claude Max\r\n",
-  "\x1b[38;5;208m  ▘▘ ▝▝\x1b[0m    ~\\AppData\\Local\\browsertodo\\workspace\r\n\r\n",
-  "\x1b[2m> \x1b[0mPost the launch thread on X from @browsertodo and reply to the first comment\r\n\r\n",
-  "\x1b[32m●\x1b[0m \x1b[1mbrowsertodo - switch_x_account\x1b[0m (MCP)(handle: \"@browsertodo\")\r\n",
-  "  \x1b[2m⎿  Already on @browsertodo\x1b[0m\r\n\r\n",
-  "\x1b[32m●\x1b[0m \x1b[1mbrowsertodo - navigate\x1b[0m (MCP)(url: \"https://x.com/compose/post\")\r\n",
-  "  \x1b[2m⎿  Opened https://x.com/compose/post\x1b[0m\r\n\r\n",
-  "\x1b[37m●\x1b[0m Writing the first post of the thread.\r\n\r\n",
-  "\x1b[38;5;174m✻ Composing… \x1b[2m(12s · esc to interrupt)\x1b[0m\r\n",
-].join("");
 
 const SIZES = [
   { w: 360, h: 800 },
@@ -448,7 +452,7 @@ for (const size of SIZES) {
     }
 
     // A running session: the composer talks to the agent (Send + Stop).
-    const runningShots = ["panel-tasks", "panel-model-running", "panel-add-form", "panel-finished-menu", "panel-activity", "panel-history", "panel-past-session", "panel-terminal"];
+    const runningShots = ["panel-tasks", "panel-model-running", "panel-add-form", "panel-finished-menu", "panel-activity", "panel-history", "panel-past-session"];
     if (wantAny(runningShots, size, scheme)) {
       const page = await openPanel(ctx, "ok");
       await checkLayout(page, `tasks ${label}`);
@@ -501,89 +505,126 @@ for (const size of SIZES) {
         await page.waitForSelector(".ev-text");
         await shoot(page, "panel-past-session", size, scheme);
       }
-      if (want("panel-terminal", size, scheme)) {
-        await page.click("#tab-btn-terminal");
-        if (!(await page.locator("#composer").isHidden())) {
-          console.error(`composer visible on the Terminal tab (${label})`);
-          failures++;
-        }
-        await page.click("#term-start");
-        await page.waitForTimeout(100);
-        for (const d of TERM_DATA) await page.evaluate((data) => window.__push({ type: "terminal.data", terminalId: "term-1", data }), d);
-        await shoot(page, "panel-terminal", size, scheme);
-      }
       reportErrors(page, `running ${label}`);
       await page.close();
     }
 
-    // A Claude Code task runs in its own terminal session beside the user's: switcher, live dots, Watch in Terminal.
-    const taskShots = ["panel-terminal-task", "panel-terminal-user", "panel-activity-watch"];
-    if (wantAny(taskShots, size, scheme)) {
-      const p = await openPanel(ctx, "claude-task");
+    // A conversation: two turns in one thread (the second opened by the user's bubble), the composer talks to it,
+    // the header says whether its Claude Code session is still open; New chat goes back to "Do this now".
+    const convShots = ["panel-conversation", "panel-conversation-ended", "panel-conversation-newchat", "panel-conversation-tasks"];
+    if (wantAny(convShots, size, scheme)) {
+      const p = await openPanel(ctx, "conversation");
       const fail = (what) => {
         console.error(`${what} (${label})`);
         failures++;
       };
-      await p.click("#tab-btn-terminal");
-      // Not typing in the user's session: the task session is shown.
-      await p.waitForSelector('.term-chip[data-id="task-1"][aria-pressed="true"]');
-      await p.waitForFunction(() => document.querySelector("#term .xterm-rows")?.textContent.includes("switch_x_account"));
-      const task = await p.evaluate(() => ({
-        switcher: !document.getElementById("term-sessions").hidden,
-        tabDot: !document.getElementById("term-live-dot").hidden,
-        startHidden: document.getElementById("term-start").hidden && document.getElementById("term-stop").hidden,
-        chipFits: (() => {
-          const row = document.getElementById("term-sessions").getBoundingClientRect();
-          return [...document.querySelectorAll(".term-chip")].every((c) => c.getBoundingClientRect().right <= row.right + 0.5);
-        })(),
-      }));
-      if (!task.switcher || !task.tabDot || !task.startHidden || !task.chipFits) fail(`task terminal view ${JSON.stringify(task)}`);
-      await checkLayout(p, `terminal-task ${label}`);
-      await shoot(p, "panel-terminal-task", size, scheme);
-
-      await p.click('.term-chip[data-id="user"]');
-      await p.waitForFunction(() => document.querySelector("#term .xterm-rows")?.textContent.includes("Welcome to Claude Code"));
-      if (await p.locator("#term-stop").isHidden()) fail("Stop hidden for the running user session");
-      await shoot(p, "panel-terminal-user", size, scheme);
-      // Typing goes to the selected terminal.
-      await p.locator("#term .xterm-helper-textarea").focus();
-      await p.keyboard.type("hi");
-      const inputs = await p.evaluate(() => window.__requests.filter((r) => r.type === "terminal.input").map((r) => r.terminalId));
-      if (!inputs.length || inputs.some((id) => id !== "term-user")) fail(`input went to ${JSON.stringify(inputs)}`);
+      const composer = () =>
+        p.evaluate(() => ({
+          placeholder: document.getElementById("now-text").placeholder,
+          submit: document.getElementById("now-submit").textContent,
+          newChat: !document.getElementById("now-new").hidden,
+          attach: !document.getElementById("now-attach").hidden,
+          stop: !document.getElementById("now-stop").hidden,
+        }));
+      const CHAT = { placeholder: "Message browsertodo…", submit: "Send", newChat: true, attach: false, stop: false };
+      const NEW = { placeholder: "Do this now, e.g. “Post ‘good morning’ on X”", submit: "Run", newChat: false, attach: true, stop: false };
+      const expectComposer = async (want, what) => {
+        const got = await composer();
+        if (JSON.stringify(got) !== JSON.stringify(want)) fail(`composer ${what}: ${JSON.stringify(got)}`);
+      };
+      // The last conversation ended a minute ago: the composer talks to it, even from the Tasks tab.
+      await p.waitForFunction(() => document.getElementById("now-text").placeholder === "Message browsertodo…");
+      await expectComposer(CHAT, "not in conversation mode on the Tasks tab");
+      await checkLayout(p, `conversation-tasks ${label}`);
+      await shoot(p, "panel-conversation-tasks", size, scheme);
 
       await p.click("#tab-btn-activity");
-      await p.waitForSelector("#act-watch:not([hidden])");
-      await checkLayout(p, `activity-watch ${label}`);
-      await shoot(p, "panel-activity-watch", size, scheme);
-      await p.click("#act-watch");
-      await p.waitForSelector('#tab-terminal:not([hidden]) .term-chip[data-id="task-1"][aria-pressed="true"]');
-      reportErrors(p, `claude-task ${label}`);
+      await p.waitForSelector("#act-log .ev-user");
+      const view = await p.evaluate(() => ({
+        bubbles: [...document.querySelectorAll("#act-log .ev-user")].map((b) => b.textContent),
+        ends: document.querySelectorAll("#act-log .ev-end").length,
+        head: document.querySelector("#act-log .ev-head")?.textContent,
+        note: document.getElementById("act-conv").hidden ? null : document.getElementById("act-conv").textContent,
+        meta: document.getElementById("act-meta").textContent,
+        rawLog: !document.getElementById("act-rawlog").hidden,
+        // The bubble opens the second turn: right after the first turn's end card.
+        order: [...document.querySelectorAll("#act-log > *")].map((e) => e.className).join(" ").includes("ev-end ev-user"),
+      }));
+      if (view.bubbles.length !== 1 || view.bubbles[0] !== "Now like the first reply to it" || view.ends !== 2 || !view.order) fail(`thread ${JSON.stringify(view)}`);
+      if (view.head !== "Claude Code · claude-sonnet-5 · Jev off") fail(`session head "${view.head}"`);
+      if (view.note !== "Conversation open · Claude Code session kept 30 min") fail(`note "${view.note}"`);
+      if (!/2 messages/.test(view.meta) || !view.rawLog) fail(`meta/raw log ${JSON.stringify(view)}`);
+      await expectComposer(CHAT, "not in conversation mode on Activity");
+      await checkLayout(p, `conversation ${label}`);
+      await shoot(p, "panel-conversation", size, scheme);
+
+      // Raw log asks the background for the helper's run log.
+      const popup = p.context().waitForEvent("page", { timeout: 3000 }).catch(() => null);
+      await p.click("#act-rawlog");
+      await p.waitForFunction(() => window.__requests.some((r) => r.type === "session.log" && r.sessionId === "s-conv"));
+      await (await popup)?.close();
+
+      // A message goes to the same conversation.
+      await p.click("#now-text");
+      await p.keyboard.insertText("And retweet it");
+      await p.keyboard.press("Enter");
+      await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.message"));
+      const sent = await p.evaluate(() => window.__requests.find((r) => r.type === "run.message"));
+      if (sent.sessionId !== "s-conv" || sent.text !== "And retweet it") fail(`message sent ${JSON.stringify(sent)}`);
+
+      // The helper closed the session: the next message starts a fresh one with a summary.
+      await p.evaluate((st) => window.__push({ type: "state", state: { ...st, openConversations: [] } }), scenario("conversation").state);
+      await p.waitForFunction(() => document.getElementById("act-conv").textContent.includes("session ended"));
+      await checkLayout(p, `conversation-ended ${label}`);
+      await shoot(p, "panel-conversation-ended", size, scheme);
+
+      // New chat: back to "Do this now"; the conversation's agent session is closed.
+      await p.click("#now-new");
+      await expectComposer(NEW, "still in the conversation after New chat");
+      const closed = await p.evaluate(() => window.__requests.find((r) => r.type === "run.newChat"));
+      if (closed?.sessionId !== "s-conv") fail(`newChat sent ${JSON.stringify(closed)}`);
+      if (!(await p.locator("#act-conv").isHidden())) fail("conversation note still shown after New chat");
+      await checkLayout(p, `conversation-newchat ${label}`);
+      await shoot(p, "panel-conversation-newchat", size, scheme);
+      // The next text starts a new conversation.
+      await p.click("#now-text");
+      await p.keyboard.insertText("Post gm");
+      await p.keyboard.press("Enter");
+      await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.adhoc" && r.instructions === "Post gm"));
+      reportErrors(p, `conversation ${label}`);
       await p.close();
     }
-    if (want("panel-terminal-autoswitch", size, scheme)) {
-      const p = await openPanel(ctx, "claude-idle");
-      await p.click("#tab-btn-terminal");
-      const pressed = () => p.evaluate(() => document.getElementById("term-sessions").hidden ? "no-switcher" : (document.querySelector('.term-chip[aria-pressed="true"]')?.dataset.id ?? "none"));
-      if ((await pressed()) !== "no-switcher") console.error(`switcher shown without task sessions (${label})`), failures++;
-      // A task session opens while the Terminal tab is visible: it takes over.
-      await p.evaluate(() => window.__push({ type: "terminal.opened", terminal: { terminalId: "task-9", kind: "task", title: "Like the three newest posts", sessionId: "s-live" } }));
-      await p.evaluate((d) => window.__push({ type: "terminal.data", terminalId: "task-9", data: d }), TASK_SCREEN);
-      if ((await pressed()) !== "task-9") console.error(`no auto-switch to the new task session (${label}): ${await pressed()}`), failures++;
-      await shoot(p, "panel-terminal-autoswitch", size, scheme);
-      // It ends: back to the user's session, the switcher goes away.
-      await p.evaluate(() => window.__push({ type: "terminal.exit", terminalId: "task-9", exitCode: 0 }));
-      if ((await pressed()) !== "no-switcher") console.error(`task chip left behind (${label})`), failures++;
-      // Typing in the user's session: a new task session does not steal the view.
-      await p.locator("#term .xterm-helper-textarea").focus();
-      await p.keyboard.type("x");
-      await p.evaluate(() => window.__push({ type: "terminal.opened", terminal: { terminalId: "task-10", kind: "task", title: "Another", sessionId: "s-other" } }));
-      if ((await pressed()) !== "user") console.error(`task session took over while typing (${label}): ${await pressed()}`), failures++;
-      reportErrors(p, `autoswitch ${label}`);
+
+    // Two tasks at once: the status line counts them, Activity has a switcher.
+    if (want("panel-parallel", size, scheme)) {
+      const p = await openPanel(ctx, "parallel");
+      const fail = (what) => {
+        console.error(`${what} (${label})`);
+        failures++;
+      };
+      if ((await p.locator("#status-meta").textContent()) !== "· 2 running") fail(`status meta "${await p.locator("#status-meta").textContent()}"`);
+      await p.click("#tab-btn-activity");
+      await p.waitForSelector("#act-switch:not([hidden]) .act-chip");
+      const chips = await p.evaluate(() => [...document.querySelectorAll(".act-chip")].map((c) => ({ id: c.dataset.id, pressed: c.getAttribute("aria-pressed") })));
+      if (chips.length !== 2 || chips.filter((c) => c.pressed === "true").length !== 1) fail(`switcher ${JSON.stringify(chips)}`);
+      // Watch the other one.
+      await p.click('.act-chip[data-id="s-par2"]');
+      await p.waitForFunction(() => document.querySelector('.act-chip[data-id="s-par2"]')?.getAttribute("aria-pressed") === "true");
+      await p.waitForFunction(() => document.getElementById("act-log").textContent.includes("Opening the doc"));
+      if (!(await p.locator("#act-title").textContent()).startsWith("Post the photo")) fail("switcher did not change the watched session");
+      // The composer talks to the watched session; Stop stops only it.
+      await p.click("#now-stop");
+      await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.stop"));
+      const stop = await p.evaluate(() => window.__requests.find((r) => r.type === "run.stop"));
+      if (stop.sessionId !== "s-par2") fail(`Stop sent ${JSON.stringify(stop)}`);
+      await checkLayout(p, `parallel ${label}`);
+      await shoot(p, "panel-parallel", size, scheme);
+      reportErrors(p, `parallel ${label}`);
       await p.close();
     }
 
     // Warning states.
-    if (wantAny(["panel-nobrain-tasks", "panel-model-menu-nojev", "panel-nobrain-terminal"], size, scheme)) {
+    if (wantAny(["panel-nobrain-tasks", "panel-model-menu-nojev"], size, scheme)) {
       const p = await openPanel(ctx, "nobrain");
       await checkLayout(p, `nobrain ${label}`);
       await shoot(p, "panel-nobrain-tasks", size, scheme);
@@ -599,8 +640,6 @@ for (const size of SIZES) {
         await shoot(p, "panel-model-menu-nojev", size, scheme);
         await p.keyboard.press("Escape");
       }
-      await p.click("#tab-btn-terminal");
-      await shoot(p, "panel-nobrain-terminal", size, scheme);
       reportErrors(p, `nobrain ${label}`);
       await p.close();
     }
@@ -614,7 +653,7 @@ for (const size of SIZES) {
       await p.close();
     }
 
-    // Stopped by the user after typing the post: Continue in the end card and in the composer.
+    // Stopped by the user after typing the post: the next message continues that conversation.
     if (wantAny(["panel-continue", "panel-continue-note", "panel-continue-newtask", "panel-continue-task-menu", "panel-continue-past"], size, scheme)) {
       const p = await openPanel(ctx, "stopped");
       await p.click("#tab-btn-activity");
@@ -631,72 +670,69 @@ for (const size of SIZES) {
         p.evaluate(() => ({
           placeholder: document.getElementById("now-text").placeholder,
           submit: document.getElementById("now-submit").textContent,
-          newTask: !document.getElementById("now-new").hidden,
+          newChat: !document.getElementById("now-new").hidden,
           attach: !document.getElementById("now-attach").hidden,
         }));
       const expectMode = async (want, what) => {
         const got = await mode();
-        if (got.placeholder !== want.placeholder || got.submit !== want.submit || got.newTask !== want.newTask || got.attach !== want.attach) {
+        if (got.placeholder !== want.placeholder || got.submit !== want.submit || got.newChat !== want.newChat || got.attach !== want.attach) {
           console.error(`composer ${what} (${label}):`, got);
           failures++;
         }
       };
-      const CONTINUE = { placeholder: "Continue with a note (optional)…", submit: "Continue", newTask: true, attach: false };
-      const NEW = { placeholder: "Do this now, e.g. “Post ‘good morning’ on X”", submit: "Run", newTask: false, attach: true };
-      const lastContinue = () => p.evaluate(() => window.__requests.filter((r) => r.type === "run.continue").at(-1) ?? null);
-      await expectMode(CONTINUE, "not in continue mode after the stop");
+      const CHAT = { placeholder: "Message browsertodo…", submit: "Send", newChat: true, attach: false };
+      const NEW = { placeholder: "Do this now, e.g. “Post ‘good morning’ on X”", submit: "Run", newChat: false, attach: true };
+      const lastMessage = () => p.evaluate(() => window.__requests.filter((r) => r.type === "run.message").at(-1) ?? null);
+      await expectMode(CHAT, "not talking to the stopped conversation");
       await checkLayout(p, `continue ${label}`);
       await shoot(p, "panel-continue", size, scheme);
 
-      // The card's Continue with an empty box: no note.
+      // The card's Continue puts the cursor in the box for this conversation (nothing is sent yet).
       await p.click(".ev-continue");
-      let req = await lastContinue();
-      if (req?.sessionId !== "s-stop" || "text" in req) {
-        console.error(`card Continue sent ${JSON.stringify(req)} (${label})`);
+      if ((await p.evaluate(() => document.activeElement?.id)) !== "now-text" || (await lastMessage())) {
+        console.error(`card Continue did not just focus the box (${label})`);
         failures++;
       }
 
-      // A note, sent with Enter.
-      await p.click("#now-text");
+      // A note, sent with Enter: the next turn of the same conversation.
       await p.keyboard.insertText("It's already typed, just press Post");
       await checkLayout(p, `continue-note ${label}`);
       await shoot(p, "panel-continue-note", size, scheme);
       await p.keyboard.press("Enter");
-      await p.waitForFunction(() => window.__requests.filter((r) => r.type === "run.continue").length === 2);
-      req = await lastContinue();
-      if (req?.text !== "It's already typed, just press Post") {
-        console.error(`composer Continue sent ${JSON.stringify(req)} (${label})`);
+      await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.message"));
+      const req = await lastMessage();
+      if (req?.sessionId !== "s-stop" || req?.text !== "It's already typed, just press Post") {
+        console.error(`composer sent ${JSON.stringify(req)} (${label})`);
         failures++;
       }
 
-      // "New task" goes back to "Do this now".
+      // "New chat" goes back to "Do this now".
       await p.click("#now-new");
-      await expectMode(NEW, "still continuing after New task");
+      await expectMode(NEW, "still in the conversation after New chat");
       await checkLayout(p, `continue-newtask ${label}`);
       await shoot(p, "panel-continue-newtask", size, scheme);
 
-      // A past stopped run from History offers Continue too.
+      // A past stopped run from History: the box talks to it.
       if (want("panel-continue-past", size, scheme)) {
         await p.click("#act-history");
         await p.waitForSelector(".sessions li");
         await p.locator(".sessions li button", { hasText: "cheapest flight" }).click();
         await p.waitForSelector("#act-log .ev-continue");
-        await expectMode(CONTINUE, "not in continue mode for a past stopped run");
+        await expectMode(CHAT, "not talking to a past stopped run");
         await checkLayout(p, `continue-past ${label}`);
         await shoot(p, "panel-continue-past", size, scheme);
       }
 
-      // Tasks tab: the paused task's menu continues its latest run; the composer is back to "Do this now".
+      // Tasks tab: the paused task's menu continues its latest run.
       await p.click("#tab-btn-tasks");
-      await expectMode(NEW, "continue mode on the Tasks tab");
       const menu = p.locator("#task-list li", { hasText: "September invoice" }).locator(".menu");
       await menu.locator("summary").click();
       await shoot(p, "panel-continue-task-menu", size, scheme);
       await menu.locator("button", { hasText: "Continue" }).click();
-      await p.waitForFunction(() => window.__requests.filter((r) => r.type === "run.continue").length === 3);
-      req = await lastContinue();
-      if (req?.sessionId !== "s-5") {
-        console.error(`task menu Continue sent ${JSON.stringify(req)} (${label})`);
+      await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.continue"));
+      const cont = await p.evaluate(() => window.__requests.filter((r) => r.type === "run.continue").at(-1));
+      if (cont?.sessionId !== "s-5") {
+        console.error(`task menu Continue sent ${JSON.stringify(cont)} (${label})`);
         failures++;
       }
       reportErrors(p, `continue ${label}`);

@@ -1,5 +1,6 @@
 /** The options page's Test buttons. Each resolves { ok, detail } and never throws. */
 import type { ExtensionSettings, PageSnapshot } from "@browsertodo/shared";
+import { errText } from "../errors.js";
 import type { CoreApi } from "./brains.js";
 
 export interface TestResult {
@@ -77,8 +78,4 @@ export async function testCloud(
   } catch (err) {
     return { ok: false, detail: errText(err) };
   }
-}
-
-function errText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

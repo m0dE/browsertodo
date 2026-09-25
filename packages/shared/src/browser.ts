@@ -70,6 +70,15 @@ export const MAX_TABS_PER_CALL = 8;
 /** Most tabs the agent may have open at once in one run (including the first). */
 export const MAX_AGENT_TABS = 20;
 
+/**
+ * Every browser.* call the helper makes for a task carries that task session's
+ * id as an extra `sessionId` param, so tasks running at the same time act in
+ * their own tabs. Calls without one (mcp-server --attach) use the first agent tab.
+ */
+export interface BrowserCallContext {
+  sessionId?: string;
+}
+
 /** Params and results of every browser RPC method. */
 export type BrowserMethods = {
   "browser.navigate": { params: { url: string }; result: { url: string; title: string } };

@@ -14,7 +14,7 @@ export interface BrainInputs {
 }
 
 /** Why local Claude Code cannot be used, or null when it can. */
-export function claudeCodeProblem(helper: HelperInfo | null, helperError?: string | null): string | null {
+function claudeCodeProblem(helper: HelperInfo | null, helperError?: string | null): string | null {
   if (!helper) return `Helper not connected${helperError ? `: ${helperError}` : ""}`;
   if (!helper.claudePath) return "Claude Code was not found on this computer";
   if (helper.claudePath === "scripted") return null;
@@ -23,7 +23,7 @@ export function claudeCodeProblem(helper: HelperInfo | null, helperError?: strin
   return null;
 }
 
-export function jevActiveFor(brain: BrainKind | null, inputs: BrainInputs): boolean {
+function jevActiveFor(brain: BrainKind | null, inputs: BrainInputs): boolean {
   const s = inputs.settings;
   if (!s.jevEnabled || !brain) return false;
   if (s.jevApiKey) return true;

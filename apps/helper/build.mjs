@@ -1,7 +1,5 @@
 // Bundles the helper entry points into dist/. Everything (MCP SDK, Jev SDK,
-// shared contracts, core) is bundled so dist/ runs with plain `node`, except
-// node-pty: it is a native module, loaded at runtime from
-// apps/helper/node_modules (dist/ sits next to it, so Node finds it).
+// shared contracts, core) is bundled so dist/ runs with plain `node`.
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -21,7 +19,6 @@ await build({
   target: "node22",
   sourcemap: true,
   logLevel: "warning",
-  external: ["node-pty"],
   banner: {
     js: 'import { createRequire as __btCreateRequire } from "node:module"; const require = __btCreateRequire(import.meta.url);',
   },

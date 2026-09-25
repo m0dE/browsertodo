@@ -129,7 +129,9 @@ button.icon:hover { color: var(--text); background: color-mix(in srgb, var(--tex
 
 .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .row.end { justify-content: flex-end; }
-.grow { flex: 1 1 120px; }
 .spacer { flex: 1; }
 .muted { color: var(--muted); }
 .count { color: var(--faint); font-weight: 400; }
+
+/* Cards: each page sets its own padding, gap and radius. */
+.card { background: var(--surface); border: 1px solid var(--border); display: flex; flex-direction: column; }

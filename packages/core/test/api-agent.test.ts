@@ -290,3 +290,97 @@ describe("startApiAgent", () => {
     expect(server.requests[0]!.body.messages[0].content[0].text).toMatch(/this is a retry/);
   });
 });
+
+describe("startApiAgent: conversation (continueWith)", () => {
+  it("a follow-up message continues the same history after task_complete", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    const { session, server, events } = start(x, [
+      msg(tool("read_page")),
+      msg(tool("task_complete", { summary: "first done" })),
+      msg(text("On it."), tool("task_complete", { summary: "second done", url: "https://x.com/a/status/2" })),
+    ]);
+    expect(await session.done).toEqual({ outcome: "done", summary: "first done" });
+    expect(session.continueWith).toBeTypeOf("function");
+
+    const next = session.continueWith!("now do the second thing", { config: { ...CONFIG, maxToolCalls: 7 } });
+    expect(next.sessionId).toBe("S1");
+    expect(await next.done).toEqual({ outcome: "done", summary: "second done", url: "https://x.com/a/status/2" });
+
+    // The third request carries the whole conversation: the first turn's task_complete is answered,
+    // then the follow-up text, in one user message.
+    const third = server.requests[2]!.body.messages;
+    expect(third).toHaveLength(5);
+    expect(third[0].content[0].text).toContain("Post: gm");
+    const followUp = third[4];
+    expect(followUp.role).toBe("user");
+    expect(followUp.content[0]).toMatchObject({ type: "tool_result", tool_use_id: third[3].content[0].id });
+    expect(followUp.content.at(-1)).toEqual({ type: "text", text: expect.stringMatching(/same conversation.*now do the second thing/) });
+    // The user's message shows in the event stream, and each turn ends with its own task_end.
+    expect(events.filter((e) => e.type === "user_message")).toEqual([{ type: "user_message", text: "now do the second thing" }]);
+    expect(events.filter((e) => e.type === "task_end").map((e) => (e as { summary?: string }).summary)).toEqual(["first done", "second done"]);
+  });
+
+  it("after a stop, the next turn answers the tool calls that never ran", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    let session!: ReturnType<typeof start>["session"];
+    const inner = x.caller();
+    // Stopped while the first of two tool calls runs.
+    const browser: BrowserCaller = {
+      call: async (method, params) => {
+        const r = await inner.call(method, params);
+        session.abort("stopped by user", "paused");
+        return r;
+      },
+    };
+    const r = start(x, [msg(tool("read_page"), tool("screenshot")), msg(tool("task_complete", { summary: "resumed" }))], { browser });
+    session = r.session;
+    expect(await session.done).toEqual({ outcome: "paused", reason: "stopped by user" });
+    const next = session.continueWith!("carry on");
+    expect(await next.done).toMatchObject({ outcome: "done", summary: "resumed" });
+    const msgs = r.server.requests.at(-1)!.body.messages;
+    expect(msgs).toHaveLength(3);
+    const uses = msgs[1].content.filter((b: Block) => b.type === "tool_use");
+    const answer = msgs[2].content;
+    // Every tool_use has a result ("not run" for the ones the stop skipped), then the follow-up text.
+    expect(answer.slice(0, 2).map((b: Block) => b.tool_use_id)).toEqual(uses.map((u: Block) => u.id));
+    expect(answer[1].content[0].text).toMatch(/Not run/);
+    expect(answer.at(-1).text).toContain("carry on");
+  });
+
+  it("a stop before Claude answered appends the follow-up to the pending user message", async () => {
+    let session!: ReturnType<typeof start>["session"];
+    const r = start(new FakeX(), [
+      () => {
+        queueMicrotask(() => session.abort("stopped by user", "paused"));
+        return msg(tool("read_page"));
+      },
+      msg(tool("task_complete", { summary: "ok" })),
+    ]);
+    session = r.session;
+    await session.done;
+    await session.continueWith!("go on").done;
+    const msgs = r.server.requests.at(-1)!.body.messages;
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].content.map((b: Block) => b.type)).toEqual(["text", "text"]);
+  });
+
+  it("refuses a follow-up while a turn runs, and an empty one", async () => {
+    const x = new FakeX();
+    let session!: ReturnType<typeof start>["session"];
+    let busy: unknown = null;
+    const r = start(x, [
+      () => {
+        try {
+          session.continueWith!("too early");
+        } catch (e) {
+          busy = e;
+        }
+        return msg(tool("task_fail", { reason: "nope" }));
+      },
+    ]);
+    session = r.session;
+    await session.done;
+    expect(String(busy)).toMatch(/busy/);
+    expect(() => session.continueWith!("  ")).toThrow(/empty/);
+  });
+});

@@ -1,4 +1,5 @@
 import { ClaimResponse, MediaInfo, type ResultInput } from "@browsertodo/shared";
+import { errText } from "./errors.js";
 
 export class ApiRequestError extends Error {
   constructor(
@@ -74,7 +75,7 @@ export class ApiClient {
       });
       return { ok: true };
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      return { ok: false, error: errText(err) };
     }
   }
 
@@ -92,7 +93,7 @@ export class ApiClient {
     try {
       res = await this.fetchFn(this.base + path, { method, headers, body: payload });
     } catch (err) {
-      throw new Error(`Cannot reach API at ${this.base}: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`Cannot reach API at ${this.base}: ${errText(err)}`);
     }
     if (!res.ok) {
       const text = await res.text().catch(() => "");

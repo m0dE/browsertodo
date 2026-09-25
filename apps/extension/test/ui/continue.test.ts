@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent, StampedAgentEvent } from "@browsertodo/shared";
 import {
-  buildContinueInstructions,
-  continueTitle,
+  buildFollowUpInstructions,
   doneSoFar,
-  isContinuable,
+  isContinuableOutcome,
   lastAssistantText,
+  lastTurnEvents,
   stopReason,
 } from "../../src/continue.js";
 
@@ -25,19 +25,11 @@ const EVENTS: StampedAgentEvent[] = [
   ev({ type: "assistant_text", text: "Typed it; pressing Post next." }),
 ];
 
-describe("isContinuable", () => {
-  const s = (outcome: string | undefined, extra: object = {}) => ({ outcome, endedAt: "x", source: "adhoc", ...extra }) as never;
-  it("paused, failed and retry runs that ended here", () => {
-    expect(isContinuable(s("paused"))).toBe(true);
-    expect(isContinuable(s("failed", { source: "local" }))).toBe(true);
-    expect(isContinuable(s("retry"))).toBe(true);
-  });
-  it("not done, running, missing or cloud runs", () => {
-    expect(isContinuable(s("done"))).toBe(false);
-    expect(isContinuable(s(undefined, { endedAt: undefined }))).toBe(false);
-    expect(isContinuable(s("paused", { endedAt: undefined }))).toBe(false);
-    expect(isContinuable(s("paused", { source: "cloud" }))).toBe(false);
-    expect(isContinuable(null)).toBe(false);
+describe("isContinuableOutcome", () => {
+  it("paused, failed and retry runs; not done or running ones", () => {
+    for (const o of ["paused", "failed", "retry"] as const) expect(isContinuableOutcome(o)).toBe(true);
+    expect(isContinuableOutcome("done")).toBe(false);
+    expect(isContinuableOutcome(undefined)).toBe(false);
   });
 });
 
@@ -66,42 +58,42 @@ describe("doneSoFar", () => {
 });
 
 describe("continue helpers", () => {
-  it("lastAssistantText, stopReason, continueTitle", () => {
+  it("lastAssistantText, stopReason, lastTurnEvents", () => {
     expect(lastAssistantText(EVENTS)).toBe("Typed it; pressing Post next.");
     expect(lastAssistantText([])).toBeNull();
     expect(stopReason({ outcome: "paused", reason: "stopped by user" })).toBe("stopped by user");
     expect(stopReason({ outcome: "retry" })).toBe("a temporary problem");
-    expect(continueTitle("Post hello")).toBe("Continue: Post hello");
-    expect(continueTitle("Continue: Post hello")).toBe("Continue: Post hello");
-    expect(continueTitle("x".repeat(100))).toHaveLength(80);
+    const end = ev({ type: "task_end", outcome: "done" });
+    const second = [ev({ type: "user_message", text: "and now" }), ev({ type: "assistant_text", text: "ok" }), end];
+    expect(lastTurnEvents([...EVENTS, end, ...second])).toEqual(second);
+    expect(lastTurnEvents(EVENTS)).toEqual(EVENTS);
   });
 });
 
-describe("buildContinueInstructions", () => {
-  it("original task, what was done, the reason, the note and the no-repeat rules", () => {
-    const text = buildContinueInstructions({
-      instructions: "  Make a post on X about cats  ",
-      session: { outcome: "paused", reason: "stopped by user" },
+describe("buildFollowUpInstructions", () => {
+  it("after a finished turn: the first request, what was done, the result and the new message", () => {
+    const text = buildFollowUpInstructions({
+      instructions: "  Post on X from @alpha. Post: first  ",
+      session: { outcome: "done", summary: "posted", url: "https://x.com/alpha/status/1" },
       events: EVENTS,
-      note: "  it is already typed  ",
+      text: "  Now like the first reply ",
     });
-    const lines = text.split("\n");
-    expect(lines[0]).toBe("Make a post on X about cats");
-    expect(text).toContain("--- Continuing a stopped run ---");
-    expect(text).toContain("(reason: stopped by user)");
-    expect(text).toContain("What it already did (oldest first):\n- navigate x.com/home");
-    expect(text).toContain('Its last message: "Typed it; pressing Post next."');
-    expect(text).toContain("The user adds: it is already typed");
-    expect(text).toMatch(/read_page or screenshot/);
-    expect(text).toMatch(/do not type it again/);
-    expect(text).toMatch(/Never post twice/);
+    expect(text.split("\n")[0]).toBe("--- Continuing a conversation ---");
+    expect(text).toContain("<<<\nPost on X from @alpha. Post: first\n>>>");
+    expect(text).toContain("What was done so far (oldest first):\n- navigate x.com/home");
+    expect(text).toContain('the user said: "use the second draft"');
+    expect(text).toContain("The last request finished: posted (https://x.com/alpha/status/1)");
+    expect(text).toContain('The agent\'s last message: "Typed it; pressing Post next."');
+    expect(text).toContain("The user's new message, which is what to do now:\n<<<\nNow like the first reply\n>>>");
+    expect(text).toMatch(/never post the same thing twice/);
+    expect(text).not.toMatch(/do not type it again/);
   });
 
-  it("no tools used and no note", () => {
-    const text = buildContinueInstructions({ instructions: "x", session: { outcome: "failed" }, events: [], note: " " });
-    expect(text).toContain("(reason: it failed)");
-    expect(text).toContain("It did not get to use any tools.");
-    expect(text).not.toContain("The user adds");
-    expect(text).not.toContain("Its last message");
+  it("after a stopped turn: the reason and the do-not-repeat rules", () => {
+    const text = buildFollowUpInstructions({ instructions: "x", session: { outcome: "paused", reason: "stopped by user" }, events: [], text: "go on" });
+    expect(text).toContain("stopped before it finished (reason: stopped by user)");
+    expect(text).toMatch(/do not type it again/);
+    expect(text).not.toContain("What was done so far");
+    expect(text).not.toContain("last message");
   });
 });

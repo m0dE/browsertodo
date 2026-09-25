@@ -2,9 +2,9 @@
  * Stdio MCP server that exposes the browsertodo tools and relays every call
  * over the named pipe to the helper.
  *
- * Spawned by the helper's Claude Code (task or interactive terminal), with env:
+ * Spawned by a task session's Claude Code (see the session's mcp-config.json), with env:
  *   BROWSERTODO_PIPE   pipe path of the helper
- *   BROWSERTODO_TASK   session id of the task; empty for the interactive terminal
+ *   BROWSERTODO_TASK   session id of the task (empty: the attached session's tools)
  *   BROWSERTODO_TOOLS  comma list of tool names to register (default: all)
  *
  * Or from the user's own Claude Code:
@@ -19,16 +19,21 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { INTERACTIVE_TOOL_NAMES, MCP_SERVER_NAME, TOOL_DESCRIPTIONS, ToolArgs, type ToolName } from "@browsertodo/shared";
 import { connectPipe, type PipeClient } from "./pipe-server.js";
-import { TOOL_CALL_TIMEOUT_MS, toMcpResult, toolsFromEnv } from "./mcp-tools.js";
-import { loadConfig } from "./config.js";
+import { INTERACTIVE_TASK_ID, TOOL_CALL_TIMEOUT_MS, toMcpResult, toolsFromEnv } from "./mcp-tools.js";
+import { HELPER_VERSION, loadConfig } from "./config.js";
 import { isPidAlive, readHelperFile } from "./helper-file.js";
+import { errorMessage } from "./logger.js";
 
-const INTERACTIVE_TASK_ID = "interactive";
 const NOT_RUNNING =
   "browsertodo helper is not running: open Chrome with the browsertodo extension (it starts the helper), then restart this MCP server.";
 
-function fail(message: string, code = 1): never {
+/** Diagnostics go to stderr: stdout carries MCP frames only. */
+function warn(message: string): void {
   process.stderr.write(`browsertodo mcp-server: ${message}\n`);
+}
+
+function fail(message: string, code = 1): never {
+  warn(message);
   process.exit(code);
 }
 
@@ -62,10 +67,10 @@ async function main(): Promise<void> {
   try {
     pipe = await connectPipe(pipePath);
   } catch (e) {
-    fail(attach ? NOT_RUNNING : `cannot connect to ${pipePath}: ${e instanceof Error ? e.message : String(e)}`);
+    fail(attach ? NOT_RUNNING : `cannot connect to ${pipePath}: ${errorMessage(e)}`);
   }
   if (attach) {
-    // The helper may not offer act (no Jev key): ask it which tools it allows.
+    // Ask the helper which tools this session allows.
     try {
       const { names } = await pipe.peer.call("tool.list", { taskId }, { timeoutMs: 5000 });
       if (names.length) tools = tools.filter((n) => names.includes(n));
@@ -74,14 +79,14 @@ async function main(): Promise<void> {
     }
   }
 
-  const server = new McpServer({ name: MCP_SERVER_NAME, version: "0.2.0" });
+  const server = new McpServer({ name: MCP_SERVER_NAME, version: HELPER_VERSION });
   for (const name of tools) {
     server.registerTool(name, { description: TOOL_DESCRIPTIONS[name], inputSchema: ToolArgs[name] }, async (args: unknown): Promise<CallToolResult> => {
       try {
         const r = await pipe.peer.call("tool.call", { taskId, name, args: args ?? {} }, { timeoutMs: TOOL_CALL_TIMEOUT_MS });
         return toMcpResult(r);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+        const msg = errorMessage(e);
         return toMcpResult({ text: `${name} failed: ${/closed/i.test(msg) ? NOT_RUNNING : msg}`, isError: true });
       }
     });
@@ -91,12 +96,12 @@ async function main(): Promise<void> {
   await server.connect(transport);
   // The helper went away: nothing useful left to do.
   void pipe.closed.then(() => {
-    process.stderr.write("browsertodo mcp-server: pipe closed, exiting\n");
+    warn("pipe closed, exiting");
     void server.close().finally(() => process.exit(0));
   });
 }
 
 main().catch((e) => {
-  process.stderr.write(`browsertodo mcp-server: ${e instanceof Error ? e.stack : String(e)}\n`);
+  warn(e instanceof Error ? String(e.stack) : String(e));
   process.exit(1);
 });

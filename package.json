@@ -20,8 +20,7 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild",
-      "workerd",
-      "node-pty"
+      "workerd"
     ]
   }
 }

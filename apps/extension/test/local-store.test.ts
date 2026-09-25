@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { installChromeFake, type ChromeFake } from "./chrome-fake.js";
 import { MemoryKvDb } from "../src/engine/kv.js";
-import { LOCAL_TASKS_KEY, LocalStore, MAX_LOCAL_ATTEMPTS, nextOccurrence } from "../src/engine/local-store.js";
+import { LOCAL_TASKS_KEY, LocalStore } from "../src/engine/local-store.js";
+import { MAX_LOCAL_ATTEMPTS, nextOccurrence } from "../src/engine/local-task-rules.js";
 
 /** Local wall-clock date, so the tests pass in any time zone. */
 const local = (y: number, mo: number, d: number, h = 0, mi = 0) => new Date(y, mo - 1, d, h, mi, 0, 0);

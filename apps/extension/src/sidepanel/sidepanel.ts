@@ -1,54 +1,41 @@
 /** Side panel entry: status line, tabs, and the push port to the background. */
 import type { SessionInfo } from "@browsertodo/shared";
-import { isContinuable } from "../continue.js";
 import { UI_PORT_NAME, uiRequest, type UiPush, type UiState } from "../ui-protocol.js";
 import { initActivity } from "./activity.js";
 import { initComposer } from "./composer.js";
 import { $, busy, errorText } from "./dom.js";
-import { clip, clockLabel, statusLine } from "./format.js";
+import { clip, clockLabel, conversationNote, statusLine } from "./format.js";
 import { initTasks } from "./tasks.js";
-import { initTerminal } from "./terminal.js";
 
-type TabName = "tasks" | "activity" | "terminal";
+type TabName = "tasks" | "activity";
 
 let state: UiState | null = null;
-let currentTab: TabName = "tasks";
-/** The session the Activity tab shows. */
+/** The conversation the Activity tab shows. */
 let focused: SessionInfo | null = null;
 
-/** A stopped run was continued: show its new session. */
-const followNew = () => {
+/** A message or a continue went out: show the conversation it went to. */
+const followLive = (sessionId?: string) => {
   showTab("activity");
-  activity.followLive();
+  activity.followLive(sessionId);
 };
-const tasks = initTasks({ onStarted: () => showTab("activity"), onContinued: followNew });
-const composer = initComposer({ onStarted: () => showTab("activity"), onState: (s) => applyState(s), onContinued: followNew });
+const tasks = initTasks({ onStarted: () => showTab("activity"), onContinued: followLive });
+const composer = initComposer({ onStarted: followLive, onState: (s) => applyState(s), onTargetChange: () => updateNote() });
 const activity = initActivity({
-  onContinue: (sessionId) => void composer.continueRun(sessionId),
+  // Continue in an end card: the next message goes to that conversation.
+  onContinue: (sessionId) => composer.focusConversation(sessionId),
   onFocus: (s) => {
     focused = s;
-    updateContinue();
-    updateWatch();
+    composer.setConversation(s);
+    updateNote();
   },
 });
 
-/** The composer continues the run the Activity tab shows when it stopped before finishing and nothing runs. */
-function updateContinue(): void {
-  const can = currentTab === "activity" && !state?.running && isContinuable(focused);
-  composer.setContinueTarget(can ? focused : null);
+/** "Conversation open · …" under the Activity header while the composer's conversation waits for a message. */
+function updateNote(): void {
+  const t = composer.target();
+  const open = !!t && (state?.openConversations ?? []).includes(t.sessionId);
+  activity.setNote(t && t.source !== "cloud" && composer.mode() === "conversation" ? conversationNote(t, open) : null);
 }
-const terminal = initTerminal();
-
-/** "Watch in Terminal" in the Activity header: the shown run is a Claude Code task whose terminal session is open. */
-const watchBtn = $<HTMLButtonElement>("act-watch");
-function updateWatch(): void {
-  watchBtn.hidden = !(focused && focused.brain === "claude-code" && terminal.taskTerminalOf(focused.sessionId));
-}
-watchBtn.addEventListener("click", () => {
-  if (!focused) return;
-  showTab("terminal");
-  terminal.watch(focused.sessionId);
-});
 
 function showTab(name: TabName): void {
   for (const btn of document.querySelectorAll<HTMLButtonElement>(".tabs [role=tab]")) {
@@ -61,12 +48,6 @@ function showTab(name: TabName): void {
   } catch {
     // Storage may be unavailable; the tab just is not remembered.
   }
-  currentTab = name;
-  updateContinue();
-  // The terminal has its own input; the composer serves Tasks and Activity.
-  composer.setVisible(name !== "terminal");
-  if (name === "terminal") terminal.onShow();
-  else terminal.onHide();
   if (name === "tasks") void tasks.refresh();
 }
 
@@ -83,12 +64,16 @@ function renderStatus(s: UiState): void {
   $("status-text").textContent = line.text;
   const metaEl = $("status-meta");
   if (line.tone === "ok") {
-    metaEl.textContent = s.running
+    const n = s.runningSessions?.length ?? (s.running ? 1 : 0);
+    metaEl.textContent =
+      n > 1
+      ? `· ${n} running`
+      : s.running
       ? `· ${clip(s.running.title, 60)}`
       : s.nextRunAt
         ? `· next check ${clockLabel(s.nextRunAt).replace(/^today /, "")}`
         : "";
-    metaEl.title = s.running?.title ?? "";
+    metaEl.title = (s.runningSessions ?? []).map((r) => r.title).join("\n") || (s.running?.title ?? "");
   } else {
     metaEl.textContent = "";
   }
@@ -115,12 +100,11 @@ $("open-settings").addEventListener("click", () => void chrome.runtime.openOptio
 function applyState(s: UiState): void {
   state = s;
   renderStatus(s);
-  activity.setRunning(s.running);
-  composer.setRunning(!!s.running);
-  updateContinue();
+  const running = s.runningSessions ?? (s.running ? [s.running] : []);
+  activity.setRunning(running);
+  composer.setRunning(running);
   composer.setState(s);
-  terminal.onState(s);
-  updateWatch();
+  updateNote();
 }
 
 function onPush(msg: UiPush): void {
@@ -133,21 +117,11 @@ function onPush(msg: UiPush): void {
       break;
     case "session":
       activity.onSession(msg.session);
+      if (focused?.sessionId === msg.session.sessionId) composer.setConversation(msg.session);
       if (msg.session.endedAt && msg.session.source === "local") void tasks.refresh();
       break;
     case "tasks.changed":
       void tasks.refresh();
-      break;
-    case "terminal.opened":
-      terminal.onOpened(msg.terminal);
-      updateWatch();
-      break;
-    case "terminal.data":
-      terminal.onData(msg.terminalId, msg.data);
-      break;
-    case "terminal.exit":
-      terminal.onExit(msg.terminalId, msg.exitCode);
-      updateWatch();
       break;
   }
 }
@@ -178,8 +152,7 @@ async function loadState(): Promise<void> {
 
 let initial: TabName = "tasks";
 try {
-  const saved = localStorage.getItem("tab");
-  if (saved === "activity" || saved === "terminal") initial = saved;
+  if (localStorage.getItem("tab") === "activity") initial = "activity";
 } catch {
   // ignore
 }

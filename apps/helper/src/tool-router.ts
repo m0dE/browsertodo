@@ -1,13 +1,14 @@
 /**
- * Routes MCP tool calls (from the per-task or interactive MCP server, over the
- * pipe) to the right @browsertodo/core tool executor: the running task's, or
- * the interactive terminal's (task id "interactive").
+ * Routes MCP tool calls (from a task session's MCP server, or the user's own
+ * Claude Code attached with `mcp-server.js --attach`, over the pipe) to the
+ * right @browsertodo/core tool executor: the task session's, or the attached
+ * session's (task id INTERACTIVE_TASK_ID).
  */
 import { TOOL_NAMES, type BrowserMethod, type BrowserMethods, type ToolName, type ToolResult } from "@browsertodo/shared";
 import type { BrowserCaller, ToolExecutor } from "@browsertodo/core";
+import { INTERACTIVE_TASK_ID } from "./mcp-tools.js";
 
 export const BROWSER_RPC_TIMEOUT_MS = 60_000;
-export const INTERACTIVE_TASK_ID = "interactive";
 
 /** Structural view of RpcPeer<BrowserMethods, ...> (it takes a timeout option). */
 export interface RpcBrowser {
@@ -23,7 +24,7 @@ export function rpcBrowser(peer: RpcBrowser, timeoutMs = BROWSER_RPC_TIMEOUT_MS)
   return { call: (method, params) => peer.call(method, params, { timeoutMs }) };
 }
 
-/** The running task, as seen by the router. Implemented by TaskRunner. */
+/** A task session, as seen by the router. Implemented by TaskSession. */
 export interface ToolSession {
   taskId: string;
   allowedTools: ReadonlySet<ToolName>;
@@ -32,6 +33,7 @@ export interface ToolSession {
   executor: ToolExecutor;
 }
 
+/** The attached session's tools (no task to end, no limits). */
 export interface InteractiveTools {
   allowedTools: ReadonlySet<ToolName>;
   executor: ToolExecutor;
@@ -44,7 +46,7 @@ export class ToolRouter {
     private readonly deps: {
       /** No id: the running turn's session. With an id: that task session (running or idle). */
       getSession: (taskId?: string) => ToolSession | null;
-      /** The interactive terminal's tools; null when not available. */
+      /** The attached session's tools; null when not available. */
       getInteractive?: () => InteractiveTools | null;
     },
   ) {}
@@ -62,7 +64,7 @@ export class ToolRouter {
       return err("A browsertodo task is using the browser right now. Wait for it to finish, then try again.");
     }
     if (!(TOOL_NAMES as string[]).includes(name) || !target.allowedTools.has(name)) {
-      return err(`Tool ${name} is not available${taskId === INTERACTIVE_TASK_ID ? " in the interactive terminal" : " for this task"}.`);
+      return err(`Tool ${name} is not available${taskId === INTERACTIVE_TASK_ID ? " in an attached session" : " for this task"}.`);
     }
     if ("beforeCall" in target) {
       const blocked = target.beforeCall(name);

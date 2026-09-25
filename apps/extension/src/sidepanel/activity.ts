@@ -1,78 +1,37 @@
-/** Activity tab: live agent session, history, read-only past sessions. */
+/**
+ * Activity tab: the conversation with the agent, live (every turn of it in
+ * one thread: the user's messages as bubbles, the agent's text, tool calls,
+ * results and Jev decisions), the history, and read-only past conversations.
+ * This module decides what the tab shows; the pieces render themselves
+ * (event-render, history, session-switcher, raw-log).
+ */
 import type { SessionInfo, StampedAgentEvent } from "@browsertodo/shared";
 import { isContinuableOutcome } from "../continue.js";
 import { uiRequest } from "../ui-protocol.js";
 import { $, busy, errorText, h } from "./dom.js";
-import { describeEvent, isNearBottom, type EventView } from "./event-format.js";
-import { brainLabel, clockLabel, outcomeChip, relativeTime } from "./format.js";
+import { describeEvent, isNearBottom } from "./event-format.js";
+import { renderEvent, renderSessionHead } from "./event-render.js";
+import { brainLabel, sessionMeta } from "./format.js";
+import { loadHistory } from "./history.js";
+import { openRawLog } from "./raw-log.js";
+import { renderSwitcher } from "./session-switcher.js";
 
 type Mode = { kind: "live" } | { kind: "history" } | { kind: "past"; session: SessionInfo };
 
 export interface ActivityView {
-  /** The running session from UiState (null when idle). */
-  setRunning(session: SessionInfo | null): void;
+  /** The running sessions from UiState, oldest first (several tasks can run at once). */
+  setRunning(sessions: readonly SessionInfo[]): void;
   onEvent(ev: StampedAgentEvent): void;
   onSession(session: SessionInfo): void;
-  /** Show the live session (e.g. the run just continued). */
-  followLive(): void;
+  /** Show a session live (e.g. the one a message just went to); none: the one followed now. */
+  followLive(sessionId?: string): void;
+  /** The line under the header about the conversation's agent session (null hides it). */
+  setNote(text: string | null): void;
 }
 
 const eventKey = (e: StampedAgentEvent) => JSON.stringify(e);
-
-/** onContinue: the run ended without finishing and can be continued (task_end cards). */
-export function renderEvent(v: EventView, onContinue?: () => void): HTMLElement {
-  switch (v.kind) {
-    case "status":
-      return h("div.ev-status", null, v.text);
-    case "text":
-      return h("p.ev-text", null, v.text);
-    case "tool":
-      // Every tool call is Claude's decision; Jev's own decisions show as Jev lines below it.
-      return h("div.ev-tool", { title: `Claude chose: ${v.name} ${v.args}` }, h("span.who", null, "Claude"), h("b", null, v.name), v.args ? ` ${v.args}` : "");
-    case "result": {
-      const cls = v.isError ? "err" : "";
-      // Long results collapse behind their preview; short ones are just the line.
-      const wrap = h(
-        "div",
-        null,
-        v.full && v.full !== v.preview
-          ? h("details.ev-result", { class: cls }, h("summary", null, v.preview), h("pre", null, v.full))
-          : h("div.ev-result.plain", { class: cls }, h("div.line", null, v.preview)),
-      );
-      if (v.thumbnail) {
-        const img = h("img.thumb", { src: `data:image/jpeg;base64,${v.thumbnail}`, alt: "screenshot", loading: "lazy" });
-        img.addEventListener("click", () => img.classList.toggle("big"));
-        wrap.append(img);
-      }
-      return wrap;
-    }
-    case "jev":
-      return h(
-        "div.ev-jev",
-        { title: v.title },
-        h("span.chip", { "data-tone": v.executed ? "accent" : "muted" }, v.label),
-        h("span.ms", null, `${v.ms} ms`),
-      );
-    case "user":
-      return h("div.ev-user", null, v.text);
-    case "end":
-      return h(
-        "div.ev-end",
-        null,
-        h("div", null, h("span.chip", { "data-tone": v.chip.tone }, v.chip.label), v.text ? ` ${v.text}` : ""),
-        v.url ? h("a", { href: v.url, target: "_blank", rel: "noopener" }, v.url) : null,
-        onContinue
-          ? h(
-              "div.ev-actions",
-              null,
-              h("button.primary.small.ev-continue", { type: "button", title: "Pick up where it stopped (uses the note in the box below, if any)", onclick: () => onContinue() }, "Continue"),
-            )
-          : null,
-      );
-    case "error":
-      return h("div.ev-error", null, v.text);
-  }
-}
+/** A conversation that ended less than this ago is shown when the panel opens (its agent session may still be open). */
+const RECENT_MS = 30 * 60_000;
 
 export interface ActivityOptions {
   /** The Continue button in a task_end card. */
@@ -86,9 +45,12 @@ export function initActivity(opts: ActivityOptions = {}): ActivityView {
   const list = $("act-list");
   const title = $("act-title");
   const meta = $("act-meta");
+  const note = $("act-conv");
+  const rawLog = $<HTMLButtonElement>("act-rawlog");
   const back = $<HTMLButtonElement>("act-back");
   const historyBtn = $<HTMLButtonElement>("act-history");
   const showBtn = $<HTMLButtonElement>("act-show");
+  const switcher = $("act-switch");
 
   let mode: Mode = { kind: "live" };
   /** The session the live view follows: the running one, or the last one that just ended. */
@@ -96,20 +58,25 @@ export function initActivity(opts: ActivityOptions = {}): ActivityView {
   let liveEvents: StampedAgentEvent[] = [];
   let backfilling = false;
   let buffered: StampedAgentEvent[] = [];
+  let noteText: string | null = null;
+  /** Every running session, for the switcher. */
+  let runningList: readonly SessionInfo[] = [];
   /** onFocus starts after init: the first view (nothing focused) needs no notice, and callers may not be wired yet. */
   let ready = false;
 
-  function header(s: SessionInfo | null, readOnly: boolean): void {
+  function header(s: SessionInfo | null): void {
     if (!s) {
       title.textContent = "Nothing running";
       meta.textContent = "Recent runs";
+      rawLog.hidden = true;
       return;
     }
     title.textContent = s.title;
     title.title = s.title;
-    const parts = [brainLabel(s.brain, s.jev), s.endedAt ? clockLabel(s.startedAt) : `started ${relativeTime(s.startedAt)}`];
-    if (s.endedAt) parts.push(outcomeChip(s.outcome).label);
-    meta.textContent = parts.join(" · ");
+    meta.textContent = sessionMeta(s);
+    meta.title = brainLabel(s.brain, s.jev);
+    // The helper's own record of every Claude Code stream event (Activity shows the gist).
+    rawLog.hidden = !(s.brain === "claude-code" && s.logPath);
   }
 
   /** The SessionInfo the view has for an event's session. */
@@ -124,15 +91,47 @@ export function initActivity(opts: ActivityOptions = {}): ActivityView {
     return renderEvent(describeEvent(e), canContinue ? () => opts.onContinue?.(e.sessionId) : undefined);
   }
 
+  /** Continue belongs to the conversation's last turn only. */
+  function pruneContinue(): void {
+    const cards = [...log.querySelectorAll(".ev-actions")];
+    for (const c of cards.slice(0, -1)) c.remove();
+    if (log.lastElementChild && !log.lastElementChild.classList.contains("ev-end")) cards.at(-1)?.remove();
+  }
+
   function focused(): SessionInfo | null {
     if (mode.kind === "past") return mode.session;
     return mode.kind === "live" ? live : null;
   }
 
-  function renderLog(events: StampedAgentEvent[], emptyText: string): void {
-    log.replaceChildren(...events.map(renderOne));
+  function renderLog(s: SessionInfo | null, events: StampedAgentEvent[], emptyText: string): void {
+    log.replaceChildren(...(s ? [renderSessionHead(s)] : []), ...events.map(renderOne));
     if (!events.length) log.append(h("p.empty", null, emptyText));
+    pruneContinue();
     log.scrollTop = log.scrollHeight;
+  }
+
+  function refreshHead(s: SessionInfo): void {
+    log.querySelector(":scope > .ev-head")?.replaceWith(renderSessionHead(s));
+  }
+
+  /** With several sessions running: one chip each, to pick which one to watch. */
+  function updateSwitcher(): void {
+    const show = runningList.length > 1 && mode.kind !== "history";
+    switcher.hidden = !show;
+    if (show) renderSwitcher(switcher, runningList, focused()?.sessionId, watch);
+  }
+
+  /** Watch this running session live. */
+  function watch(s: SessionInfo): void {
+    mode = { kind: "live" };
+    if (live?.sessionId === s.sessionId) show();
+    else void adopt(s);
+  }
+
+  function renderNote(): void {
+    const s = focused();
+    note.hidden = !noteText || !s;
+    note.textContent = noteText ?? "";
   }
 
   function show(): void {
@@ -145,47 +144,19 @@ export function initActivity(opts: ActivityOptions = {}): ActivityView {
     // Only meaningful while there is an agent session to look at.
     showBtn.hidden = !live || mode.kind !== "live";
     if (mode.kind === "past") {
-      header(mode.session, true);
+      header(mode.session);
     } else if (mode.kind === "history") {
-      header(null, true);
+      header(null);
       title.textContent = "History";
       meta.textContent = "";
     } else {
-      header(live, false);
+      header(live);
     }
-    if (listMode) void loadHistory();
-    else if (mode.kind === "live") renderLog(liveEvents, "Waiting for the agent…");
+    if (listMode) void loadHistory((s) => void openPast(s));
+    else if (mode.kind === "live") renderLog(live, liveEvents, "Waiting for the agent…");
+    renderNote();
+    updateSwitcher();
     if (ready) opts.onFocus?.(focused());
-  }
-
-  async function loadHistory(): Promise<void> {
-    try {
-      const { sessions } = await uiRequest({ type: "sessions.list", limit: 30 });
-      const ul = $("history-list");
-      ul.replaceChildren(
-        ...sessions.map((s) => {
-          const chip = outcomeChip(s.endedAt ? s.outcome : undefined);
-          return h(
-            "li",
-            null,
-            h(
-              "button",
-              { type: "button", onclick: () => void openPast(s) },
-              h("span.chip", { "data-tone": chip.tone }, chip.label),
-              h(
-                "span.s-main",
-                null,
-                h("div.s-title", null, s.title),
-                h("div.meta", null, `${clockLabel(s.startedAt)} · ${brainLabel(s.brain, s.jev)}${s.source === "adhoc" ? " · one-off" : ""}`),
-              ),
-            ),
-          );
-        }),
-      );
-      $("history-empty").hidden = sessions.length > 0;
-    } catch (err) {
-      $("history-list").replaceChildren(h("li.ev-error", null, errorText(err)));
-    }
   }
 
   async function openPast(s: SessionInfo): Promise<void> {
@@ -200,8 +171,8 @@ export function initActivity(opts: ActivityOptions = {}): ActivityView {
       const res = await uiRequest({ type: "sessions.events", sessionId: s.sessionId });
       if (mode.kind === "past" && mode.session.sessionId === s.sessionId) {
         mode = { kind: "past", session: res.session };
-        header(res.session, true);
-        renderLog(res.events, "No events were recorded for this run.");
+        header(res.session);
+        renderLog(res.session, res.events, "No events were recorded for this run.");
         opts.onFocus?.(res.session);
       }
     } catch (err) {
@@ -214,6 +185,8 @@ export function initActivity(opts: ActivityOptions = {}): ActivityView {
     liveEvents = buffered.filter((e) => e.sessionId === s.sessionId);
     buffered = [];
     backfilling = true;
+    // A past conversation that got a new message is now the live one.
+    if (mode.kind === "past" && mode.session.sessionId === s.sessionId) mode = { kind: "live" };
     if (mode.kind === "live") show();
     try {
       const res = await uiRequest({ type: "sessions.events", sessionId: s.sessionId });
@@ -234,15 +207,27 @@ export function initActivity(opts: ActivityOptions = {}): ActivityView {
     const follow = isNearBottom(log);
     log.querySelector(":scope > p.empty")?.remove();
     log.append(renderOne(ev));
+    pruneContinue();
     if (follow) log.scrollTop = log.scrollHeight;
   }
 
   showBtn.addEventListener("click", () =>
     void busy(showBtn, async () => {
       try {
-        await uiRequest({ type: "agent.show" });
+        await uiRequest({ type: "agent.show", ...(live ? { sessionId: live.sessionId } : {}) });
       } catch (err) {
         append({ type: "error", text: errorText(err), ts: new Date().toISOString(), sessionId: live?.sessionId ?? "" });
+      }
+    }),
+  );
+  rawLog.addEventListener("click", () =>
+    void busy(rawLog, async () => {
+      const s = focused();
+      if (!s) return;
+      try {
+        await openRawLog(s.sessionId);
+      } catch (err) {
+        append({ type: "error", text: `Raw log: ${errorText(err)}`, ts: new Date().toISOString(), sessionId: s.sessionId });
       }
     }),
   );
@@ -258,15 +243,33 @@ export function initActivity(opts: ActivityOptions = {}): ActivityView {
   show();
   ready = true;
 
+  // After the panel (re)opens with nothing running, a conversation that ended
+  // recently is still the one to talk to: show it.
+  void uiRequest({ type: "sessions.list", limit: 1 })
+    .then(({ sessions: [last] }) => {
+      if (!live && last?.endedAt && Date.now() - Date.parse(last.endedAt) < RECENT_MS && last.source !== "cloud") void adopt(last);
+    })
+    .catch(() => {});
+
   return {
-    setRunning(session) {
-      // Continue buttons wait until nothing runs.
-      log.classList.toggle("busy", !!session);
-      if (session && session.sessionId !== live?.sessionId) void adopt(session);
-      else if (session && live) {
-        live = session;
-        if (mode.kind === "live") header(live, false);
+    setRunning(sessions) {
+      const before = new Set(runningList.map((s) => s.sessionId));
+      runningList = sessions;
+      const watching = live ? sessions.find((s) => s.sessionId === live!.sessionId) : undefined;
+      // Continue buttons wait until the watched conversation's turn ends.
+      log.classList.toggle("busy", !!watching);
+      if (watching) {
+        live = watching;
+        if (mode.kind === "live") {
+          header(live);
+          refreshHead(live);
+        }
+      } else {
+        // Not watching a running session: follow the newest one that just started.
+        const started = [...sessions].reverse().find((s) => !before.has(s.sessionId)) ?? (live ? undefined : sessions.at(-1));
+        if (started) void adopt(started);
       }
+      updateSwitcher();
     },
     onEvent(ev) {
       if (live && ev.sessionId === live.sessionId) append(ev);
@@ -275,16 +278,29 @@ export function initActivity(opts: ActivityOptions = {}): ActivityView {
     onSession(s) {
       if (live?.sessionId === s.sessionId) {
         live = s;
-        if (mode.kind === "live") header(live, false);
-        if (s.endedAt && mode.kind === "live") log.scrollTop = log.scrollHeight;
-        if (mode.kind === "live") opts.onFocus?.(live);
-      } else if (!s.endedAt) {
+        if (mode.kind === "live") {
+          header(live);
+          refreshHead(live);
+          if (s.endedAt) log.scrollTop = log.scrollHeight;
+          opts.onFocus?.(live);
+        }
+      } else if (!s.endedAt && (!live || live.endedAt)) {
+        // A session started while the watched one is not running: follow it.
         void adopt(s);
       }
     },
-    followLive() {
+    followLive(sessionId) {
       mode = { kind: "live" };
-      show();
+      if (!sessionId || live?.sessionId === sessionId) return show();
+      const known = runningList.find((s) => s.sessionId === sessionId);
+      if (known) return void adopt(known);
+      void uiRequest({ type: "sessions.events", sessionId })
+        .then(({ session }) => adopt(session))
+        .catch(() => show());
+    },
+    setNote(text) {
+      noteText = text;
+      renderNote();
     },
   };
 }

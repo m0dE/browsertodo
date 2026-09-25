@@ -3,13 +3,12 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentEvent, AgentTask, RunConfig } from "@browsertodo/shared";
-import { createToolExecutor, type JevLike } from "@browsertodo/core";
+import type { JevLike } from "@browsertodo/core";
 import { TaskRunner, type RunTaskParams, type TaskRunnerDeps } from "../src/task-runner.js";
-import { ToolRouter, INTERACTIVE_TASK_ID } from "../src/tool-router.js";
-import { ScriptedBrain, extractPostText, extractStartUrl } from "../src/brains/scripted.js";
+import { ToolRouter } from "../src/tool-router.js";
+import { INTERACTIVE_TASK_ID } from "../src/mcp-tools.js";
+import { ScriptedBrain } from "../src/brains/scripted.js";
 import type { Brain, BrainContext } from "../src/brains/brain.js";
-import { UserInput } from "../src/brains/brain.js";
-import { buildClaudeArgs, claudeEnv, mapStreamEvent, resolveClaudePath, userMessageLine } from "../src/brains/claude-code.js";
 import { FakeX } from "./fake-x.js";
 
 let dir: string;
@@ -35,7 +34,7 @@ function params(over: Partial<AgentTask> = {}, rest: Partial<RunTaskParams> = {}
 function setup(x: FakeX, over: Partial<TaskRunnerDeps> & { brain?: (router: ToolRouter) => Brain } = {}) {
   let runner!: TaskRunner;
   const events: { sessionId: string; event: AgentEvent }[] = [];
-  const router = new ToolRouter({ getSession: () => runner.session() });
+  const router = new ToolRouter({ getSession: (id) => runner.session(id) });
   runner = new TaskRunner({
     runsDir: join(dir, "runs"),
     mcpServerPath: "C:\\helper\\dist\\mcp-server.js",
@@ -152,13 +151,30 @@ describe("TaskRunner with ScriptedBrain", () => {
     expect(x.posts).toHaveLength(0);
   });
 
-  it("rejects a second task while busy; abort is keyed by sessionId", async () => {
+  it("runs several sessions at once, one turn per session; abort is keyed by sessionId", async () => {
     const { runner } = setup(new FakeX(), { brain: () => customBrain(async () => {}, "abort") });
     const first = runner.run(params());
-    await expect(runner.run(params({}, { sessionId: "S2" }))).rejects.toThrow("busy");
-    expect(runner.abort("S2", "wrong session")).toBe(false);
+    const second = runner.run(params({}, { sessionId: "S2" }));
+    expect(runner.runningSessions.sort()).toEqual(["S1", "S2"]);
+    await expect(runner.run(params())).rejects.toThrow("busy");
+    expect(runner.abort("S3", "wrong session")).toBe(false);
     runner.abort("S1", "test over");
     expect(await first).toMatchObject({ outcome: "failed", reason: "test over" });
+    expect(runner.runningSessions).toEqual(["S2"]);
+    runner.abort("S2", "done too");
+    expect(await second).toMatchObject({ outcome: "failed", reason: "done too" });
+    expect(runner.busy).toBe(false);
+  });
+
+  it("each session's browser calls carry its session id, so the extension acts in that session's tab", async () => {
+    const x = new FakeX({ account: "alice" });
+    const seen: { method: string; sessionId?: string }[] = [];
+    const inner = x.caller();
+    const browser = { call: (method: any, p: any) => (seen.push({ method, sessionId: p?.sessionId }), inner.call(method, p)) } as typeof inner;
+    const { runner } = setup(x, { browser });
+    await Promise.all([runner.run(params()), runner.run(params({ instructions: "Post: from two" }, { sessionId: "S2" }))]);
+    expect(seen.length).toBeGreaterThan(4);
+    expect(new Set(seen.map((c) => c.sessionId))).toEqual(new Set(["S1", "S2"]));
   });
 
   it("single-turn brains end with their turn: continueSession says the session ended", async () => {
@@ -299,113 +315,99 @@ describe("TaskRunner with ScriptedBrain", () => {
   });
 });
 
-describe("ToolRouter", () => {
-  it("routes by task id, refuses unknown tasks and tools, and serves the interactive executor", async () => {
-    const x = new FakeX();
-    const interactiveExec = createToolExecutor({ browser: x.caller(), jev: null, jevThreshold: 0.8, onEvent: () => {}, mediaPaths: [] });
-    const router = new ToolRouter({
-      getSession: () => null,
-      getInteractive: () => ({ allowedTools: new Set(["read_page", "task_complete"]), executor: interactiveExec }),
-    });
-    expect((await router.call("S9", "read_page", {})).text).toMatch(/No running task S9/);
-    expect((await router.call(INTERACTIVE_TASK_ID, "read_page", {})).text).toContain("URL:");
-    expect((await router.call(INTERACTIVE_TASK_ID, "click", { index: 1 })).text).toMatch(/not available in the interactive terminal/);
-    // task_* in interactive mode: the executor has no onTaskEnd
-    expect((await router.call(INTERACTIVE_TASK_ID, "task_complete", { summary: "x" })).text).toMatch(/no task to end in the interactive terminal/);
-    expect(router.allowedTools(INTERACTIVE_TASK_ID)).toEqual(["read_page", "task_complete"]);
-  });
-});
+/**
+ * Like headless Claude Code with stdin kept open: every message (the prompt,
+ * then each follow-up) is answered with task_complete; it exits when its input
+ * closes or it is aborted.
+ */
+function chatBrain(router: ToolRouter, opts: { ignoreClose?: boolean } = {}): Brain {
+  return {
+    persistent: true,
+    run: async (ctx) => {
+      const answer = (text: string) => void router.call(ctx.taskId, "task_complete", { summary: `did: ${text.slice(-40)}` });
+      answer(ctx.task!.instructions);
+      ctx.input.onMessage((text) => answer(text));
+      await new Promise<void>((resolve) => {
+        if (!opts.ignoreClose) ctx.input.onClose(resolve);
+        ctx.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    },
+  };
+}
 
-describe("UserInput", () => {
-  it("queues until subscribed, and refuses after close", () => {
-    const input = new UserInput();
-    expect(input.push("a")).toBe(true);
-    const got: string[] = [];
-    input.onMessage((t) => got.push(t));
-    input.push("b");
-    let closed = 0;
-    input.onClose(() => closed++);
-    input.close();
-    input.close();
-    expect(input.push("c")).toBe(false);
-    expect(got).toEqual(["a", "b"]);
-    expect(closed).toBe(1);
-  });
-});
+describe("TaskRunner: kept-open sessions (persistent brain)", () => {
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-describe("ScriptedBrain helpers", () => {
-  it("extracts the post text and the start URL", () => {
-    expect(extractPostText("Go to the site. Post: hi there ")).toBe("hi there");
-    expect(extractPostText("just this")).toBe("just this");
-    expect(extractStartUrl("Open http://localhost:8787/compose. Post: see https://ex.com")).toBe("http://localhost:8787/compose");
-    expect(extractStartUrl("Post: see https://ex.com")).toBeNull();
-    expect(extractStartUrl("no url")).toBeNull();
-  });
-});
+  function chatSetup(over: Partial<TaskRunnerDeps> = {}, brainOpts: { ignoreClose?: boolean } = {}) {
+    const changes: string[][] = [];
+    const t = setup(new FakeX(), { brain: (router) => chatBrain(router, brainOpts), onSessionsChanged: (open) => changes.push(open), ...over });
+    return { ...t, changes };
+  }
 
-describe("ClaudeCodeBrain helpers", () => {
-  it("builds the exact claude arguments (stream-json in and out, prompt on stdin)", () => {
-    expect(
-      buildClaudeArgs({
-        systemPrompt: "rules",
-        mcpConfigPath: "C:\\run\\mcp-config.json",
-        allowedTools: ["mcp__browsertodo__click", "mcp__browsertodo__task_complete"],
-        model: "sonnet",
-      }),
-    ).toEqual([
-      "-p",
-      "--input-format",
-      "stream-json",
-      "--output-format",
-      "stream-json",
-      "--verbose",
-      "--tools",
-      "",
-      "--setting-sources",
-      "",
-      "--strict-mcp-config",
-      "--mcp-config",
-      "C:\\run\\mcp-config.json",
-      "--allowedTools",
-      "mcp__browsertodo__click,mcp__browsertodo__task_complete",
-      "--append-system-prompt",
-      "rules",
-      "--no-session-persistence",
-      "--model",
-      "sonnet",
-    ]);
-    expect(userMessageLine('say "hi"\nnow')).toBe('{"type":"user","message":{"role":"user","content":"say \\"hi\\"\\nnow"}}\n');
+  it("stays open after task_*; continueSession runs the next turn in the same session", async () => {
+    const { runner, events, changes } = chatSetup();
+    expect(await runner.run(params())).toMatchObject({ outcome: "done", summary: "did: Post: hello from browsertodo" });
+    expect(runner.openSessions).toEqual(["S1"]);
+    expect(runner.busy).toBe(false);
+    expect(changes).toEqual([["S1"]]);
+
+    const next = await runner.continueSession({ sessionId: "S1", text: "now like it", config: CONFIG });
+    expect(next).toMatchObject({ outcome: "done", summary: expect.stringContaining("now like it") });
+    const mine = events.filter((e) => e.sessionId === "S1").map((e) => e.event);
+    // The follow-up shows as the user's message, then its own task_end.
+    const i = mine.findIndex((e) => e.type === "user_message");
+    expect(mine[i]).toEqual({ type: "user_message", text: "now like it" });
+    expect(mine.filter((e) => e.type === "task_end")).toHaveLength(2);
+    expect(mine.slice(i).some((e) => e.type === "task_end")).toBe(true);
   });
 
-  it("maps stream-json events to AgentEvents (no tool events)", () => {
-    expect(
-      mapStreamEvent({
-        type: "assistant",
-        message: { content: [{ type: "text", text: "Opening the composer." }, { type: "tool_use", id: "x", name: "mcp__browsertodo__act", input: {} }] },
-      }),
-    ).toEqual([{ type: "assistant_text", text: "Opening the composer." }]);
-    expect(mapStreamEvent({ type: "user", message: { content: [{ type: "tool_result" }] } })).toEqual([]);
-    expect(mapStreamEvent({ type: "result", subtype: "success", is_error: false, result: "done" })).toEqual([]);
-    expect(mapStreamEvent({ type: "result", subtype: "success", is_error: true, result: "Claude AI usage limit reached|123" })).toEqual([
-      { type: "error", text: "Claude Code: Claude AI usage limit reached|123" },
-    ]);
-    expect(mapStreamEvent({ type: "result", subtype: "error_max_turns", is_error: true })).toEqual([{ type: "error", text: "Claude Code: error_max_turns" }]);
-    expect(mapStreamEvent({ type: "system", subtype: "init", model: "claude-sonnet-5" })).toEqual([{ type: "status", text: "Claude Code started (claude-sonnet-5)" }]);
+  it("endSession closes it: continueSession then says 'session ended'", async () => {
+    const { runner, changes } = chatSetup();
+    await runner.run(params());
+    expect(runner.endSession("S1")).toBe(true);
+    await wait(10);
+    expect(runner.openSessions).toEqual([]);
+    expect(changes.at(-1)).toEqual([]);
+    await expect(runner.continueSession({ sessionId: "S1", text: "again", config: CONFIG })).rejects.toThrow("session ended");
+    expect(runner.endSession("S1")).toBe(false);
   });
 
-  it("resolves claude from the override, then PATH (.exe only on Windows), then ~/.local/bin", () => {
-    expect(resolveClaudePath({ BROWSERTODO_CLAUDE_PATH: "D:\\c.exe" })).toBe("D:\\c.exe");
-    const exe = process.platform === "win32" ? "C:\\bin\\claude.exe" : "/bin/claude";
-    expect(resolveClaudePath({}, { where: () => `C:\\bin\\claude\r\n${exe}\r\n`, exists: (p) => p === exe })).toBe(exe);
-    const fallback = join("C:\\Users\\me", ".local", "bin", process.platform === "win32" ? "claude.exe" : "claude");
-    expect(
-      resolveClaudePath({ USERPROFILE: "C:\\Users\\me" }, { where: () => { throw new Error("none"); }, exists: (p) => p === fallback }),
-    ).toBe(fallback);
-    expect(resolveClaudePath({ USERPROFILE: "C:\\x" }, { where: () => "", exists: () => false })).toBeNull();
+  it("an agent that ignores the close is killed after abortWaitMs", async () => {
+    const { runner } = chatSetup({ abortWaitMs: 30 }, { ignoreClose: true });
+    await runner.run(params());
+    runner.endSession("S1");
+    await wait(5);
+    expect(runner.openSessions).toEqual(["S1"]);
+    await wait(80);
+    expect(runner.openSessions).toEqual([]);
   });
 
-  it("strips nested-session variables from the child env", () => {
-    const env = claudeEnv({ PATH: "p", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_CODE_CHILD_SESSION: "1", BROWSERTODO_BRAIN: "scripted" });
-    expect(env).toEqual({ PATH: "p" });
+  it("closes an idle session after idleSessionMs", async () => {
+    const { runner } = chatSetup({ idleSessionMs: 40 });
+    await runner.run(params());
+    expect(runner.openSessions).toEqual(["S1"]);
+    await wait(120);
+    expect(runner.openSessions).toEqual([]);
+  });
+
+  it("keeps at most maxSessions open: a new run closes the oldest idle one", async () => {
+    const { runner } = chatSetup({ maxSessions: 2 });
+    await runner.run(params({}, { sessionId: "A" }));
+    await wait(2);
+    await runner.run(params({}, { sessionId: "B" }));
+    await runner.run(params({}, { sessionId: "C" }));
+    await wait(10);
+    expect(runner.openSessions.sort()).toEqual(["B", "C"]);
+    await expect(runner.continueSession({ sessionId: "A", text: "x", config: CONFIG })).rejects.toThrow("session ended");
+  });
+
+  it("an aborted turn ends the session", async () => {
+    const { runner } = setup(new FakeX(), { brain: () => ({ persistent: true, run: (ctx) => new Promise<void>((r) => ctx.signal.addEventListener("abort", () => r(), { once: true })) }) });
+    const run = runner.run(params());
+    await wait(5);
+    runner.forcePause("S1", "stopped by user");
+    expect(await run).toEqual(expect.objectContaining({ outcome: "paused", reason: "stopped by user" }));
+    expect(runner.openSessions).toEqual([]);
+    await expect(runner.continueSession({ sessionId: "S1", text: "go on", config: CONFIG })).rejects.toThrow("session ended");
   });
 });

@@ -5,21 +5,21 @@
 import { z } from "zod";
 import * as core from "@browsertodo/core";
 import type { ExtensionSettings } from "@browsertodo/shared";
-import { AgentTab } from "./agent-tab.js";
+import { AgentSlots } from "./agent-slots.js";
 import { ApiClient } from "./api-client.js";
 import { Cdp } from "./cdp.js";
-import { Driver } from "./driver.js";
+import { ApiBrain } from "./engine/api-brain.js";
 import { resolveBrain } from "./engine/brain-resolver.js";
-import { ApiBrain, ClaudeCodeBrain } from "./engine/brains.js";
-import { createBrowserCaller, registerBrowserHandlers } from "./engine/browser-caller.js";
+import { registerBrowserHandlers } from "./engine/browser-caller.js";
+import { ClaudeCodeBrain } from "./engine/claude-code-brain.js";
 import { IdbKvDb } from "./engine/kv.js";
 import { LocalStore } from "./engine/local-store.js";
 import { MediaFiles } from "./engine/media-files.js";
 import { Runner, type ResolvedBrain } from "./engine/runner.js";
 import { SessionStore } from "./engine/sessions.js";
 import { testClaude, testCloud, testJev } from "./engine/settings-tests.js";
-import { TerminalRelay } from "./engine/terminal.js";
-import { UiHub, UiRouter, type ExtraRequest } from "./engine/ui-router.js";
+import { UiHub } from "./engine/ui-hub.js";
+import { UiRouter, type ExtraRequest } from "./engine/ui-router.js";
 import { HelperLink } from "./helper-link.js";
 import { notify } from "./notify.js";
 import { ALARM_NAME, ensureAlarm, getRunnerId, handleStorageChange, loadSettings, saveSettings, saveSettingsPatch } from "./settings-store.js";
@@ -35,17 +35,19 @@ const DUE_ALARM = "browsertodo-due";
 const HELPER_AUTOCONNECT_MS = 60_000;
 
 const cdp = new Cdp();
-const agentTab = new AgentTab();
-const driver = new Driver(cdp, agentTab);
 const vault = new Vault();
+// Each running session acts in its own agent tab (slot); slot 0 is the first agent tab.
+const slots = new AgentSlots(cdp, vault);
+const { tab: agentTab, driver, browser } = slots.get(0);
 const db = new IdbKvDb();
 const localStore = new LocalStore({ db });
 const sessions = new SessionStore(db);
-const browser = createBrowserCaller(driver, vault);
-const helper = new HelperLink({ registerHandlers: (peer) => registerBrowserHandlers(peer, driver, vault) });
+// Claude Code's browser calls name their task session: they are served in that session's tab.
+const helper = new HelperLink({ registerHandlers: (peer) => registerBrowserHandlers(peer, (sessionId) => slots.browserFor(sessionId)) });
 const mediaFiles = new MediaFiles();
-const claudeCodeBrain = new ClaudeCodeBrain(helper);
-const apiBrain = new ApiBrain({ core, browser });
+// Which conversations still have their agent session open shows in the side panel.
+const claudeCodeBrain = new ClaudeCodeBrain(helper, { onSessionsChanged: () => hub?.pushState() });
+const apiBrain = new ApiBrain({ core, browser, onSessionsChanged: () => hub?.pushState() });
 
 function brainStatus(settings: ExtensionSettings) {
   return resolveBrain({ settings, helper: helper.info, helperError: helper.lastError });
@@ -72,44 +74,13 @@ const runner = new Runner({
   media: mediaFiles,
   resolveBrain: resolveForRun,
   core,
-  browser,
-  prepareTab: async (opts) => {
-    cdp.reset();
-    // Pick the run's tab once; the driver keeps using it for the whole run.
-    await agentTab.prepare(opts?.mode ?? "own-tab");
-    await driver.ready();
-    if (opts?.show) await agentTab.show().catch(() => false);
-  },
-  isAgentTab: (tabId) => agentTab.isAgentTab(tabId),
-  screenshot: () => driver.screenshot(),
+  slots,
   notify,
   keepAlive: () => chrome.runtime.getPlatformInfo(),
-  onStateChange: () => {
-    hub?.pushState();
-    closeTabsAfterRun();
-  },
+  onStateChange: () => hub?.pushState(),
   log: (m) => console.log("[browsertodo]", m),
 });
 cdp.onUserCancel = () => runner.onDebuggerCanceled();
-
-/** The session running at the last state change; the tabs it opened are closed once it ends. */
-let lastRunningSession: string | null = null;
-function closeTabsAfterRun(): void {
-  try {
-    const now = runner.running?.sessionId ?? null;
-    if (lastRunningSession !== null && now !== lastRunningSession) void driver.closeOpenedTabs().catch(() => 0);
-    lastRunningSession = now;
-  } catch {
-    /* called while the runner is still being constructed */
-  }
-}
-
-const terminal = new TerminalRelay(helper, {
-  opened: (t) => hub.push({ type: "terminal.opened", terminal: t }),
-  data:(terminalId, data) => hub.push({ type: "terminal.data", terminalId, data }),
-  exit: (terminalId, exitCode) => hub.push({ type: "terminal.exit", terminalId, exitCode }),
-  changed: () => hub.pushState(),
-});
 
 async function nextRunAt(): Promise<string | undefined> {
   const settings = await loadSettings();
@@ -135,10 +106,10 @@ const router = new UiRouter({
   loadSettings,
   saveSettingsPatch,
   runner,
-  showAgent: () => agentTab.show(),
+  showAgent: (sessionId) => slots.show(sessionId ?? runner.running?.sessionId),
   localStore,
   sessions,
-  terminal,
+  openConversations: () => [...claudeCodeBrain.openSessions(), ...apiBrain.openSessions()],
   helper,
   brainStatus,
   nextRunAt,
@@ -208,12 +179,10 @@ onStart();
   helper,
   settings: { load: loadSettings, save: saveSettingsPatch },
   router,
-  terminal,
   media: mediaFiles,
   vault,
   cdp,
+  slots,
   agentTab,
-  /** Old name kept for the e2e suite. */
-  agentWindow: agentTab,
   scheduleDueAlarm,
 };

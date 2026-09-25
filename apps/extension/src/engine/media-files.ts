@@ -8,6 +8,8 @@
  * least 60 MB). Cloud media is downloaded straight from the API with the
  * runner key as a header, falling back to fetch + data: URL.
  */
+import { bytesToBase64 } from "../base64.js";
+import { errText } from "../errors.js";
 
 export type MediaSource =
   | { kind: "blob"; name: string; blob: Blob }
@@ -37,7 +39,7 @@ export interface DownloadsLike {
   erase(query: { id: number }): Promise<number[]>;
 }
 
-export const MEDIA_DIR = "browsertodo-media";
+const MEDIA_DIR = "browsertodo-media";
 
 const EXT_BY_TYPE: Record<string, string> = {
   "image/png": ".png",
@@ -81,12 +83,8 @@ export function uniqueNames(names: string[]): string[] {
   });
 }
 
-export async function blobToDataUrl(blob: Blob): Promise<string> {
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  let bin = "";
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  return `data:${blob.type || "application/octet-stream"};base64,${btoa(bin)}`;
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return `data:${blob.type || "application/octet-stream"};base64,${bytesToBase64(new Uint8Array(await blob.arrayBuffer()))}`;
 }
 
 export class MediaFiles {
@@ -192,8 +190,4 @@ export class MediaFiles {
       dl.onChanged.removeListener(listener);
     }
   }
-}
-
-function errText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

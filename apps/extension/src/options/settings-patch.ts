@@ -62,7 +62,7 @@ export function helperStatus(helper: HelperInfo | null, helperError?: string): H
     return {
       tone: helperError ? "bad" : "muted",
       headline: "Helper not connected",
-      details: helperError ? [helperError] : ["Needed only for local Claude Code and the Terminal tab."],
+      details: helperError ? [helperError] : ["Needed only for local Claude Code."],
     };
   }
   const details: string[] = [];
@@ -70,7 +70,6 @@ export function helperStatus(helper: HelperInfo | null, helperError?: string): H
   const st = helper.selfTest;
   if (st) details.push(st.ok ? `Self-test passed (${(st.ms / 1000).toFixed(1)} s)` : `Self-test failed: ${st.error ?? "unknown error"}`);
   else if (helper.claudePath) details.push("Self-test not run yet");
-  if (!helper.ptyAvailable) details.push("Terminal unavailable (node-pty did not load)");
   const tone = !helper.claudePath || (st && !st.ok) ? "warn" : "ok";
   return { tone, headline: `Helper connected · v${helper.version}`, details };
 }

@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentEvent } from "@browsertodo/shared";
 import { ClaudeCodeBrain, buildClaudeArgs } from "../src/brains/claude-code.js";
+import { claudeEnv, resolveClaudePath } from "../src/claude-process.js";
 import { UserInput, type BrainContext } from "../src/brains/brain.js";
 import { SelfTestCache, parseSelfTestOutput, runSelfTest, selfTestArgs } from "../src/self-test.js";
 
@@ -105,7 +106,7 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     const input = new UserInput();
     let idle = 0;
     const c = { ...ctx(new AbortController().signal, log, events, input), idle: () => idle++ };
-    const persistent = new ClaudeCodeBrain({ claudePath: process.execPath, model: "sonnet", prefixArgs: [FAKE], persistent: true, startStatus: "headless" });
+    const persistent = new ClaudeCodeBrain({ claudePath: process.execPath, model: "sonnet", prefixArgs: [FAKE], persistent: true });
     expect(persistent.persistent).toBe(true);
     const run = persistent.run(c);
     const t0 = Date.now();
@@ -118,7 +119,8 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     await run;
     const texts = events.filter((e) => e.type === "assistant_text").map((e) => (e as { text: string }).text);
     expect(texts).toEqual([`got: ${c.prompt}`, "got: Next message from the user: like it"]);
-    expect(events[0]).toEqual({ type: "status", text: "headless" });
+    // Claude Code repeats its init event every turn; "started" shows once.
+    expect(events.filter((e) => e.type === "status")).toEqual([{ type: "status", text: "Claude Code started (sonnet)" }]);
     expect(log.at(-1)).toMatchObject({ type: "claude_exit", code: 0 });
   });
 
@@ -194,5 +196,23 @@ describe("self-test", () => {
     expect(new SelfTestCache({ claudePath: "D:\\other.exe", cacheFile, run }).cached).toBeUndefined();
     expect((await new SelfTestCache({ claudePath: "scripted", cacheFile: null }).get()).ok).toBe(true);
     expect(await new SelfTestCache({ claudePath: null, cacheFile: null }).get()).toMatchObject({ ok: false, error: expect.stringMatching(/not found/) });
+  });
+});
+
+describe("Claude Code executable", () => {
+  it("resolves claude from the override, then PATH (.exe only on Windows), then ~/.local/bin", () => {
+    expect(resolveClaudePath({ BROWSERTODO_CLAUDE_PATH: "D:\\c.exe" })).toBe("D:\\c.exe");
+    const exe = process.platform === "win32" ? "C:\\bin\\claude.exe" : "/bin/claude";
+    expect(resolveClaudePath({}, { where: () => `C:\\bin\\claude\r\n${exe}\r\n`, exists: (p) => p === exe })).toBe(exe);
+    const fallback = join("C:\\Users\\me", ".local", "bin", process.platform === "win32" ? "claude.exe" : "claude");
+    expect(
+      resolveClaudePath({ USERPROFILE: "C:\\Users\\me" }, { where: () => { throw new Error("none"); }, exists: (p) => p === fallback }),
+    ).toBe(fallback);
+    expect(resolveClaudePath({ USERPROFILE: "C:\\x" }, { where: () => "", exists: () => false })).toBeNull();
+  });
+
+  it("strips nested-session variables from the child env", () => {
+    const env = claudeEnv({ PATH: "p", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_CODE_CHILD_SESSION: "1", BROWSERTODO_BRAIN: "scripted" });
+    expect(env).toEqual({ PATH: "p" });
   });
 });

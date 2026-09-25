@@ -18,7 +18,7 @@
  * Messages the human sends while it runs are acknowledged with an
  * assistant_text event ("Scripted brain received: ...").
  */
-import { pauseReasonForUrl, type ToolName, type ToolResult } from "@browsertodo/shared";
+import { mcpToolName, pauseReasonForUrl, type ToolName, type ToolResult } from "@browsertodo/shared";
 import { isXUrl, parseSnapshotText, type ParsedPage } from "@browsertodo/core";
 import type { Brain, BrainContext } from "./brain.js";
 
@@ -62,11 +62,11 @@ export class ScriptedBrain implements Brain {
     if (!task) throw new Error("ScriptedBrain needs ctx.task");
     const sleep = this.opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
     ctx.input.onMessage((text) => ctx.emit({ type: "assistant_text", text: `Scripted brain received: ${text}` }));
-    const offered = new Set(ctx.allowedTools.map((n) => n.replace(/^mcp__browsertodo__/, "")));
+    const offered = (name: ToolName) => ctx.allowedTools.includes(mcpToolName(name));
     const call = async (name: ToolName, args: unknown = {}): Promise<ToolResult> => {
       if (ctx.signal.aborted) throw new Stop();
       // With Jev on, click and type are not offered: send the same action as an act step with the index.
-      if ((name === "click" || name === "type") && !offered.has(name) && offered.has("act")) {
+      if ((name === "click" || name === "type") && !offered(name) && offered("act")) {
         const a = args as { index: number; text?: string };
         const step = name === "type" ? { goal: "type the text", index: a.index, text: a.text } : { goal: "click", index: a.index };
         args = { steps: [step] };

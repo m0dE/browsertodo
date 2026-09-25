@@ -1,9 +1,8 @@
-import { MAX_SNAPSHOT_ELEMENTS, MAX_SNAPSHOT_TEXT, type BrowserMethods, type PageSnapshot, type Screenshot } from "@browsertodo/shared";
+import { MAX_SNAPSHOT_ELEMENTS, MAX_SNAPSHOT_TEXT, type PageSnapshot, type Screenshot } from "@browsertodo/shared";
+import { defaultSleep, NAV_TIMEOUT_MS, POLL_MS, SCROLL_SETTLE_MS, SETTLE_MS, type Params as P, type Result as R, type Sleep } from "./driver-common.js";
+import { errText } from "./errors.js";
 import { parseKeyCombo } from "./keys.js";
 import { snapshotPage } from "./page-snapshot.js";
-
-type P<M extends keyof BrowserMethods> = BrowserMethods[M]["params"];
-type R<M extends keyof BrowserMethods> = BrowserMethods[M]["result"];
 
 /**
  * Shown once per tab when the driver switches to this fallback. The runner
@@ -12,7 +11,7 @@ type R<M extends keyof BrowserMethods> = BrowserMethods[M]["result"];
 export const FALLBACK_NOTE =
   "(Using fallback mode: another extension's frame on this page blocks Chrome's debugger. Clicks and typing are simulated.)";
 
-export const FALLBACK_UPLOAD_ERROR =
+const FALLBACK_UPLOAD_ERROR =
   "upload is not possible on this page because another extension's frame blocks Chrome's debugger, " +
   "and an extension cannot attach local files without it. Ask the human to attach the file (task_pause), " +
   "or disable the other extension on this site and try again.";
@@ -24,12 +23,9 @@ export const FALLBACK_UPLOAD_ERROR =
  * session is detached ("target_closed") as soon as such a frame appears.
  */
 export function isDebuggerBlocked(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
+  const msg = errText(err);
   return /Cannot access a chrome-extension:\/\/ URL of different extension|debugger_access_denied/i.test(msg);
 }
-
-const NAV_TIMEOUT_MS = 30_000;
-const POLL_MS = 200;
 
 /** Result of a page function: its value, or an error message to throw. */
 type PageResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -41,10 +37,10 @@ type PageResult<T> = { ok: true; value: T } | { ok: false; error: string };
  * files cannot be uploaded.
  */
 export class FallbackDriver {
-  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly sleep: Sleep;
 
-  constructor(opts: { sleep?: (ms: number) => Promise<void> } = {}) {
-    this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  constructor(opts: { sleep?: Sleep } = {}) {
+    this.sleep = opts.sleep ?? defaultSleep;
   }
 
   async navigate(tabId: number, { url }: P<"browser.navigate">): Promise<R<"browser.navigate">> {
@@ -62,7 +58,7 @@ export class FallbackDriver {
       if ((tab.status === "complete" && !tab.pendingUrl) || Date.now() >= deadline) break;
       await this.sleep(POLL_MS);
     }
-    await this.sleep(500);
+    await this.sleep(SETTLE_MS);
     const tab = await chrome.tabs.get(tabId);
     return { url: tab.url ?? url, title: tab.title ?? "" };
   }
@@ -108,7 +104,7 @@ export class FallbackDriver {
 
   async scroll(tabId: number, { direction, amount = 1, index }: P<"browser.scroll">): Promise<R<"browser.scroll">> {
     await this.exec(tabId, scrollInPage, [direction, amount, index ?? null]);
-    await this.sleep(300);
+    await this.sleep(SCROLL_SETTLE_MS);
     return { ok: true };
   }
 

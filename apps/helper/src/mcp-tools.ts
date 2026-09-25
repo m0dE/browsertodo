@@ -2,6 +2,12 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { TOOL_NAMES, type ToolName, type ToolResult } from "@browsertodo/shared";
 
+/**
+ * Pipe task id of the attached session: the user's own Claude Code running
+ * `mcp-server.js --attach` (no task to end). Never a task session id.
+ */
+export const INTERACTIVE_TASK_ID = "interactive";
+
 /** Long enough for act / switch_x_account, which make several 60 s browser calls. */
 export const TOOL_CALL_TIMEOUT_MS = 5 * 60_000;
 

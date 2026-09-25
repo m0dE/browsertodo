@@ -2,8 +2,10 @@
  * URLs that always pause a task, whatever the agent is doing. Login,
  * verification and lockout pages need a human.
  */
+import { siteHost } from "./urls.js";
 
-const X_HOSTS = new Set(["x.com", "twitter.com", "mobile.x.com", "mobile.twitter.com"]);
+/** Only X's main and mobile hosts show these flows (unlike isXSite, no other subdomains). */
+const X_PAUSE_HOSTS = new Set(["x.com", "twitter.com", "mobile.x.com", "mobile.twitter.com"]);
 
 const X_PAUSE_PATHS: { prefix: string; reason: string }[] = [
   { prefix: "/i/flow/login", reason: "X is asking to log in" },
@@ -24,8 +26,7 @@ export function pauseReasonForUrl(rawUrl: string): string | null {
   } catch {
     return null;
   }
-  const host = url.hostname.toLowerCase().replace(/^www\./, "");
-  if (!X_HOSTS.has(host)) return null;
+  if (!X_PAUSE_HOSTS.has(siteHost(url.hostname))) return null;
   const path = url.pathname.toLowerCase();
   for (const rule of X_PAUSE_PATHS) {
     if (path === rule.prefix || path.startsWith(rule.prefix + "/") || path.startsWith(rule.prefix + "?")) {

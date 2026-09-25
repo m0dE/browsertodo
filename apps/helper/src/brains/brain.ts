@@ -73,16 +73,8 @@ export interface BrainContext {
   emit: (e: AgentEvent) => void;
   /** Messages the human types (and, for persistent brains, follow-up turns). Closed: end gracefully. */
   input: UserInput;
-  /** Short task title (the terminal's name in the side panel). */
-  title?: string;
-  /** The run folder (log, screenshots, terminal transcript). */
-  runDir?: string;
-  /** Stops the turn and reports it as paused with this reason (e.g. Claude Code is asking a question). */
-  pause?: (reason: string) => void;
   /** Persistent brains: the agent is waiting for input (its turn ended). Ends a turn that has no result yet. */
   idle?: () => void;
-  /** Persistent brains: true while a turn waits for its task_* call. */
-  inTurn?: () => boolean;
   /**
    * Structured task data. Not needed by ClaudeCodeBrain (it reads `prompt`);
    * the ScriptedBrain uses it to run its deterministic script.

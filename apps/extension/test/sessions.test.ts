@@ -22,6 +22,26 @@ describe("SessionStore", () => {
     expect(await store.get("a")).toMatchObject({ outcome: "done" });
   });
 
+  it("reopen starts the next turn: events append after the stored ones, latest-turn fields are cleared", async () => {
+    const db = new MemoryKvDb();
+    const store = new SessionStore(db);
+    await store.create(info("a", "2026-09-24T10:00:00Z"));
+    store.append("a", { type: "status", text: "one" });
+    store.append("a", { type: "task_end", outcome: "done", summary: "s" });
+    await store.update("a", { outcome: "done", endedAt: "2026-09-24T10:01:00Z", summary: "s", url: "u", reason: "r" });
+    // A new store (the service worker restarted) knows nothing of the sequence.
+    const next = new SessionStore(db);
+    const pushed: SessionInfo[] = [];
+    next.subscribe({ onSession: (s) => pushed.push(s) });
+    const s = await next.reopen("a", { turns: 2, startedAt: "2026-09-24T10:05:00Z" });
+    expect(s).toEqual({ ...info("a", "2026-09-24T10:05:00Z"), turns: 2 });
+    expect(pushed).toEqual([s]);
+    next.append("a", { type: "user_message", text: "two" });
+    const events = await next.eventsOf("a");
+    expect(events.map((e) => e.type)).toEqual(["status", "task_end", "user_message"]);
+    expect(await next.reopen("nope")).toBeNull();
+  });
+
   it("keeps the last MAX_EVENTS_PER_SESSION events", async () => {
     const store = new SessionStore(new MemoryKvDb());
     await store.create(info("a", "2026-09-24T10:00:00Z"));

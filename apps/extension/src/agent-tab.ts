@@ -1,9 +1,9 @@
 import { MAX_AGENT_TABS } from "@browsertodo/shared";
+import { addToGroup, createWindowTab, isControllableUrl, lastNormalWindow, mustId, removeTabs, tabExists } from "./chrome-tabs.js";
 
 const TAB_KEY = "agentTabId";
 /** The run's tabs (main + opened by open_tabs) and which one is current. */
 const TABS_KEY = "agentTabs";
-export const TAB_GROUP_TITLE = "browsertodo";
 
 /**
  * current-tab: act on the tab the user is looking at (one-off runs).
@@ -11,22 +11,7 @@ export const TAB_GROUP_TITLE = "browsertodo";
  */
 export type TabMode = "current-tab" | "own-tab";
 
-export const AGENT_TAB_CLOSED = "the agent tab was closed";
-
-/** URLs the debugger cannot attach to (browser pages, other extensions, the Web Store). */
-export function isControllableUrl(url: string | undefined): boolean {
-  if (!url) return false;
-  if (url === "about:blank") return true;
-  if (/^(chrome|chrome-extension|chrome-untrusted|edge|brave|opera|vivaldi|devtools|view-source|about|data|file):/i.test(url)) return false;
-  try {
-    const u = new URL(url);
-    if (u.hostname === "chromewebstore.google.com") return false;
-    if (u.hostname === "chrome.google.com" && u.pathname.startsWith("/webstore")) return false;
-    return u.protocol === "http:" || u.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
+const AGENT_TAB_CLOSED = "the agent tab was closed";
 
 /** One tab of the run: short id ("t1", "t2", ...), Chrome tab id, and whether the agent opened it. */
 export interface RunTab {
@@ -44,14 +29,37 @@ interface TabsState {
   next: number;
 }
 
+export interface AgentTabOptions {
+  /**
+   * True when another slot's run uses this tab right now: a one-off run then
+   * gets a new tab instead of the one the user is looking at.
+   */
+  isTaken?(tabId: number): boolean | Promise<boolean>;
+}
+
 /**
  * The tabs the agent acts in, inside the user's own browser window: the run's
  * main tab (picked by prepare()) plus tabs it opened with open_tabs, one of
  * them current. The state lives in chrome.storage.session so a restarted
  * service worker finds it again. Every agent tab is put in a tab group titled
  * "browsertodo".
+ *
+ * Runs that happen at the same time each use their own slot: slot 0 is the
+ * first agent tab (its storage keys predate slots), slot n keeps its state
+ * under "agentTabId.n" / "agentTabs.n".
  */
 export class AgentTab {
+  private readonly tabKey: string;
+  private readonly tabsKey: string;
+
+  constructor(
+    readonly slot = 0,
+    private readonly opts: AgentTabOptions = {},
+  ) {
+    this.tabKey = slot ? `${TAB_KEY}.${slot}` : TAB_KEY;
+    this.tabsKey = slot ? `${TABS_KEY}.${slot}` : TABS_KEY;
+  }
+
   /**
    * Picks the main tab for a run and makes it the current tab. The driver
    * keeps using the current tab until the next prepare() or switch, even if
@@ -62,8 +70,8 @@ export class AgentTab {
     const previous = await this.state();
     await removeTabs((previous?.tabs ?? []).filter((t) => t.opened && t.tabId !== tabId).map((t) => t.tabId));
     const state: TabsState = { current: tabId, tabs: [{ id: "t1", tabId, opened: false }], next: 2 };
-    await chrome.storage.session.set({ [TAB_KEY]: tabId, [TABS_KEY]: state });
-    await this.label(tabId);
+    await chrome.storage.session.set({ [this.tabKey]: tabId, [this.tabsKey]: state });
+    await addToGroup(tabId);
     return tabId;
   }
 
@@ -81,7 +89,7 @@ export class AgentTab {
     const main = state.tabs[0]!;
     const gone = state.tabs.find((t) => t.tabId === state.current);
     if (!gone || gone === main || !(await tabExists(main.tabId))) {
-      await chrome.storage.session.remove([TAB_KEY, TABS_KEY]);
+      await chrome.storage.session.remove([this.tabKey, this.tabsKey]);
       throw new Error(AGENT_TAB_CLOSED);
     }
     await this.save({ ...state, current: main.tabId, tabs: state.tabs.filter((t) => t !== gone) });
@@ -151,7 +159,7 @@ export class AgentTab {
       if (opts.active && created[0]) state.current = created[0].tabId;
       await this.save(state);
     }
-    await this.label(created.map((t) => t.tabId));
+    await addToGroup(created.map((t) => t.tabId));
     if (opts.active && created[0]) await chrome.tabs.update(created[0].tabId, { active: true }).catch(() => undefined);
     return created;
   }
@@ -236,17 +244,17 @@ export class AgentTab {
 
   /** The main tab (picked by prepare()). */
   private async storedTabId(): Promise<number | null> {
-    const got = await chrome.storage.session.get(TAB_KEY);
-    const id = got[TAB_KEY];
+    const got = await chrome.storage.session.get(this.tabKey);
+    const id = got[this.tabKey];
     return typeof id === "number" ? id : null;
   }
 
   /** The run's tab state; derived from the main tab when missing or stale (e.g. set by an older worker). */
   private async state(): Promise<TabsState | null> {
-    const got = await chrome.storage.session.get([TAB_KEY, TABS_KEY]);
-    const main = got[TAB_KEY];
+    const got = await chrome.storage.session.get([this.tabKey, this.tabsKey]);
+    const main = got[this.tabKey];
     if (typeof main !== "number") return null;
-    const s = got[TABS_KEY] as TabsState | undefined;
+    const s = got[this.tabsKey] as TabsState | undefined;
     if (!s || !Array.isArray(s.tabs) || s.tabs[0]?.tabId !== main || typeof s.current !== "number") {
       return { current: main, tabs: [{ id: "t1", tabId: main, opened: false }], next: 2 };
     }
@@ -254,7 +262,7 @@ export class AgentTab {
   }
 
   private async save(state: TabsState): Promise<void> {
-    await chrome.storage.session.set({ [TABS_KEY]: state });
+    await chrome.storage.session.set({ [this.tabsKey]: state });
   }
 
   private async pickCurrentTab(): Promise<number> {
@@ -265,44 +273,19 @@ export class AgentTab {
       [tab] = await chrome.tabs.query({ active: true, windowId: win.id });
     }
     if (tab?.id === undefined) return createWindowTab();
-    if (isControllableUrl(tab.url ?? tab.pendingUrl)) return tab.id;
+    if (isControllableUrl(tab.url ?? tab.pendingUrl) && !(await this.opts.isTaken?.(tab.id))) return tab.id;
     const created = await chrome.tabs.create({ windowId: tab.windowId, index: tab.index + 1, active: true, url: "about:blank" });
     return mustId(created);
   }
 
   private async pickOwnTab(): Promise<number> {
     const stored = await this.storedTabId();
-    if (stored !== null && (await tabExists(stored))) return stored;
+    if (stored !== null && (await tabExists(stored)) && !(await this.opts.isTaken?.(stored))) return stored;
     const win = await lastNormalWindow();
     if (!win?.id) return createWindowTab();
-    const created = await chrome.tabs.create({ windowId: win.id, active: true, url: "about:blank" });
+    // Extra slots work in the background, beside the first agent tab.
+    const created = await chrome.tabs.create({ windowId: win.id, active: this.slot === 0, url: "about:blank" });
     return mustId(created);
-  }
-
-  /**
-   * Puts the tabs (all in one window) in the window's "browsertodo" tab group
-   * (creating it if needed), like Claude's own "Claude" group. Best effort:
-   * never blocks a task.
-   */
-  private async label(tabIds: number | number[]): Promise<void> {
-    try {
-      if (!chrome.tabGroups || !chrome.tabs.group) return;
-      const list = Array.isArray(tabIds) ? tabIds : [tabIds];
-      if (!list.length) return;
-      const ids = list as [number, ...number[]];
-      const tab = await chrome.tabs.get(ids[0]);
-      const current = tab.groupId ?? -1;
-      if (ids.length === 1 && current !== -1 && (await chrome.tabGroups.get(current)).title === TAB_GROUP_TITLE) return;
-      const [existing] = await chrome.tabGroups.query({ windowId: tab.windowId, title: TAB_GROUP_TITLE });
-      if (existing) {
-        await chrome.tabs.group({ groupId: existing.id, tabIds: ids });
-        return;
-      }
-      const groupId = await chrome.tabs.group({ tabIds: ids, createProperties: { windowId: tab.windowId } });
-      await chrome.tabGroups.update(groupId, { title: TAB_GROUP_TITLE, color: "blue" });
-    } catch {
-      /* grouping is cosmetic */
-    }
   }
 }
 
@@ -310,38 +293,4 @@ export class AgentTab {
 function normalizeId(id: string): string {
   const s = id.trim().toLowerCase();
   return /^\d+$/.test(s) ? `t${s}` : s;
-}
-
-async function tabExists(tabId: number): Promise<boolean> {
-  try {
-    await chrome.tabs.get(tabId);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Closes tabs, ignoring ones that are already gone. */
-async function removeTabs(tabIds: number[]): Promise<void> {
-  await Promise.all(tabIds.map((id) => chrome.tabs.remove(id).catch(() => undefined)));
-}
-
-async function lastNormalWindow(): Promise<chrome.windows.Window | null> {
-  try {
-    return await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
-  } catch {
-    return null;
-  }
-}
-
-async function createWindowTab(): Promise<number> {
-  const win = await chrome.windows.create({ url: "about:blank", focused: true, type: "normal" });
-  const tabId = win?.tabs?.[0]?.id;
-  if (tabId === undefined) throw new Error("Could not open a browser window for the agent");
-  return tabId;
-}
-
-function mustId(tab: chrome.tabs.Tab | undefined): number {
-  if (tab?.id === undefined) throw new Error("Could not open a tab for the agent");
-  return tab.id;
 }

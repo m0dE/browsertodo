@@ -87,15 +87,12 @@ describe("HelperLink", () => {
     chrome.runtime.onConnectNative = answerHello;
     const link = new HelperLink({ registerHandlers: () => {} });
     const events: unknown[] = [];
-    const data: unknown[] = [];
+    const open: unknown[] = [];
     link.onNotification("helper.event", (p) => events.push(p));
-    link.onNotification("helper.terminal.data", (p) => data.push(p));
-    const opened: unknown[] = [];
-    link.onNotification("helper.terminal.opened", (p) => opened.push(p));
+    link.onNotification("helper.sessions", (p) => open.push(p));
     await link.connect();
-    chrome.runtime.ports[0]!.deliver({ method: "helper.terminal.opened", params: { terminalId: "K", kind: "task", title: "t", sessionId: "s1" } });
+    chrome.runtime.ports[0]!.deliver({ method: "helper.sessions", params: { open: ["s1"] } });
     chrome.runtime.ports[0]!.deliver({ method: "helper.event", params: { sessionId: "s1", event: { type: "status", text: "hi" } } });
-    chrome.runtime.ports[0]!.deliver({ method: "helper.terminal.data", params: { terminalId: "T", data: "x" } });
     chrome.runtime.ports[0]!.hostDisconnect("bye");
     await link.connect();
     chrome.runtime.ports[1]!.deliver({ method: "helper.event", params: { sessionId: "s2", event: { type: "status", text: "again" } } });
@@ -103,8 +100,7 @@ describe("HelperLink", () => {
       { sessionId: "s1", event: { type: "status", text: "hi" } },
       { sessionId: "s2", event: { type: "status", text: "again" } },
     ]);
-    expect(data).toEqual([{ terminalId: "T", data: "x" }]);
-    expect(opened).toEqual([{ terminalId: "K", kind: "task", title: "t", sessionId: "s1" }]);
+    expect(open).toEqual([{ open: ["s1"] }]);
   });
 
   it("hello asks for the self-test when requested, also on an open connection", async () => {

@@ -3,13 +3,12 @@
  * signed-in account. The testIds come from X's markup at the time of writing
  * and must be re-checked against the live site.
  */
-import type { ElementInfo, PageSnapshot, ToolResult } from "@browsertodo/shared";
+import { isXUrl, type ElementInfo, type PageSnapshot, type ToolResult } from "@browsertodo/shared";
 import type { BrowserCaller } from "./types.js";
-import { isXUrl } from "./util.js";
 
 export const SWITCHER_TEST_ID = "SideNav_AccountSwitcher_Button";
 const MENU_ROLES = new Set(["menuitem", "button", "link"]);
-const FALLBACK = "Do it yourself with read_page and click, then verify with a screenshot. If the account is not signed in, call task_pause.";
+const FALLBACK = "Do it yourself with read_page and act (give the element index), then verify with a screenshot. If the account is not signed in, call task_pause.";
 
 export function normalizeHandle(handle: string): string {
   return `@${handle.trim().replace(/^@+/, "").trim()}`;

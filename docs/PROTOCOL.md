@@ -60,6 +60,14 @@ A task is due when:
 - it is `paused` and `retryAfter` is in the past, or
 - it is `running` and its lease has expired.
 
+The hosted service fails a `running` task with an expired lease instead of
+handing it out again once it has been attempted 5 times.
+
+The extension claims again while earlier claims are still running: it can
+run several tasks at once (the "Tasks at once" setting), so a runner may hold
+several leases. It does not claim while a task that acts as an X account is
+running, and it runs X tasks one at a time.
+
 ## Keep the lease alive
 
 `POST /v1/runner/tasks/:id/heartbeat`
@@ -82,6 +90,7 @@ while a task runs.
   "outcome": "done",
   "summary": "Posted the good-morning message on @myhandle.",
   "url": "https://x.com/myhandle/status/1839...",
+  "reason": "...",
   "screenshotId": "01J9Z...",
   "retryAfterMinutes": 15
 }
@@ -97,7 +106,15 @@ while a task runs.
     fails it once it has been attempted too many times (5 on the hosted
     service).
 - `reason` explains a `failed`, `paused` or `retry` outcome.
-- **409** when the task is not running or the lease belongs to another runner.
+- `retryAfterMinutes` defaults to 15 on the hosted service. The extension
+  sends its "Retry temporary failures after" setting (10 by default) with
+  `retry`, and its "Retry tasks that needed you after" setting (15 by
+  default) with the other outcomes.
+- The extension marks a `done` result as `retry` itself when the post URL
+  cannot be verified, and reports temporary errors (rate limits, network
+  errors, a crashed agent) as `retry` rather than `failed`.
+- **200** with the updated task. **409** when the task is not running or the
+  lease belongs to another runner.
 
 ## Media
 

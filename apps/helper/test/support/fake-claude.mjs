@@ -6,9 +6,11 @@ import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
-// Like real Claude Code, the init event names the model it runs.
+// Like real Claude Code, the init event names the model it runs (and comes again with every later turn).
 const modelAt = args.indexOf("--model");
-out({ type: "system", subtype: "init", model: modelAt >= 0 ? args[modelAt + 1] : "fake", args, cwd: process.cwd(), nested: process.env.CLAUDECODE ?? null, child: process.env.CLAUDE_CODE_CHILD_SESSION ?? null });
+const init = () => out({ type: "system", subtype: "init", model: modelAt >= 0 ? args[modelAt + 1] : "fake", args, cwd: process.cwd(), nested: process.env.CLAUDECODE ?? null, child: process.env.CLAUDE_CODE_CHILD_SESSION ?? null });
+init();
+let turns = 0;
 process.stdout.write("not json\n");
 const slow = Number(process.env.FAKE_CLAUDE_SLOW_MS || 0);
 const rl = createInterface({ input: process.stdin });
@@ -18,6 +20,7 @@ rl.on("line", (line) => {
     if (!line.trim()) return;
     const msg = JSON.parse(line);
     if (slow) await new Promise((r) => setTimeout(r, slow));
+    if (turns++ > 0) init();
     out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: `got: ${msg.message.content}` }] } });
     out({ type: "result", subtype: "success", is_error: false, result: "✓ done" });
   });

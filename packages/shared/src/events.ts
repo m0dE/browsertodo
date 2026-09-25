@@ -37,7 +37,13 @@ export type StampedAgentEvent = AgentEvent & { ts: string; sessionId: string };
 
 export type BrainKind = "claude-code" | "claude-api" | "scripted";
 
-/** One agent run: a queued task or a one-off "do this now" request. */
+/**
+ * One conversation with the agent: a queued task or a one-off "do this now"
+ * request, plus the follow-up messages the user sent in it. Each message is a
+ * turn; every turn's events append to this session's event stream (a
+ * follow-up starts with its user_message). startedAt/endedAt, outcome,
+ * summary, url and reason describe the latest turn.
+ */
 export interface SessionInfo {
   sessionId: string;
   source: TaskSource;
@@ -57,6 +63,14 @@ export interface SessionInfo {
   account?: string;
   /** Set when this run continues an earlier stopped one ("Continue"). */
   continuedFrom?: string;
+  /** Turns in this conversation so far (absent: 1). */
+  turns?: number;
+  /** When the conversation's first turn started (startedAt is the latest turn's). */
+  firstStartedAt?: string;
+  /** The Claude model the latest turn used (the model setting, e.g. "claude-sonnet-5"). */
+  model?: string;
+  /** Claude Code sessions: the helper's run log of the latest turn (see helper.runLog). */
+  logPath?: string;
 }
 
 /** Keep text in events bounded so storage and native messages stay small. */

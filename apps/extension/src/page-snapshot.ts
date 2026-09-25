@@ -1,6 +1,6 @@
 import { MAX_SNAPSHOT_ELEMENTS, MAX_SNAPSHOT_TEXT, type PageSnapshot } from "@browsertodo/shared";
 
-export const INDEX_ATTR = "data-browsertodo-index";
+const INDEX_ATTR = "data-browsertodo-index";
 
 /** Selector for the element with this index from the last snapshot. */
 export function indexSelector(index: number): string {

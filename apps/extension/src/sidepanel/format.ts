@@ -14,6 +14,23 @@ export function brainLabel(kind: BrainKind, jev = false): string {
   return BRAIN_LABELS[kind] + (jev ? " + Jev" : "");
 }
 
+/** "Claude Code · claude-sonnet-5 · Jev on": the agent behind a conversation. */
+export function sessionHeadline(s: { brain: BrainKind; model?: string; jev: boolean }): string {
+  return [BRAIN_LABELS[s.brain], s.model?.trim() || "default model", s.jev ? "Jev on" : "Jev off"].join(" · ");
+}
+
+/**
+ * The note under the Activity header while a conversation waits for the
+ * next message: whether it continues in the same agent session.
+ */
+export function conversationNote(s: { brain: BrainKind; endedAt?: string }, open: boolean): string | null {
+  if (!s.endedAt) return null;
+  if (!open) return "Conversation open · session ended — the next message starts a fresh session with a summary";
+  return s.brain === "claude-code"
+    ? "Conversation open · Claude Code session kept 30 min"
+    : "Conversation open · Claude API history kept 30 min";
+}
+
 export interface StatusLine {
   tone: Tone;
   text: string;
@@ -119,6 +136,17 @@ export function taskChip(task: Timing, now = Date.now()): Chip {
   }
 }
 
+/** The Activity header's meta line: "started 2 min ago · 2 messages", or "today 14:30 · done" once ended. */
+export function sessionMeta(
+  s: { startedAt: string; endedAt?: string; outcome?: string; turns?: number },
+  now = Date.now(),
+): string {
+  const parts = [s.endedAt ? clockLabel(s.startedAt, now) : `started ${relativeTime(s.startedAt, now)}`];
+  if (s.endedAt) parts.push(outcomeChip(s.outcome).label);
+  if ((s.turns ?? 1) > 1) parts.push(`${s.turns} messages`);
+  return parts.join(" · ");
+}
+
 export function outcomeChip(outcome: string | undefined): Chip {
   switch (outcome) {
     case undefined:
@@ -175,17 +203,7 @@ export function localInputToIso(value: string): string | undefined {
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
 }
 
-/** ISO time to the value format of <input type="datetime-local">. */
-export function isoToLocalInput(iso: string): string {
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-export function bytesToBase64(bytes: Uint8Array): string {
-  let bin = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(bin);
-}
+export { bytesToBase64 } from "../base64.js";
 
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;

@@ -4,13 +4,15 @@ import { installChromeFake } from "./chrome-fake.js";
 import { resolveBrain } from "../src/engine/brain-resolver.js";
 import { MemoryKvDb } from "../src/engine/kv.js";
 import { LocalStore } from "../src/engine/local-store.js";
-import type { AdhocInput, RunnerState } from "../src/engine/runner.js";
+import type { AdhocInput } from "../src/engine/run/jobs.js";
+import type { RunnerState } from "../src/engine/run/state.js";
 import { SessionStore } from "../src/engine/sessions.js";
-import { UiHub, UiRouter, type RouterRunner, type UiRouterDeps } from "../src/engine/ui-router.js";
+import { UiHub } from "../src/engine/ui-hub.js";
+import { UiRouter, type RouterRunner, type UiRouterDeps } from "../src/engine/ui-router.js";
 import { applySettingsPatch } from "../src/settings-store.js";
 import { UI_PORT_NAME, type UiPush, type UiRequest, type UiResponse } from "../src/ui-protocol.js";
 
-const INFO: HelperInfo = { version: "2", jevAvailable: false, claudePath: "C:\\claude.exe", logDir: "L", ptyAvailable: true, selfTest: { ok: true, ms: 1, at: "x" } };
+const INFO: HelperInfo = { version: "2", jevAvailable: false, claudePath: "C:\\claude.exe", logDir: "L", selfTest: { ok: true, ms: 1, at: "x" } };
 
 function setup() {
   const db = new MemoryKvDb();
@@ -19,10 +21,13 @@ function setup() {
   const running: SessionInfo | null = null;
   const runner = {
     running,
+    runningSessions: [] as SessionInfo[],
     state: vi.fn(async () => ({ ...rstate })),
     runDue: vi.fn(async () => ({ started: true })),
     runAdhoc: vi.fn(async (_i: AdhocInput) => ({ sessionId: "adhoc-1" })),
     continueSession: vi.fn(async (_id: string, _note?: string) => ({ sessionId: "cont-1" })),
+    message: vi.fn(async (sessionId: string | undefined, _text: string) => ({ sessionId: sessionId ?? "new-1", mode: sessionId ? ("turn" as const) : ("new" as const) })),
+    newChat: vi.fn(async (_id?: string) => ({ ok: true })),
     stop: vi.fn(() => true),
     say: vi.fn(async () => true),
     pauseSchedule: vi.fn(async () => {
@@ -32,15 +37,6 @@ function setup() {
       settings = { ...settings, paused: false };
     }),
   } satisfies RouterRunner;
-  const terminal = {
-    current: null as { terminalId: string } | null,
-    start: vi.fn(async () => ({ terminalId: "term-1" })),
-    input: vi.fn(async () => true),
-    resize: vi.fn(async () => true),
-    stop: vi.fn(async () => true),
-    list: vi.fn(() => [{ terminalId: "task-1", kind: "task" as const, title: "Post hi", sessionId: "S1" }]),
-    backlog: vi.fn(async (id: string) => `screen of ${id}`),
-  };
   const helper = {
     info: null as HelperInfo | null,
     lastError: "Specified native messaging host not found." as string | null,
@@ -49,7 +45,7 @@ function setup() {
       helper.lastError = null;
       return INFO;
     }),
-    call: vi.fn(async () => ({ text: "log lines" })),
+    call: vi.fn(async (method: string, _p?: unknown, _o?: unknown): Promise<any> => (method === "helper.runLog" ? { text: "{\"type\":\"task_start\"}\n", truncated: false } : { text: "log lines" })),
   };
   const localStore = new LocalStore({ db });
   const sessions = new SessionStore(db);
@@ -58,9 +54,10 @@ function setup() {
     loadSettings: async () => settings,
     saveSettingsPatch: async (patch) => (settings = applySettingsPatch(settings, patch)),
     runner,
+    showAgent: async () => false,
     localStore,
     sessions,
-    terminal,
+    openConversations: () => ["S-open"],
     helper,
     brainStatus: (s) => resolveBrain({ settings: s, helper: helper.info, helperError: helper.lastError }),
     nextRunAt: async () => "2026-09-24T10:15:00.000Z",
@@ -75,7 +72,7 @@ function setup() {
     if (!res.ok) throw new Error(res.error);
     return res.data;
   };
-  return { router, deps, runner, terminal, helper, localStore, sessions, vault, req, get settings() { return settings; } };
+  return { router, deps, runner, helper, localStore, sessions, vault, req, get settings() { return settings; } };
 }
 
 beforeEach(() => {
@@ -90,7 +87,7 @@ describe("UiRouter", () => {
     expect(s.settings.runnerKey).toBe("set");
     expect(s.settings.jevApiKey).toBe("");
     expect(s.brain).toMatchObject({ effective: "claude-api", hasApiKey: true, helper: null, helperError: "Specified native messaging host not found." });
-    expect(s).toMatchObject({ running: null, paused: false, lastRunAt: "2026-09-24T09:00:00.000Z", nextRunAt: "2026-09-24T10:15:00.000Z", terminal: null });
+    expect(s).toMatchObject({ running: null, paused: false, lastRunAt: "2026-09-24T09:00:00.000Z", nextRunAt: "2026-09-24T10:15:00.000Z" });
   });
 
   it("settings.save: partial update, secrets kept when omitted or 'set', cleared with ''", async () => {
@@ -129,7 +126,12 @@ describe("UiRouter", () => {
     expect(t.runner.runDue).toHaveBeenCalledWith("manual");
     expect(await t.req({ type: "run.stop" })).toEqual({ ok: true });
     expect(await t.req({ type: "run.say", text: "hello" })).toEqual({ ok: true });
-    expect(t.runner.say).toHaveBeenCalledWith("hello");
+    expect(t.runner.say).toHaveBeenCalledWith("hello", undefined);
+    // One session of several: stop and say take its id.
+    await t.req({ type: "run.stop", sessionId: "S2" });
+    expect(t.runner.stop).toHaveBeenLastCalledWith("S2");
+    await t.req({ type: "run.say", text: "hi", sessionId: "S2" });
+    expect(t.runner.say).toHaveBeenLastCalledWith("hi", "S2");
   });
 
   it("run.continue passes the session id and the trimmed note; errors come back as { ok: false }", async () => {
@@ -185,38 +187,37 @@ describe("UiRouter", () => {
     expect(await t.router.handle({ type: "sessions.events", sessionId: "nope" })).toEqual({ ok: false, error: "No session nope" });
   });
 
-  it("terminal.* go to the relay", async () => {
+  it("run.message goes to the runner with the conversation (none: a new one); run.newChat too", async () => {
     const t = setup();
-    expect(await t.req({ type: "terminal.start", cols: 100, rows: 30 })).toEqual({ terminalId: "term-1" });
-    expect(t.terminal.start).toHaveBeenCalledWith(100, 30, undefined);
-    expect(await t.req({ type: "terminal.input", data: "ls\r" })).toEqual({ ok: true });
-    expect(await t.req({ type: "terminal.resize", cols: 90, rows: 20 })).toEqual({ ok: true });
-    expect(await t.req({ type: "terminal.stop" })).toEqual({ ok: true });
-    // No terminalId: the user's session.
-    expect(t.terminal.input).toHaveBeenLastCalledWith("ls\r", undefined);
-    expect(t.terminal.stop).toHaveBeenLastCalledWith(undefined);
+    expect(await t.req({ type: "run.message", sessionId: "S1", text: "now like it" })).toEqual({ sessionId: "S1", mode: "turn" });
+    expect(t.runner.message).toHaveBeenLastCalledWith("S1", "now like it");
+    expect(await t.req({ type: "run.message", text: "post gm" })).toEqual({ sessionId: "new-1", mode: "new" });
+    expect(t.runner.message).toHaveBeenLastCalledWith(undefined, "post gm");
+    expect(await t.req({ type: "run.message", sessionId: "", text: "x" })).toMatchObject({ mode: "new" });
+    t.runner.message.mockRejectedValueOnce(new Error("The message is empty"));
+    expect(await t.router.handle({ type: "run.message", sessionId: "S1", text: " " })).toEqual({ ok: false, error: "The message is empty" });
+    expect(await t.req({ type: "run.newChat", sessionId: "S1" })).toEqual({ ok: true });
+    expect(t.runner.newChat).toHaveBeenLastCalledWith("S1");
+    await t.req({ type: "run.newChat" });
+    expect(t.runner.newChat).toHaveBeenLastCalledWith(undefined);
   });
 
-  it("terminal.* take a terminalId for task sessions; state lists every terminal", async () => {
+  it("state lists the conversations whose agent session is still open", async () => {
     const t = setup();
-    await t.req({ type: "terminal.input", data: "y", terminalId: "task-1" });
-    await t.req({ type: "terminal.resize", cols: 90, rows: 20, terminalId: "task-1" });
-    await t.req({ type: "terminal.stop", terminalId: "task-1" });
-    expect(t.terminal.input).toHaveBeenLastCalledWith("y", "task-1");
-    expect(t.terminal.resize).toHaveBeenLastCalledWith(90, 20, "task-1");
-    expect(t.terminal.stop).toHaveBeenLastCalledWith("task-1");
-    expect(await t.req({ type: "terminal.backlog", terminalId: "task-1" })).toEqual({ data: "screen of task-1" });
-    expect((await t.req({ type: "state.get" })).terminals).toEqual([{ terminalId: "task-1", kind: "task", title: "Post hi", sessionId: "S1" }]);
+    expect((await t.req({ type: "state.get" })).openConversations).toEqual(["S-open"]);
   });
 
-  it("terminal.start passes the Jev key only when Jev is on", async () => {
+  it("session.log fetches a Claude Code session's run log from the helper", async () => {
     const t = setup();
-    await t.req({ type: "settings.save", settings: { jevApiKey: "jk-1", jevEnabled: true } });
-    await t.req({ type: "terminal.start", cols: 80, rows: 24 });
-    expect(t.terminal.start).toHaveBeenLastCalledWith(80, 24, "jk-1");
-    await t.req({ type: "settings.save", settings: { jevEnabled: false } });
-    await t.req({ type: "terminal.start", cols: 80, rows: 24 });
-    expect(t.terminal.start).toHaveBeenLastCalledWith(80, 24, undefined);
+    await t.sessions.create({ sessionId: "cc", source: "adhoc", title: "x", brain: "claude-code", jev: false, startedAt: "2026-09-24T10:00:00Z" });
+    await t.sessions.update("cc", { endedAt: "2026-09-24T10:01:00Z", outcome: "done", logPath: "C:\\bt\\runs\\cc-1\\log.jsonl" });
+    expect(await t.router.handle({ type: "session.log", sessionId: "cc" })).toEqual({ ok: false, error: "The helper is not connected" });
+    t.helper.info = INFO;
+    expect(await t.req({ type: "session.log", sessionId: "cc" })).toEqual({ path: "C:\\bt\\runs\\cc-1\\log.jsonl", text: '{"type":"task_start"}\n', truncated: false });
+    expect(t.helper.call).toHaveBeenLastCalledWith("helper.runLog", { path: "C:\\bt\\runs\\cc-1\\log.jsonl" }, { timeoutMs: 15_000 });
+    await t.sessions.create({ sessionId: "api", source: "adhoc", title: "x", brain: "claude-api", jev: false, startedAt: "2026-09-24T10:00:00Z" });
+    expect(await t.router.handle({ type: "session.log", sessionId: "api" })).toEqual({ ok: false, error: "This session has no run log (only Claude Code sessions do)" });
+    expect(await t.router.handle({ type: "session.log", sessionId: "nope" })).toEqual({ ok: false, error: "No session nope" });
   });
 
   it("extra requests: helper.getLog and vault.*", async () => {

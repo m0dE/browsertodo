@@ -24,7 +24,7 @@ export interface TasksView {
   tick(): void;
 }
 
-export function initTasks(opts: { onStarted: () => void; onContinued?: () => void }): TasksView {
+export function initTasks(opts: { onStarted: () => void; onContinued?: (sessionId: string) => void }): TasksView {
   let tasks: Row[] = [];
 
   // Add form
@@ -115,8 +115,9 @@ export function initTasks(opts: { onStarted: () => void; onContinued?: () => voi
       const { sessions } = await uiRequest({ type: "sessions.list", limit: 200 });
       const last = sessions.find((s) => s.taskId === t.id && s.source === "local" && s.endedAt);
       if (!last) return flash(tasksMsg, "No earlier run of this task to continue. Use Run again.", "bad");
-      await uiRequest({ type: "run.continue", sessionId: last.sessionId });
-      (opts.onContinued ?? opts.onStarted)();
+      const { sessionId } = await uiRequest({ type: "run.continue", sessionId: last.sessionId });
+      if (opts.onContinued) opts.onContinued(sessionId);
+      else opts.onStarted();
     } catch (err) {
       flash(tasksMsg, errorText(err), "bad");
     }

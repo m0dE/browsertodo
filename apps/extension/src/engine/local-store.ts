@@ -1,23 +1,27 @@
 /**
  * Local todo list: LocalTask records in chrome.storage.local, media blobs in
- * IndexedDB. Works with no cloud at all.
+ * IndexedDB. Works with no cloud at all. The rules (input checks, repeats,
+ * how a run changes a task) are in local-task-rules.ts.
  */
-import { MAX_INSTRUCTIONS_CHARS, RepeatRule, type LocalTask, type TaskRunResult } from "@browsertodo/shared";
+import type { RepeatRule, TaskRunResult } from "@browsertodo/shared";
+import { base64ToBytes } from "../base64.js";
 import type { LocalMediaInfo, UiMediaUpload } from "../ui-protocol.js";
-import type { KvDb, KvStore } from "./kv.js";
+import type { KvDb, KvStore, StorageLike } from "./kv.js";
+import {
+  afterCrash,
+  afterRun,
+  byCreated,
+  cleanAccount,
+  cleanInstructions,
+  cleanRepeat,
+  cleanTime,
+  nextOccurrence,
+  nextOccurrenceTask,
+  type StoredLocalTask,
+} from "./local-task-rules.js";
 
 export const LOCAL_TASKS_KEY = "localTasks";
-/** A local task fails for good after this many attempts. */
-export const MAX_LOCAL_ATTEMPTS = 5;
-export const MAX_MEDIA_PER_TASK = 10;
-
-/** A stored local task plus bookkeeping the UI may ignore. */
-export type StoredLocalTask = LocalTask & {
-  /** Set when a previous attempt was interrupted while running (crash, restart). */
-  crashed?: boolean;
-  /** Id of the next occurrence this (repeating) task already spawned. */
-  nextId?: string | null;
-};
+const MAX_MEDIA_PER_TASK = 10;
 
 export interface MediaRecord {
   id: string;
@@ -42,8 +46,6 @@ export interface LocalTaskPatch {
   repeat?: RepeatRule | null;
 }
 
-type StorageLike = { get(key: string): Promise<Record<string, unknown>>; set(items: Record<string, unknown>): Promise<void> };
-
 export interface LocalStoreOptions {
   db: KvDb;
   now?: () => Date;
@@ -52,64 +54,9 @@ export interface LocalStoreOptions {
   storage?: StorageLike;
 }
 
-/**
- * The next local wall-clock time from dailyAt ("HH:MM", local time zone)
- * strictly after `after`.
- */
-export function nextOccurrence(dailyAt: string[], after: Date): Date {
-  if (dailyAt.length === 0) throw new Error("repeat rule has no times");
-  for (let day = 0; day <= 2; day++) {
-    let best: Date | null = null;
-    for (const hhmm of dailyAt) {
-      const [h, m] = hhmm.split(":").map(Number) as [number, number];
-      const cand = new Date(after.getFullYear(), after.getMonth(), after.getDate() + day, h, m, 0, 0);
-      if (cand.getTime() > after.getTime() && (!best || cand < best)) best = cand;
-    }
-    if (best) return best;
-  }
-  throw new Error("no next occurrence found");
-}
-
-function decodeBase64(b64: string): Uint8Array<ArrayBuffer> {
-  const bin = atob(b64.replace(/^data:[^,]*,/, ""));
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
 export function uploadToBlob(m: UiMediaUpload): Blob {
-  return new Blob([decodeBase64(m.dataBase64)], { type: m.type || "application/octet-stream" });
+  return new Blob([base64ToBytes(m.dataBase64)], { type: m.type || "application/octet-stream" });
 }
-
-function cleanInstructions(text: unknown): string {
-  const t = typeof text === "string" ? text.trim() : "";
-  if (!t) throw new Error("Instructions are empty");
-  if (t.length > MAX_INSTRUCTIONS_CHARS) throw new Error(`Instructions are longer than ${MAX_INSTRUCTIONS_CHARS} characters`);
-  return t;
-}
-
-function cleanAccount(a: unknown): string | null {
-  if (typeof a !== "string") return null;
-  const t = a.trim();
-  if (t.length > 100) throw new Error("Account is longer than 100 characters");
-  return t || null;
-}
-
-function cleanTime(t: unknown): string | null {
-  if (t === null || t === undefined || t === "") return null;
-  const d = new Date(String(t));
-  if (Number.isNaN(d.getTime())) throw new Error(`Invalid time: ${String(t)}`);
-  return d.toISOString();
-}
-
-function cleanRepeat(r: unknown): RepeatRule | null {
-  if (r === null || r === undefined) return null;
-  const parsed = RepeatRule.safeParse(r);
-  if (!parsed.success) throw new Error("Repeat times must be HH:MM (24 h), 1 to 24 of them");
-  return { dailyAt: [...new Set(parsed.data.dailyAt)].sort() };
-}
-
-const byCreated = (a: StoredLocalTask, b: StoredLocalTask) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0);
 
 export class LocalStore {
   private readonly media: KvStore<MediaRecord>;
@@ -280,10 +227,8 @@ export class LocalStore {
   }
 
   /**
-   * Records how a run ended. retry: back to pending after retryAfterMinutes
-   * (the reason is kept in failReason), or failed once MAX_LOCAL_ATTEMPTS is
-   * reached. paused: waits for the user (tasks.retry). A repeating task that
-   * ends done or failed spawns its next occurrence once.
+   * Records how a run ended (see afterRun). A repeating task that ends done
+   * or failed spawns its next occurrence once.
    */
   async finish(
     id: string,
@@ -293,51 +238,13 @@ export class LocalStore {
     let out: StoredLocalTask | null = null;
     let next: StoredLocalTask | null = null;
     const now = this.now();
-    const nowIso = now.toISOString();
     await this.mutate((tasks) => {
       const updated = tasks.map((t) => {
         if (t.id !== id) return t;
-        const base: StoredLocalTask = { ...t, updatedAt: nowIso, crashed: false, retryAfter: null };
-        let r: StoredLocalTask;
-        switch (result.outcome) {
-          case "done":
-            r = { ...base, status: "done", resultSummary: result.summary ?? null, resultUrl: result.url ?? null, failReason: null, pauseReason: null };
-            break;
-          case "failed":
-            r = { ...base, status: "failed", failReason: result.reason ?? "failed", pauseReason: null };
-            break;
-          case "paused":
-            r = { ...base, status: "paused", pauseReason: result.reason ?? "needs your attention" };
-            break;
-          default: {
-            const reason = result.reason ?? "temporary problem";
-            if (t.attempts >= MAX_LOCAL_ATTEMPTS) {
-              r = { ...base, status: "failed", failReason: `${reason} (gave up after ${t.attempts} attempts)`, pauseReason: null };
-            } else {
-              const retryAfter = new Date(now.getTime() + opts.retryAfterMinutes * 60_000).toISOString();
-              r = { ...base, status: "pending", failReason: reason, retryAfter };
-            }
-          }
-        }
+        let r = afterRun(t, result, now, opts.retryAfterMinutes);
         if ((r.status === "done" || r.status === "failed") && r.repeat && !r.nextId) {
-          const n: StoredLocalTask = {
-            ...r,
-            id: this.newId(),
-            status: "pending",
-            attempts: 0,
-            notBefore: nextOccurrence(r.repeat.dailyAt, now).toISOString(),
-            retryAfter: null,
-            resultSummary: null,
-            resultUrl: null,
-            pauseReason: null,
-            failReason: null,
-            createdAt: nowIso,
-            updatedAt: nowIso,
-            crashed: false,
-            nextId: null,
-          };
-          next = n;
-          r = { ...r, nextId: n.id };
+          next = nextOccurrenceTask({ ...r, repeat: r.repeat }, this.newId(), now);
+          r = { ...r, nextId: next.id };
         }
         out = r;
         return r;
@@ -358,14 +265,10 @@ export class LocalStore {
     const cutoff = now.getTime() - (maxTaskMinutes + 2) * 60_000;
     let count = 0;
     await this.mutate((tasks) =>
-      tasks.map((t): StoredLocalTask => {
+      tasks.map((t) => {
         if (t.status !== "running" || Date.parse(t.updatedAt) > cutoff) return t;
         count++;
-        const reason = "interrupted (browser or extension stopped during the run)";
-        if (t.attempts >= MAX_LOCAL_ATTEMPTS) {
-          return { ...t, status: "failed", failReason: `${reason} (gave up after ${t.attempts} attempts)`, updatedAt: now.toISOString() };
-        }
-        return { ...t, status: "pending", crashed: true, failReason: reason, retryAfter: null, updatedAt: now.toISOString() };
+        return afterCrash(t, now);
       }),
     );
     return count;

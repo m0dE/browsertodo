@@ -11,39 +11,57 @@ It runs entirely on your machine. A cloud task queue is optional.
 
 ## What you get
 
-- **A side panel** (click the toolbar icon) with three tabs:
-  - **Tasks:** "Do this now", plus a todo list with times, daily repeats and
-    attached files.
-  - **Activity:** every step of the running task, live. You can type to the
-    agent mid-task or stop it.
-  - **Terminal:** your real Claude Code, running in the panel with
-    browsertodo's browser tools attached.
-- **A settings page** for choosing the brain, adding keys, cloud sync, and
-  site logins.
+- **A side panel** (click the toolbar icon) with two tabs:
+  - **Tasks:** a todo list with times, daily repeats and attached files.
+    "Run due" runs everything that is due now.
+  - **Activity:** the conversation with the agent, live: which brain and
+    model run it, what Claude says, every tool call and result, and Jev's
+    picks. "Show tab" brings up the tab the agent is using, History lists
+    past runs, and when several tasks run at once you can switch between
+    them. Claude Code runs also have a "Raw log" link to the helper's full
+    log of the run.
+- **A message box** under both tabs, like a chat:
+  - Type a task to start it now.
+  - While a task runs, your message goes straight to the agent. Stop pauses
+    it.
+  - After a task ends, a message continues the same conversation. If the
+    agent session is still open (up to 30 idle minutes) it picks the message
+    up; otherwise a fresh one starts with a summary of what was done.
+  - A run that was stopped, paused or failed shows a **Continue** button.
+  - **New chat** ends the conversation; the next message starts a new one.
+  - The **model chip** shows the model and whether Jev is on, and changes
+    either.
+- **A settings page** for the brain, the model, keys, cloud sync, site
+  logins and limits.
 - **Careful defaults:**
   - It pauses at login pages, 2FA, CAPTCHAs and account warnings.
   - It never types your X password.
-  - It checks each post exists before calling the task done.
+  - It checks each X post exists before calling the task done.
   - A retry after a crash checks for an existing post before posting again.
-  - It stops running tasks after repeated failures.
+  - Scheduled runs stop after repeated failures.
 
 ## Choose a brain
 
 | Option | You need | Notes |
 |---|---|---|
 | **Claude API** | An Anthropic API key | Runs inside the extension. Nothing else to install. |
-| **Local Claude Code** | Claude Code installed and signed in, plus the helper below | Uses your Claude subscription. Also powers the Terminal tab. |
+| **Local Claude Code** | Claude Code installed and signed in, plus the helper below (Windows) | Uses your Claude subscription. Runs headless, with only browsertodo's browser tools. |
 | **Auto** (default) | Either of the above | Uses local Claude Code when the helper works, otherwise the API key. |
+
+The model setting (default Sonnet 5) applies to both brains.
 
 **Jev is optional with either brain.** With a Jev key, steps can be described
 in plain words ("click the Post button") and a small, fast model finds the
-element. Without it, Claude names the element itself. Either way, Claude does
-several steps per turn, which is where most of the speed comes from.
+element. Without it, Claude names the element from the page's element list.
+Either way, Claude sends several steps in one call. On a fake X site with
+real Claude Code, a post took 19.6 s on average before steps were batched,
+16.4 s with batched steps, and 15.3 s with batched steps and Jev (6 posts
+each).
 
 ## Setup
 
-Requirements: Windows 10 or 11 for the helper, Google Chrome, Node.js 22+ and
-pnpm 10.
+Requirements: Google Chrome, Node.js 22+ and pnpm 10 to build. The helper
+for local Claude Code needs Windows 10 or 11.
 
 1. **Build it.**
 
@@ -63,15 +81,38 @@ pnpm 10.
    node apps/helper/dist/install.js
    ```
 
-   Then click "Re-check" under the helper status. `--uninstall` removes the
-   registration.
+   Then click "Connect" under the helper status. The first connection runs a
+   short Claude Code self-test. `--uninstall` removes the registration.
 
 4. **Optional:** add a Jev key in settings.
 
 5. **Sign in to your accounts by hand** in Chrome. For several X accounts, use
    X's "Add an existing account" so they all appear in X's account switcher.
 
-6. **Add a task** in the side panel and click Run.
+6. **Type a task** in the side panel's message box and click Run.
+
+## How it works in your browser
+
+- **It uses your own tabs.** A task you start from the side panel works in
+  the tab you are looking at (or a new tab next to it, if that tab is a
+  browser page or already in use). Scheduled tasks use their own tab. Agent
+  tabs go in a tab group named "browsertodo".
+- **Several tasks at once.** Up to 2 due tasks run at the same time by
+  default (up to 4, "Tasks at once" in settings), each in its own tab, and
+  tasks you start from the side panel run beside them. Tasks on X run one at
+  a time, because all X accounts share one login in the browser: switching
+  accounts in one tab switches it in every tab.
+- **Several pages at once.** The agent can open up to 8 pages in parallel
+  tabs and read them in one step. Opening and reading 5 test pages took
+  4.8 s one by one and 0.5 s in parallel tabs. Tabs it opens are closed when
+  the task ends.
+- **Chrome shows an "is debugging this browser" bar** while a task runs. That
+  is how the extension sends real clicks and keystrokes. Closing the bar
+  stops every running task.
+- **Pages with another extension inside them** (for example Streak in
+  Gmail) block Chrome's debugger. On those pages the extension falls back to
+  simulated clicks and typing. Some sites ignore simulated input, and files
+  cannot be uploaded there.
 
 ## Use the browser tools from your own terminal
 
@@ -82,7 +123,9 @@ the browser too:
 claude mcp add browsertodo -- node <path-to-repo>/apps/helper/dist/mcp-server.js --attach
 ```
 
-Then ask Claude Code something like "post this on X from @me".
+Then ask Claude Code something like "post this on X from @me". It gets the
+same tools as tasks, except the ones that end a task. While a browsertodo
+task is running, its calls are turned away until the task finishes.
 
 ## Cloud task queue (optional)
 
@@ -99,31 +142,39 @@ queue work while your computer is off. Any server that implements
 | Random pause between tasks | 60–180 seconds |
 | Maximum tool calls per task | 60 |
 | Maximum time per task | 10 minutes |
+| Tasks at once | 2 (1–4; X tasks one at a time) |
 | Retry a temporary failure after | 10 minutes |
+| Retry a task that needed you after | 15 minutes |
 | Pause runs after failures in a row | 3 |
 
-Logs of every run are in `%LOCALAPPDATA%\browsertodo\runs\` when the helper is
-used, and in the Activity tab for both brains.
+**Site logins** stores usernames and passwords for other sites, encrypted
+with a passphrase you enter once per browser session. The agent asks for the
+login of the site it is signing in to, and the username and password go to
+Claude. It is never used for X.
+
+Every run is kept in the Activity tab's History, for both brains. With the
+helper, each Claude Code run also has a full log in
+`%LOCALAPPDATA%\browsertodo\runs\`.
 
 ## Things to know
 
-- **Chrome shows an "is debugging this browser" bar** while a task runs. That
-  is how the extension sends real clicks and keystrokes.
-- **Tasks run in their own window,** in a tab group named "browsertodo", so
-  your tabs are left alone.
 - **Sites change their pages.** Account switching on X relies on X's current
   markup. If it breaks, Claude falls back to finding the menu itself.
 - **Automation may break a site's rules.** Check the terms of any site you
   automate.
 - **Page content is untrusted.** The agent follows your instructions, not text
-  it finds on a page.
+  it finds on a page. What it reads on a page is sent to Claude.
 
 ## Development
 
 ```
 pnpm test
 pnpm typecheck
-node apps/extension/test/smoke.e2e.mjs   # the built extension in Playwright's Chromium
+pnpm build
+node apps/extension/test/smoke.e2e.mjs [--headed]           # the built extension in Playwright's Chromium
+node apps/extension/test/multitab.e2e.mjs [--headed]        # parallel tabs vs one by one
+node apps/extension/test/foreign-frame.e2e.mjs [--headed]   # the fallback on pages with another extension's frame
+node apps/extension/test/ui/harness.mjs [--headed]          # side panel and settings screenshots, light and dark
 ```
 
 `test/fixtures/fake-x` is a small fake X site, with an account switcher, a

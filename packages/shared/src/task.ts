@@ -143,3 +143,18 @@ export type LocalTask = z.infer<typeof LocalTask>;
 /** Where a task came from. "adhoc" is a one-off "do this now" request. */
 export const TaskSource = z.enum(["local", "cloud", "adhoc"]);
 export type TaskSource = z.infer<typeof TaskSource>;
+
+const X_HOST = /\b(?:x|twitter)\.com\b/i;
+/** An @handle as X writes it (not the @ inside an email address). */
+const X_HANDLE = /(?:^|[^\w.@])@[A-Za-z0-9_]{1,15}(?![\w@.]*\.[A-Za-z])\b/;
+
+/**
+ * True when a task acts as an X account: it names one (account, or an
+ * @handle in the instructions) or works on x.com. Such tasks never run at the
+ * same time: every X account shares one login session in the browser, so
+ * switching accounts in one tab switches it in every tab.
+ */
+export function isXTask(task: { instructions: string; account?: string | null }): boolean {
+  if (task.account?.trim()) return true;
+  return X_HOST.test(task.instructions) || X_HANDLE.test(task.instructions);
+}

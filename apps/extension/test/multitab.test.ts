@@ -45,7 +45,7 @@ const urls = (n: number) => Array.from({ length: n }, (_, i) => `https://mail.te
 const activations = () => chrome.tabs.updateCalls.filter((c) => c.props.active);
 
 describe("Driver with several tabs", () => {
-  it("opens tabs in the background of the agent window, in the browsertodo group, and waits for all to load", async () => {
+  it("opens tabs in the background of the agent tab's window, in the browsertodo group, and waits for all to load", async () => {
     // The second tab keeps loading for a few polls.
     let polls = 0;
     onSleep = () => {

@@ -1,4 +1,4 @@
-import type { BrowserMethod, BrowserMethods } from "@browsertodo/shared";
+import type { BrowserCallContext, BrowserMethod, BrowserMethods } from "@browsertodo/shared";
 import type { BrowserCaller } from "@browsertodo/core";
 import type { HelperPeer } from "../helper-link.js";
 
@@ -26,7 +26,7 @@ export interface VaultLike {
 }
 
 /** Every browser.* and vault.* method, performed directly by the driver and the vault. */
-export function browserMethods(driver: DriverLike, vault: VaultLike): Impl {
+function browserMethods(driver: DriverLike, vault: VaultLike): Impl {
   return {
     "browser.navigate": (p) => driver.navigate(p),
     "browser.readPage": (p) => driver.readPage(p ?? {}),
@@ -54,10 +54,19 @@ export function createBrowserCaller(driver: DriverLike, vault: VaultLike): Brows
   };
 }
 
-/** Serves the same methods to the helper (Claude Code brain via MCP). */
-export function registerBrowserHandlers(peer: HelperPeer, driver: DriverLike, vault: VaultLike): void {
-  const impl = browserMethods(driver, vault);
-  for (const method of Object.keys(impl) as BrowserMethod[]) {
-    peer.handle(method, impl[method] as never);
+/**
+ * Serves the browser methods to the helper (Claude Code brain via MCP). Each
+ * call is served by the caller's session (BrowserCallContext.sessionId): the
+ * tab of that session's slot. The session id is not passed on to the driver.
+ */
+export function registerBrowserHandlers(peer: HelperPeer, browserFor: (sessionId: string | undefined) => BrowserCaller): void {
+  for (const method of BROWSER_METHODS) {
+    peer.handle(method, ((params: (BrowserCallContext & Record<string, unknown>) | undefined) => {
+      const { sessionId, ...rest } = params ?? {};
+      return browserFor(typeof sessionId === "string" && sessionId ? sessionId : undefined).call(method, rest as never);
+    }) as never);
   }
 }
+
+/** Every browser.* and vault.* method. */
+const BROWSER_METHODS = Object.keys(browserMethods({} as DriverLike, {} as VaultLike)) as BrowserMethod[];

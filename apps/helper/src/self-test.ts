@@ -8,7 +8,8 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { HelperInfo } from "@browsertodo/shared";
-import { claudeEnv, killTree } from "./brains/claude-code.js";
+import { CLAUDE_NOT_FOUND, claudeEnv, killTree } from "./claude-process.js";
+import { errorMessage } from "./logger.js";
 
 export type SelfTestResult = NonNullable<HelperInfo["selfTest"]>;
 
@@ -86,7 +87,7 @@ export async function runSelfTest(opts: {
         ...(opts.cwd ? { cwd: opts.cwd } : {}),
       });
     } catch (e) {
-      resolve(done({ ok: false, error: `could not start Claude Code: ${e instanceof Error ? e.message : String(e)}` }));
+      resolve(done({ ok: false, error: `could not start Claude Code: ${errorMessage(e)}` }));
       return;
     }
     const timeoutMs = opts.timeoutMs ?? SELF_TEST_TIMEOUT_MS;
@@ -134,7 +135,7 @@ export class SelfTestCache {
     const path = this.opts.claudePath;
     let r: SelfTestResult;
     if (path === "scripted") r = { ok: true, ms: 0, at: new Date().toISOString() };
-    else if (!path) r = { ok: false, error: "Claude Code was not found. Install it or set BROWSERTODO_CLAUDE_PATH.", ms: 0, at: new Date().toISOString() };
+    else if (!path) r = { ok: false, error: CLAUDE_NOT_FOUND, ms: 0, at: new Date().toISOString() };
     else r = await (this.opts.run ?? ((p) => runSelfTest({ claudePath: p })))(path);
     this.result = r;
     this.saveDisk(r);

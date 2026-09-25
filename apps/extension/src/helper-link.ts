@@ -7,6 +7,7 @@ import {
   type HelperNotifications,
   type RpcMessage,
 } from "@browsertodo/shared";
+import { errText } from "./errors.js";
 
 /**
  * HelperMethods and BrowserMethods are interfaces, which TypeScript does not
@@ -22,7 +23,7 @@ export interface HelperLinkOptions {
 }
 
 /** helper.hello may run the Claude Code self-test (up to 60 s) before answering. */
-export const HELLO_TIMEOUT_MS = 75_000;
+const HELLO_TIMEOUT_MS = 75_000;
 
 type NotificationName = keyof HelperNotifications & string;
 
@@ -134,12 +135,12 @@ export class HelperLink {
     try {
       port = chrome.runtime.connectNative(hostName);
     } catch (err) {
-      this.lastErrorText = `Cannot start helper: ${err instanceof Error ? err.message : String(err)}`;
+      this.lastErrorText = `Cannot start helper: ${errText(err)}`;
       throw new Error(this.lastErrorText);
     }
     const peer: HelperPeer = new RpcPeer<Methods<HelperMethods>, Methods<BrowserMethods>>((msg) => port.postMessage(msg), "e");
     this.opts.registerHandlers(peer);
-    for (const method of ["helper.event", "helper.terminal.opened", "helper.terminal.data", "helper.terminal.exit"] as const) {
+    for (const method of ["helper.event", "helper.sessions"] as const) {
       peer.onNotification(method, (params) => {
         for (const fn of this.notificationListeners.get(method) ?? []) {
           try {
@@ -167,7 +168,7 @@ export class HelperLink {
       this.setInfo(info);
       return info;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       if (this.port === port) this.disconnect(msg);
       this.lastErrorText = msg;
       throw err;

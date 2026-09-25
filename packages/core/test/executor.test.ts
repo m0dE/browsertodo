@@ -145,7 +145,7 @@ describe("createToolExecutor: plain tools", () => {
     const { exec } = setup(new FakeX(), { onTaskEnd: null });
     const r = await exec.call("task_complete", { summary: "x" });
     expect(r.isError).toBe(true);
-    expect(r.text).toMatch(/no task to end in the interactive terminal/);
+    expect(r.text).toMatch(/no task to end in an attached session/);
   });
 });
 
@@ -406,14 +406,11 @@ describe("createToolExecutor: several tabs", () => {
 
   it("the prompts tell the model to open several pages at once", async () => {
     const { buildSystemPrompt } = await import("../src/index.js");
-    const { TOOL_NAMES, INTERACTIVE_TOOL_NAMES } = await import("@browsertodo/shared");
+    const { TOOL_NAMES } = await import("@browsertodo/shared");
     const task = buildSystemPrompt({ tools: TOOL_NAMES, jev: true });
     expect(task).toContain("- open_tabs:");
     expect(task).toMatch(/open them together with open_tabs .* one read_page call using `tabs`/);
     expect(task).toMatch(/tabs you opened are also closed when the task ends/);
-    const terminal = buildSystemPrompt({ tools: INTERACTIVE_TOOL_NAMES, jev: true, interactive: true });
-    expect(terminal).toMatch(/When a request needs several pages/);
-    expect(terminal).not.toMatch(/when the task ends/);
     expect(buildSystemPrompt({ tools: ["navigate", "read_page"], jev: false })).not.toContain("open_tabs");
   });
 });

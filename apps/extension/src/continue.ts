@@ -1,34 +1,21 @@
 /**
- * "Continue" for a run that stopped before finishing (stopped by the user,
- * paused, failed, retry): which runs can be continued, and the instructions
- * for the new run that picks up where the old one left off. Pure; shared by
- * the background runner and the side panel.
+ * Continuing a conversation: which runs "Continue" applies to, and the
+ * instructions for a fresh agent session that picks up a conversation whose
+ * own session is gone (what was done so far, how it ended, the new message).
+ * Pure; shared by the background runner and the side panel.
  */
 import type { SessionInfo, StampedAgentEvent, TaskOutcome } from "@browsertodo/shared";
 import { toolArgsSummary } from "./sidepanel/event-format.js";
 import { clip } from "./sidepanel/format.js";
 
 /** How many earlier steps the continuation instructions list. */
-export const CONTINUE_STEPS = 15;
+const CONTINUE_STEPS = 15;
 
 const CONTINUABLE: readonly TaskOutcome[] = ["paused", "failed", "retry"];
 
 /** An outcome a run can be continued from. */
 export function isContinuableOutcome(outcome: TaskOutcome | undefined): boolean {
   return !!outcome && CONTINUABLE.includes(outcome);
-}
-
-/**
- * The run ended without finishing and can be continued on this machine.
- * Cloud runs continue from the server's queue instead.
- */
-export function isContinuable(s: Pick<SessionInfo, "endedAt" | "outcome" | "source"> | null | undefined): boolean {
-  return !!s && !!s.endedAt && s.source !== "cloud" && isContinuableOutcome(s.outcome);
-}
-
-/** "Continue: <title>" without stacking the prefix on repeated continues. */
-export function continueTitle(title: string): string {
-  return clip(`Continue: ${title.replace(/^(Continue: )+/, "")}`, 80);
 }
 
 const bare = (name: string) => name.replace(/^mcp__browsertodo__/, "");
@@ -96,44 +83,68 @@ export function stopReason(s: Pick<SessionInfo, "outcome" | "reason">): string {
   }
 }
 
-export interface ContinueInput {
-  /** The original task instructions. */
-  instructions: string;
-  session: Pick<SessionInfo, "outcome" | "reason">;
-  events: readonly StampedAgentEvent[];
-  /** The user's optional note. */
-  note?: string | null;
+/** The events of the conversation's last turn: after the task_end that closed the turn before it. */
+export function lastTurnEvents(events: readonly StampedAgentEvent[]): StampedAgentEvent[] {
+  const ends: number[] = [];
+  events.forEach((e, i) => e.type === "task_end" && ends.push(i));
+  const from = ends.length >= 2 ? ends[ends.length - 2]! + 1 : 0;
+  return events.slice(from);
 }
 
-/** Instructions for the run that continues a stopped one. */
-export function buildContinueInstructions(input: ContinueInput): string {
+export interface FollowUpInput {
+  /** The conversation's first request. */
+  instructions: string;
+  /** The conversation so far (latest turn fields: how it ended). */
+  session: Pick<SessionInfo, "outcome" | "reason" | "summary" | "url">;
+  events: readonly StampedAgentEvent[];
+  /** The user's new message. */
+  text: string;
+}
+
+/**
+ * Instructions for a fresh agent session that continues a conversation whose
+ * own session is gone (the Claude Code session closed, or the extension
+ * restarted): the first request, what was done so far, how the last turn
+ * ended, then the user's new message as the request to act on now.
+ */
+export function buildFollowUpInstructions(input: FollowUpInput): string {
   const { steps, skipped } = doneSoFar(input.events);
   const last = lastAssistantText(input.events);
-  const note = input.note?.trim();
+  const s = input.session;
   const lines = [
+    "--- Continuing a conversation ---",
+    "You are continuing an earlier conversation with the user in this browser (the earlier agent session is gone).",
+    "The conversation started with this request:",
+    "<<<",
     input.instructions.trim(),
-    "",
-    "--- Continuing a stopped run ---",
-    `An earlier run of this task stopped before it finished (reason: ${stopReason(input.session)}).`,
+    ">>>",
   ];
   if (steps.length) {
     lines.push(
       skipped
-        ? `What it already did (the last ${steps.length} steps, oldest first; ${skipped} earlier step(s) not shown):`
-        : "What it already did (oldest first):",
-      ...steps.map((s) => `- ${s}`),
+        ? `What was done so far (the last ${steps.length} steps, oldest first; ${skipped} earlier step(s) not shown):`
+        : "What was done so far (oldest first):",
+      ...steps.map((x) => `- ${x}`),
     );
-  } else {
-    lines.push("It did not get to use any tools.");
   }
-  if (last) lines.push(`Its last message: "${last}"`);
-  if (note) lines.push(`The user adds: ${note}`);
+  if (s.outcome === "done") {
+    lines.push(`The last request finished${s.summary ? `: ${s.summary}` : "."}${s.url ? ` (${s.url})` : ""}`);
+  } else if (s.outcome) {
+    lines.push(
+      `The last request stopped before it finished (reason: ${stopReason(s)}).`,
+      "Text it already typed into a composer is still there: do not type it again. If the post (or message) was already published, do not publish it again; use its URL.",
+    );
+  }
+  if (last) lines.push(`The agent's last message: "${last}"`);
   lines.push(
     "",
-    "The browser tab is as that run left it (if it was closed, you are in a fresh tab). " +
-      "First look at the current page (read_page or screenshot) and continue from there. " +
-      "Do not repeat steps that are already done: for example, text already typed into a composer is still there, so do not type it again. " +
-      "Never post twice: if the post (or message) was already published, do not publish it again; finish with its URL instead.",
+    "The user's new message, which is what to do now:",
+    "<<<",
+    input.text.trim(),
+    ">>>",
+    "",
+    "The browser tab is as the conversation left it (if it was closed, you are in a fresh tab). " +
+      "Look at the current page first. Do not redo work that is already done, and never post the same thing twice.",
   );
   return lines.join("\n");
 }

@@ -98,7 +98,12 @@ export function redirectConsole(live: LiveLog): void {
   console.trace = to("trace");
 }
 
-export function safeJson(v: unknown): string {
+/** The message of a thrown value. */
+export function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+function safeJson(v: unknown): string {
   if (v instanceof Error) return `${v.name}: ${v.message}`;
   try {
     return JSON.stringify(v);

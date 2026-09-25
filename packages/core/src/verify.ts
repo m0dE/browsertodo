@@ -1,6 +1,7 @@
 /** Independent check that an X post exists and shows the expected text. */
+import { isXStatusUrl } from "@browsertodo/shared";
 import type { BrowserCaller } from "./types.js";
-import { errorMessage, isXStatusUrl, normalizeText } from "./util.js";
+import { errorMessage, normalizeText } from "./util.js";
 
 export const VERIFY_SNIPPET_CHARS = 40;
 

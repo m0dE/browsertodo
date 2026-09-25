@@ -2,7 +2,7 @@
 import type { BrainMode, ExtensionSettings } from "@browsertodo/shared";
 import { uiRequest, type UiState } from "../ui-protocol.js";
 import { $, busy, errorText, flash, h } from "../sidepanel/dom.js";
-import { brainLabel } from "../sidepanel/format.js";
+import { brainLabel, KNOWN_MODELS } from "../sidepanel/format.js";
 import { initVaultSection } from "./vault-section.js";
 import {
   adjustedFields,
@@ -21,6 +21,7 @@ const NUMBER_FIELDS = [
   "delayMaxSec",
   "maxToolCalls",
   "maxTaskMinutes",
+  "maxParallelTasks",
   "retryAfterMinutes",
   "pauseRetryMinutes",
   "maxConsecutiveFailures",
@@ -35,6 +36,7 @@ const LABELS: Partial<Record<keyof ExtensionSettings, string>> = {
   delayMaxSec: "max pause",
   maxToolCalls: "max tool calls",
   maxTaskMinutes: "max minutes",
+  maxParallelTasks: "tasks at once",
   retryAfterMinutes: "retry after",
   pauseRetryMinutes: "retry needed-you tasks after",
   maxConsecutiveFailures: "failure limit",
@@ -49,6 +51,8 @@ let saved: ExtensionSettings | null = null;
 let secrets: Partial<Record<SecretKey, SecretEdit>> = {};
 
 const input = (key: string) => $<HTMLInputElement>(`f-${key}`);
+
+$("model-ids").replaceChildren(...KNOWN_MODELS.map((m) => h("option", { value: m.id }, m.label)));
 
 function readForm(): Partial<Omit<ExtensionSettings, SecretKey>> {
   const out: Record<string, unknown> = {};

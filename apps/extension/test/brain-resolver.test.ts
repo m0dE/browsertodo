@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS, type BrainMode, type HelperInfo } from "@browsertodo/shared";
 import { resolveBrain } from "../src/engine/brain-resolver.js";
 
-const base: HelperInfo = { version: "2", jevAvailable: false, claudePath: "C:\\claude.exe", logDir: "L", ptyAvailable: true };
+const base: HelperInfo = { version: "2", jevAvailable: false, claudePath: "C:\\claude.exe", logDir: "L" };
 const ok: HelperInfo = { ...base, selfTest: { ok: true, ms: 900, at: "2026-09-24T00:00:00Z" } };
 const failed: HelperInfo = { ...base, selfTest: { ok: false, error: "not logged in", ms: 900, at: "2026-09-24T00:00:00Z" } };
 const noClaude: HelperInfo = { ...base, claudePath: null };

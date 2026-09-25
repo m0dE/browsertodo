@@ -6,12 +6,12 @@ import {
   bytesToBase64,
   clockLabel,
   firstLine,
-  isoToLocalInput,
   localInputToIso,
   modelChip,
   modelLabel,
   parseRepeatTimes,
   relativeTime,
+  sessionMeta,
   repeatLabel,
   splitTasks,
   statusLine,
@@ -27,10 +27,10 @@ function state(over: Partial<UiState> = {}, brain: Partial<UiState["brain"]> = {
     settings: DEFAULT_SETTINGS,
     brain: { effective: "claude-code", helper: null, hasApiKey: false, jevActive: false, ...brain },
     running: null,
+    runningSessions: [],
     paused: false,
-    terminal: null,
+    openConversations: [],
     ...over,
-    terminals: over.terminals ?? [],
   };
 }
 
@@ -66,10 +66,14 @@ describe("times", () => {
     expect(clockLabel(at(23, 0, -1), NOW)).toBe("yesterday 23:00");
     expect(clockLabel(at(8, 0, 6), NOW)).toBe("Sep 30 08:00");
   });
-  it("datetime-local round trip", () => {
+  it("sessionMeta", () => {
+    expect(sessionMeta({ startedAt: new Date(NOW - 5 * 60_000).toISOString() }, NOW)).toBe("started 5 min ago");
+    expect(sessionMeta({ startedAt: at(14, 30), endedAt: at(14, 32), outcome: "done", turns: 2 }, NOW)).toBe("today 14:30 · done · 2 messages");
+    expect(sessionMeta({ startedAt: at(9, 0), endedAt: at(9, 5), outcome: "paused", turns: 1 }, NOW)).toBe("today 09:00 · needs you");
+  });
+  it("localInputToIso", () => {
     const iso = localInputToIso("2026-09-25T09:30");
     expect(iso).toBe(new Date(2026, 8, 25, 9, 30).toISOString());
-    expect(isoToLocalInput(iso!)).toBe("2026-09-25T09:30");
     expect(localInputToIso("")).toBeUndefined();
     expect(localInputToIso("garbage")).toBeUndefined();
   });

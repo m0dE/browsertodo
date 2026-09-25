@@ -7,26 +7,24 @@ import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
+/** Reported in helper.hello and by the MCP server. */
+export const HELPER_VERSION = "0.2.0";
+
 export interface HelperConfig {
   /** %LOCALAPPDATA%\browsertodo, or BROWSERTODO_HOME. */
   baseDir: string;
   logDir: string;
   runsDir: string;
   hostDir: string;
-  /** Working directory of the interactive terminal. */
-  workspaceDir: string;
   /** helper.json: pipe name and pid of the running helper, for `mcp-server.js --attach`. */
   helperFilePath: string;
-  /** apps/helper */
-  helperRoot: string;
   /** Absolute path of the bundled MCP server that Claude Code spawns. */
   mcpServerPath: string;
   /** Jev key, or null when missing or blank. */
   typesafeApiKey: string | null;
   brain: "claude" | "scripted";
   model: string;
-  /** BROWSERTODO_CLAUDE_PATH, when set. */
-  claudePathOverride: string | null;
+  /** The merged environment (.env files, then process.env). */
   env: Record<string, string | undefined>;
 }
 
@@ -86,14 +84,11 @@ export function loadConfig(
     logDir: join(baseDir, "logs"),
     runsDir: join(baseDir, "runs"),
     hostDir: join(baseDir, "host"),
-    workspaceDir: join(baseDir, "workspace"),
     helperFilePath: join(baseDir, "helper.json"),
-    helperRoot: root,
     mcpServerPath: join(root, "dist", "mcp-server.js"),
     typesafeApiKey: key ? key : null,
     brain: env.BROWSERTODO_BRAIN === "scripted" ? "scripted" : "claude",
     model: env.BROWSERTODO_MODEL?.trim() || "sonnet",
-    claudePathOverride: env.BROWSERTODO_CLAUDE_PATH?.trim() || null,
     env,
   };
 }

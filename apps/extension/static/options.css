@@ -3,7 +3,7 @@ body { font-size: 14px; }
 .page { max-width: 640px; margin: 0 auto; padding: 24px 16px 0; display: flex; flex-direction: column; gap: 14px; }
 .head h1 { font-size: 20px; }
 .head p { margin: 2px 0 0; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.card { border-radius: 10px; padding: 16px; gap: 12px; }
 .card h2 { font-size: 15px; }
 .card > h2 + .hint { margin-top: -8px; }
 .hint { margin: 0; color: var(--muted); font-size: 13px; }
@@ -13,7 +13,7 @@ body { font-size: 14px; }
 .choices { display: flex; flex-direction: column; gap: 6px; }
 .choice {
   display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
-  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius);
 }
 .choice input { margin-top: 3px; }
 .choice span { display: flex; flex-direction: column; }
@@ -75,8 +75,8 @@ body { font-size: 14px; }
 #cloud-fields { display: flex; flex-direction: column; gap: 12px; }
 
 .vault-sites { list-style: none; margin: 8px 0 12px; padding: 0; }
-.vault-sites li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line, rgba(127, 127, 127, 0.25)); }
-.vault-sites li.empty { color: var(--muted, #6b7280); border-bottom: 0; }
+.vault-sites li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid rgb(127 127 127 / 0.25); }
+.vault-sites li.empty { color: var(--muted); border-bottom: 0; }
 #vault-card .row input[type="password"] { flex: 1; min-width: 0; }
 .vault-body { padding: 0 16px 16px; display: flex; flex-direction: column; gap: 8px; }
 .vault-body .hint { margin: 0; }

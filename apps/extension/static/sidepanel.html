@@ -4,7 +4,6 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>browsertodo</title>
-    <link rel="stylesheet" href="xterm.css" />
     <link rel="stylesheet" href="ui.css" />
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
@@ -22,7 +21,6 @@
       <nav class="tabs" role="tablist">
         <button type="button" role="tab" id="tab-btn-tasks" data-tab="tasks" aria-selected="true">Tasks</button>
         <button type="button" role="tab" id="tab-btn-activity" data-tab="activity" aria-selected="false">Activity <span id="live-dot" class="live-dot" hidden></span></button>
-        <button type="button" role="tab" id="tab-btn-terminal" data-tab="terminal" aria-selected="false">Terminal <span id="term-live-dot" class="live-dot" title="Claude Code is running a task here" hidden></span></button>
       </nav>
     </header>
 
@@ -83,11 +81,13 @@
             <div id="act-title" class="title">Nothing running</div>
             <div class="act-sub">
               <span id="act-meta" class="meta"></span>
-              <button id="act-watch" type="button" class="link" title="See the full Claude Code session" hidden>Watch in Terminal</button>
+              <button id="act-rawlog" type="button" class="link" title="Every Claude Code event of this session, as the helper logged it" hidden>Raw log</button>
             </div>
           </div>
           <button id="act-show" type="button" class="ghost small" title="Switch to the tab the agent is using">Show tab</button>
           <button id="act-history" type="button" class="ghost small">History</button>
+          <div id="act-conv" class="act-conv" hidden></div>
+          <div id="act-switch" class="act-switch" role="group" aria-label="Running sessions" hidden></div>
         </div>
         <div id="act-log" class="log scroll" aria-live="polite"></div>
         <div id="act-list" class="scroll history" hidden>
@@ -95,32 +95,9 @@
           <p id="history-empty" class="empty" hidden>No runs yet.</p>
         </div>
       </section>
-
-      <!-- Terminal -->
-      <section id="tab-terminal" class="tab terminal" role="tabpanel" hidden>
-        <div id="term-sessions" class="term-sessions" role="group" aria-label="Terminal sessions" hidden></div>
-        <div id="term-bar" class="term-bar">
-          <span id="term-status" class="meta">Claude Code in the browsertodo workspace</span>
-          <span class="spacer"></span>
-          <button id="term-start" type="button" class="primary small">Start</button>
-          <button id="term-stop" type="button" class="ghost small" hidden>Stop</button>
-        </div>
-        <div id="term" class="term"></div>
-        <div id="term-missing" class="card missing" hidden>
-          <p id="term-missing-text">The terminal needs the browsertodo helper on this computer. Install it once:</p>
-          <div class="cmd-row">
-            <code id="install-cmd" class="cmd"></code>
-            <button id="copy-cmd" type="button" class="ghost small">Copy</button>
-          </div>
-          <div class="row">
-            <button id="term-connect" type="button" class="ghost small">Connect helper</button>
-            <span id="term-msg" class="msg"></span>
-          </div>
-        </div>
-      </section>
     </main>
 
-    <!-- One input for the Tasks and Activity tabs: starts a task when idle, talks to the agent while one runs. -->
+    <!-- One input for the Tasks and Activity tabs: talks to the conversation Activity shows, or starts a new one. -->
     <footer id="composer" class="composer">
       <p id="now-msg" class="msg"></p>
       <form id="now-form" class="now">
@@ -131,7 +108,7 @@
             <input id="now-files" type="file" multiple hidden />
             <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 7.5 8 13a3.5 3.5 0 0 1-5-5l5.8-5.8a2.3 2.3 0 0 1 3.3 3.3L6.3 11.3a1.2 1.2 0 0 1-1.7-1.7L10 4.2"/></svg>
           </label>
-          <button id="now-new" type="button" class="now-new" title="Start a new task instead of continuing" hidden>New task</button>
+          <button id="now-new" type="button" class="now-new" title="End this conversation; the next message starts a new one" hidden>New chat</button>
           <div class="model-pick">
             <button id="now-model" type="button" class="now-model" aria-haspopup="menu" aria-expanded="false" aria-controls="model-menu">
               <span id="now-model-label" class="now-model-label">Model</span>

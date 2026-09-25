@@ -7,6 +7,8 @@
 //
 // Usage: node test/fixtures/fake-x/server.mjs [--port 443]
 // API:   GET /api/feed  -> { "@alpha": [...], ... }   POST /api/reset
+// Also a non-X page for tasks that run beside X tasks: /notes/<board>?delay=<ms>
+// (served under any host name, e.g. https://notes.test) saves notes; notes() lists them.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -115,9 +117,30 @@ btn.addEventListener('click', async () => {
 </script>`);
 }
 
+/** A notes board: a text box and a Post button (the same test ids as X's, so the scripted brain can use it). */
+function notesPage(board) {
+  return page(`Notes ${board}`, `<main>
+  <h1>Notes: ${esc(board)}</h1>
+  <div contenteditable="true" role="textbox" aria-label="Note text" id="editor"></div>
+  <button data-testid="tweetButton" id="save" disabled>Post</button>
+</main>
+<script>
+const editor = document.getElementById('editor');
+const btn = document.getElementById('save');
+editor.addEventListener('input', () => { btn.disabled = editor.innerText.trim().length === 0; });
+btn.addEventListener('click', async () => {
+  const res = await fetch('/api/note', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ board: ${JSON.stringify(board)}, text: editor.innerText.trim() }) });
+  const { id } = await res.json();
+  location.href = '/notes/${encodeURIComponent(board)}/' + id;
+});
+</script>`);
+}
+
 export function createFakeX() {
   let feed = {};
   let nextId = 1000;
+  let notes = [];
 
   const handler = (req, res) => {
     const url = new URL(req.url, "https://x.com");
@@ -136,6 +159,29 @@ export function createFakeX() {
       const cookie = `acct=${encodeURIComponent(to)}; Path=/; SameSite=Lax; Secure`;
       const location = to === "@locked" ? "/account/access" : "/home";
       return send(302, "", "text/plain", { location, "set-cookie": cookie });
+    }
+    const board = /^\/notes\/([a-z0-9-]+)$/.exec(url.pathname);
+    if (req.method === "GET" && board) {
+      // ?delay=ms: a slow page, so tasks on it take long enough to overlap.
+      const delay = Math.min(10_000, Number(url.searchParams.get("delay") || 0));
+      setTimeout(() => send(200, notesPage(board[1])), delay);
+      return;
+    }
+    const note = /^\/notes\/([a-z0-9-]+)\/(\d+)$/.exec(url.pathname);
+    if (req.method === "GET" && note) {
+      const n = notes.find((x) => String(x.id) === note[2]);
+      return send(n ? 200 : 404, page(n ? `Note ${n.id}` : "Not found", `<main>${n ? `<p>${esc(n.text)}</p>` : "Not found"}</main>`));
+    }
+    if (req.method === "POST" && url.pathname === "/api/note") {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const { board: b, text } = JSON.parse(body || "{}");
+        const id = nextId++;
+        notes.push({ id, board: b, text, at: new Date().toISOString() });
+        json(200, { id });
+      });
+      return;
     }
     if (req.method === "GET" && url.pathname === "/mail") {
       // A tiny webmail inbox for "find something out" tasks.
@@ -195,6 +241,7 @@ export function createFakeX() {
     listen: (port = 443, host = "127.0.0.1") => new Promise((resolve) => server.listen(port, host, () => resolve(server.address().port))),
     close: () => new Promise((resolve) => server.close(() => resolve())),
     feed: () => feed,
+    notes: () => notes,
   };
 }
 

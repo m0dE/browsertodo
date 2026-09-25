@@ -4,6 +4,7 @@
  * raw key lives in chrome.storage.session, so it survives service worker
  * restarts but not a browser restart.
  */
+import { base64ToBytes, bytesToBase64 } from "./base64.js";
 
 const VAULT_KEY = "vault";
 const SESSION_KEY = "vaultKey";
@@ -37,15 +38,15 @@ export class Vault {
     if (!data) {
       const salt = crypto.getRandomValues(new Uint8Array(16));
       key = await this.derive(passphrase, salt);
-      data = { salt: toB64(salt), verifier: await seal(key, VERIFIER_TEXT), entries: {} };
+      data = { salt: bytesToBase64(salt), verifier: await seal(key, VERIFIER_TEXT), entries: {} };
       await chrome.storage.local.set({ [VAULT_KEY]: data });
     } else {
-      key = await this.derive(passphrase, fromB64(data.salt));
+      key = await this.derive(passphrase, base64ToBytes(data.salt));
       const check = await open(key, data.verifier).catch(() => null);
       if (check !== VERIFIER_TEXT) throw new Error("Wrong passphrase");
     }
     const raw = new Uint8Array(await crypto.subtle.exportKey("raw", key));
-    await chrome.storage.session.set({ [SESSION_KEY]: toB64(raw) });
+    await chrome.storage.session.set({ [SESSION_KEY]: bytesToBase64(raw) });
   }
 
   async lock(): Promise<void> {
@@ -99,7 +100,7 @@ export class Vault {
     const got = await chrome.storage.session.get(SESSION_KEY);
     const raw = got[SESSION_KEY];
     if (typeof raw !== "string") return null;
-    return crypto.subtle.importKey("raw", fromB64(raw), "AES-GCM", false, ["encrypt", "decrypt"]);
+    return crypto.subtle.importKey("raw", base64ToBytes(raw), "AES-GCM", false, ["encrypt", "decrypt"]);
   }
 
   private async requireKey(): Promise<CryptoKey> {
@@ -121,7 +122,7 @@ export class Vault {
 }
 
 /** "https://Mail.Example.com/x" or "mail.example.com" -> "mail.example.com". */
-export function normalizeSite(site: string): string {
+function normalizeSite(site: string): string {
   const s = site.trim().toLowerCase();
   try {
     if (s.includes("://")) return new URL(s).hostname.replace(/\.$/, "");
@@ -134,23 +135,10 @@ export function normalizeSite(site: string): string {
 async function seal(key: CryptoKey, text: string): Promise<Sealed> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const data = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(text));
-  return { iv: toB64(iv), data: toB64(new Uint8Array(data)) };
+  return { iv: bytesToBase64(iv), data: bytesToBase64(new Uint8Array(data)) };
 }
 
 async function open(key: CryptoKey, sealed: Sealed): Promise<string> {
-  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromB64(sealed.iv) }, key, fromB64(sealed.data));
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: base64ToBytes(sealed.iv) }, key, base64ToBytes(sealed.data));
   return new TextDecoder().decode(plain);
-}
-
-function toB64(bytes: Uint8Array): string {
-  let s = "";
-  for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s);
-}
-
-function fromB64(b64: string): Uint8Array<ArrayBuffer> {
-  const s = atob(b64);
-  const out = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
-  return out;
 }

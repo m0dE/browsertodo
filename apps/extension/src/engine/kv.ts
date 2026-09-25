@@ -4,7 +4,7 @@
  * MemoryKvDb) never touches the IndexedDB API directly.
  */
 
-export const KV_STORES = ["media", "sessions", "events"] as const;
+const KV_STORES = ["media", "sessions", "events"] as const;
 export type KvStoreName = (typeof KV_STORES)[number];
 
 export interface KvStore<T> {
@@ -16,6 +16,12 @@ export interface KvStore<T> {
   /** Keys only; cheaper than list for large values. */
   keys(prefix?: string): Promise<string[]>;
   deletePrefix(prefix: string): Promise<void>;
+}
+
+/** A chrome.storage area (chrome.storage.local), or a fake of one in tests. */
+export interface StorageLike {
+  get(key: string): Promise<Record<string, unknown>>;
+  set(items: Record<string, unknown>): Promise<void>;
 }
 
 export interface KvDb {

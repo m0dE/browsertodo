@@ -21,7 +21,7 @@ function seqKey(sessionId: string, seq: number): string {
 }
 
 /** Bounds the text fields of an event so storage stays small. */
-export function clipEvent(e: AgentEvent): AgentEvent {
+function clipEvent(e: AgentEvent): AgentEvent {
   switch (e.type) {
     case "status":
     case "assistant_text":
@@ -98,6 +98,28 @@ export class SessionStore {
     const s = out as SessionInfo | null;
     if (s) this.emitSession(s);
     if (s?.endedAt) this.seq.delete(sessionId);
+    return s;
+  }
+
+  /**
+   * Starts the next turn of an ended conversation: its events keep appending
+   * after the stored ones, and the latest-turn fields (endedAt, outcome,
+   * summary, url, reason) are cleared, then `patch` applied. Null when unknown.
+   */
+  async reopen(sessionId: string, patch: Partial<SessionInfo> = {}): Promise<SessionInfo | null> {
+    let out: SessionInfo | null = null;
+    await this.enqueue(async () => {
+      const cur = await this.sessions.get(sessionId);
+      if (!cur) return;
+      const { endedAt: _e, outcome: _o, summary: _s, url: _u, reason: _r, ...rest } = cur;
+      out = { ...rest, ...patch, sessionId };
+      await this.sessions.put(sessionId, out);
+      const last = (await this.events.keys(`${sessionId}:`)).at(-1);
+      const n = last ? Number(last.slice(sessionId.length + 1)) + 1 : 0;
+      this.seq.set(sessionId, Math.max(n, this.seq.get(sessionId) ?? 0));
+    });
+    const s = out as SessionInfo | null;
+    if (s) this.emitSession(s);
     return s;
   }
 

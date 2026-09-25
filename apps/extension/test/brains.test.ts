@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS, type AgentEvent, type HelperNotifications, type TaskRunResult } from "@browsertodo/shared";
 import type { AgentSession, ApiAgentOptions } from "@browsertodo/core";
-import { ApiBrain, ClaudeCodeBrain, type BrainStartOptions, type HelperLike } from "../src/engine/brains.js";
+import { ApiBrain } from "../src/engine/api-brain.js";
+import { SessionEndedError, type BrainContinueOptions, type BrainStartOptions } from "../src/engine/brains.js";
+import { ClaudeCodeBrain, type HelperLike } from "../src/engine/claude-code-brain.js";
 
 function opts(events: AgentEvent[], extra: Partial<BrainStartOptions> = {}): BrainStartOptions {
   return {
@@ -19,12 +21,13 @@ function fakeHelper() {
   const calls: { method: string; params: any }[] = [];
   const notif = new Map<string, Set<(p: any) => void>>();
   const disc = new Set<(r: string) => void>();
+  const info = new Set<(i: any) => void>();
   let finish!: (r: TaskRunResult) => void;
   let fail!: (e: Error) => void;
   const helper: HelperLike = {
     call: ((method: string, params: any) => {
       calls.push({ method, params });
-      if (method === "helper.runTask") return new Promise((res, rej) => ((finish = res), (fail = rej)));
+      if (method === "helper.runTask" || method === "helper.continueSession") return new Promise((res, rej) => ((finish = res), (fail = rej)));
       if (method === "helper.sendUserMessage") return Promise.resolve({ ok: true });
       return Promise.resolve({ ok: true });
     }) as HelperLike["call"],
@@ -37,6 +40,10 @@ function fakeHelper() {
       disc.add(fn);
       return () => disc.delete(fn);
     },
+    onInfo: (fn) => {
+      info.add(fn);
+      return () => info.delete(fn);
+    },
   };
   return {
     helper,
@@ -45,6 +52,7 @@ function fakeHelper() {
     fail: (e: Error) => fail(e),
     notify: <N extends keyof HelperNotifications>(m: N, p: HelperNotifications[N]) => notif.get(m)?.forEach((fn) => fn(p)),
     disconnect: (r: string) => disc.forEach((fn) => fn(r)),
+    hello: (openSessions: string[]) => info.forEach((fn) => fn({ version: "2", jevAvailable: false, claudePath: "c", logDir: "l", openSessions })),
     listenerCount: () => [...notif.values()].reduce((n, s) => n + s.size, 0) + disc.size,
   };
 }
@@ -53,7 +61,9 @@ describe("ClaudeCodeBrain", () => {
   it("runs helper.runTask with sessionId and media paths, forwards only its session's events", async () => {
     const f = fakeHelper();
     const events: AgentEvent[] = [];
-    const run = new ClaudeCodeBrain(f.helper).start(opts(events));
+    const brain = new ClaudeCodeBrain(f.helper);
+    const base = f.listenerCount();
+    const run = brain.start(opts(events));
     expect(f.calls[0]).toEqual({
       method: "helper.runTask",
       params: { sessionId: "s1", task: { id: "t1", instructions: "do it", account: null }, mediaPaths: ["C:\\a.png"], config: expect.objectContaining({ isRetry: false }) },
@@ -72,7 +82,7 @@ describe("ClaudeCodeBrain", () => {
     ]);
     f.finish({ outcome: "done", summary: "ok" });
     expect(await run.done).toEqual({ outcome: "done", summary: "ok" });
-    expect(f.listenerCount()).toBe(0);
+    expect(f.listenerCount()).toBe(base);
   });
 
   it("a helper disconnect ends the run as retry", async () => {
@@ -87,6 +97,144 @@ describe("ClaudeCodeBrain", () => {
     const run = new ClaudeCodeBrain(f.helper).start(opts([]));
     f.fail(new Error("boom"));
     expect(await run.done).toEqual({ outcome: "retry", reason: "helper error: boom" });
+  });
+});
+
+function contOpts(events: AgentEvent[], extra: Partial<BrainContinueOptions> = {}): BrainContinueOptions {
+  return {
+    sessionId: "s1",
+    text: "now like it",
+    config: { maxToolCalls: 7, maxTaskMinutes: 5, jevEnabled: true, jevThreshold: 0.8, isRetry: false },
+    settings: { ...DEFAULT_SETTINGS },
+    onEvent: (e) => events.push(e),
+    ...extra,
+  };
+}
+
+describe("ClaudeCodeBrain: conversations", () => {
+  it("tracks the helper's open sessions (hello, helper.sessions, disconnect)", () => {
+    const f = fakeHelper();
+    const changed = vi.fn();
+    const brain = new ClaudeCodeBrain(f.helper, { onSessionsChanged: changed });
+    f.hello(["a"]);
+    expect(brain.openSessions()).toEqual(["a"]);
+    f.notify("helper.sessions", { open: ["a", "b"] });
+    expect(brain.isOpen("b")).toBe(true);
+    f.notify("helper.sessions", { open: ["a", "b"] });
+    expect(changed).toHaveBeenCalledTimes(2);
+    f.disconnect("gone");
+    expect(brain.openSessions()).toEqual([]);
+    expect(changed).toHaveBeenCalledTimes(3);
+  });
+
+  it("continue: helper.continueSession in the open session, its events, its result", async () => {
+    const f = fakeHelper();
+    const brain = new ClaudeCodeBrain(f.helper);
+    f.notify("helper.sessions", { open: ["s1"] });
+    const events: AgentEvent[] = [];
+    const run = brain.continue(contOpts(events));
+    expect(f.calls[0]).toEqual({ method: "helper.continueSession", params: { sessionId: "s1", text: "now like it", config: expect.objectContaining({ maxToolCalls: 7 }) } });
+    f.notify("helper.event", { sessionId: "s1", event: { type: "assistant_text", text: "liking" } });
+    f.finish({ outcome: "done", summary: "liked" });
+    expect(await run.done).toEqual({ outcome: "done", summary: "liked" });
+    expect(events).toEqual([{ type: "assistant_text", text: "liking" }]);
+  });
+
+  it("continue fails with SessionEndedError when the session is gone (known, or said by the helper)", async () => {
+    const f = fakeHelper();
+    const brain = new ClaudeCodeBrain(f.helper);
+    await expect(brain.continue(contOpts([])).done).rejects.toBeInstanceOf(SessionEndedError);
+    expect(f.calls).toEqual([]);
+    f.notify("helper.sessions", { open: ["s1"] });
+    const run = brain.continue(contOpts([]));
+    f.fail(new Error("session ended"));
+    await expect(run.done).rejects.toBeInstanceOf(SessionEndedError);
+    // Other helper errors are a temporary problem, as for runTask.
+    const again = brain.continue(contOpts([]));
+    f.fail(new Error("busy"));
+    expect(await again.done).toEqual({ outcome: "retry", reason: "helper error: busy" });
+  });
+
+  it("end closes the helper session", async () => {
+    const f = fakeHelper();
+    const brain = new ClaudeCodeBrain(f.helper);
+    f.notify("helper.sessions", { open: ["s1"] });
+    await brain.end("s1");
+    expect(f.calls).toEqual([{ method: "helper.endSession", params: { sessionId: "s1" } }]);
+    expect(brain.isOpen("s1")).toBe(false);
+  });
+});
+
+describe("ApiBrain: conversations", () => {
+  function agentStub(label: string) {
+    let resolve!: (r: TaskRunResult) => void;
+    const agent: AgentSession & { next: AgentSession | null; continued: { text: string; config?: unknown }[] } = {
+      sessionId: "s1",
+      sendUserMessage: vi.fn(),
+      abort: vi.fn(),
+      done: new Promise<TaskRunResult>((r) => (resolve = r)),
+      next: null,
+      continued: [],
+      continueWith(text, o) {
+        agent.continued.push({ text, config: o?.config });
+        return agent.next ?? agentStub(`${label}+`).agent;
+      },
+    };
+    return { agent, finish: (r: TaskRunResult) => resolve(r) };
+  }
+
+  function apiBrain(now = { t: 0 }) {
+    const emits: { onEvent: (e: AgentEvent) => void }[] = [];
+    const first = agentStub("a");
+    const core = {
+      createJev: vi.fn(),
+      startApiAgent: vi.fn((o: ApiAgentOptions) => (emits.push({ onEvent: o.onEvent }), first.agent)),
+    };
+    const brain = new ApiBrain({ core, browser: { call: vi.fn() as never }, now: () => now.t });
+    return { brain, first, emits, core, now };
+  }
+
+  it("keeps the history: the next message continues the same agent, events go to the new turn", async () => {
+    const { brain, first, emits } = apiBrain();
+    const turn1: AgentEvent[] = [];
+    const run1 = brain.start(opts(turn1));
+    first.finish({ outcome: "done" });
+    await run1.done;
+    expect(brain.openSessions()).toEqual(["s1"]);
+    const second = agentStub("b");
+    first.agent.next = second.agent;
+    const turn2: AgentEvent[] = [];
+    const run2 = brain.continue(contOpts(turn2));
+    expect(first.agent.continued).toEqual([{ text: "now like it", config: expect.objectContaining({ maxToolCalls: 7 }) }]);
+    emits[0]!.onEvent({ type: "assistant_text", text: "turn 2 says hi" });
+    expect(turn1).toEqual([]);
+    expect(turn2).toEqual([{ type: "assistant_text", text: "turn 2 says hi" }]);
+    await run2.sendUserMessage("faster");
+    expect(second.agent.sendUserMessage).toHaveBeenCalledWith("faster");
+    second.finish({ outcome: "done", summary: "liked" });
+    expect(await run2.done).toEqual({ outcome: "done", summary: "liked" });
+  });
+
+  it("unknown, ended or idle-expired conversations fail with SessionEndedError (a restart loses them)", async () => {
+    const { brain, first, now } = apiBrain();
+    await expect(brain.continue(contOpts([], { sessionId: "nope" })).done).rejects.toBeInstanceOf(SessionEndedError);
+    brain.start(opts([]));
+    first.finish({ outcome: "done" });
+    await first.agent.done;
+    await Promise.resolve();
+    now.t += 31 * 60_000;
+    expect(brain.isOpen("s1")).toBe(false);
+    await expect(brain.continue(contOpts([])).done).rejects.toBeInstanceOf(SessionEndedError);
+    const b = apiBrain();
+    b.brain.start(opts([]));
+    await b.brain.end("s1");
+    expect(b.brain.openSessions()).toEqual([]);
+  });
+
+  it("keeps at most three conversations", () => {
+    const { brain } = apiBrain();
+    for (const id of ["a", "b", "c", "d"]) brain.start(opts([], { sessionId: id }));
+    expect(brain.openSessions()).toEqual(["b", "c", "d"]);
   });
 });
 
@@ -107,7 +255,10 @@ describe("ApiBrain", () => {
     const browser = { call: vi.fn() as never };
     const run = new ApiBrain({ core, browser }).start(opts([]));
     expect(core.createJev).toHaveBeenCalledWith("jk", undefined);
-    expect(got).toMatchObject({ sessionId: "s1", apiKey: "sk", model: DEFAULT_SETTINGS.anthropicModel, jev, browser, mediaPaths: ["C:\\a.png"] });
+    expect(got).toMatchObject({ sessionId: "s1", apiKey: "sk", model: DEFAULT_SETTINGS.anthropicModel, jev, mediaPaths: ["C:\\a.png"] });
+    // Browser calls go to the run's tab (here the default browser).
+    await got!.browser.call("browser.currentUrl", {});
+    expect(browser.call).toHaveBeenCalledWith("browser.currentUrl", {});
     expect(await run.sendUserMessage("more")).toBe(true);
     expect(session.sendUserMessage).toHaveBeenCalledWith("more");
     run.abort("login", "paused");

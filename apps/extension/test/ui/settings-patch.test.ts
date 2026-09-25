@@ -63,11 +63,10 @@ describe("helperStatus", () => {
     expect(s.headline).toBe("Helper connected · v0.2.0");
     expect(s.details).toEqual(["Claude Code: C:\\claude.exe", "Self-test passed (4.2 s)"]);
   });
-  it("warns on missing claude, failed self-test or no pty", () => {
+  it("warns on missing claude or a failed self-test", () => {
     expect(helperStatus({ ...info, claudePath: null }).tone).toBe("warn");
-    const failed = helperStatus({ ...info, ptyAvailable: false, selfTest: { ok: false, error: "not logged in", ms: 1, at: "t" } });
+    const failed = helperStatus({ ...info, selfTest: { ok: false, error: "not logged in", ms: 1, at: "t" } });
     expect(failed.tone).toBe("warn");
     expect(failed.details).toContain("Self-test failed: not logged in");
-    expect(failed.details).toContain("Terminal unavailable (node-pty did not load)");
   });
 });

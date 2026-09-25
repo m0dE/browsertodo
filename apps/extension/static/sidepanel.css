@@ -28,7 +28,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .status[data-tone="warn"] .status-text, .status[data-tone="bad"] .status-text { white-space: normal; flex: 1; }
 .status[data-tone="warn"] .status-meta, .status[data-tone="bad"] .status-meta { display: none; }
 .status .link, .status .icon { flex: none; }
-.status .link { margin-top: 0; }
 
 .tabs { display: flex; padding: 0 6px; gap: 2px; }
 .tabs button {
@@ -48,7 +47,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 /* Tasks tab */
 #tab-tasks { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.card { border-radius: var(--radius); padding: 10px; gap: 8px; }
 .file-btn { cursor: pointer; }
 .files { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
 .files:empty { display: none; }
@@ -81,7 +80,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .task-main { min-width: 0; }
 .task-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-meta { color: var(--muted); font-size: 12px; display: flex; flex-wrap: wrap; column-gap: 8px; }
-.task-meta .bad { color: var(--bad); }
 .task-meta a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .task-reason { color: var(--bad); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { color: var(--muted); text-align: center; margin: 12px 0; font-size: 12px; }
@@ -92,7 +90,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .finished[open] summary { margin-bottom: 2px; }
 .finished .task { opacity: 0.85; }
 
-/* Overflow menu */
+/* A task's overflow menu */
 .menu { position: relative; }
 .menu summary {
   list-style: none; cursor: pointer; color: var(--muted);
@@ -103,7 +101,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .menu summary:hover, .menu[open] summary { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
 .menu-pop {
   position: absolute; right: 0; top: 24px; z-index: 5;
-  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: 0 6px 20px rgb(0 0 0 / 0.14);
   padding: 4px; display: flex; flex-direction: column; min-width: 120px;
 }
@@ -111,14 +109,47 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .menu-pop button:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
 .menu-pop button.bad { color: var(--bad); }
 
-/* Activity tab */
+/* Activity tab: header */
 .activity { display: flex; flex-direction: column; }
-.act-head { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.act-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .act-title { flex: 1; min-width: 0; }
 .act-title .title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The meta line with its "Raw log" link. */
+.act-sub { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.act-sub .meta { min-width: 0; }
+.act-sub .link { flex: none; font-size: 12px; white-space: nowrap; }
+/* "Conversation open · …" while the conversation waits for the next message. */
+.act-conv {
+  flex-basis: 100%; margin-top: -2px; font-size: 11.5px; line-height: 1.35; color: var(--muted);
+  display: flex; gap: 6px; align-items: baseline;
+}
+.act-conv::before {
+  content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); transform: translateY(-1px);
+}
+/* Several sessions running: pick which one to watch. */
+.act-switch {
+  flex-basis: 100%; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; margin-top: 2px;
+}
+.act-switch::-webkit-scrollbar { display: none; }
+.act-chip {
+  flex: 0 1 auto; min-width: 0; max-width: 60%; display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  border: 1px solid var(--border); background: transparent; color: var(--muted);
+}
+.act-chip:hover { color: var(--text); }
+.act-chip[aria-pressed="true"] { color: var(--text); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); background: var(--accent-soft); }
+.act-chip .live-dot { margin: 0; flex: none; }
+.act-chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* Activity tab: the conversation log */
 .log { flex: 1; min-height: 0; padding: 10px 12px 16px; display: flex; flex-direction: column; gap: 6px; }
 .log > * { flex-shrink: 0; }
+/* The agent behind the conversation, at the top of its thread. */
+.log .ev-head {
+  align-self: flex-start; font-size: 11px; color: var(--muted);
+  padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
+}
 .log .ev-text { margin: 2px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .log .ev-status { color: var(--faint); font-size: 12px; }
 .log .ev-tool {
@@ -126,6 +157,17 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .log .ev-tool b { color: var(--text); font-weight: 600; }
+/* Who made each decision: Claude (tool calls) or Jev (element picks) */
+.log .ev-tool .who {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 5px;
+  margin-right: 6px;
+  border-radius: 4px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  vertical-align: 1px;
+}
 .log .ev-result { margin: -4px 0 0 14px; font-size: 12px; }
 .log .ev-result summary, .log .ev-result .line {
   color: var(--faint); font-family: var(--mono); font-size: 11px;
@@ -146,6 +188,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .log .thumb.big { max-width: 100%; max-height: none; cursor: zoom-out; }
 .log .ev-jev { margin-left: 14px; display: flex; gap: 6px; align-items: center; font-size: 11px; }
 .log .ev-jev .chip { font-family: var(--mono); font-weight: 400; }
+.log .ev-jev .chip[data-tone="accent"] { font-weight: 600; }
 .log .ev-jev .ms { color: var(--faint); }
 .log .ev-user {
   align-self: flex-end; max-width: 85%; background: var(--accent-soft); color: var(--text);
@@ -159,6 +202,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .log .ev-error { color: var(--bad); font-size: 12px; overflow-wrap: anywhere; }
 .log .empty { margin: auto; max-width: 240px; }
 
+/* Activity tab: History */
 .history { flex: 1; min-height: 0; padding: 4px 12px 12px; }
 .sessions { list-style: none; padding: 0; margin: 0; }
 .sessions li { border-bottom: 1px solid var(--border); }
@@ -171,7 +215,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .sessions .s-main { min-width: 0; width: 100%; }
 .sessions .s-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sessions .chip { margin-top: 1px; }
-.recent-head { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
 
 /* Composer pinned under the Tasks and Activity tabs: textarea on top, a compact control row below. */
 .composer { flex: none; position: relative; padding: 6px 10px 10px; background: var(--bg); display: flex; flex-direction: column; gap: 6px; }
@@ -188,6 +231,9 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 16px rgb(0 0 0 / 0.05);
   cursor: text;
 }
+@media (prefers-color-scheme: dark) {
+  .now { box-shadow: 0 4px 16px rgb(0 0 0 / 0.35); }
+}
 .now:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
 .now .files { padding: 2px 0 4px; }
 .now textarea {
@@ -198,8 +244,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .now-bar { display: flex; align-items: center; gap: 4px; margin-left: -4px; cursor: default; }
 .now-bar button { height: 28px; padding: 0 12px; }
 .now.blank #now-submit { opacity: 0.45; }
-/* Continuing needs no text: the note is optional. */
-.now.continue.blank #now-submit { opacity: 1; }
 .now-bar .now-new {
   flex: none; padding: 0 8px; border: 0; border-radius: 7px; background: none;
   color: var(--muted); font-size: 12px; font-weight: 500;
@@ -211,14 +255,14 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 }
 .now-tool:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
 .now-tool:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 0; }
+
 /* Model chip ("Sonnet 5 · Jev") and its menu, which opens upward. */
 .model-pick { position: relative; min-width: 0; display: flex; }
-.now-model {
+.now-bar .now-model {
   min-width: 0; height: 28px; display: inline-flex; align-items: center; gap: 3px;
   padding: 0 7px 0 9px; border: 0; border-radius: 7px; background: none;
   color: var(--muted); font-size: 12px; font-weight: 500;
 }
-.now-bar .now-model { height: 28px; padding: 0 7px 0 9px; }
 .now-model svg { flex: none; opacity: 0.8; }
 .now-model-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .now-model:hover:not(:disabled), .now-model[aria-expanded="true"] { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
@@ -232,7 +276,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   box-shadow: 0 8px 28px rgb(0 0 0 / 0.16);
   padding: 4px; display: flex; flex-direction: column; cursor: default;
 }
-.model-menu[hidden] { display: none; }
 .mm-head { color: var(--faint); font-size: 11px; font-weight: 500; padding: 5px 8px 3px; }
 .mm-sep { height: 1px; background: var(--border); margin: 4px 2px; }
 .model-menu .mm-item {
@@ -259,55 +302,3 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .mm-switch[data-on="true"]::after { transform: translateX(11px); }
 .mm-item:disabled .mm-switch { opacity: 0.5; }
 @media (prefers-reduced-motion: reduce) { .mm-switch, .mm-switch::after { transition: none; } }
-@media (prefers-color-scheme: dark) {
-  .now { box-shadow: 0 4px 16px rgb(0 0 0 / 0.35); }
-}
-
-/* Terminal tab */
-.terminal { display: flex; flex-direction: column; background: var(--bg); }
-.term-bar { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.term-bar .meta { min-width: 0; }
-.term-sessions {
-  display: flex; gap: 6px; padding: 6px 12px; overflow-x: auto; scrollbar-width: none;
-  border-bottom: 1px solid var(--border); background: var(--surface);
-}
-.term-sessions::-webkit-scrollbar { display: none; }
-.term-chip {
-  flex: 0 1 auto; min-width: 0; max-width: 100%; display: inline-flex; align-items: center; gap: 6px;
-  padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 500;
-  border: 1px solid var(--border); background: transparent; color: var(--muted);
-}
-.term-chip.user { flex: none; }
-.term-chip:hover { color: var(--text); }
-.term-chip[aria-pressed="true"] { color: var(--text); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); background: var(--accent-soft); }
-.term-chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.term-chip .live-dot { margin: 0; flex: none; }
-.term-chip .idle-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; border: 1px solid var(--faint); box-sizing: border-box; }
-/* Activity header: the meta line with its "Watch in Terminal" link */
-.act-sub { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.act-sub .meta { min-width: 0; }
-.act-sub .link { flex: none; font-size: 12px; white-space: nowrap; }
-.term { flex: 1; min-height: 0; min-width: 0; overflow: hidden; background: #16161c; padding: 6px 0 0 8px; }
-.term .xterm { height: 100%; }
-.term .xterm-viewport { background: #16161c !important; }
-.missing { margin: 12px; }
-.missing p { margin: 0; }
-.cmd-row { display: flex; gap: 6px; align-items: flex-start; }
-.cmd {
-  flex: 1; min-width: 0; display: block; padding: 6px 8px; border-radius: 6px;
-  background: var(--bg); border: 1px solid var(--border); word-break: break-all; user-select: all;
-}
-
-/* Who made each decision: Claude (tool calls) or Jev (element picks) */
-.log .ev-tool .who {
-  font-family: var(--sans, inherit);
-  font-size: 10px;
-  font-weight: 600;
-  padding: 0 5px;
-  margin-right: 6px;
-  border-radius: 4px;
-  color: var(--muted);
-  border: 1px solid var(--border);
-  vertical-align: 1px;
-}
-.log .ev-jev .chip[data-tone="accent"] { font-weight: 600; }

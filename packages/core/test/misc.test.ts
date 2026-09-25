@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { INTERACTIVE_TOOL_NAMES, TOOL_NAMES, type PageSnapshot } from "@browsertodo/shared";
+import { TOOL_NAMES, type PageSnapshot } from "@browsertodo/shared";
 import { buildSystemPrompt, buildTaskPrompt, classifyFailure, createJev, formatSnapshot, verifyXPost } from "../src/index.js";
 import { buildJevState, jevFromClient, type JevClientLike } from "../src/jev.js";
 import { mentionsHandle, normalizeHandle, switchXAccount } from "../src/x-account.js";
@@ -160,15 +160,6 @@ describe("prompts", () => {
     expect(p).toMatch(/Never refuse or fail a task because it is on a site other than X/);
     expect(p).toMatch(/find something out/);
     expect(p).toMatch(/only a greeting/);
-  });
-
-  it("interactive prompt has no task_* tools and mentions the human in a terminal", () => {
-    const p = buildSystemPrompt({ tools: INTERACTIVE_TOOL_NAMES, jev: true, interactive: true });
-    expect(p).toMatch(/chatting with you in a terminal/);
-    expect(p).not.toContain("- task_complete:");
-    expect(p).not.toMatch(/Finish by calling exactly one of task_complete/);
-    // even if task tools are passed, they are not listed
-    expect(buildSystemPrompt({ tools: TOOL_NAMES, jev: false, interactive: true })).not.toContain("- task_pause:");
   });
 
   it("task prompt carries instructions, account, media and the retry check", () => {

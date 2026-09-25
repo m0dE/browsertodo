@@ -4,6 +4,10 @@ import {
   CreateTaskInput,
   DEFAULT_SETTINGS,
   INTERACTIVE_TOOL_NAMES,
+  isXSite,
+  isXStatusUrl,
+  isXTask,
+  isXUrl,
   MAX_TABS_PER_CALL,
   RpcPeer,
   TOOL_DESCRIPTIONS,
@@ -12,6 +16,7 @@ import {
   parseSettings,
   pauseReasonForUrl,
   pickDelayMs,
+  siteHost,
   toolsFor,
   type RpcMessage,
 } from "../src/index.js";
@@ -153,15 +158,57 @@ describe("multi-tab tools", () => {
     expect(ToolArgs.close_tabs.safeParse({ tabs: [] }).success).toBe(false);
   });
 
-  it("are offered to tasks and the interactive terminal, with descriptions", () => {
+  it("are offered to tasks and to mcp-server --attach, with descriptions", () => {
     for (const n of ["open_tabs", "switch_tab", "list_tabs", "close_tabs"] as const) {
       expect(TOOL_DESCRIPTIONS[n].length).toBeGreaterThan(10);
       expect(toolsFor({ jev: false })).toContain(n);
       expect(toolsFor({ jev: true, interactive: true })).toContain(n);
       expect(INTERACTIVE_TOOL_NAMES).toContain(n);
     }
-    // toolsFor semantics are unchanged: act replaces click/type, no task_* in the terminal.
+    // act replaces click/type; no task_* for --attach.
     expect(toolsFor({ jev: false })).not.toContain("click");
     expect(toolsFor({ jev: true, interactive: true })).not.toContain("task_complete");
+  });
+});
+
+describe("isXTask", () => {
+  it("names an X account (account field or @handle) or works on x.com", () => {
+    expect(isXTask({ instructions: "Post: gm", account: "@alpha" })).toBe(true);
+    expect(isXTask({ instructions: "Post on X from @alpha. Post: first turn" })).toBe(true);
+    expect(isXTask({ instructions: "Reply to @beta's newest post" })).toBe(true);
+    expect(isXTask({ instructions: "Open https://x.com/home and like the first post" })).toBe(true);
+    expect(isXTask({ instructions: "open twitter.com" })).toBe(true);
+  });
+  it("not for email addresses or other sites", () => {
+    expect(isXTask({ instructions: "Email paul@example.com the invoice" })).toBe(false);
+    expect(isXTask({ instructions: "Check https://notes.test/notes/a?delay=3000. Post: note A", account: null })).toBe(false);
+    expect(isXTask({ instructions: "Buy milk", account: "  " })).toBe(false);
+  });
+});
+
+describe("maxParallelTasks", () => {
+  it("defaults to 2 and stays within 1..4", () => {
+    expect(DEFAULT_SETTINGS.maxParallelTasks).toBe(2);
+    expect(parseSettings({ maxParallelTasks: 3 }).maxParallelTasks).toBe(3);
+    expect(parseSettings({ maxParallelTasks: 9 }).maxParallelTasks).toBe(2);
+    expect(parseSettings({ maxParallelTasks: 0 }).maxParallelTasks).toBe(2);
+  });
+});
+
+describe("url helpers", () => {
+  it("normalize hosts and recognize X URLs", () => {
+    expect(siteHost(" https://WWW.Example.com/login ")).toBe("example.com");
+    expect(siteHost("mail.example.com")).toBe("mail.example.com");
+    expect(isXSite("twitter.com")).toBe(true);
+    expect(isXSite("https://mobile.x.com/home")).toBe(true);
+    expect(isXSite("notx.com")).toBe(false);
+    expect(isXUrl("https://x.com/home")).toBe(true);
+    expect(isXUrl("not a url")).toBe(false);
+    expect(isXStatusUrl("https://x.com/alpha/status/123")).toBe(true);
+    expect(isXStatusUrl("https://x.com/alpha")).toBe(false);
+    // Only the path counts: a /status/ in the query is not a post.
+    expect(isXStatusUrl("https://x.com/home?ref=/status/123")).toBe(false);
+    expect(isXStatusUrl("https://x.com/i/web/status/123")).toBe(true);
+    expect(isXStatusUrl("https://example.com/alpha/status/123")).toBe(false);
   });
 });

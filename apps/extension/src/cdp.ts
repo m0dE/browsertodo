@@ -1,3 +1,5 @@
+import { errText } from "./errors.js";
+
 /**
  * chrome.debugger wrapper for the agent's tabs. Several tabs can be attached at
  * once (a run may read many tabs without activating them); `send` targets the
@@ -49,7 +51,7 @@ export class Cdp {
       await chrome.debugger.attach({ tabId }, "1.3");
     } catch (err) {
       // Left over from a previous service worker lifetime: detach and retry once.
-      if (!/already attached/i.test(String(err instanceof Error ? err.message : err))) throw err;
+      if (!/already attached/i.test(errText(err))) throw err;
       await chrome.debugger.detach({ tabId }).catch(() => {});
       await chrome.debugger.attach({ tabId }, "1.3");
     }

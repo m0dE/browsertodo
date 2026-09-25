@@ -29,9 +29,7 @@ export const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
   return el as T;
 };
 
-export function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
+export { errText as errorText } from "../errors.js";
 
 /** Show a short message in a status element; clears itself after `ms` when tone is ok. */
 export function flash(el: HTMLElement, text: string, tone: "ok" | "bad" | "" = "", ms = 4000): void {

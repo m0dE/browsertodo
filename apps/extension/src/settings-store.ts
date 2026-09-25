@@ -9,14 +9,12 @@ export async function loadSettings(): Promise<ExtensionSettings> {
   return parseSettings(got[SETTINGS_KEY]);
 }
 
+/** Raw partial update (the runner's paused flag): no secret rules. */
 export async function saveSettings(patch: Partial<ExtensionSettings>): Promise<ExtensionSettings> {
-  const current = await loadSettings();
-  const next = parseSettings({ ...current, ...patch });
-  await chrome.storage.local.set({ [SETTINGS_KEY]: next });
-  return next;
+  return storeSettings(parseSettings({ ...(await loadSettings()), ...patch }));
 }
 
-export const SECRET_FIELDS = ["anthropicApiKey", "jevApiKey", "runnerKey"] as const;
+const SECRET_FIELDS = ["anthropicApiKey", "jevApiKey", "runnerKey"] as const;
 
 /**
  * Applies a partial update from the UI. Secret fields: omitted (or the
@@ -40,7 +38,10 @@ export function applySettingsPatch(current: ExtensionSettings, patch: Partial<Ex
 
 /** settings.save from the UI: partial update with the secret rules above. */
 export async function saveSettingsPatch(patch: Partial<ExtensionSettings>): Promise<ExtensionSettings> {
-  const next = applySettingsPatch(await loadSettings(), patch);
+  return storeSettings(applySettingsPatch(await loadSettings(), patch));
+}
+
+async function storeSettings(next: ExtensionSettings): Promise<ExtensionSettings> {
   await chrome.storage.local.set({ [SETTINGS_KEY]: next });
   return next;
 }
@@ -55,7 +56,7 @@ export async function getRunnerId(): Promise<string> {
   return id;
 }
 
-export async function scheduleAlarm(intervalMinutes: number): Promise<void> {
+async function scheduleAlarm(intervalMinutes: number): Promise<void> {
   await chrome.alarms.clear(ALARM_NAME);
   await chrome.alarms.create(ALARM_NAME, { periodInMinutes: intervalMinutes, delayInMinutes: intervalMinutes });
 }

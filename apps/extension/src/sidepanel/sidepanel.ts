@@ -228,10 +228,16 @@ function renderStatus(s: UiState): void {
   const titles = {
     settings: "Open the settings",
     resume: "Run scheduled tasks again",
-    topup: "Buy AI credit (opens the billing page)",
+    topup: "Buy usage credit (opens the billing page)",
     pause: "Pause scheduled runs",
   } as const;
   const action = line.action ?? "pause";
+  // Pausing lives in Settings now; the header only offers actions that fix something.
+  statusAction.hidden = action === "pause";
+  const paused = action === "resume";
+  const pauseItem = $("acct-pause");
+  pauseItem.textContent = paused ? "Resume scheduled runs" : "Pause scheduled runs";
+  pauseItem.dataset.paused = paused ? "1" : "";
   statusAction.textContent = labels[action];
   statusAction.dataset.action = action;
   statusAction.title = titles[action];
@@ -250,7 +256,6 @@ statusAction.addEventListener("click", () =>
     }
   }),
 );
-$("open-settings").addEventListener("click", () => void openSettings());
 
 /** The account's top-up page (the link a 402 carried, or the dashboard). */
 function openTopup(): void {
@@ -264,9 +269,13 @@ function openTopup(): void {
 const acct = $<HTMLDetailsElement>("acct");
 function renderAccount(s: UiState): void {
   const a = s.account;
-  acct.hidden = !a?.signedIn;
-  if (!a?.signedIn || !a.user) {
-    acct.open = false;
+  // Always shown: signed out it offers Log in and Settings, signed in the account too.
+  const signedIn = !!(a?.signedIn && a.user);
+  acct.toggleAttribute("data-signed-in", signedIn);
+  if (!signedIn || !a?.user) {
+    $<HTMLImageElement>("acct-avatar").hidden = true;
+    $("acct-initial").textContent = "";
+    $("acct-btn").title = "Log in or open settings";
     return;
   }
   const u = a.user;
@@ -286,8 +295,8 @@ function renderAccount(s: UiState): void {
   }
   const plan = $("acct-plan");
   const planName = a.plan ? `${a.plan.id.charAt(0).toUpperCase()}${a.plan.id.slice(1)} plan` : "";
-  const credit = a.credit ? `${centsLabel(a.credit.totalCents)} AI credit` : "";
-  plan.textContent = a.outOfCredit ? `${planName ? `${planName} · ` : ""}Out of AI credit` : [planName, credit].filter(Boolean).join(" · ");
+  const credit = a.credit ? `${centsLabel(a.credit.totalCents)} usage credit` : "";
+  plan.textContent = a.outOfCredit ? `${planName ? `${planName} · ` : ""}Out of usage credit` : [planName, credit].filter(Boolean).join(" · ");
   plan.dataset.tone = a.outOfCredit ? "warn" : "";
 }
 $("acct-avatar").addEventListener("error", () => {
@@ -295,6 +304,27 @@ $("acct-avatar").addEventListener("error", () => {
   $("acct-avatar").hidden = true;
   const u = state?.account?.user;
   if (u) $("acct-initial").textContent = (u.name || u.email).trim().charAt(0).toUpperCase();
+});
+const pauseItem = $<HTMLButtonElement>("acct-pause");
+pauseItem.addEventListener("click", () =>
+  void busy(pauseItem, async () => {
+    try {
+      applyState(await uiRequest({ type: pauseItem.dataset.paused ? "schedule.resume" : "schedule.pause" }));
+      acct.open = false;
+    } catch (err) {
+      $("status-text").textContent = errorText(err);
+    }
+  }),
+);
+$("acct-open-settings").addEventListener("click", () => {
+  acct.open = false;
+  void openSettings();
+});
+$("acct-login").addEventListener("click", () => {
+  acct.open = false;
+  // Same flow as the TODO tab's Log In button.
+  showTab("todo");
+  $<HTMLButtonElement>("login-btn").click();
 });
 $("acct-settings").addEventListener("click", () => {
   acct.open = false;

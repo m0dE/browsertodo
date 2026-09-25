@@ -41,7 +41,7 @@ export interface StatusLine {
 
 /**
  * True when the hosted AI is (or would be) the brain and the account has no
- * credit: the status line and the model chip say "Out of AI credit".
+ * credit: the status line and the model chip say "Out of usage credit".
  */
 export function outOfCredit(state: Pick<UiState, "brain" | "settings" | "account">): boolean {
   const a = state.account;
@@ -52,7 +52,7 @@ export function outOfCredit(state: Pick<UiState, "brain" | "settings" | "account
 /** The slim line at the top of the side panel. */
 export function statusLine(state: UiState): StatusLine {
   if (outOfCredit(state)) {
-    return { tone: "warn", text: "Out of AI credit", action: "topup" };
+    return { tone: "warn", text: "Out of usage credit", action: "topup" };
   }
   if (!state.brain.effective) {
     return {
@@ -289,7 +289,7 @@ export function modelLabel(id: string | null | undefined): string {
 }
 
 export interface ModelChipInfo {
-  /** "Sonnet 5 · Jev" or "Sonnet 5"; "Out of AI credit" when the hosted AI has none. */
+  /** "Sonnet 5 · Jev" or "Sonnet 5"; "Out of usage credit" when the hosted AI has none. */
   label: string;
   /** The hosted browsertodo AI runs (or would run) the next task: only its models are offered. */
   hosted: boolean;
@@ -311,7 +311,7 @@ export function modelChip(state: Pick<UiState, "settings" | "brain" | "account">
   const jevActive = !!state.brain.effective && state.brain.jevActive;
   const noCredit = outOfCredit(state);
   const info: ModelChipInfo = {
-    label: noCredit ? "Out of AI credit" : modelLabel(model) + (jevActive ? " · Jev" : ""),
+    label: noCredit ? "Out of usage credit" : modelLabel(model) + (jevActive ? " · Jev" : ""),
     hosted,
     outOfCredit: noCredit,
     model,
@@ -320,7 +320,7 @@ export function modelChip(state: Pick<UiState, "settings" | "brain" | "account">
     jevEnabled: state.settings.jevEnabled,
   };
   const credit = state.account?.signedIn ? state.account.credit : undefined;
-  if (hosted && credit) info.credit = `${centsLabel(credit.totalCents)} AI credit left`;
+  if (hosted && credit) info.credit = `${centsLabel(credit.totalCents)} usage credit left`;
   return info;
 }
 

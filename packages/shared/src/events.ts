@@ -66,7 +66,7 @@ export function picksText(p: ElementPicks): string {
 
 export type StampedAgentEvent = AgentEvent & { ts: string; sessionId: string };
 
-/** browsertodo: the hosted "browsertodo AI" (Claude through the account's AI credit). */
+/** browsertodo: the hosted "browsertodo AI" (Claude through the account's usage credit). */
 export type BrainKind = "claude-code" | "claude-api" | "scripted" | "browsertodo";
 
 /**

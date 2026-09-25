@@ -117,11 +117,11 @@ describe("Runner: cloud tasks", () => {
       authHeaders: () => [{ name: "Authorization", value: "Bearer bt_s_session" }],
     });
     h.runner = new Runner(h.deps);
-    h.brain.script = () => ({ outcome: "paused", reason: "Out of AI credit" });
+    h.brain.script = () => ({ outcome: "paused", reason: "Out of usage credit" });
     await runAll(h);
     expect(accountResults).toEqual(["a1 paused"]);
     expect(runnerKeyClaims).not.toHaveBeenCalled();
-    expect(h.notifications).toEqual([{ title: "Task paused", message: "Out of AI credit" }]);
+    expect(h.notifications).toEqual([{ title: "Task paused", message: "Out of usage credit" }]);
   });
 
   it("signed in without cloud sync: the account queue is still checked", async () => {

@@ -86,6 +86,6 @@ describe("AccountTodo (the signed-in TODO list)", () => {
   });
 
   it("accountRow keeps the cloud fields", () => {
-    expect(accountRow(task("x", { status: "paused", pauseReason: "Out of AI credit" }))).toMatchObject({ status: "paused", pauseReason: "Out of AI credit", media: [] });
+    expect(accountRow(task("x", { status: "paused", pauseReason: "Out of usage credit" }))).toMatchObject({ status: "paused", pauseReason: "Out of usage credit", media: [] });
   });
 });

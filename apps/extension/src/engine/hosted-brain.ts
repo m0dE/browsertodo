@@ -4,7 +4,7 @@
  * `${apiBase}/v1/ai/messages` and Jev to `${apiBase}/v1/ai/jev`, with the
  * session token as a bearer and X-Browsertodo-Session naming the run, so the
  * server can tie usage to it. A 402 (out of credit) pauses the run with
- * "Out of AI credit" and flags the account for the Top up link.
+ * "Out of usage credit" and flags the account for the Top up link.
  */
 import { OutOfCreditError, type JevLike } from "@browsertodo/core";
 import { hostedModel } from "../account/types.js";

@@ -119,8 +119,8 @@ export interface ApiAgentOptions {
    */
   stream?: boolean;
   /**
-   * HTTP 402 (the account is out of AI credit): called, then the turn ends
-   * paused with reason OUT_OF_CREDIT ("Out of AI credit").
+   * HTTP 402 (the account is out of usage credit): called, then the turn ends
+   * paused with reason OUT_OF_CREDIT ("Out of usage credit").
    */
   onOutOfCredit?(info: { message: string; topupUrl?: string }): void;
 }

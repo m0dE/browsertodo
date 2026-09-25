@@ -112,7 +112,7 @@ export function toolResultBlock(toolUseId: string, r: ToolResult): ToolResultBlo
 
 export type PostResult =
   | { kind: "ok"; message: MessagesResponse }
-  /** 402 from the browsertodo API: the account has no AI credit left. */
+  /** 402 from the browsertodo API: the account has no usage credit left. */
   | { kind: "credit"; reason: string; topupUrl?: string }
   /** 429, 529, 5xx, network: worth retrying. */
   | { kind: "transient"; reason: string }
@@ -161,7 +161,7 @@ function creditInfo(body: string): { message?: string; topupUrl?: string } {
   }
 }
 
-export const OUT_OF_CREDIT = "Out of AI credit";
+export const OUT_OF_CREDIT = "Out of usage credit";
 
 /** Streaming: text as it is written. `messageId:index` names the text block. */
 export interface StreamOptions {

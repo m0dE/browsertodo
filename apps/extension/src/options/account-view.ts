@@ -66,12 +66,12 @@ export function accountSummary(a: AccountView): AccountSummary {
   };
 }
 
-/** The paid plans as the Subscribe choices show them: "Starter · $9.99/mo · $5.00 AI credit". */
+/** The paid plans as the Subscribe choices show them: "Starter · $9.99/mo · $5.00 usage credit". */
 export function planChoices(): { id: PlanId; label: string; detail: string }[] {
   return PLANS.filter((p) => p.id !== "free").map((p) => ({
     id: p.id,
     label: p.name,
-    detail: `${centsLabel(p.priceCents)}/mo · ${centsLabel(p.creditCents)} AI credit`,
+    detail: `${centsLabel(p.priceCents)}/mo · ${centsLabel(p.creditCents)} usage credit`,
   }));
 }
 

@@ -48,7 +48,7 @@ export interface StoredAccount {
 /** What the brain resolver needs to know about the account. */
 export interface BrainAccount {
   signedIn: boolean;
-  /** Signed in with AI credit left, or on an active paid plan. */
+  /** Signed in with usage credit left, or on an active paid plan. */
   hostedUsable: boolean;
   outOfCredit: boolean;
 }
@@ -276,7 +276,7 @@ export class AccountService {
     await this.store(next);
   }
 
-  /** A hosted request answered 402: show "Out of AI credit" until the credit is back. */
+  /** A hosted request answered 402: show "Out of usage credit" until the credit is back. */
   async markOutOfCredit(topupUrl?: string): Promise<void> {
     await this.load();
     if (!this.session()) return;

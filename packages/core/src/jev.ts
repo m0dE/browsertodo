@@ -200,7 +200,7 @@ export function jevFromClient(client: JevClientLike, opts: { model?: string } = 
 
 const quiet: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 
-/** A hosted-AI request was refused with 402: the account has no AI credit left. */
+/** A hosted-AI request was refused with 402: the account has no usage credit left. */
 export class OutOfCreditError extends Error {
   constructor(
     message: string,

@@ -117,7 +117,7 @@ export function initAccountSection(opts: { onState(state: UiState): void; showBi
     const sum = accountSummary(a);
     $("acct-plan").textContent = sum.planName;
     $("acct-plan-status").textContent = sum.planStatus;
-    $("acct-credit").textContent = sum.outOfCredit ? "Out of AI credit" : sum.credit || "—";
+    $("acct-credit").textContent = sum.outOfCredit ? "Out of usage credit" : sum.credit || "—";
     $("acct-credit-detail").textContent = sum.outOfCredit ? (sum.credit ? `${sum.credit} left` : "") : sum.creditDetail;
     $("acct-credit").parentElement!.dataset.tone = sum.outOfCredit ? "warn" : "";
 
@@ -155,7 +155,7 @@ export function initAccountSection(opts: { onState(state: UiState): void; showBi
     topup.replaceChildren(
       h("span", null, "Top up"),
       ...TOPUP_AMOUNTS.map((cents) => {
-        const b = h("button.small", { type: "button", title: `Buy ${centsLabel(cents)} of AI credit (never expires)` }, centsLabel(cents));
+        const b = h("button.small", { type: "button", title: `Buy ${centsLabel(cents)} of usage credit (never expires)` }, centsLabel(cents));
         b.addEventListener("click", () => billing(b, { action: "topup", amountCents: cents }));
         return b;
       }),

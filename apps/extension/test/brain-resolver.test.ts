@@ -90,8 +90,8 @@ describe("resolveBrain with the browsertodo account", () => {
 
   it("explains what the hosted AI needs", () => {
     expect(ra("browsertodo", signedOut, ok, true).note).toBe("Sign in to use browsertodo AI");
-    expect(ra("browsertodo", noCredit, ok, true).note).toMatch(/^Out of AI credit/);
-    expect(ra("auto", noCredit, null, false).note).toMatch(/^Out of AI credit: subscribe or top up.*or set a Claude API key/);
+    expect(ra("browsertodo", noCredit, ok, true).note).toMatch(/^Out of usage credit/);
+    expect(ra("auto", noCredit, null, false).note).toMatch(/^Out of usage credit: subscribe or top up.*or set a Claude API key/);
     expect(ra("auto", signedOut, null, false).note).toMatch(/sign in for browsertodo AI/);
   });
 

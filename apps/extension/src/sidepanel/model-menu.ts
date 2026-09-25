@@ -54,7 +54,7 @@ export function initModelPicker(opts: {
     label.textContent = info.label;
     const what = `${info.hosted ? "browsertodo AI · " : ""}${info.model}${info.jevActive ? " with Jev" : ""}`;
     chip.title = info.outOfCredit
-      ? "Out of AI credit: top up or subscribe to keep using browsertodo AI"
+      ? "Out of usage credit: top up or subscribe to keep using browsertodo AI"
       : running
         ? `This task runs on ${what}. Changes apply to the next task.`
         : `Model for new tasks: ${what}${info.credit ? ` (${info.credit})` : ""}`;
@@ -95,7 +95,7 @@ export function initModelPicker(opts: {
         h(
           "div.mm-credit",
           { role: "presentation", "data-tone": info.outOfCredit ? "warn" : "" },
-          info.outOfCredit ? "Out of AI credit" : (info.credit ?? ""),
+          info.outOfCredit ? "Out of usage credit" : (info.credit ?? ""),
         ),
       );
       rows.push(

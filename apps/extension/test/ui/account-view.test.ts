@@ -43,9 +43,9 @@ describe("options: account summary", () => {
 
   it("plan choices, dates and the return URL", () => {
     expect(planChoices()).toEqual([
-      { id: "starter", label: "Starter", detail: "$9.99/mo · $5.00 AI credit" },
-      { id: "plus", label: "Plus", detail: "$29.99/mo · $20.00 AI credit" },
-      { id: "pro", label: "Pro", detail: "$199.99/mo · $199.99 AI credit" },
+      { id: "starter", label: "Starter", detail: "$9.99/mo · $5.00 usage credit" },
+      { id: "plus", label: "Plus", detail: "$29.99/mo · $20.00 usage credit" },
+      { id: "pro", label: "Pro", detail: "$199.99/mo · $199.99 usage credit" },
     ]);
     expect(dateLabel("bogus")).toBe("");
     expect(billingReturnUrl("https://api.test/")).toBe("https://api.test/billing");

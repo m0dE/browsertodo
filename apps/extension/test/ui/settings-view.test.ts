@@ -82,13 +82,13 @@ describe("browsertodo AI option", () => {
     const v = view({ account: FREE_EMPTY });
     expect(option(v, "browsertodo").enabled).toBe(true);
     expect(v.showHostedSignIn).toBe(false);
-    expect(v.hosted).toEqual({ plan: "Free plan", credit: "No AI credit left", tone: "warn", action: { kind: "get-plan", label: "Get a plan" } });
+    expect(v.hosted).toEqual({ plan: "Free plan", credit: "No usage credit left", tone: "warn", action: { kind: "get-plan", label: "Get a plan" } });
   });
   it("free plan with top-up credit still offers a plan", () => {
-    expect(view({ account: FREE_TOPPED }).hosted).toMatchObject({ credit: "$7.50 AI credit left", tone: "", action: { kind: "get-plan" } });
+    expect(view({ account: FREE_TOPPED }).hosted).toMatchObject({ credit: "$7.50 usage credit left", tone: "", action: { kind: "get-plan" } });
   });
   it("paid plan with credit: nothing to buy", () => {
-    expect(view({ account: PLUS }).hosted).toEqual({ plan: "Plus plan", credit: "$15.40 AI credit left", tone: "", action: null });
+    expect(view({ account: PLUS }).hosted).toEqual({ plan: "Plus plan", credit: "$15.40 usage credit left", tone: "", action: null });
   });
   it("paid plan with no credit: Top up", () => {
     expect(view({ account: PLUS_EMPTY }).hosted?.action).toEqual({ kind: "top-up", label: "Top up" });
@@ -102,7 +102,7 @@ describe("browsertodo AI option", () => {
     expect(v.showHostedSignIn).toBe(true);
   });
   it("chosen with no credit on the free plan: says so", () => {
-    expect(view({ brain: "browsertodo", account: FREE_EMPTY }).brainProblem).toMatch(/Out of AI credit/);
+    expect(view({ brain: "browsertodo", account: FREE_EMPTY }).brainProblem).toMatch(/Out of usage credit/);
   });
   it("chosen and usable: no problem", () => {
     expect(view({ brain: "browsertodo", account: PLUS }).brainProblem).toBeNull();

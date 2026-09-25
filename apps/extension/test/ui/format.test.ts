@@ -188,7 +188,7 @@ describe("hosted AI in the status line and the model chip", () => {
 
   it("out of credit: the status line says so with a Top up action", () => {
     const out = account({ outOfCredit: { topupUrl: "https://api.test/billing" }, credit: { subscriptionCents: 0, topupCents: 0, totalCents: 0, periodGrantCents: 0, periodEnd: null } });
-    expect(statusLine(state({ account: out }, { effective: "browsertodo" }))).toEqual({ tone: "warn", text: "Out of AI credit", action: "topup" });
+    expect(statusLine(state({ account: out }, { effective: "browsertodo" }))).toEqual({ tone: "warn", text: "Out of usage credit", action: "topup" });
     // Auto fell back to nothing usable: still the credit message.
     expect(statusLine(state({ account: out }, { effective: null, note: "x" })).action).toBe("topup");
     // Another brain runs: credit is not the problem.
@@ -197,11 +197,11 @@ describe("hosted AI in the status line and the model chip", () => {
 
   it("the chip shows the hosted model, the credit left, and out of credit", () => {
     const chip = modelChip(state({ account: account() }, { effective: "browsertodo", jevActive: true }));
-    expect(chip).toMatchObject({ hosted: true, label: "Sonnet 5 · Jev", credit: "$14.21 AI credit left", outOfCredit: false, jevPossible: true });
+    expect(chip).toMatchObject({ hosted: true, label: "Sonnet 5 · Jev", credit: "$14.21 usage credit left", outOfCredit: false, jevPossible: true });
     const custom = state({ account: account(), settings: { ...DEFAULT_SETTINGS, anthropicModel: "my-model" } }, { effective: "browsertodo" });
     expect(modelChip(custom)).toMatchObject({ model: "claude-sonnet-5", label: "Sonnet 5" });
     const out = modelChip(state({ account: account({ outOfCredit: { topupUrl: "u" } }) }, { effective: "browsertodo" }));
-    expect(out).toMatchObject({ label: "Out of AI credit", outOfCredit: true });
+    expect(out).toMatchObject({ label: "Out of usage credit", outOfCredit: true });
     expect(modelChip(state({ account: account() })).hosted).toBe(false);
   });
 });

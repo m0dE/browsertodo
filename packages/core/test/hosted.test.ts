@@ -76,15 +76,15 @@ describe("hosted AI transport", () => {
   it("402 out_of_credit pauses the turn with OUT_OF_CREDIT and reports the top-up link once", async () => {
     const onOutOfCredit = vi.fn();
     const { session, requests, events } = hosted(
-      [{ status: 402, body: { error: "out_of_credit", message: "No AI credit left", topupUrl: "https://dash.test/billing" } }],
+      [{ status: 402, body: { error: "out_of_credit", message: "No usage credit left", topupUrl: "https://dash.test/billing" } }],
       { onOutOfCredit },
     );
     expect(await session.done).toEqual({ outcome: "paused", reason: OUT_OF_CREDIT });
-    expect(OUT_OF_CREDIT).toBe("Out of AI credit");
+    expect(OUT_OF_CREDIT).toBe("Out of usage credit");
     expect(requests).toHaveLength(1); // not retried
     expect(onOutOfCredit).toHaveBeenCalledTimes(1);
-    expect(onOutOfCredit).toHaveBeenCalledWith({ message: "Out of AI credit: No AI credit left", topupUrl: "https://dash.test/billing" });
-    expect(events).toContainEqual({ type: "error", text: "Out of AI credit: No AI credit left" });
+    expect(onOutOfCredit).toHaveBeenCalledWith({ message: "Out of usage credit: No usage credit left", topupUrl: "https://dash.test/billing" });
+    expect(events).toContainEqual({ type: "error", text: "Out of usage credit: No usage credit left" });
   });
 
   it("an expired session (401) fails with a sign-in reason, not the API-key one", async () => {
@@ -126,7 +126,7 @@ describe("createJev through the browsertodo proxy", () => {
   });
 
   it("402 throws OutOfCreditError with the top-up link", async () => {
-    const s = server([{ status: 402, body: { error: "out_of_credit", message: "No AI credit left", topupUrl: "https://dash.test/billing" } }]);
+    const s = server([{ status: 402, body: { error: "out_of_credit", message: "No usage credit left", topupUrl: "https://dash.test/billing" } }]);
     const jev = createJev("t", { fetch: s.fetchImpl, endpoint: "https://api.test/v1/ai/jev" });
     const err = await jev.decide({ goal: "g", snapshot }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(OutOfCreditError);

@@ -78,7 +78,7 @@ export type Tone = "ok" | "warn" | "bad" | "";
 export interface HostedAccount {
   /** "Free plan" / "Plus plan". */
   plan: string;
-  /** "$4.21 AI credit left" or "No AI credit left". */
+  /** "$4.21 usage credit left" or "No usage credit left". */
   credit: string;
   tone: Tone;
   /** get-plan: on the free plan; top-up: a paid plan with no credit left. null: nothing to buy (or billing is off). */
@@ -140,7 +140,7 @@ function hostedAccount(a: AccountView): HostedAccount {
   const paid = isPaidActive(a.plan);
   const cents = a.credit?.totalCents;
   const noCredit = !!a.outOfCredit || cents === 0;
-  const credit = cents === undefined ? (a.outOfCredit ? "No AI credit left" : "Credit not loaded") : noCredit ? "No AI credit left" : `${centsLabel(cents)} AI credit left`;
+  const credit = cents === undefined ? (a.outOfCredit ? "No usage credit left" : "Credit not loaded") : noCredit ? "No usage credit left" : `${centsLabel(cents)} usage credit left`;
   const canBuy = a.stripeConfigured !== false;
   let action: HostedAccount["action"] = null;
   if (canBuy && !paid) action = { kind: "get-plan", label: "Get a plan" };
@@ -189,7 +189,7 @@ export function settingsView(input: ViewInput): SettingsView {
   if (draft.brain === "browsertodo" && !signedIn) {
     brainProblem = "browsertodo AI is selected but you are logged out, so no tasks run. Log in, or pick another brain.";
   } else if (draft.brain === "browsertodo" && !chosen.effective) {
-    brainProblem = "Out of AI credit, so no tasks run on browsertodo AI. Top up, get a plan, or pick another brain.";
+    brainProblem = "Out of usage credit, so no tasks run on browsertodo AI. Top up, get a plan, or pick another brain.";
   }
   // Local Claude Code and the Claude API say what is missing in their own inline sections.
 
@@ -198,7 +198,7 @@ export function settingsView(input: ViewInput): SettingsView {
     {
       value: "browsertodo",
       label: "browsertodo AI",
-      detail: signedIn ? "Hosted by browsertodo, paid from your AI credit. Nothing to set up." : "Hosted by browsertodo. Needs an account.",
+      detail: signedIn ? "Hosted by browsertodo, paid from your usage credit. Nothing to set up." : "Hosted by browsertodo. Needs an account.",
       enabled: signedIn,
     },
     { value: "claude-code", label: "Local Claude Code", detail: "Your Claude subscription, through the helper app.", enabled: true },

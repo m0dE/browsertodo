@@ -28,6 +28,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .status[data-tone="warn"] .status-text, .status[data-tone="bad"] .status-text { white-space: normal; flex: 1; }
 .status[data-tone="warn"] .status-meta, .status[data-tone="bad"] .status-meta { display: none; }
 .status .link, .status .icon { flex: none; }
+.status .acct { margin-left: auto; }
 
 .tabs { display: flex; padding: 0 6px; gap: 2px; }
 .tabs button {
@@ -113,15 +114,19 @@ button.login-btn {
 .migrate-text { margin: 0; }
 
 /* The account in the header: avatar button and its menu */
-.acct summary { width: 24px; height: 24px; border-radius: 50%; padding: 0; overflow: hidden; }
-.acct summary:hover, .acct[open] summary { background: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
-#acct-avatar { width: 24px; height: 24px; border-radius: 50%; display: block; object-fit: cover; }
+.menu.acct summary { width: 26px; height: 26px; border-radius: 50%; padding: 0; overflow: hidden; flex: none; }
+#acct-anon { color: var(--muted); }
+.acct:hover #acct-anon, .acct[open] #acct-anon { color: var(--text); }
+.acct[data-signed-in] #acct-anon, .acct:not([data-signed-in]) #acct-who, .acct:not([data-signed-in]) #acct-settings, .acct:not([data-signed-in]) #acct-signout, .acct[data-signed-in] #acct-login { display: none; }
+.acct-pop { top: 30px; }
+.menu.acct summary:hover, .menu.acct[open] summary { background: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+#acct-avatar { width: 26px; height: 26px; border-radius: 50%; display: block; object-fit: cover; }
 #acct-initial {
-  width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+  width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
   background: var(--accent); color: var(--on-accent); font-size: 12px; font-weight: 600;
 }
 #acct-initial:empty { display: none; }
-.acct-pop { min-width: 210px; max-width: calc(100vw - 24px); }
+.acct-pop { min-width: 210px; margin-left: 0; max-width: calc(100vw - 24px); }
 .acct-who { padding: 5px 8px 7px; border-bottom: 1px solid var(--border); margin-bottom: 3px; }
 .acct-email { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-plan { color: var(--muted); font-size: 12px; }

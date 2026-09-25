@@ -395,10 +395,10 @@ function scenario(kind) {
     sessions.push({ sessionId: "s-5", source: "local", taskId: "t5", title: tasks[4].instructions, brain: "claude-api", jev: true, startedAt: iso(-70), endedAt: iso(-60), outcome: "paused", reason: "Needs a one-time code sent by SMS" });
   }
   if (kind === "hosted-out") {
-    // The last run hit the end of the AI credit: paused, with a Top up link.
+    // The last run hit the end of the usage credit: paused, with a Top up link.
     const out = {
       sessionId: "s-out", source: "adhoc", title: "Summarize the three newest issues on the tracker", brain: "browsertodo", jev: true,
-      model: "claude-sonnet-5", startedAt: iso(-3), endedAt: iso(-2), outcome: "paused", reason: "Out of AI credit",
+      model: "claude-sonnet-5", startedAt: iso(-3), endedAt: iso(-2), outcome: "paused", reason: "Out of usage credit",
     };
     const oev = (minutes, e) => ({ ...e, ts: iso(minutes), sessionId: "s-out" });
     eventsBySession["s-out"] = [
@@ -406,12 +406,12 @@ function scenario(kind) {
       oev(-3, { type: "assistant_text", text: "Opening the tracker." }),
       oev(-3, { type: "tool_call", id: "1", name: "navigate", args: { url: "https://tracker.example.com/issues" } }),
       oev(-3, { type: "tool_result", id: "1", name: "navigate", text: "Opened https://tracker.example.com/issues" }),
-      oev(-2, { type: "error", text: "Out of AI credit: No AI credit left" }),
-      oev(-2, { type: "task_end", outcome: "paused", reason: "Out of AI credit" }),
+      oev(-2, { type: "error", text: "Out of usage credit: No usage credit left" }),
+      oev(-2, { type: "task_end", outcome: "paused", reason: "Out of usage credit" }),
     ];
     sessions.unshift(out);
     state.tabChats = { "1": "s-out" };
-    tasks[0] = { ...tasks[0], status: "paused", pauseReason: "Out of AI credit", attempts: 1 };
+    tasks[0] = { ...tasks[0], status: "paused", pauseReason: "Out of usage credit", attempts: 1 };
   }
   if (kind === "details") {
     // The running task has long instructions with links, files and an account; a one-off chat has a multi-line message.
@@ -1261,7 +1261,7 @@ for (const size of SIZES) {
             dy: Math.abs((b.top + b.bottom) / 2 - (tab.top + tab.bottom) / 2),
             tabH: tab.height, shown, text: btn.textContent,
             composer: document.getElementById("composer").hidden,
-            acct: document.getElementById("acct").hidden,
+            acct: (() => { const d = document.getElementById("acct"); const shown = (id) => getComputedStyle(document.getElementById(id)).display !== "none"; return !d.hidden && !d.hasAttribute("data-signed-in") && shown("acct-anon") && shown("acct-login") && shown("acct-open-settings") && !shown("acct-signout") && !shown("acct-who"); })(),
           };
         });
         if (cta.text !== "Log In") fail(`login button says "${cta.text}"`);
@@ -1269,7 +1269,7 @@ for (const size of SIZES) {
         if (cta.dx > 2 || cta.dy > cta.tabH * 0.12) fail(`Log In is not centered: ${JSON.stringify(cta)}`);
         if (cta.shown.join() !== "todo-login") fail(`signed-out TODO shows more than Log In: ${cta.shown.join(", ")}`);
         if (!cta.composer) fail("composer shown under Log In");
-        if (!cta.acct) fail("account avatar shown while signed out");
+        if (!cta.acct) fail("signed-out account menu should show the person icon with Log in and Settings only");
         await checkLayout(p, `${kind} ${label}`);
         if (kind === "loggedout-noclient") {
           await p.click("#login-btn");
@@ -1323,7 +1323,7 @@ for (const size of SIZES) {
           return { left: r.left, right: r.right, email: document.getElementById("acct-email").textContent, plan: document.getElementById("acct-plan").textContent };
         });
         if (pop.left < 0 || pop.right > size.w) fail(`account menu off screen ${JSON.stringify(pop)}`);
-        if (pop.email !== "ada.lovelace@example.com" || pop.plan !== "Plus plan · $14.21 AI credit") fail(`account menu ${JSON.stringify(pop)}`);
+        if (pop.email !== "ada.lovelace@example.com" || pop.plan !== "Plus plan · $14.21 usage credit") fail(`account menu ${JSON.stringify(pop)}`);
         await shoot(p, "panel-account-menu", size, scheme);
         await p.click("#acct-signout");
         await p.waitForFunction(() => window.__requests.some((r) => r.type === "account.signOut"));
@@ -1339,7 +1339,7 @@ for (const size of SIZES) {
           models: [...document.querySelectorAll(".mm-item[role=menuitemradio]")].length,
           jev: document.querySelector(".mm-jev").disabled,
         }));
-        if (menu.head !== "browsertodo AI model" || menu.credit !== "$14.21 AI credit left" || menu.models !== 4 || menu.jev) fail(`hosted model menu ${JSON.stringify(menu)}`);
+        if (menu.head !== "browsertodo AI model" || menu.credit !== "$14.21 usage credit left" || menu.models !== 4 || menu.jev) fail(`hosted model menu ${JSON.stringify(menu)}`);
         await checkLayout(q, `model-menu-hosted ${label}`);
         await shoot(q, "panel-model-menu-hosted", size, scheme);
         reportErrors(q, `model-menu-hosted ${label}`);
@@ -1349,11 +1349,11 @@ for (const size of SIZES) {
       await p.close();
     }
 
-    // Out of AI credit: the status line says so with Top up; the paused run's card links to the top-up page.
+    // Out of usage credit: the status line says so with Top up; the paused run's card links to the top-up page.
     if (want("panel-out-of-credit", size, scheme)) {
       const p = await openPanel(ctx, "hosted-out", "#chat-log .ev-end");
       const st = await p.evaluate(() => ({ text: document.getElementById("status-text").textContent, action: document.getElementById("status-action").textContent, chip: document.getElementById("now-model-label").textContent }));
-      if (st.text !== "Out of AI credit" || st.action !== "Top up" || st.chip !== "Out of AI credit") fail(`out of credit status ${JSON.stringify(st)}`);
+      if (st.text !== "Out of usage credit" || st.action !== "Top up" || st.chip !== "Out of usage credit") fail(`out of credit status ${JSON.stringify(st)}`);
       const link = await p.evaluate(() => document.querySelector("#chat-log .ev-topup")?.getAttribute("href"));
       if (link !== "https://browsertodo-api.jaeyun.workers.dev/billing") fail(`Top up link ${link}`);
       await checkLayout(p, `out-of-credit ${label}`);
@@ -1561,7 +1561,7 @@ const OPTION_CASES = [
     d.state.brain = { ...d.state.brain, effective: "browsertodo" };
   }, (p) => [
     ["browsertodo AI enabled and checked", async () => (await p.isChecked(radio("browsertodo"))) && (await p.isEnabled(radio("browsertodo")))],
-    ["credit inline", async () => /\$15\.40 AI credit left/.test(await p.textContent("#hosted-credit"))],
+    ["credit inline", async () => /\$15\.40 usage credit left/.test(await p.textContent("#hosted-credit"))],
     ["no buy action on a paid plan with credit", async () => !(await shown(p, "#hosted-action"))],
     ["no problem note", async () => !(await shown(p, "#brain-problem"))],
   ]],
@@ -1635,7 +1635,7 @@ const OPTION_CASES = [
     ["credit", async () => (await p.textContent("#acct-credit")) === "$25.40"],
   ]],
   ["options-account-outofcredit", "opt-out", "#account", () => {}, (p) => [
-    ["out of credit", async () => (await p.textContent("#acct-credit")) === "Out of AI credit"],
+    ["out of credit", async () => (await p.textContent("#acct-credit")) === "Out of usage credit"],
     ["note", async () => /paused until you top up/.test(await p.textContent("#acct-note"))],
   ]],
   ["options-account-nobilling", "opt-nobilling", "#account", () => {}, (p) => [

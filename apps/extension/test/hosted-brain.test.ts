@@ -93,17 +93,17 @@ describe("browsertodo AI brain", () => {
     expect(agentOpts.jev).not.toBeNull();
   });
 
-  it("402 out_of_credit pauses the run with 'Out of AI credit' and reports the top-up link", async () => {
-    const t = brain([{ status: 402, body: { error: "out_of_credit", message: "No AI credit left", topupUrl: "https://api.test/billing" } }]);
+  it("402 out_of_credit pauses the run with 'Out of usage credit' and reports the top-up link", async () => {
+    const t = brain([{ status: 402, body: { error: "out_of_credit", message: "No usage credit left", topupUrl: "https://api.test/billing" } }]);
     const result = await t.b.start(startOpts({ jevEnabled: false })).done;
-    expect(result).toEqual({ outcome: "paused", reason: "Out of AI credit" });
+    expect(result).toEqual({ outcome: "paused", reason: "Out of usage credit" });
     expect(t.onOutOfCredit).toHaveBeenCalledWith("https://api.test/billing");
     expect(t.s.requests).toHaveLength(1);
   });
 
   it("a Jev 402 flags the account too", async () => {
     const onOutOfCredit = vi.fn();
-    const inner = { decide: vi.fn(async () => Promise.reject(new core.OutOfCreditError("Jev: No AI credit left", "https://api.test/b"))) };
+    const inner = { decide: vi.fn(async () => Promise.reject(new core.OutOfCreditError("Jev: No usage credit left", "https://api.test/b"))) };
     let jev: core.JevLike | null = null;
     const b = new ApiBrain({
       core: { createJev: () => inner, startApiAgent: (o: core.ApiAgentOptions) => ((jev = o.jev), { sessionId: "s", sendUserMessage() {}, abort() {}, done: new Promise<never>(() => {}) }) } as never,

@@ -7,13 +7,13 @@ import { MarkdownView } from "./markdown.js";
 
 let topupUrl: string | null = null;
 
-/** Where "Top up" on an "Out of AI credit" end card goes (the account's top-up page). */
+/** Where "Top up" on an "Out of usage credit" end card goes (the account's top-up page). */
 export function setTopupUrl(url: string | null): void {
   topupUrl = url;
 }
 
 /** The hosted AI refused the run for lack of credit (core's OUT_OF_CREDIT reason). */
-const isOutOfCredit = (text: string | undefined) => !!text && /^Out of AI credit\b/.test(text);
+const isOutOfCredit = (text: string | undefined) => !!text && /^Out of usage credit\b/.test(text);
 
 /** onContinue: the run ended without finishing and can be continued (task_end cards). */
 export function renderEvent(v: EventView, onContinue?: () => void): HTMLElement {
@@ -69,7 +69,7 @@ export function renderEvent(v: EventView, onContinue?: () => void): HTMLElement 
           ? h("div.ev-picks", { title: "Who chose the element for each click and typing step: Jev (the fast picker), or Claude when Jev was unsure" }, v.picks)
           : null,
         isOutOfCredit(v.text) && topupUrl
-          ? h("a.ev-topup", { href: topupUrl, target: "_blank", rel: "noopener", title: "Buy AI credit, then continue" }, "Top up")
+          ? h("a.ev-topup", { href: topupUrl, target: "_blank", rel: "noopener", title: "Buy usage credit, then continue" }, "Top up")
           : null,
         onContinue
           ? h(

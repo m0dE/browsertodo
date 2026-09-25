@@ -1,6 +1,6 @@
 /**
  * Which brain runs tasks right now:
- * - browsertodo: the hosted "browsertodo AI"; signed in with AI credit left
+ * - browsertodo: the hosted "browsertodo AI"; signed in with usage credit left
  *   or an active paid plan.
  * - claude-code: helper connected, Claude Code found, self-test passed.
  * - claude-api: an Anthropic API key is set.
@@ -18,7 +18,7 @@ export interface BrainInputs {
 }
 
 export const HOSTED_SIGN_IN = "Sign in to use browsertodo AI";
-export const HOSTED_NO_CREDIT = "Out of AI credit: subscribe or top up to use browsertodo AI";
+export const HOSTED_NO_CREDIT = "Out of usage credit: subscribe or top up to use browsertodo AI";
 
 /** Why the hosted AI cannot be used, or null when it can. */
 function hostedProblem(account: BrainInputs["account"]): string | null {

@@ -9,7 +9,7 @@ export * from "./types.js";
 export { createToolExecutor, picksEvent } from "./executor.js";
 /** Jev client over fetch (works in the extension and in Node). */
 export { createJev, OutOfCreditError, type CreateJevOptions } from "./jev.js";
-/** Reason of a turn that ended because the browsertodo account has no AI credit left (HTTP 402). */
+/** Reason of a turn that ended because the browsertodo account has no usage credit left (HTTP 402). */
 export { OUT_OF_CREDIT } from "./anthropic.js";
 /** System prompt for either brain, and the first user message of a task. */
 export { buildSystemPrompt, buildTaskPrompt } from "./prompts.js";

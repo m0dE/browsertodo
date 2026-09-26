@@ -261,8 +261,8 @@ describe("live text", () => {
     await flush();
     source.feed(tone(1100));
     expect(t.calls).toHaveLength(2);
-    t.calls[1]!.reject(Object.assign(new Error("Voice needs a paid plan."), { fatal: true }));
-    await expect(result).rejects.toThrow("Voice needs a paid plan.");
+    t.calls[1]!.reject(Object.assign(new Error("Voice needs the Plus or Pro plan."), { fatal: true }));
+    await expect(result).rejects.toThrow("Voice needs the Plus or Pro plan.");
     expect(d.state).toBe("error");
     expect(source.stopped).toBe(true);
   });

@@ -8,13 +8,15 @@
  *
  * In Chat, sending an empty box means "look at this page and do what is
  * needed" (SCREEN_HELP_TEXT, see emptySend); under TODO an empty box does
- * nothing.
+ * nothing. After a turn, Chat offers the agent's follow-up suggestion faded
+ * in the box (see suggestion.ts): Tab takes it, it is never sent by itself.
  */
 import type { SessionInfo } from "@browsertodo/shared";
 import { uiRequest, type UiRequest, type UiState } from "../ui-protocol.js";
 import { $, busy, flash, showError } from "../ui/dom.js";
 import { filePicker, filesToUploads } from "./files.js";
 import { initModelPicker } from "./model-menu.js";
+import { FollowUpSuggestion, suggestionDescription, type SuggestionOffer } from "./suggestion.js";
 import type { TabName } from "./tabs.js";
 
 export type ComposerMode = "new" | "conversation" | "running";
@@ -70,6 +72,8 @@ export interface ComposerView {
   draft(): string;
   /** Replaces the text in the box (voice input writes its live text here). */
   setDraft(value: string): void;
+  /** Voice input is writing into the box: the follow-up suggestion stays hidden meanwhile. */
+  setDictating(on: boolean): void;
   /** Sends what is in the box, exactly as Enter does (an empty box in Chat looks at the page). */
   send(): void;
   /**
@@ -116,6 +120,13 @@ export function initComposer(opts: {
   const msg = $("now-msg");
   const fileInput = $<HTMLInputElement>("now-files");
   const filesList = $("now-files-list");
+  const ghost = $("now-ghost");
+  const ghostTyped = ghost.querySelector<HTMLElement>(".now-ghost-typed")!;
+  const ghostRest = ghost.querySelector<HTMLElement>(".now-ghost-rest")!;
+  const suggestionText = $("now-suggestion");
+  const suggestion = new FollowUpSuggestion();
+  /** The box's placeholder for the mode; the suggestion takes its place while it shows. */
+  let placeholder = text.placeholder;
   const files = filePicker(fileInput, filesList, () => queueMicrotask(() => render()));
   const model = initModelPicker({ onState: opts.onState, onError: (t) => flash(msg, t, "bad"), onTopup: () => opts.onTopup?.() });
   // The attach control is a label around a hidden input; make it keyboard-operable.
@@ -136,13 +147,26 @@ export function initComposer(opts: {
     return running.has(t.sessionId) ? "running" : "conversation";
   };
 
-  /** Grow with the text up to MAX_ROWS lines, then scroll inside. */
+  /** The follow-up suggestion after what is typed (or nothing), for eyes and for screen readers. */
+  const drawSuggestion = () => {
+    const shown = suggestion.shown(text.value);
+    ghost.hidden = shown === null;
+    ghostTyped.textContent = shown === null ? "" : text.value;
+    ghostRest.textContent = suggestion.rest(text.value) ?? "";
+    suggestionText.textContent = shown === null ? "" : suggestionDescription(shown);
+    if (shown === null) text.removeAttribute("aria-describedby");
+    else text.setAttribute("aria-describedby", suggestionText.id);
+    text.placeholder = shown === null ? placeholder : "";
+  };
+
+  /** Grow with the text (or the suggestion shown in it) up to MAX_ROWS lines, then scroll inside. */
   const fit = () => {
+    drawSuggestion();
     const cs = getComputedStyle(text);
     const line = parseFloat(cs.lineHeight) || 20;
     const max = line * MAX_ROWS + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
     text.style.height = "auto";
-    const full = text.scrollHeight;
+    const full = Math.max(text.scrollHeight, ghost.hidden ? 0 : ghost.offsetHeight);
     text.style.height = `${Math.min(full, max)}px`;
     text.style.overflowY = full > max ? "auto" : "hidden";
     form.classList.toggle("blank", !text.value.trim());
@@ -156,10 +180,20 @@ export function initComposer(opts: {
     }
   });
   let keyInterceptor: ((e: KeyboardEvent) => boolean) | null = null;
-  // Enter sends, Shift+Enter adds a line (like chat apps).
+  // Enter sends, Shift+Enter adds a line (like chat apps). Tab takes a shown suggestion, Esc dismisses it.
   text.addEventListener("keydown", (e) => {
     if (keyInterceptor?.(e)) {
       e.preventDefault();
+      return;
+    }
+    const took = suggestion.onKey(e, text.value);
+    if (took) {
+      e.preventDefault();
+      if (took !== "dismissed") {
+        text.value = took.accept;
+        text.setSelectionRange(text.value.length, text.value.length);
+      }
+      fit();
       return;
     }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -167,6 +201,12 @@ export function initComposer(opts: {
       form.requestSubmit();
     }
   });
+
+  /** A message is going out: the box empties, and this turn's suggestion must not come back before the next turn's. */
+  const dismissSuggestion = () => {
+    suggestion.dismiss();
+    fit();
+  };
 
   const clearInput = () => {
     text.value = "";
@@ -179,6 +219,7 @@ export function initComposer(opts: {
     if (!value) return sendEmpty();
     const m = mode();
     const t = target();
+    dismissSuggestion();
     void busy(
       submit,
       async () => {
@@ -215,6 +256,7 @@ export function initComposer(opts: {
     const t = target();
     const next = emptySend({ panelTab, mode: mode(), sessionId: t?.sessionId ?? null, hasFiles: files.files().length > 0, tabId: opts.tabId?.() ?? null });
     if ("hint" in next) return void flash(msg, next.hint);
+    dismissSuggestion();
     void busy(
       submit,
       async () => {
@@ -243,7 +285,9 @@ export function initComposer(opts: {
   function render(): void {
     const m = mode();
     const inChat = panelTab === "chat";
-    text.placeholder = m !== "new" ? CHAT_PLACEHOLDER : inChat ? SCREEN_PLACEHOLDER : NEW_PLACEHOLDER;
+    placeholder = m !== "new" ? CHAT_PLACEHOLDER : inChat ? SCREEN_PLACEHOLDER : NEW_PLACEHOLDER;
+    suggestion.setOffer(inChat && m === "conversation" ? offerOf(target()) : null);
+    fit();
     // In Chat an empty box can be sent: it looks at the page.
     const screenOk = inChat && m !== "running" && files.files().length === 0;
     form.classList.toggle("screen-ok", screenOk);
@@ -281,6 +325,10 @@ export function initComposer(opts: {
       // Keep the end of what is being dictated in view.
       text.scrollTop = text.scrollHeight;
     },
+    setDictating(on) {
+      suggestion.setDictating(on);
+      fit();
+    },
     send() {
       form.requestSubmit();
     },
@@ -297,6 +345,7 @@ export function initComposer(opts: {
     },
     async continueNow(sessionId) {
       const note = text.value.trim();
+      dismissSuggestion();
       flash(msg, "Continuing…");
       try {
         await uiRequest({ type: "run.continue", sessionId, ...(note ? { text: note } : {}), ...tab() });
@@ -320,6 +369,11 @@ export function initComposer(opts: {
   };
 
   render();
-  fit();
   return view;
+}
+
+/** The suggestion an ended turn left (SessionInfo.suggestion); a dismissal lasts until the next turn ends. */
+function offerOf(session: SessionInfo | null): SuggestionOffer | null {
+  if (!session?.suggestion) return null;
+  return { text: session.suggestion, turn: `${session.sessionId}@${session.endedAt ?? ""}` };
 }

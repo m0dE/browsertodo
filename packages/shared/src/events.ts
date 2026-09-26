@@ -49,7 +49,8 @@ export type AgentEvent =
     }
   /** A message the human typed into the running session. */
   | { type: "user_message"; text: string }
-  | { type: "task_end"; outcome: TaskOutcome; summary?: string; url?: string; reason?: string }
+  /** suggestion: the agent's proposed next request (TaskRunResult.suggestion). */
+  | { type: "task_end"; outcome: TaskOutcome; summary?: string; url?: string; reason?: string; suggestion?: string }
   | { type: "error"; text: string };
 
 /** Element picks of act steps (clicks and typing) in a turn: by Jev, or by Claude naming an index. */
@@ -74,7 +75,7 @@ export type BrainKind = "claude-code" | "claude-api" | "scripted" | "browsertodo
  * request, plus the follow-up messages the user sent in it. Each message is a
  * turn; every turn's events append to this session's event stream (a
  * follow-up starts with its user_message). startedAt/endedAt, outcome,
- * summary, url and reason describe the latest turn.
+ * summary, url, reason and suggestion describe the latest turn.
  */
 export interface SessionInfo {
   sessionId: string;
@@ -90,6 +91,11 @@ export interface SessionInfo {
   summary?: string;
   url?: string;
   reason?: string;
+  /**
+   * The agent's proposed next request after the latest turn: the chat's input
+   * box offers it faded (Tab takes it) until the next message is sent.
+   */
+  suggestion?: string;
   /** Adhoc runs: the full instructions and account, so the run can be continued later. */
   instructions?: string;
   account?: string;

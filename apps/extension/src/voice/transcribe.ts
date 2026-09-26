@@ -4,7 +4,7 @@
  * account API. Failures travel as data, mapped to plain messages here, since
  * UI request errors are plain strings.
  */
-import { OutOfCreditError, PlanRequiredError, VOICE_LIMITS } from "@browsertodo/shared";
+import { OutOfCreditError, PlanRequiredError, plansWithText, VOICE_LIMITS } from "@browsertodo/shared";
 import { ApiRequestError, NotSignedInError } from "../http-client.js";
 import { base64ToBytes, bytesToBase64 } from "../base64.js";
 import type { TranscribeClip } from "./dictation.js";
@@ -47,7 +47,7 @@ export function toVoiceError(err: unknown): VoiceError {
   if (err instanceof NotSignedInError) return new VoiceError(SIGNED_OUT);
   if (err instanceof ApiRequestError) {
     const plan = PlanRequiredError.safeParse(err.body);
-    if (plan.success) return new VoiceError({ kind: "plan", message: "Voice needs a paid plan.", fatal: true, url: plan.data.upgradeUrl });
+    if (plan.success) return new VoiceError({ kind: "plan", message: `Voice needs ${plansWithText("voice")}.`, fatal: true, url: plan.data.upgradeUrl });
     const credit = OutOfCreditError.safeParse(err.body);
     if (credit.success) {
       return new VoiceError({ kind: "credit", message: "You're out of usage credit. Top up to keep using voice.", fatal: true, url: credit.data.topupUrl });

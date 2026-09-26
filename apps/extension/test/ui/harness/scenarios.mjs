@@ -73,6 +73,9 @@ export const EMAIL_ANSWER = [
   "Want me to draft replies to Jordan and Sam?",
 ].join("\n");
 
+/** The follow-up the agent suggests after the email answer (task_complete's suggestion). */
+export const SUGGESTION = "Reply to Jordan and say I'll sign by Thursday";
+
 export function scenario(kind) {
   const now = Date.now();
   const iso = (minutes) => new Date(now + minutes * 60_000).toISOString();
@@ -282,7 +285,7 @@ export function scenario(kind) {
     sessions.unshift(conv);
     sessions.splice(1, 1);
   }
-  if (kind === "answer" || kind === "streaming") {
+  if (kind === "answer" || kind === "streaming" || kind === "suggest") {
     // A question answered in the chat. Turn 1: an older run that put the whole answer (Markdown) into
     // task_complete's summary. Turn 2: the answer as the agent's own text, then a one-line summary.
     // Made-up sample content only.
@@ -322,6 +325,11 @@ export function scenario(kind) {
     state.openConversations = ["s-ans"];
     sessions.unshift(ans);
     sessions.splice(1, 1);
+    if (kind === "suggest") {
+      // The turn ended with a follow-up suggestion: kept with the session, offered in the box.
+      ans.suggestion = SUGGESTION;
+      Object.assign(eventsBySession["s-ans"].at(-1), { suggestion: SUGGESTION });
+    }
     if (kind === "streaming") {
       // The second turn is still being written: the harness pushes its text in pieces.
       const live = { ...ans, endedAt: undefined, outcome: undefined, summary: undefined };

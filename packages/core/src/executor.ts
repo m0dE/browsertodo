@@ -42,6 +42,11 @@ export function picksEvent(picks: ElementPicks): AgentEvent | null {
   return { type: "status", text: picksText(picks), picks };
 }
 
+/** A task_* result with the agent's follow-up suggestion, when it gave one. */
+function withSuggestion(r: TaskRunResult, suggestion: string | undefined): TaskRunResult {
+  return suggestion ? { ...r, suggestion } : r;
+}
+
 /** Case- and slash-insensitive path key, for comparing upload paths with mediaPaths. */
 function pathKey(p: string): string {
   return p.trim().replace(/\\/g, "/").replace(/\/+/g, "/").toLowerCase();
@@ -192,15 +197,19 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
           outOfCredit: () => endTask({ outcome: "paused", reason: OUT_OF_CREDIT }, "Task paused: the account is out of usage credit. Stop now."),
         });
       case "task_complete": {
-        const { summary, url } = a as ToolArgsOf<"task_complete">;
+        const { summary, url, suggestion } = a as ToolArgsOf<"task_complete">;
         const r: TaskRunResult = { outcome: "done", summary };
         if (url) r.url = url;
-        return endTask(r, "Task recorded as done. Stop now.");
+        return endTask(withSuggestion(r, suggestion), "Task recorded as done. Stop now.");
       }
-      case "task_fail":
-        return endTask({ outcome: "failed", reason: (a as ToolArgsOf<"task_fail">).reason }, "Task recorded as failed. Stop now.");
-      case "task_pause":
-        return endTask({ outcome: "paused", reason: (a as ToolArgsOf<"task_pause">).reason }, "Task paused for the human. Stop now.");
+      case "task_fail": {
+        const { reason, suggestion } = a as ToolArgsOf<"task_fail">;
+        return endTask(withSuggestion({ outcome: "failed", reason }, suggestion), "Task recorded as failed. Stop now.");
+      }
+      case "task_pause": {
+        const { reason, suggestion } = a as ToolArgsOf<"task_pause">;
+        return endTask(withSuggestion({ outcome: "paused", reason }, suggestion), "Task paused for the human. Stop now.");
+      }
     }
   }
 

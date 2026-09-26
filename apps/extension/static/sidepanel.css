@@ -404,6 +404,21 @@ button.title-btn:hover { color: var(--accent); }
   line-height: 20px; min-height: 28px; overflow-y: hidden; scrollbar-width: thin;
 }
 .now textarea:focus-visible { outline: none; }
+/* The follow-up suggestion: a copy of the box's text box (same font, padding, wrapping) stacked under the transparent
+   textarea, its typed part invisible so the faded rest starts exactly where typing goes on (the <wbr> after it lets a
+   half-typed word end its line, as it does in the box). Drawn on the same opaque surface, it is antialiased alike. */
+.now-field { display: grid; grid-template-columns: minmax(0, 1fr); }
+.now-field > textarea, .now-ghost { grid-area: 1 / 1; }
+.now-ghost {
+  align-self: start; font: inherit; line-height: 20px; padding: 4px 4px 4px 0;
+  white-space: pre-wrap; overflow-wrap: break-word; color: var(--faint);
+}
+.now-ghost-typed { color: transparent; }
+.now-ghost-key {
+  display: inline-block; vertical-align: top; margin: 2px 0 0 6px; padding: 0 5px; height: 16px;
+  font: inherit; font-size: var(--text-xs); line-height: 14px; white-space: nowrap;
+  border: 1px solid var(--border); border-radius: 4px; color: var(--muted); background: var(--bg);
+}
 .now-bar { display: flex; align-items: center; gap: 4px; margin-left: -4px; cursor: default; }
 .now-bar button { height: 28px; padding: 0 12px; }
 /* An empty box can be sent in Chat (it looks at the page): only elsewhere does Send look unavailable. */

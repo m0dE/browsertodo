@@ -113,6 +113,21 @@ describe("startApiAgent", () => {
     expect(events.at(-1)).toEqual({ type: "task_end", outcome: "done", summary: "posted", url: "https://x.com/alice/status/1000" });
   });
 
+  it("task_complete's follow-up suggestion ends the turn's result and its task_end; the schema offers it", async () => {
+    const x = new FakeX({ url: "https://mail.example.com/inbox" });
+    const { session, server, events } = start(x, [
+      msg(text("You have one email from Jordan asking you to sign the lease by Thursday."), tool("task_complete", { summary: "Checked email", suggestion: "Reply to Jordan and say I'll sign by Thursday" })),
+    ]);
+    const result = await session.done;
+    expect(result).toEqual({ outcome: "done", summary: "Checked email", suggestion: "Reply to Jordan and say I'll sign by Thursday" });
+    expect(events.at(-1)).toEqual({ type: "task_end", outcome: "done", summary: "Checked email", suggestion: "Reply to Jordan and say I'll sign by Thursday" });
+    const req = server.requests[0]!.body;
+    for (const name of ["task_complete", "task_fail", "task_pause"]) {
+      expect(req.tools.find((t: any) => t.name === name).input_schema.properties.suggestion).toMatchObject({ type: "string", maxLength: 80 });
+    }
+    expect(req.system[0].text).toContain("give it as `suggestion`");
+  });
+
   it("with Jev, act replaces click/type for the whole task, even after a step is not confident", async () => {
     const x = new FakeX({ url: "https://x.com/home" });
     const jev = smartJev();

@@ -51,6 +51,8 @@ export interface TaskRunResult {
   summary?: string;
   url?: string;
   reason?: string;
+  /** The agent's proposed next request for the user (task_* `suggestion`), offered faded in the chat's input box. */
+  suggestion?: string;
   logPath?: string;
 }
 

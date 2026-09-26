@@ -24,6 +24,24 @@ function actArgs(d: { goal: string; index: string; steps: string }) {
   });
 }
 
+/** Longest follow-up suggestion (task_* `suggestion`): one short line the chat's input box can show faded. */
+export const MAX_SUGGESTION_CHARS = 80;
+
+/** What a follow-up suggestion must never propose (the system prompt and the task_* field say the same). */
+export const SUGGESTION_NEVER =
+  "Never suggest paying, buying or sending money, deleting anything, or posting or messaging anyone beyond what the user asked about";
+
+/** task_complete / task_fail / task_pause: the user's likely next request, which they accept (Tab) and send themselves. */
+const suggestionArg = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_SUGGESTION_CHARS)
+  .optional()
+  .describe(
+    `Only when the user very likely wants one specific next step: that request as a short imperative in their words, at most ${MAX_SUGGESTION_CHARS} characters (e.g. "Reply to Jordan and say I'll sign by Thursday"). Shown faded in their input box; it runs only if they accept and send it. Omit otherwise. ${SUGGESTION_NEVER}.`,
+  );
+
 export const ToolArgs = {
   navigate: z.object({ url: z.string().describe("Absolute URL to open") }),
   read_page: z.object({
@@ -75,9 +93,10 @@ export const ToolArgs = {
       .string()
       .describe("One short line for the task list: what was done (e.g. 'Answered the question', 'Posted the reply'). Not the answer itself: write answers as message text before this call"),
     url: z.string().optional().describe("URL of the created post or result, if any"),
+    suggestion: suggestionArg,
   }),
-  task_fail: z.object({ reason: z.string() }),
-  task_pause: z.object({ reason: z.string().describe("Why a human is needed") }),
+  task_fail: z.object({ reason: z.string(), suggestion: suggestionArg }),
+  task_pause: z.object({ reason: z.string().describe("Why a human is needed"), suggestion: suggestionArg }),
 } as const;
 
 export type ToolName = keyof typeof ToolArgs;
@@ -104,9 +123,9 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   switch_x_account: "Switch X (Twitter) to another signed-in account using X's account switcher. Verify with a screenshot afterwards.",
   get_credential: "Get the stored username and password for a site. Never use this for X.",
   task_complete:
-    "Finish the task successfully. Call exactly once when the task is fully done. For questions and information tasks, write the full answer to the user as normal message text first (Markdown is rendered), then call this with a one-line summary; never put the answer or long text in the summary.",
-  task_fail: "Finish the task as failed when it cannot be done.",
-  task_pause: "Stop and ask the human for help: login page, 2FA, CAPTCHA, warning, or anything uncertain.",
+    "Finish the task successfully. Call exactly once when the task is fully done. For questions and information tasks, write the full answer to the user as normal message text first (Markdown is rendered), then call this with a one-line summary; never put the answer or long text in the summary. Add a suggestion only when a next step is clearly likely.",
+  task_fail: "Finish the task as failed when it cannot be done. Add a suggestion only when a next request would clearly help (e.g. 'Try again after I sign in').",
+  task_pause: "Stop and ask the human for help: login page, 2FA, CAPTCHA, warning, or anything uncertain. Add a suggestion only when the user's likely reply is clear.",
 };
 
 /**

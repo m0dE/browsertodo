@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   BatchCreateInput,
   CreateTaskInput,
@@ -8,8 +9,10 @@ import {
   isXStatusUrl,
   isXTask,
   isXUrl,
+  MAX_SUGGESTION_CHARS,
   MAX_TABS_PER_CALL,
   RpcPeer,
+  SUGGESTION_NEVER,
   TOOL_DESCRIPTIONS,
   ToolArgs,
   mcpToolName,
@@ -171,6 +174,34 @@ describe("multi-tab tools", () => {
   });
 });
 
+describe("follow-up suggestion (task_* suggestion)", () => {
+  const ends = [
+    ["task_complete", { summary: "Summarized 4 unread emails" }],
+    ["task_fail", { reason: "The page would not load" }],
+    ["task_pause", { reason: "Sign in to example.com" }],
+  ] as const;
+
+  it("is optional on task_complete, task_fail and task_pause, trimmed, and capped at MAX_SUGGESTION_CHARS", () => {
+    for (const [name, args] of ends) {
+      expect(ToolArgs[name].safeParse(args).success).toBe(true);
+      const withIt = ToolArgs[name].safeParse({ ...args, suggestion: "  Reply to Jordan and say I'll sign by Thursday " });
+      expect(withIt.success && withIt.data.suggestion).toBe("Reply to Jordan and say I'll sign by Thursday");
+      expect(ToolArgs[name].safeParse({ ...args, suggestion: "x".repeat(MAX_SUGGESTION_CHARS) }).success).toBe(true);
+      expect(ToolArgs[name].safeParse({ ...args, suggestion: "x".repeat(MAX_SUGGESTION_CHARS + 1) }).success).toBe(false);
+      expect(ToolArgs[name].safeParse({ ...args, suggestion: "   " }).success).toBe(false);
+    }
+    expect(MAX_SUGGESTION_CHARS).toBe(80);
+  });
+
+  it("the schema the model sees states the cap and what never to suggest", () => {
+    const schema = z.toJSONSchema(ToolArgs.task_complete, { io: "input" }) as { properties: Record<string, { maxLength?: number; description?: string }>; required: string[] };
+    expect(schema.properties.suggestion!.maxLength).toBe(MAX_SUGGESTION_CHARS);
+    expect(schema.properties.suggestion!.description).toContain(SUGGESTION_NEVER);
+    expect(schema.required).toEqual(["summary"]);
+    for (const [name] of ends) expect(TOOL_DESCRIPTIONS[name]).toMatch(/suggestion/);
+  });
+});
+
 describe("isXTask", () => {
   it("names an X account (account field or @handle) or works on x.com", () => {
     expect(isXTask({ instructions: "Post: gm", account: "@alpha" })).toBe(true);
@@ -216,7 +247,9 @@ describe("url helpers", () => {
 describe("plan features", () => {
   it("a feature works when the catalog grants it and the plan is in good standing", async () => {
     const { PLAN_CATALOG, planAllows, VOICE_LIMITS } = await import("../src/index.js");
-    expect(Object.values(PLAN_CATALOG).filter((p) => p.voice).map((p) => p.id)).toEqual(["starter", "plus", "pro"]);
+    expect(Object.values(PLAN_CATALOG).filter((p) => p.voice).map((p) => p.id)).toEqual(["plus", "pro"]);
+    // Voice starts at Plus: Starter includes the TODO list and API keys but not voice.
+    expect(planAllows({ id: "starter", status: "active" }, "voice")).toBe(false);
     expect(planAllows({ id: "plus", status: "active" }, "voice")).toBe(true);
     expect(planAllows({ id: "pro", status: "past_due" }, "apiKeys")).toBe(true);
     expect(planAllows({ id: "starter", status: "canceled" }, "voice")).toBe(false);
@@ -244,8 +277,8 @@ describe("the locked TODO list", () => {
 describe("plan descriptions", () => {
   it("say what a plan includes, generated from the catalog flags", async () => {
     const { PLAN_CATALOG, planIncludesText } = await import("../src/index.js");
-    expect(planIncludesText(PLAN_CATALOG.free)).toBe("No TODO list, voice input or API keys");
-    expect(planIncludesText(PLAN_CATALOG.plus)).toBe("Includes TODO list, voice input and API keys");
-    expect(planIncludesText({ todo: true, voice: false, apiKeys: false })).toBe("Includes TODO list; no voice input or API keys");
+    expect(planIncludesText(PLAN_CATALOG.free)).toBe("No TODO list, voice input or API access");
+    expect(planIncludesText(PLAN_CATALOG.plus)).toBe("Includes TODO list, voice input and API access");
+    expect(planIncludesText({ todo: true, voice: false, apiKeys: false })).toBe("Includes TODO list; no voice input or API access");
   });
 });

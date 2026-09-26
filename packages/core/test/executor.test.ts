@@ -145,6 +145,22 @@ describe("createToolExecutor: plain tools", () => {
     ]);
   });
 
+  it("task_* tools pass the agent's follow-up suggestion on; an over-long one is refused with the cap", async () => {
+    const { exec, ended } = setup(new FakeX());
+    await exec.call("task_complete", { summary: "Summarized 4 unread emails", suggestion: "Reply to Jordan and say I'll sign by Thursday" });
+    await exec.call("task_fail", { reason: "signed out", suggestion: "Try again after I sign in" });
+    await exec.call("task_pause", { reason: "2FA", suggestion: "I've entered the code, go on" });
+    expect(ended).toEqual([
+      { outcome: "done", summary: "Summarized 4 unread emails", suggestion: "Reply to Jordan and say I'll sign by Thursday" },
+      { outcome: "failed", reason: "signed out", suggestion: "Try again after I sign in" },
+      { outcome: "paused", reason: "2FA", suggestion: "I've entered the code, go on" },
+    ]);
+    const long = await exec.call("task_complete", { summary: "done", suggestion: "x".repeat(81) });
+    expect(long.isError).toBe(true);
+    expect(long.text).toMatch(/Invalid arguments for task_complete: suggestion: .*80/);
+    expect(ended).toHaveLength(3);
+  });
+
   it("task_* tools without onTaskEnd answer that there is no task to end", async () => {
     const { exec } = setup(new FakeX(), { onTaskEnd: null });
     const r = await exec.call("task_complete", { summary: "x" });

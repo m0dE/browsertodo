@@ -41,11 +41,14 @@ export class ResultRecorder {
     if (result.summary) end.summary = result.summary;
     if (result.url) end.url = result.url;
     if (result.reason) end.reason = result.reason;
+    if (result.suggestion) end.suggestion = result.suggestion;
     this.deps.sessions.append(sessionId, end);
     const patch: Partial<SessionInfo> = { endedAt: this.deps.now().toISOString(), outcome: result.outcome };
     if (result.summary) patch.summary = result.summary;
     if (result.url) patch.url = result.url;
     if (result.reason) patch.reason = result.reason;
+    // Kept with the session, so a reopened panel offers it again until the next message is sent (reopen clears it).
+    if (result.suggestion) patch.suggestion = result.suggestion;
     if (result.logPath) patch.logPath = result.logPath;
     await this.deps.sessions.update(sessionId, patch);
   }

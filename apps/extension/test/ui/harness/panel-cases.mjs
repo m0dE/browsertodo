@@ -3,12 +3,15 @@
 // size's browser context and label, the checks (checks.mjs) and the panel helpers below.
 import { join } from "node:path";
 import { installChromeStub } from "./chrome-stub.mjs";
-import { EMAIL_ANSWER, scenario, SHORTCUT, thumbnail } from "./scenarios.mjs";
+import { EMAIL_ANSWER, scenario, SHORTCUT, SUGGESTION, thumbnail } from "./scenarios.mjs";
 
 export const SIZES = [
   { w: 360, h: 800 },
   { w: 480, h: 900 },
 ];
+
+/** A follow-up suggestion near the longest allowed (MAX_SUGGESTION_CHARS). */
+const LONG_SUGGESTION = "Reply to Jordan and Sam that I'll sign the lease on Thursday and call on Friday";
 
 const LONG_TEXT = [
   "Post the launch thread on X from @browsertodo:",
@@ -612,6 +615,221 @@ export const PANEL_CASES = [
       await p.close();
     },
   },
+  // The agent's follow-up suggestion: faded in the empty box exactly where typing starts, with a Tab hint; typing its
+  // start keeps the rest showing; Tab takes it into the box (not sent); anything else hides it and Tab moves the focus;
+  // Esc dismisses it; an empty Enter still looks at the page; sending clears it; voice hides it; TODO never shows it.
+  {
+    names: ["panel-suggest", "panel-suggest-typed", "panel-suggest-accepted", "panel-suggest-long"],
+    async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors, base }) {
+      await ctx.grantPermissions(["microphone"], { origin: base });
+      const box = (p) =>
+        p.evaluate(() => {
+          const t = document.getElementById("now-text");
+          const g = document.getElementById("now-ghost");
+          const desc = t.getAttribute("aria-describedby");
+          return {
+            value: t.value,
+            placeholder: t.placeholder,
+            ghost: g.hidden ? null : g.querySelector(".now-ghost-rest").textContent,
+            key: g.hidden ? null : g.querySelector(".now-ghost-key").textContent,
+            described: desc ? document.getElementById(desc).textContent : null,
+            focused: document.activeElement === t,
+            caretAtEnd: t.selectionStart === t.value.length && t.selectionEnd === t.value.length,
+          };
+        });
+      const expectBox = async (p, want, what) => {
+        const got = await box(p);
+        const bad = Object.entries(want).filter(([k, v]) => got[k] !== v);
+        if (bad.length) fail(`suggestion ${what}: ${bad.map(([k, v]) => `${k} ${JSON.stringify(got[k])}, want ${JSON.stringify(v)}`).join("; ")}`);
+      };
+      const sent = (p) => p.evaluate(() => window.__requests.filter((r) => r.type === "run.message" || r.type === "run.adhoc"));
+      const focusBox = (p) => p.evaluate(() => document.getElementById("now-text").focus());
+      const voiceIs = (p, states) => p.waitForFunction((s) => s.includes(document.querySelector(".voice-mic").dataset.state), states);
+
+      /**
+       * The box drawn two ways must match pixel for pixel (caret hidden): `a` and `b` are each the text in the box
+       * and CSS for that drawing. A one-pixel shift of `b` must show up, or the check would prove nothing.
+       */
+      const sameDrawing = async (p, what, a, b) => {
+        const caret = await p.addStyleTag({ content: "#now-text { caret-color: transparent !important; }" });
+        const rect = () => p.evaluate(() => JSON.parse(JSON.stringify(document.getElementById("now-text").getBoundingClientRect())));
+        const draw = async ({ value, css }, dx = [0]) => {
+          await p.evaluate((val) => {
+            const t = document.getElementById("now-text");
+            t.value = val;
+            t.dispatchEvent(new Event("input"));
+          }, value);
+          const style = await p.addStyleTag({ content: css });
+          const r = await rect();
+          const shots = [];
+          for (const x of dx) shots.push(await p.screenshot({ clip: { x: Math.round(r.x) + x, y: Math.round(r.y), width: Math.floor(r.width) - 2, height: Math.floor(r.height) }, animations: "disabled" }));
+          await style.evaluate((n) => n.remove());
+          return shots;
+        };
+        const [first] = await draw(a);
+        const [second, shifted] = await draw(b, [0, 1]);
+        await caret.evaluate((n) => n.remove());
+        await p.evaluate(() => {
+          const t = document.getElementById("now-text");
+          t.value = "";
+          t.dispatchEvent(new Event("input"));
+        });
+        const diff = await p.evaluate(
+          async (shots) => {
+            const load = (b64) =>
+              new Promise((res, rej) => {
+                const i = new Image();
+                i.onload = () => res(i);
+                i.onerror = rej;
+                i.src = `data:image/png;base64,${b64}`;
+              });
+            const pixels = (img) => {
+              const cv = document.createElement("canvas");
+              cv.width = img.width;
+              cv.height = img.height;
+              const x = cv.getContext("2d");
+              x.drawImage(img, 0, 0);
+              return x.getImageData(0, 0, img.width, img.height).data;
+            };
+            const [u0, v0, w0] = (await Promise.all(shots.map(load))).map(pixels);
+            const differ = (u, v) => {
+              if (u.length !== v.length) return Infinity;
+              let n = 0;
+              for (let i = 0; i < u.length; i += 4) if (Math.abs(u[i] - v[i]) + Math.abs(u[i + 1] - v[i + 1]) + Math.abs(u[i + 2] - v[i + 2]) > 24) n++;
+              return n;
+            };
+            return { same: differ(u0, v0), shifted: differ(u0, w0) };
+          },
+          [first, second, shifted].map((x) => x.toString("base64")),
+        );
+        if (diff.same !== 0) fail(`suggestion ${what}: ${diff.same} pixels differ`);
+        if (diff.shifted < 20) fail(`suggestion ${what}: the check cannot see a 1 px shift (${diff.shifted} pixels)`);
+      };
+      /** The box alone, as the user types into it. */
+      const BOX_ONLY = ".now-ghost { visibility: hidden !important; }";
+      /** Only the suggestion's faded rest drawn in the text colour (Tab hint hidden). */
+      const REST_AS_TEXT = ".now-ghost-rest { color: var(--text) !important; } .now-ghost-key { visibility: hidden !important; }";
+      /** The faded rest continues the typed text exactly where typing would: typed + rest look like the whole typed out. */
+      const expectAligned = (p, full, typed, what) => sameDrawing(p, `${what}: the faded text is not where typed text goes`, { value: full, css: BOX_ONLY }, { value: typed, css: REST_AS_TEXT });
+      /**
+       * The overlay lays out the typed part exactly as the box does (so the rest starts right after the cursor), also
+       * when a half-typed word ends a line: the box's own text vs the overlay's typed part drawn in its place.
+       */
+      const expectTypedAligned = (p, typed, what) =>
+        sameDrawing(
+          p,
+          `${what}: the overlay does not lay out the typed text like the box`,
+          { value: typed, css: BOX_ONLY },
+          { value: typed, css: "#now-text { color: transparent !important; } .now-ghost-typed { color: var(--text) !important; } .now-ghost-rest, .now-ghost-key { visibility: hidden !important; }" },
+        );
+
+      const p = await openPanel(ctx, "suggest", "#chat-log .ev-end");
+      await p.waitForSelector("#now-ghost:not([hidden])");
+      const described = `Suggestion: “${SUGGESTION}”. Press Tab to use it.`;
+      await expectBox(p, { value: "", ghost: SUGGESTION, key: "Tab", placeholder: "", described }, "in the empty box");
+      await expectAligned(p, SUGGESTION, "", "empty box");
+      await expectAligned(p, SUGGESTION, "Reply to Jor", "typed start");
+      await expectTypedAligned(p, "Reply to Jor", "typed start");
+      await focusBox(p);
+      await checkLayout(p, `suggest ${label}`);
+      await shoot(p, "panel-suggest", size, scheme);
+
+      // Typing its start (any case) keeps the rest showing after the typed text.
+      await p.keyboard.type("reply to");
+      await expectBox(p, { value: "reply to", ghost: SUGGESTION.slice("reply to".length), key: "Tab", described }, "after typing its start");
+      await checkLayout(p, `suggest-typed ${label}`);
+      await shoot(p, "panel-suggest-typed", size, scheme);
+
+      // Tab completes it in the box, cursor at the end, nothing sent.
+      await p.keyboard.press("Tab");
+      await expectBox(p, { value: `reply to${SUGGESTION.slice(8)}`, ghost: null, focused: true, caretAtEnd: true, described: null }, "after Tab");
+      if ((await sent(p)).length) fail(`suggestion: Tab sent ${JSON.stringify(await sent(p))}`);
+      await checkLayout(p, `suggest-accepted ${label}`);
+      await shoot(p, "panel-suggest-accepted", size, scheme);
+
+      // Anything else hides it, and Tab then moves the focus as usual; an emptied box shows it again.
+      await p.fill("#now-text", "Forward it");
+      await expectBox(p, { ghost: null, placeholder: "Message browsertodo…", described: null }, "after other text");
+      await p.keyboard.press("Tab");
+      if ((await box(p)).focused) fail("suggestion: with other text typed, Tab did not move the focus");
+      await p.fill("#now-text", "");
+      await expectBox(p, { ghost: SUGGESTION }, "after emptying the box");
+
+      // Voice input hides it while it writes into the box; cancelling restores the empty box, and the suggestion.
+      await p.click("#now-actions .voice-mic");
+      await voiceIs(p, ["opening", "listening"]);
+      await expectBox(p, { ghost: null }, "while voice starts");
+      await p.waitForFunction(() => document.getElementById("now-text").value.length > 0, null, { timeout: 15_000 });
+      await expectBox(p, { ghost: null }, "with dictated text");
+      await p.keyboard.press("Escape");
+      await voiceIs(p, ["idle"]);
+      await expectBox(p, { value: "", ghost: SUGGESTION }, "after voice was cancelled");
+
+      // Under TODO the box never offers it.
+      await p.click("#tab-btn-todo");
+      await expectBox(p, { ghost: null, described: null }, "under TODO");
+      await p.click("#tab-btn-chat");
+      await expectBox(p, { ghost: SUGGESTION }, "back in Chat");
+
+      // Esc dismisses it for this turn: the placeholder is back, Tab moves the focus, an empty Enter looks at the page.
+      await focusBox(p);
+      await p.keyboard.press("Escape");
+      await expectBox(p, { value: "", ghost: null, placeholder: "Message browsertodo…", described: null }, "after Esc");
+      await p.keyboard.press("Tab");
+      if ((await box(p)).focused) fail("suggestion: after Esc, Tab did not move the focus");
+      await focusBox(p);
+      await p.keyboard.press("Enter");
+      await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.message"));
+      const afterEsc = (await sent(p)).at(-1);
+      if (afterEsc?.sessionId !== "s-ans" || afterEsc?.text !== "" || afterEsc?.screen !== true) fail(`suggestion: empty Enter after Esc sent ${JSON.stringify(afterEsc)}`);
+      reportErrors(p, `suggest ${label}`);
+      await p.close();
+
+      // With it showing, an empty Enter still looks at the page (the suggestion is never sent by itself); sending clears it.
+      const q = await openPanel(ctx, "suggest", "#chat-log .ev-end");
+      await q.waitForSelector("#now-ghost:not([hidden])");
+      await focusBox(q);
+      await q.keyboard.press("Enter");
+      await q.waitForFunction(() => window.__requests.some((r) => r.type === "run.message"));
+      const screen = (await sent(q)).at(-1);
+      if (screen?.sessionId !== "s-ans" || screen?.text !== "" || screen?.screen !== true) fail(`suggestion: empty Enter with it shown sent ${JSON.stringify(screen)}`);
+      await expectBox(q, { value: "", ghost: null }, "after an empty send");
+      reportErrors(q, `suggest-empty-send ${label}`);
+      await q.close();
+
+      // Tab, then Enter: the suggestion goes out as the typed message.
+      const r = await openPanel(ctx, "suggest", "#chat-log .ev-end");
+      await r.waitForSelector("#now-ghost:not([hidden])");
+      await focusBox(r);
+      await r.keyboard.press("Tab");
+      await r.keyboard.press("Enter");
+      await r.waitForFunction(() => window.__requests.some((m) => m.type === "run.message"));
+      const took = (await sent(r)).at(-1);
+      if (took?.sessionId !== "s-ans" || took?.text !== SUGGESTION || took?.screen) fail(`suggestion: Tab, Enter sent ${JSON.stringify(took)}`);
+      await expectBox(r, { value: "", ghost: null }, "after sending it");
+      reportErrors(r, `suggest-send ${label}`);
+      await r.close();
+
+      // The longest suggestion (MAX_SUGGESTION_CHARS) wraps like typed text would, also with a typed start across the wrap.
+      const l = await openPanel(ctx, "suggest", "#chat-log .ev-end");
+      await l.evaluate((text) => {
+        const s = window.__data.sessions.find((x) => x.sessionId === "s-ans");
+        window.__push({ type: "session", session: { ...s, endedAt: new Date(Date.now() + 1000).toISOString(), suggestion: text } });
+      }, LONG_SUGGESTION);
+      await l.waitForFunction((t) => document.querySelector("#now-ghost .now-ghost-rest")?.textContent === t, LONG_SUGGESTION);
+      const lines = await l.evaluate(() => Math.round((document.getElementById("now-ghost").getBoundingClientRect().height - 8) / 20));
+      if (lines < 2) fail(`suggestion: the longest one did not wrap (${lines} line)`);
+      await expectAligned(l, LONG_SUGGESTION, "", "longest, empty box");
+      await expectAligned(l, LONG_SUGGESTION, LONG_SUGGESTION.slice(0, 20), "longest, typed start");
+      // A half-typed word at the end of a line stays there (as in the box); the rest goes on after it.
+      for (const n of [52, 55, 58]) await expectTypedAligned(l, LONG_SUGGESTION.slice(0, n), `longest, ${n} typed`);
+      await focusBox(l);
+      await checkLayout(l, `suggest-long ${label}`);
+      await shoot(l, "panel-suggest-long", size, scheme);
+      reportErrors(l, `suggest-long ${label}`);
+      await l.close();
+    },
+  },
   // Two tasks at once, each in its own tab: the status line counts them; Chat shows this tab's and a chip for the other tab's.
   {
     names: ["panel-parallel", "panel-parallel-newchat"],
@@ -1038,11 +1256,11 @@ export const PANEL_CASES = [
       {
         const p = await openPanel(ctx, "free", ".chat-empty");
         if ((await voiceState(p)) !== "locked") fail(`free plan mic ${await voiceState(p)}`);
-        if ((await p.getAttribute(mic, "title")) !== "Voice needs a paid plan") fail(`locked tooltip "${await p.getAttribute(mic, "title")}"`);
+        if ((await p.getAttribute(mic, "title")) !== "Voice needs the Plus or Pro plan") fail(`locked tooltip "${await p.getAttribute(mic, "title")}"`);
         await p.click(mic);
         await p.waitForSelector(".voice-tip:not([hidden])");
         const tipText = await p.textContent(".voice-tip");
-        if (!/Voice needs a paid plan/.test(tipText) || !/Get a plan/.test(tipText)) fail(`locked tip "${tipText}"`);
+        if (!/Voice needs the Plus or Pro plan/.test(tipText) || !/Get a plan/.test(tipText)) fail(`locked tip "${tipText}"`);
         await checkLayout(p, `voice-locked ${label}`);
         await shoot(p, "panel-voice-locked", size, scheme);
         await p.click(".voice-tip button.link");

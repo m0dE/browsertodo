@@ -205,6 +205,21 @@ describe("TaskRunner with ScriptedBrain", () => {
     await expect(runner.continueSession({ sessionId: "S1", text: "again", config: CONFIG })).rejects.toMatchObject({ code: HelperErrorCode.sessionEnded });
   });
 
+  it("task_complete's follow-up suggestion comes back with the result and its task_end; the system prompt asks for it", async () => {
+    let prompt = "";
+    const suggestion = "Reply to Jordan and say I'll sign by Thursday";
+    const { runner, events } = setup(new FakeX(), {
+      brain: (router) =>
+        customBrain(async (ctx) => {
+          prompt = ctx.systemPrompt;
+          await router.call(ctx.taskId, "task_complete", { summary: "Checked email", suggestion });
+        }),
+    });
+    expect(await runner.run(params({ instructions: "check my email" }, { config: { ...CONFIG, jevEnabled: false } }))).toMatchObject({ outcome: "done", summary: "Checked email", suggestion });
+    expect(events.at(-1)!.event).toEqual({ type: "task_end", outcome: "done", summary: "Checked email", suggestion });
+    expect(prompt).toContain("give it as `suggestion`");
+  });
+
   it("refuses the reserved interactive session id", async () => {
     await expect(setup(new FakeX()).runner.run(params({}, { sessionId: INTERACTIVE_TASK_ID }))).rejects.toThrow(/reserved/);
   });

@@ -101,6 +101,35 @@ describe("Runner: conversations", () => {
     expect(await h.sessions.list()).toHaveLength(1);
   });
 
+  it("the turn's follow-up suggestion is kept with the session (a reopened panel offers it) until the next message", async () => {
+    const h = harness();
+    const suggestion = "Reply to Jordan and say I'll sign by Thursday";
+    h.brain.script = () => ({ outcome: "done", summary: "Checked email", suggestion });
+    const { sessionId } = await h.runner.runAdhoc({ instructions: "check my email" });
+    await settle(h);
+    // Stored with the session, where a (re)opened panel reads it (sessions.events).
+    expect(await h.sessions.get(sessionId)).toMatchObject({ outcome: "done", suggestion });
+    expect((await h.sessions.eventsOf(sessionId)).at(-1)).toMatchObject({ type: "task_end", outcome: "done", suggestion });
+    // The next message starts a turn: the suggestion is gone, and a turn without one leaves none.
+    h.brain.continueScript = () => ({ outcome: "done", summary: "Replied" });
+    await h.runner.message(sessionId, suggestion);
+    expect((await h.sessions.get(sessionId))!.suggestion).toBeUndefined();
+    await settle(h);
+    expect(await h.sessions.get(sessionId)).toMatchObject({ outcome: "done", summary: "Replied" });
+    expect((await h.sessions.get(sessionId))!.suggestion).toBeUndefined();
+  });
+
+  it("a post that is not verified drops the follow-up suggestion (it assumed the post went out)", async () => {
+    const h = harness();
+    h.verify.mockResolvedValue({ ok: false, detail: "no such post" });
+    h.brain.script = () => ({ outcome: "done", summary: "posted", url: "https://x.com/alpha/status/9", suggestion: "Pin the post" });
+    const { sessionId } = await h.runner.runAdhoc({ instructions: "Post gm" });
+    await settle(h);
+    const s = (await h.sessions.get(sessionId))!;
+    expect(s.outcome).toBe("retry");
+    expect(s.suggestion).toBeUndefined();
+  });
+
   it("falls back to a fresh session with a summary when the agent session is gone", async () => {
     const h = harness();
     const sessionId = await firstTurn(h);

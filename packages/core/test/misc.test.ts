@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeHandle, TOOL_NAMES, type PageSnapshot } from "@browsertodo/shared";
+import { MAX_SUGGESTION_CHARS, normalizeHandle, SUGGESTION_NEVER, TOOL_NAMES, type PageSnapshot } from "@browsertodo/shared";
 import { SCREEN_HELP_TEXT } from "@browsertodo/shared";
 import { agentError, buildFollowUpMessage, buildSystemPrompt, buildTaskPrompt, classifyFailure, createJev, ENDED_WITHOUT_RESULT, EXITED_WITHOUT_RESULT, formatSnapshot, timeLimitReached, toolCallLimitExceeded, verifyXPost } from "../src/index.js";
 import { buildJevQuestions, buildJevState, jevFromClient, type JevClientLike } from "../src/jev.js";
@@ -219,6 +219,17 @@ describe("prompts", () => {
     expect(p).toContain("- task_complete:");
     expect(p).toContain("switch_x_account");
     expect(p).not.toMatch(/batching several small steps/);
+  });
+
+  it("system prompt: a follow-up suggestion only for a likely next step, short, accepted by the user, never risky", () => {
+    for (const jev of [false, true]) {
+      const p = buildSystemPrompt({ tools: TOOL_NAMES, jev });
+      expect(p).toContain("give it as `suggestion` in your task_complete, task_fail or task_pause call");
+      expect(p).toContain(`at most ${MAX_SUGGESTION_CHARS} characters`);
+      expect(p).toContain("runs only if they accept and send it");
+      expect(p).toContain("Omit it when no next step is clearly likely");
+      expect(p).toContain(SUGGESTION_NEVER);
+    }
   });
 
   it("a kept-open agent's system prompt adds the follow-up rules", () => {

@@ -115,13 +115,14 @@ export class SessionStore {
   /**
    * Starts the next turn of an ended conversation: its events keep appending
    * after the stored ones, and the latest-turn fields (endedAt, outcome,
-   * summary, url, reason) are cleared, then `patch` applied. Null when unknown.
+   * summary, url, reason, suggestion) are cleared, then `patch` applied. Null
+   * when unknown.
    */
   async reopen(sessionId: string, patch: Partial<SessionInfo> = {}): Promise<SessionInfo | null> {
     const s = await this.enqueue(async () => {
       const cur = await this.sessions.get(sessionId);
       if (!cur) return null;
-      const { endedAt: _e, outcome: _o, summary: _s, url: _u, reason: _r, ...rest } = cur;
+      const { endedAt: _e, outcome: _o, summary: _s, url: _u, reason: _r, suggestion: _g, ...rest } = cur;
       const next: SessionInfo = { ...rest, ...patch, sessionId };
       await this.sessions.put(sessionId, next);
       const last = (await this.events.keys(`${sessionId}:`)).at(-1);

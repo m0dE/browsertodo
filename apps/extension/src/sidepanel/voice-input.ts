@@ -12,7 +12,7 @@
  *   way to pick a plan. The microphone is asked for on mic-permission.html,
  *   since a side panel cannot show Chrome's prompt.
  */
-import { errorMessage, VOICE_LIMITS, VOICE_TUNING } from "@browsertodo/shared";
+import { errorMessage, plansWithText, VOICE_LIMITS, VOICE_TUNING } from "@browsertodo/shared";
 import { Dictation, type AudioSource, type DictationResult, type StopReason, type TranscribeClip } from "../voice/dictation.js";
 import { VoiceDraft } from "../voice/draft.js";
 import type { MicPermission } from "../voice/mic-access.js";
@@ -23,7 +23,8 @@ import { h, restartAnimation } from "../ui/dom.js";
 /** What the mic button shows. */
 export type VoiceUiState = "locked" | "idle" | "opening" | "listening" | "transcribing";
 
-export const LOCKED_TEXT = "Voice needs a paid plan";
+/** From the plan catalog, e.g. "Voice needs the Plus or Pro plan". */
+export const LOCKED_TEXT = `Voice needs ${plansWithText("voice")}`;
 export const LISTENING_CAPTION = "Listening… Esc to cancel · Enter to send";
 export const FINISHING_CAPTION = "Finishing…";
 
@@ -65,7 +66,7 @@ export function errorTip(err: unknown, links: { openPlans(): void; openUrl(url: 
 const isMicRefused = (err: unknown) => (err as { name?: string } | null)?.name === "NotAllowedError";
 
 export interface VoiceInputDeps {
-  composer: Pick<ComposerView, "actionSlot" | "draft" | "setDraft" | "send" | "focus" | "interceptKeys">;
+  composer: Pick<ComposerView, "actionSlot" | "draft" | "setDraft" | "setDictating" | "send" | "focus" | "interceptKeys">;
   transcribe: TranscribeClip;
   createSource(): AudioSource;
   mic: {
@@ -144,6 +145,7 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
     const active = ui === "listening" || ui === "transcribing" || ui === "opening";
     orb.hidden = !active;
     orb.dataset.state = ui;
+    composer.setDictating(active);
     caption.textContent = ui === "transcribing" ? FINISHING_CAPTION : LISTENING_CAPTION;
     if (!active) setLevel(0);
   }

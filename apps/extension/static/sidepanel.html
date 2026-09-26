@@ -158,7 +158,12 @@
       <p id="now-msg" class="msg"></p>
       <form id="now-form" class="now">
         <ul id="now-files-list" class="files"></ul>
-        <textarea id="now-text" rows="1" placeholder="Do this now, e.g. “Post ‘good morning’ on X”" aria-label="Task to do now"></textarea>
+        <!-- The agent's follow-up suggestion shows faded under the (transparent) box, laid out exactly like the typed text (suggestion.ts). -->
+        <div class="now-field">
+          <div id="now-ghost" class="now-ghost" aria-hidden="true" hidden><span class="now-ghost-typed"></span><wbr><span class="now-ghost-rest"></span><kbd class="now-ghost-key">Tab</kbd></div>
+          <textarea id="now-text" rows="1" placeholder="Do this now, e.g. “Post ‘good morning’ on X”" aria-label="Task to do now"></textarea>
+        </div>
+        <span id="now-suggestion" class="sr-only"></span>
         <div class="now-bar">
           <label id="now-attach" class="now-tool" title="Attach files" aria-label="Attach files" role="button" tabindex="0">
             <input id="now-files" type="file" multiple hidden />

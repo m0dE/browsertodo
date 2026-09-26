@@ -59,11 +59,10 @@ export const PlanFeature = z.enum(["todo", "voice", "apiKeys"]);
 export type PlanFeature = z.infer<typeof PlanFeature>;
 
 /** How a feature reads in plan descriptions: `name` inside a sentence, `has` / `lacks` as a plan card's line. */
-export const PLAN_FEATURE_TEXT: Readonly<Record<PlanFeature, { name: string; has: string; lacks: string }>> = {
-  todo: { name: "TODO list", has: "Cloud TODO list with scheduled runs", lacks: "No cloud TODO list" },
-  voice: { name: "voice input", has: "Voice input in the side panel", lacks: "No voice input" },
-  apiKeys: { name: "API keys", has: "API keys for your scripts", lacks: "No API keys" },
-};
+const FeatureText = z.object({ name: z.string(), has: z.string(), lacks: z.string() });
+export const PLAN_FEATURE_TEXT: Readonly<Record<PlanFeature, z.infer<typeof FeatureText>>> = z
+  .object({ todo: FeatureText, voice: FeatureText, apiKeys: FeatureText })
+  .parse(catalog.features);
 
 /** "a", "a and b", "a, b and c". */
 function listOf(items: string[], last: "and" | "or"): string {
@@ -89,15 +88,26 @@ export const NOT_SET_UP = {
   voice: "Voice input is not set up on this server yet",
 } as const;
 
-/** The `message` of a 403 plan_required, per feature. */
-export const PLAN_REQUIRED_MESSAGES: Readonly<Record<PlanFeature, string>> = {
-  apiKeys: "API keys need a paid plan.",
-  voice: "Voice input needs a paid plan.",
-  todo: "The TODO list needs a paid plan.",
-};
-
 /** The plans (decided by the owner; docs/BILLING-CONTRACT.md). The one plan table: API, dashboard, extension and the Stripe setup script read it. */
 export const PLAN_CATALOG: Readonly<Record<PlanId, PlanCatalogEntry>> = z.record(PlanId, PlanCatalogEntry).parse(catalog.plans);
+
+/** Which plans include a feature, from the catalog: "a paid plan" when every paid plan has it, else e.g. "the Plus or Pro plan". */
+export function plansWithText(feature: PlanFeature): string {
+  const paid = Object.values(PLAN_CATALOG).filter((p) => p.priceCents > 0);
+  const having = paid.filter((p) => p[feature]);
+  return having.length === paid.length ? "a paid plan" : `the ${listOf(having.map((p) => p.name), "or")} plan`;
+}
+
+const REQUIRED_SUBJECT: Readonly<Record<PlanFeature, string>> = {
+  apiKeys: "API keys need",
+  voice: "Voice input needs",
+  todo: "The TODO list needs",
+};
+
+/** The `message` of a 403 plan_required, per feature, e.g. "Voice input needs the Plus or Pro plan." */
+export const PLAN_REQUIRED_MESSAGES: Readonly<Record<PlanFeature, string>> = Object.fromEntries(
+  PlanFeature.options.map((f) => [f, `${REQUIRED_SUBJECT[f]} ${plansWithText(f)}.`]),
+) as Record<PlanFeature, string>;
 
 /** The Stripe API version the server calls with and pins its webhook endpoint to. */
 export const STRIPE_API_VERSION: string = catalog.stripe.apiVersion;

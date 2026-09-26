@@ -6,7 +6,8 @@
 // --claude: real headless Claude Code through the helper (registered like test/e2e/run-e2e.mjs), on the
 // verify-email fixture: the sign-up page says "We sent a verification link to test@example.com", the fake mailbox
 // is served as https://mail.google.com. Measures whether the empty message makes the agent open the mail and
-// click the link, and whether a chat on chrome://version still gets work done in other tabs.
+// click the link, and whether a chat on chrome://version still gets work done in other tabs. Then "check my email" in
+// the mailbox's tab: the follow-up suggestion the agent proposes (if any) shows faded in the panel's box.
 //
 // Usage: pnpm build && node apps/extension/test/screen.e2e.mjs [--headed] [--claude] [--email=you@gmail.com]
 // --email: the address the sign-up page names (default test@example.com, a reserved example domain).
@@ -27,6 +28,8 @@ const RESTRICTED_STATUS = "Chrome doesn't let extensions see this page; browsert
 /** How long a key press gets to reach the extension's command handler before it counts as not delivered. */
 const KEY_PRESS_GRACE_MS = 1500;
 const RUN_TIMEOUT = claude ? 8 * 60_000 : 15_000;
+/** The fake brain's follow-up suggestion after "check my email". */
+const FAKE_SUGGESTION = "Reply to Example App";
 
 const emailArg = process.argv.find((a) => a.startsWith("--email="))?.slice(8);
 // The fake mailbox is https://mail.google.com (the browser ignores certificate errors).
@@ -51,10 +54,11 @@ try {
   if (!claude) {
     // The fake brain: records the task it got, then looks like the agent is told to (screenshot, read_page).
     await installFakeBrain(sw, {
-      makeAct: () => {
+      arg: FAKE_SUGGESTION,
+      makeAct: (suggestion) => {
         const runs = (globalThis.__runs = []);
         /** task: the AgentTask of a first turn (the prompt is built from it); text: a next turn's message. */
-        return async (opts, _name, kind) => {
+        return async (opts, name, kind) => {
           const run = { ...(kind === "start" ? { task: opts.task } : { text: opts.text }), shot: null, url: null, error: null };
           runs.push(run);
           try {
@@ -69,7 +73,7 @@ try {
             run.error = String(e?.message ?? e);
           }
           opts.onEvent({ type: "assistant_text", text: `looked at ${run.url}` });
-          return "looked";
+          return name === "check my email" ? { summary: "looked", suggestion } : "looked";
         };
       },
     });
@@ -211,6 +215,53 @@ try {
     console.log(`     outcome: ${s.outcome}${s.reason ? ` (${s.reason})` : ""}; verified before=${beforeVerified}`);
     assert.notEqual(s.outcome, "failed", `failed: ${s.reason}`);
     return `${s.outcome}, ${tools.length} tool calls`;
+  });
+  await step("'check my email' in the mailbox's tab: the agent's follow-up suggestion shows faded in the box; Tab takes it without sending", async () => {
+    const mail = await context.newPage();
+    await mail.goto("https://mail.google.com/");
+    const mailTab = await bt(async (w) => {
+      const [t] = (await chrome.tabs.query({ url: "https://mail.google.com/*" })).sort((a, b) => b.id - a.id);
+      if (t.windowId !== w) await chrome.tabs.move(t.id, { windowId: w, index: -1 });
+      await chrome.tabs.update(t.id, { active: true });
+      return t.id;
+    }, windowId);
+    await waitFor(() => panel.evaluate(() => !!document.querySelector("#chat-log .chat-empty")), "the mailbox tab's new chat");
+    await panel.fill("#now-text", "check my email");
+    await panel.focus("#now-text");
+    await panel.keyboard.press("Enter");
+    const sessionId = await waitFor(() => bt((t) => globalThis.__browsertodo.tabChats.get(t), mailTab), "the chat bound to the mailbox tab", { timeout: 15_000 });
+    const s = await runEnded(sessionId);
+    const answer = (await eventsOf(sessionId)).filter((e) => e.type === "assistant_text").at(-1)?.text ?? "";
+    if (claude) {
+      console.log(`     answer: ${answer.slice(0, 400).replace(/\n/g, " / ")}`);
+      console.log(`     outcome: ${s.outcome}; summary: ${s.summary ?? ""}; suggestion: ${s.suggestion === undefined ? "(none)" : JSON.stringify(s.suggestion)}`);
+    } else {
+      assert.equal(s.suggestion, FAKE_SUGGESTION);
+    }
+    if (!s.suggestion) return `${s.outcome}; the agent proposed no follow-up`;
+    // Faded in the empty box, told to screen readers; Tab puts it in the box and sends nothing.
+    await waitFor(() => panel.evaluate((t) => document.querySelector("#now-ghost:not([hidden]) .now-ghost-rest")?.textContent === t, s.suggestion), "the suggestion in the box");
+    const described = await panel.evaluate(() => document.getElementById(document.getElementById("now-text").getAttribute("aria-describedby"))?.textContent);
+    assert.equal(described, `Suggestion: “${s.suggestion}”. Press Tab to use it.`);
+    await panel.focus("#now-text");
+    await panel.keyboard.press("Tab");
+    assert.equal(await panel.inputValue("#now-text"), s.suggestion);
+    assert.equal(await panel.evaluate(() => document.getElementById("now-ghost").hidden), true);
+    await sleep(500);
+    const after = await ui({ type: "sessions.events", sessionId });
+    assert.equal(after.session.turns ?? 1, 1, "Tab sent nothing");
+    assert.ok(after.session.endedAt, "no new turn started");
+    // Emptied, the box offers it again; an empty Enter still looks at the page (the fake brain only: it is quick).
+    await panel.fill("#now-text", "");
+    await waitFor(() => panel.evaluate(() => !document.getElementById("now-ghost").hidden), "the suggestion back in the emptied box");
+    if (claude) return `${s.outcome}; suggestion ${JSON.stringify(s.suggestion)} shown faded, Tab took it`;
+    await panel.keyboard.press("Enter");
+    const next = await sessionWhen(sw, sessionId, "the empty message's turn to end", { timeout: RUN_TIMEOUT, until: (x) => (x.turns ?? 1) === 2 && !!x.endedAt });
+    const users = (await eventsOf(sessionId)).filter((e) => e.type === "user_message").map((e) => e.text);
+    assert.equal(users.at(-1), SCREEN, `the empty Enter's message: ${JSON.stringify(users)}`);
+    assert.equal(next.suggestion, undefined, "the new turn left no suggestion");
+    await waitFor(() => panel.evaluate(() => document.getElementById("now-ghost").hidden), "the suggestion gone after sending");
+    return `suggestion ${JSON.stringify(s.suggestion)} shown faded, Tab took it without sending; an empty Enter then looked at the page`;
   });
 } finally {
   await ext.close();

@@ -49,7 +49,7 @@ describe("AccountApi.transcribe", () => {
   });
 
   it.each([
-    [403, { error: "plan_required", feature: "voice", message: "Voice input needs a paid plan.", upgradeUrl: "https://dash.test/billing" }, "plan", "Voice needs a paid plan.", true, "https://dash.test/billing"],
+    [403, { error: "plan_required", feature: "voice", message: "Voice input needs the Plus or Pro plan.", upgradeUrl: "https://dash.test/billing" }, "plan", "Voice needs the Plus or Pro plan.", true, "https://dash.test/billing"],
     [402, { error: "out_of_credit", message: "x", topupUrl: "https://dash.test/billing" }, "credit", "You're out of usage credit. Top up to keep using voice.", true, "https://dash.test/billing"],
     [401, { error: "invalid key" }, "signed-out", "Log in to use voice.", true, undefined],
     [413, { error: "audio is longer than 60 seconds" }, "too-long", "Voice messages can be up to 60 seconds.", true, undefined],
@@ -80,7 +80,7 @@ describe("the panel's transcriber (through the background)", () => {
   });
 
   it("rejects with the VoiceError the background reported", async () => {
-    const send = async (): Promise<VoiceTranscribeResult> => ({ error: { kind: "plan", message: "Voice needs a paid plan.", fatal: true, url: "https://x" } });
+    const send = async (): Promise<VoiceTranscribeResult> => ({ error: { kind: "plan", message: "Voice needs the Plus or Pro plan.", fatal: true, url: "https://x" } });
     const err = await panelTranscriber(send)(wav, req).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(VoiceError);
     expect(err).toMatchObject({ kind: "plan", fatal: true, url: "https://x" });
@@ -110,7 +110,8 @@ describe("voiceAllowed", () => {
       cancelAtPeriodEnd: false,
     });
     expect(voiceAllowed(plan("free", "none"))).toBe(false);
-    expect(voiceAllowed(plan("starter", "active"))).toBe(true);
+    expect(voiceAllowed(plan("starter", "active"))).toBe(false); // voice starts at Plus
+    expect(voiceAllowed(plan("plus", "active"))).toBe(true);
     expect(voiceAllowed(plan("pro", "past_due"))).toBe(true);
     expect(voiceAllowed(plan("plus", "canceled"))).toBe(false);
     expect(voiceAllowed(undefined)).toBe(false);

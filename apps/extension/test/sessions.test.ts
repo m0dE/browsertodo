@@ -44,7 +44,7 @@ describe("SessionStore", () => {
     await store.create(info("a", "2026-09-24T10:00:00Z"));
     store.append("a", { type: "status", text: "one" });
     store.append("a", { type: "task_end", outcome: "done", summary: "s" });
-    await store.update("a", { outcome: "done", endedAt: "2026-09-24T10:01:00Z", summary: "s", url: "u", reason: "r" });
+    await store.update("a", { outcome: "done", endedAt: "2026-09-24T10:01:00Z", summary: "s", url: "u", reason: "r", suggestion: "Reply to Jordan" });
     // A new store (the service worker restarted) knows nothing of the sequence.
     const next = new SessionStore(db);
     const pushed: SessionInfo[] = [];

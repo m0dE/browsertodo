@@ -87,6 +87,33 @@ describe("mcp-server.js over stdio", () => {
     }
   });
 
+  it("task_* take an optional follow-up suggestion of at most 80 characters, relayed as given", async () => {
+    const client = await connect("task_complete,task_fail,task_pause");
+    try {
+      const { tools } = await client.listTools();
+      for (const t of tools) {
+        const props = (t.inputSchema as any).properties;
+        expect(props.suggestion).toMatchObject({ type: "string", maxLength: 80 });
+        expect(props.suggestion.description).toMatch(/runs only if they accept and send it/);
+        expect((t.inputSchema as any).required ?? []).not.toContain("suggestion");
+      }
+      expect(tools.find((t) => t.name === "task_complete")!.description).toMatch(/suggestion/);
+
+      received.length = 0;
+      const args = { summary: "Checked email", suggestion: "Reply to Jordan and say I'll sign by Thursday" };
+      await client.callTool({ name: "task_complete", arguments: args });
+      expect(received).toEqual([{ taskId: "T9", name: "task_complete", args }]);
+
+      const long = await client
+        .callTool({ name: "task_complete", arguments: { summary: "x", suggestion: "x".repeat(81) } })
+        .catch((e: Error) => ({ isError: true, error: e }));
+      expect(long.isError).toBe(true);
+      expect(received).toHaveLength(1);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("offers act only when the helper allows it", async () => {
     const withAct = await connect("act,read_page");
     try {

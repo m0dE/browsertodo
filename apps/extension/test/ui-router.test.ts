@@ -343,10 +343,10 @@ describe("UiRouter: account", () => {
     expect(await t.req({ type: "voice.transcribe", wav, speechMs: 900, context: "Open", sessionId: "s1" })).toEqual({ text: "heard 8 bytes" });
     expect(t.account.transcribe).toHaveBeenCalledWith(new TextEncoder().encode("RIFF1234"), { speechMs: 900, context: "Open", sessionId: "s1" });
     t.account.transcribe.mockRejectedValueOnce(
-      new ApiRequestError(403, "plan_required", { error: "plan_required", feature: "voice", message: "Voice input needs a paid plan.", upgradeUrl: "https://dash.test/billing" }),
+      new ApiRequestError(403, "plan_required", { error: "plan_required", feature: "voice", message: "Voice input needs the Plus or Pro plan.", upgradeUrl: "https://dash.test/billing" }),
     );
     expect(await t.req({ type: "voice.transcribe", wav, speechMs: 900 })).toEqual({
-      error: { kind: "plan", message: "Voice needs a paid plan.", fatal: true, url: "https://dash.test/billing" },
+      error: { kind: "plan", message: "Voice needs the Plus or Pro plan.", fatal: true, url: "https://dash.test/billing" },
     });
     t.account.transcribe.mockRejectedValueOnce(new NotSignedInError());
     expect(await t.req({ type: "voice.transcribe", wav, speechMs: 900 })).toMatchObject({ error: { kind: "signed-out" } });

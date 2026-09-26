@@ -1,5 +1,5 @@
 /** System prompt and per-task prompt for both brains. */
-import { toolDescription, xProfileUrl, type AgentTask, type RestrictedPage, type ToolName } from "@browsertodo/shared";
+import { MAX_SUGGESTION_CHARS, SUGGESTION_NEVER, toolDescription, xProfileUrl, type AgentTask, type RestrictedPage, type ToolName } from "@browsertodo/shared";
 
 /** Framing of a follow-up message (the next turn of a conversation), so the agent knows it continues the same conversation. */
 export const FOLLOW_UP_PREFIX = "Next message from the user (same conversation; the browser tab is as you left it): ";
@@ -19,6 +19,14 @@ const FOLLOW_UP_RULES = [
 
 const POST_URL_RULE =
   'A post URL contains /status/ (https://x.com/<handle>/status/<id>); never report the home page or a profile page as the post URL. After posting, X usually stays on the current page and shows a "Your post was sent" message with a View link: call read_page and use that link\'s href. If there is no such link, open https://x.com/<handle without @> and use the /status/ link of your newest post whose text matches what you posted.';
+
+/** The follow-up the agent may propose when it ends a turn (task_* `suggestion`); the user accepts it or not. */
+const SUGGESTION_RULE = [
+  "When what you found or did points to one specific next step the user very likely wants (an email that needs their reply, a link or form waiting on them, a retry once they have signed in), give it as `suggestion` in your task_complete, task_fail or task_pause call:",
+  `the request in the user's own words, a short imperative of at most ${MAX_SUGGESTION_CHARS} characters (e.g. "Reply to Jordan and say I'll sign by Thursday", "Open the verification link", "I've signed in, go on").`,
+  "It is shown faded in the user's input box and runs only if they accept and send it. Omit it when no next step is clearly likely; never pad it with a generic offer.",
+  `${SUGGESTION_NEVER}.`,
+].join(" ");
 
 /**
  * System prompt for either brain. followUps: the agent stays open after its
@@ -70,6 +78,7 @@ export function buildSystemPrompt(opts: { tools: ToolName[]; jev: boolean; follo
       : "Attach media with upload, using the exact absolute file paths listed in the task, on an input of type=file from read_page.",
     "Do only what the task asks. Do not like, follow, reply or post anything else.",
     `Finish by calling exactly one of task_complete, task_fail or task_pause, then stop. For questions and information tasks, first write the answer as message text, then call task_complete with a one-line summary. When you create a post, include its URL in task_complete. ${POST_URL_RULE}`,
+    SUGGESTION_RULE,
   );
 
   const prompt = `${intro}

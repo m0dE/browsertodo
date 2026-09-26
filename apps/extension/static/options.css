@@ -162,20 +162,9 @@ input[aria-invalid="true"] { border-color: var(--bad); }
 .fact small { color: var(--muted); font-size: var(--text-sm); }
 .fact small:empty { display: none; }
 .fact[data-tone="warn"] b { color: var(--warn); }
-.acct-billing { display: flex; flex-direction: column; gap: 10px; }
-.plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
-.plan {
-  display: flex; flex-direction: column; align-items: stretch; gap: 2px; text-align: left; white-space: normal;
-  padding: 10px 12px; border-radius: var(--radius);
-}
-.plan b { font-weight: 600; }
-.plan small { color: var(--muted); font-size: var(--text-sm); }
-.plan:hover { border-color: var(--accent); }
-.topups { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.topups:empty { display: none; }
-.topups > span { color: var(--muted); font-size: var(--text-md); }
-.flash-target { animation: flash 1.2s ease; border-radius: var(--radius-lg); }
-@keyframes flash { 0%, 40% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent); } 100% { box-shadow: 0 0 0 3px transparent; } }
+/* The one billing button: it opens the dashboard's Billing page. */
+.acct-billing, .keys-gate { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.billing-open { min-width: 200px; }
 
 /* API keys */
 .keys-body { display: flex; flex-direction: column; gap: 10px; }

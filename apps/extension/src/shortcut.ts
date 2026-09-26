@@ -14,16 +14,21 @@ export const SHORTCUTS_URL = "chrome://extensions/shortcuts";
 const MAC_SYMBOLS: Readonly<Record<string, string>> = { command: "⌘", macctrl: "⌃", ctrl: "⌘", alt: "⌥", option: "⌥", shift: "⇧" };
 /** The order macOS menus list modifiers in the way the user reads it here: ⌘⌃⌥⇧, then the key. */
 const MAC_ORDER = ["⌘", "⌃", "⌥", "⇧"];
+/** Keys Chrome names in words that read as their character ("Ctrl+Period" is Ctrl+.). */
+const KEY_CHARS: Readonly<Record<string, string>> = { period: ".", comma: "," };
 
 /**
- * A shortcut as the user reads it: "Ctrl+Shift+K" elsewhere, "⌘⇧K" on a Mac
- * (Chrome reports Mac shortcuts as symbols already, e.g. "⇧⌘K"; either way
- * the modifiers come in one order).
+ * A shortcut as the user reads it: "Ctrl+." (Chrome says "Ctrl+Period") or
+ * "Ctrl+Shift+K" elsewhere, "⌘." or "⌘⇧K" on a Mac (Chrome reports Mac
+ * shortcuts as symbols already, e.g. "⇧⌘K"; either way the modifiers come
+ * in one order).
  */
 export function shortcutLabel(shortcut: string, mac: boolean): string {
   const s = shortcut.trim();
-  if (!mac || !s) return s;
-  const parts = s.includes("+") ? s.split("+").map((p) => MAC_SYMBOLS[p.trim().toLowerCase()] ?? p.trim()) : [...s];
+  if (!s) return s;
+  const named = (key: string) => KEY_CHARS[key.trim().toLowerCase()] ?? key.trim();
+  if (!mac) return s.split("+").map(named).join("+");
+  const parts = s.includes("+") ? s.split("+").map((p) => MAC_SYMBOLS[p.trim().toLowerCase()] ?? named(p)) : [...s];
   const mods = MAC_ORDER.filter((m) => parts.includes(m));
   const keys = parts.filter((p) => !MAC_ORDER.includes(p));
   return [...mods, ...keys].join("");

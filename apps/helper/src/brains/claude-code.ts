@@ -11,7 +11,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { dirname } from "node:path";
 import { DeltaBatcher, MAX_ASSISTANT_TEXT, clipEventText, type AgentEvent } from "@browsertodo/shared";
-import { humanMessage } from "@browsertodo/core";
+import { humanMessage, plainErrorText } from "@browsertodo/core";
 import { claudeEnv, isolatedClaudeArgs, killTree } from "../claude-process.js";
 import { LineSplitter } from "../line-framing.js";
 import type { Brain, BrainContext } from "./brain.js";
@@ -100,7 +100,7 @@ export class ClaudeStreamMapper {
       return out;
     }
     if (ev.type === "result" && (ev.is_error === true || (typeof ev.subtype === "string" && ev.subtype !== "success"))) {
-      const detail = typeof ev.result === "string" && ev.result.trim() ? ev.result : typeof ev.subtype === "string" ? ev.subtype : "error";
+      const detail = typeof ev.result === "string" && ev.result.trim() ? plainErrorText(ev.result.trim()) : typeof ev.subtype === "string" ? ev.subtype : "error";
       return [{ type: "error", text: clipEventText(`Claude Code: ${detail}`) }];
     }
     if (ev.type === "system" && ev.subtype === "init") {
@@ -137,6 +137,23 @@ export class ClaudeStreamMapper {
 export function isNoisyStreamLine(line: unknown): boolean {
   const ev = asStreamLine(line);
   return ev?.type === "stream_event" || (ev?.type === "system" && ev.subtype === "thinking_tokens");
+}
+
+/**
+ * The run log's copy of a stream-json line: base64 data (the screenshots in
+ * tool results, each hundreds of KB and already saved beside the log as a
+ * file) replaced by its size.
+ */
+export function withoutBase64Data(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutBase64Data);
+  if (!value || typeof value !== "object") return value;
+  const obj = value as Record<string, unknown>;
+  if (obj.type === "base64" && typeof obj.data === "string") {
+    return { ...obj, data: `[${Math.ceil((obj.data.length * 3) / 4 / 1024)} KB of base64 data not logged]` };
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) out[k] = withoutBase64Data(v);
+  return out;
 }
 
 export class ClaudeCodeBrain implements Brain {
@@ -225,7 +242,7 @@ export class ClaudeCodeBrain implements Brain {
             ctx.log({ type: "claude_stdout", text: line.slice(0, 2000) });
             continue;
           }
-          if (!isNoisyStreamLine(event)) ctx.log({ type: "claude", event });
+          if (!isNoisyStreamLine(event)) ctx.log({ type: "claude", event: withoutBase64Data(event) });
           // Claude Code repeats its init event for every turn; "started" is said once per session.
           const ev = asStreamLine(event);
           const isInit = ev?.type === "system" && ev.subtype === "init";

@@ -4,7 +4,8 @@
  * `${apiBase}/v1/ai/messages` and Jev to `${apiBase}/v1/ai/jev`, with the
  * session token as a bearer and X-Browsertodo-Session naming the run, so the
  * server can tie usage to it. A 402 (out of credit) pauses the run with
- * "Out of usage credit" and flags the account for the Top up link.
+ * "Out of usage credit" and flags the account (its Top up opens the
+ * dashboard's Billing page).
  */
 import { OutOfCreditError, type JevLike } from "@browsertodo/core";
 import { hostedModel, SESSION_HEADER } from "@browsertodo/shared";
@@ -17,7 +18,7 @@ export interface HostedDeps {
   /** The signed-in session (null when signed out). */
   session(): { token: string; apiBase: string } | null;
   /** A request was refused for lack of credit. */
-  onOutOfCredit(topupUrl?: string): void;
+  onOutOfCredit(): void;
   /** A turn ended: the credit changed. */
   afterTurn?(): void;
   fetch?: typeof fetch;
@@ -40,7 +41,7 @@ export function hostedBackend(deps: HostedDeps): ApiBackend {
             try {
               return await inner.decide(input);
             } catch (err) {
-              if (err instanceof OutOfCreditError) deps.onOutOfCredit(err.topupUrl);
+              if (err instanceof OutOfCreditError) deps.onOutOfCredit();
               throw err;
             }
           },
@@ -54,7 +55,7 @@ export function hostedBackend(deps: HostedDeps): ApiBackend {
           auth: "bearer",
           headers,
           label: HOSTED_LABEL,
-          onOutOfCredit: (info) => deps.onOutOfCredit(info.topupUrl),
+          onOutOfCredit: () => deps.onOutOfCredit(),
         },
         jev,
       };

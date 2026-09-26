@@ -6,11 +6,11 @@ import { brainLabel } from "../ui/labels.js";
 import { sessionHeadline, sessionMeta } from "./format.js";
 import { MarkdownView } from "./markdown.js";
 
-let topupUrl: string | null = null;
+let topup: (() => void) | null = null;
 
-/** Where "Top up" on an "Out of usage credit" end card goes (the account's top-up page). */
-export function setTopupUrl(url: string | null): void {
-  topupUrl = url;
+/** What "Top up" on an "Out of usage credit" end card does (opens the dashboard's Billing page); null: no Top up. */
+export function setTopup(open: (() => void) | null): void {
+  topup = open;
 }
 
 /** The hosted AI refused the run for lack of credit (a paused run's reason starts with OUT_OF_CREDIT). */
@@ -69,8 +69,8 @@ export function renderEvent(v: EventView, onContinue?: () => void): HTMLElement 
         v.picks
           ? h("div.ev-picks", { title: "Who chose the element for each click and typing step: Jev (the fast picker), or Claude when Jev was unsure" }, v.picks)
           : null,
-        isOutOfCredit(v.text) && topupUrl
-          ? h("a.ev-topup", { href: topupUrl, target: "_blank", rel: "noopener", title: "Buy usage credit, then continue" }, "Top up")
+        isOutOfCredit(v.text) && topup
+          ? h("button.link.ev-topup", { type: "button", title: "Buy usage credit on the dashboard, then continue", onclick: topup }, "Top up")
           : null,
         onContinue
           ? h(

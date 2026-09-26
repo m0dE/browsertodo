@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionInfo } from "@browsertodo/shared";
-import { canOpenInChat, chatActions } from "../../src/sidepanel/chat-actions.js";
+import { chatActions } from "../../src/sidepanel/chat-actions.js";
 import { chipHint, taskChip } from "@browsertodo/shared";
 import { runNowButton } from "../../src/sidepanel/format.js";
 import { savedTab, tabHasComposer } from "../../src/sidepanel/tabs.js";
@@ -35,7 +35,7 @@ const session = (extra: Partial<SessionInfo> = {}): SessionInfo => ({
 describe("chat action bar", () => {
   it("disables everything with a reason on an empty chat", () => {
     const a = chatActions(null, new Set());
-    for (const x of [a.newChat, a.showTab, a.rawLog]) {
+    for (const x of [a.newChat, a.showTab]) {
       expect(x.disabled).toBe(true);
       expect(x.title).not.toBe("");
     }
@@ -46,17 +46,8 @@ describe("chat action bar", () => {
     expect(ended.showTab).toEqual({ disabled: true, title: expect.stringContaining("only has one while it is working") });
     expect(ended.newChat.disabled).toBe(false);
   });
-  it("Raw log only for Claude Code runs with a log", () => {
-    expect(chatActions(session({ logPath: "C:\runs\s1\log.jsonl" }), new Set()).rawLog.disabled).toBe(false);
-    expect(chatActions(session(), new Set()).rawLog).toEqual({ disabled: true, title: "No raw log was recorded for this chat" });
-    const api = chatActions(session({ brain: "claude-api" }), new Set(["s1"])).rawLog;
-    expect(api.disabled).toBe(true);
-    expect(api.title).toContain("Claude API");
-  });
-  it("cloud runs cannot be opened in Chat", () => {
-    expect(canOpenInChat({ source: "adhoc" })).toBe(true);
-    expect(canOpenInChat({ source: "local" })).toBe(true);
-    expect(canOpenInChat({ source: "cloud" })).toBe(false);
+  it("two actions only: New chat and Show tab", () => {
+    expect(Object.keys(chatActions(session(), new Set()))).toEqual(["newChat", "showTab"]);
   });
 });
 

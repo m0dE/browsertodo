@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { accountSummary, billingReturnUrl, dateLabel, planChoices } from "../../src/options/account-view.js";
+import { accountSummary, dateLabel, keysLockedText } from "../../src/options/account-view.js";
 import type { AccountView } from "../../src/ui-protocol.js";
 
-const base: AccountView = { signedIn: true, signInConfigured: true, apiBase: "https://api.test", dashboardUrl: "https://api.test/", user: { email: "a@b.c", name: null, pictureUrl: null } };
+const base: AccountView = { signedIn: true, signInConfigured: true, apiBase: "https://api.test", dashboardUrl: "https://api.test/", billingUrl: "https://api.test/billing", user: { email: "a@b.c", name: null, pictureUrl: null } };
 
 describe("options: account summary", () => {
   it("free plan without billing on the server", () => {
@@ -12,7 +12,7 @@ describe("options: account summary", () => {
       credit: { subscriptionCents: 0, topupCents: 0, totalCents: 0, periodGrantCents: 0, periodEnd: null },
       stripeConfigured: false,
     });
-    expect(s).toMatchObject({ planName: "Free", planStatus: "", credit: "$0.00", creditDetail: "$0.00 top-up", paid: false, keysAllowed: false, billing: "not-set-up" });
+    expect(s).toMatchObject({ planName: "Free", planStatus: "", credit: "$0.00", creditDetail: "$0.00 top-up", paid: false, keysAllowed: false, billingLabel: "Choose a plan", billing: "not-set-up" });
     // What Free lacks, from the plan catalog: the TODO list first.
     expect(s.planIncludes).toBe("");
   });
@@ -31,27 +31,25 @@ describe("options: account summary", () => {
       creditDetail: "$15.40 subscription (expires Oct 24, 2026) + $10.00 top-up",
       paid: true,
       keysAllowed: true,
+      billingLabel: "Manage plan & billing",
       billing: "ready",
       planIncludes: "Includes TODO list, voice input and API access",
     });
     expect(accountSummary({ ...base, plan: { id: "pro", status: "active", currentPeriodEnd: "2026-10-24T00:00:00Z", cancelAtPeriodEnd: true } }).planStatus).toBe("Ends Oct 24, 2026");
-    expect(accountSummary({ ...base, plan: { id: "starter", status: "past_due", currentPeriodEnd: null, cancelAtPeriodEnd: false } })).toMatchObject({ planStatus: "Payment overdue", paid: true });
+    expect(accountSummary({ ...base, plan: { id: "starter", status: "past_due", currentPeriodEnd: null, cancelAtPeriodEnd: false } })).toMatchObject({ planStatus: "Payment overdue", paid: true, keysAllowed: true });
     expect(accountSummary({ ...base, plan: { id: "free", status: "canceled", currentPeriodEnd: null, cancelAtPeriodEnd: false } })).toMatchObject({ planName: "Free", planStatus: "Subscription ended", paid: false, keysAllowed: false });
   });
 
   it("unknown billing and out of credit", () => {
     expect(accountSummary(base)).toMatchObject({ billing: "unknown", credit: "", planName: "Free", planIncludes: "" });
-    expect(accountSummary({ ...base, outOfCredit: { topupUrl: "u" } }).outOfCredit).toBe(true);
+    expect(accountSummary({ ...base, outOfCredit: true })).toMatchObject({ outOfCredit: true, billingLabel: "Choose a plan" });
+    const plus = { id: "plus", status: "active", currentPeriodEnd: "2026-10-24T00:00:00Z", cancelAtPeriodEnd: false } as const;
+    expect(accountSummary({ ...base, plan: plus, outOfCredit: true }).billingLabel).toBe("Top up or change plan");
   });
 
-  it("plan choices, dates and the return URL", () => {
-    expect(planChoices()).toEqual([
-      { id: "starter", label: "Starter", detail: "$9.99/mo · $5.00 usage credit", includes: "Includes TODO list and API access" },
-      { id: "plus", label: "Plus", detail: "$29.99/mo · $20.00 usage credit", includes: "Includes TODO list, voice input and API access" },
-      { id: "pro", label: "Pro", detail: "$199.99/mo · $199.99 usage credit", includes: "Includes TODO list, voice input and API access" },
-    ]);
+  it("dates, and the API keys tab's text on a plan without keys (from the catalog)", () => {
+    expect(dateLabel("2026-10-24T00:00:00Z")).toBe("Oct 24, 2026");
     expect(dateLabel("bogus")).toBe("");
-    expect(billingReturnUrl("https://api.test/")).toBe("https://api.test/billing");
-    expect(billingReturnUrl("")).toBe("");
+    expect(keysLockedText()).toBe("API access to add TODO tasks comes with a paid plan.");
   });
 });

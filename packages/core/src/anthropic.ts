@@ -112,8 +112,8 @@ export type PostResult =
   | { kind: "ok"; message: MessagesResponse }
   /** 402 from the browsertodo API: the account has no usage credit left. */
   | { kind: "credit"; reason: string; topupUrl?: string }
-  /** 429, 529, 5xx, network: worth retrying. */
-  | { kind: "transient"; reason: string }
+  /** 429, 529, 5xx, network: worth retrying; retryAfterMs when the server said when (retry-after-ms / retry-after). */
+  | { kind: "transient"; reason: string; retryAfterMs?: number }
   /** 401/403. */
   | { kind: "auth"; reason: string }
   | { kind: "error"; reason: string };
@@ -197,12 +197,32 @@ export async function postMessages(
     return r;
   }
   const detail = errorDetail(text);
+  const status = `(HTTP ${s}${detail ? `: ${detail}` : ""})`;
   const rejected = transport.auth === "bearer" ? `${label} rejected the sign-in` : `${label} key rejected`;
-  if (s === 401 || s === 403) return { kind: "auth", reason: `${rejected} (HTTP ${s}: ${detail})` };
-  if (s === 429) return { kind: "transient", reason: `${label} rate limit (HTTP 429: ${detail})` };
-  if (s === 529) return { kind: "transient", reason: `${label} overloaded (HTTP 529: ${detail})` };
-  if (s >= 500) return { kind: "transient", reason: `${label} server error (HTTP ${s}: ${detail})` };
-  return { kind: "error", reason: `${label} error (HTTP ${s}: ${detail})` };
+  if (s === 401 || s === 403) return { kind: "auth", reason: `${rejected} ${status}` };
+  const transient = (reason: string): PostResult => {
+    const after = retryAfterMs(res.headers);
+    return after === undefined ? { kind: "transient", reason } : { kind: "transient", reason, retryAfterMs: after };
+  };
+  if (s === 429) return transient(`${label} rate limit ${status}`);
+  if (s === 529) return transient(`${label} overloaded ${status}`);
+  if (s >= 500) return transient(`${label} server error ${status}`);
+  return { kind: "error", reason: `${label} error ${status}` };
+}
+
+/**
+ * When the server asks the client to retry: `retry-after-ms` (milliseconds,
+ * Anthropic), else `retry-after` (seconds, or an HTTP date). Undefined when
+ * neither is there or readable.
+ */
+export function retryAfterMs(headers: Headers, now = Date.now()): number | undefined {
+  const ms = Number.parseFloat(headers.get("retry-after-ms") ?? "");
+  if (Number.isFinite(ms) && ms >= 0) return Math.round(ms);
+  const value = headers.get("retry-after")?.trim();
+  if (!value) return undefined;
+  if (/^\d+(\.\d+)?$/.test(value)) return Math.round(Number(value) * 1000);
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - now);
 }
 
 async function readStream(body: ReadableStream<Uint8Array>, stream: StreamOptions, label: string, signal?: AbortSignal): Promise<PostResult> {

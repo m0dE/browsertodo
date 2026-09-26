@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { getEventListeners } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HelperErrorCode, type AgentEvent, type AgentTask, type RunConfig } from "@browsertodo/shared";
 import { agentError, classifyFailure, ENDED_WITHOUT_RESULT, EXITED_WITHOUT_RESULT, type JevLike } from "@browsertodo/core";
 import { TaskRunner, type RunTaskParams, type TaskRunnerDeps } from "../src/task-runner.js";
 import { ToolRouter } from "../src/tool-router.js";
+import { LiveLog } from "../src/logger.js";
 import { INTERACTIVE_TASK_ID } from "../src/mcp-tools.js";
 import { ScriptedBrain } from "../src/brains/scripted.js";
 import type { Brain, BrainContext } from "../src/brains/brain.js";
@@ -461,5 +463,69 @@ describe("TaskRunner: kept-open sessions (persistent brain)", () => {
     expect(await run).toEqual(expect.objectContaining({ outcome: "paused", reason: "stopped by user" }));
     expect(runner.openSessions).toEqual([]);
     await expect(runner.continueSession({ sessionId: "S1", text: "go on", config: CONFIG })).rejects.toMatchObject({ code: HelperErrorCode.sessionEnded });
+  });
+});
+
+describe("TaskRunner: secrets, closing sessions, long-lived sessions", () => {
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it("a password from get_credential reaches the agent but not the run log, live.log or the extension's events", async () => {
+    const x = new FakeX({ credentials: { "example.com": { username: "u", password: "s3cret-pw" } } });
+    const live = new LiveLog(join(dir, "logs"));
+    let got = "";
+    const brain = (router: ToolRouter) =>
+      customBrain(async (ctx) => {
+        got = (await router.call(ctx.taskId, "get_credential", { site: "example.com" })).text ?? "";
+        // What Claude Code echoes on stdout (logged raw), what it says, and what it types.
+        ctx.log({ type: "claude", event: { type: "user", message: { content: [{ type: "tool_result", content: [{ type: "text", text: got }] }] } } });
+        ctx.emit({ type: "assistant_text", text: "Signed in with s3cret-pw" });
+        await router.call(ctx.taskId, "paste", { text: "s3cret-pw" });
+        await router.call(ctx.taskId, "task_complete", { summary: "signed in" });
+      });
+    const { runner, events } = setup(x, { brain, live });
+    const result = await runner.run(params());
+    expect(result.outcome).toBe("done");
+    expect(got).toContain("password: s3cret-pw");
+    expect(readFileSync(result.logPath!, "utf8")).not.toContain("s3cret-pw");
+    expect(readFileSync(live.path, "utf8")).not.toContain("s3cret-pw");
+    expect(JSON.stringify(events)).not.toContain("s3cret-pw");
+    expect(events.some((e) => e.event.type === "assistant_text" && e.event.text === "Signed in with [redacted]")).toBe(true);
+  });
+
+  it("shutdown also stops sessions that were closed to make room or replaced, and waits for them", async () => {
+    const contexts: BrainContext[] = [];
+    const brain = (router: ToolRouter): Brain => {
+      const inner = chatBrain(router, { ignoreClose: true });
+      return { persistent: true, run: (ctx) => (contexts.push(ctx), inner.run(ctx)) };
+    };
+    const { runner } = setup(new FakeX(), { brain, maxSessions: 1, abortWaitMs: 60_000 });
+    await runner.run(params({}, { sessionId: "A" }));
+    await runner.run(params({}, { sessionId: "B" })); // A is closed to make room, but its agent ignores the close
+    await runner.run(params({}, { sessionId: "B" })); // B is replaced the same way
+    expect(runner.openSessions).toEqual(["B"]);
+    expect(contexts).toHaveLength(3);
+    expect(contexts.some((c) => c.signal.aborted)).toBe(false);
+
+    let allClosed = false;
+    void runner.whenAllClosed().then(() => (allClosed = true));
+    await wait(10);
+    expect(allClosed).toBe(false);
+    runner.shutdown("helper shutting down");
+    await runner.whenAllClosed();
+    expect(contexts.every((c) => c.signal.aborted)).toBe(true);
+  });
+
+  it("a kept-open session's turns do not pile up abort listeners", async () => {
+    let signal!: AbortSignal;
+    const brain = (router: ToolRouter): Brain => {
+      const inner = chatBrain(router);
+      return { persistent: true, run: (ctx) => ((signal = ctx.signal), inner.run(ctx)) };
+    };
+    const { runner } = setup(new FakeX(), { brain });
+    await runner.run(params());
+    const before = getEventListeners(signal, "abort").length;
+    for (let i = 0; i < 12; i++) expect((await runner.continueSession({ sessionId: "S1", text: `turn ${i}`, config: CONFIG })).outcome).toBe("done");
+    expect(getEventListeners(signal, "abort").length).toBe(before);
+    runner.endSession("S1");
   });
 });

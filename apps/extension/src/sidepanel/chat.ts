@@ -2,7 +2,7 @@
  * Chat tab: the conversation of the browser tab that is active in the
  * panel's window, live (every turn of it in one thread: the user's messages
  * as bubbles, the agent's text, tool calls, results and Jev decisions), its
- * action bar (New chat | Show tab | Raw log) and, while conversations of
+ * action bar (New chat | Show tab) and, while conversations of
  * other tabs run, one chip each to switch to their tab. Which conversation
  * that is comes from sidepanel.ts (see tab-chat.ts); past runs live in the
  * Activity log tab (history.ts).
@@ -16,7 +16,6 @@ import { describeEvent, isNearBottom, isScreenHelp, turnPicks } from "./event-fo
 import { placeEvent, pruneContinue, renderEvent, renderScreenHelp, renderSessionHead, renderSessionTitle, renderText } from "./event-render.js";
 import { LiveTexts } from "./live-text.js";
 import { MarkdownView } from "./markdown.js";
-import { wireRawLog } from "./raw-log.js";
 import { renderSwitcher } from "./session-switcher.js";
 import { otherRunning } from "./tab-chat.js";
 
@@ -71,7 +70,6 @@ export function initChat(opts: ChatOptions = {}): ChatView {
   const switcher = $("chat-switch");
   const newBtn = $<HTMLButtonElement>("chat-new");
   const showBtn = $<HTMLButtonElement>("chat-show");
-  const rawLog = $<HTMLButtonElement>("chat-rawlog");
 
   /** The id of the conversation shown (set at once), and its info once known. */
   let shownId: string | null = null;
@@ -97,7 +95,6 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     const a = chatActions(current, new Set(runningList.map((s) => s.sessionId)));
     setBarAction(newBtn, a.newChat);
     setBarAction(showBtn, a.showTab);
-    setBarAction(rawLog, a.rawLog);
   }
 
   /** Text Claude is still writing, and its elements while its conversation is shown. */
@@ -184,7 +181,7 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     log.scrollTop = log.scrollHeight;
   }
 
-  /** "Press Ctrl+Shift+K to open this chat at any time.", or a link to set a shortcut when none is set. */
+  /** "Press Ctrl+. to open this chat at any time.", or a link to set a shortcut when none is set. */
   function shortcutHint(): HTMLElement | null {
     if (shortcut === undefined) return null;
     if (shortcut === null) {
@@ -300,7 +297,6 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     if (!usable(showBtn) || !s) return;
     void busy(showBtn, () => uiRequest({ type: "agent.show", sessionId: s.sessionId }), appendError);
   });
-  wireRawLog(rawLog, () => current, appendError);
 
   render();
   ready = true;

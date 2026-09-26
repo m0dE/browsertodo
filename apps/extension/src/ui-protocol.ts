@@ -15,9 +15,9 @@ import type {
   StampedAgentEvent,
 } from "@browsertodo/shared";
 import type { VoiceClipRequest, VoiceTranscribeResult } from "./voice/transcribe.js";
-import type { ApiKeyInfo, BillingAction, BillingLinkRequest, CreatedApiKey, CreditInfo, KeyRole, PlanId, PlanInfo } from "./account/types.js";
+import type { ApiKeyInfo, CreatedApiKey, CreditInfo, KeyRole, PlanId, PlanInfo } from "./account/types.js";
 
-export type { ApiKeyInfo, BillingAction, BillingLinkRequest, CreatedApiKey, CreditInfo, KeyRole, PlanId, PlanInfo };
+export type { ApiKeyInfo, CreatedApiKey, CreditInfo, KeyRole, PlanId, PlanInfo };
 
 export const UI_PORT_NAME = "browsertodo-ui";
 
@@ -61,8 +61,10 @@ export interface AccountView {
   signInConfigured: boolean;
   /** The account server (setting accountApiBase). */
   apiBase: string;
-  /** Usage & billing dashboard (the API origin + "/"). */
+  /** The dashboard's home (usage), at the account server's origin (account/dashboard.ts). */
   dashboardUrl: string;
+  /** The dashboard's Billing page: plans, top-ups and invoices. Every upgrade button opens it (ui/billing.ts). */
+  billingUrl: string;
   user?: { email: string; name: string | null; pictureUrl: string | null };
   /** Missing while the server has no billing (or it could not be loaded). */
   plan?: PlanInfo;
@@ -73,7 +75,7 @@ export interface AccountView {
   error?: string;
   fetchedAt?: string;
   /** The hosted AI refused a request for lack of credit (or the credit is 0). */
-  outOfCredit?: { topupUrl: string };
+  outOfCredit?: true;
   /** Pending or paused local tasks that can be moved into the account (the offer after sign-in). */
   localTasks?: number;
 }
@@ -152,12 +154,10 @@ export type UiRequest =
    * turn keeps running). tabId: that tab has no conversation any more.
    */
   | { type: "run.newChat"; sessionId?: string; tabId?: number }
-  /** "Open in Chat": the conversation now belongs to this browser tab (it leaves any other tab). */
+  /** A run picked in the Activity log: the conversation now belongs to this browser tab (it leaves any other tab). */
   | { type: "chat.bind"; sessionId: string; tabId: number }
   /** Switch to a browser tab (another tab's chat): activates it and focuses its window. */
   | { type: "tab.focus"; tabId: number }
-  /** The helper's raw run log of a Claude Code session's latest turn. */
-  | { type: "session.log"; sessionId: string }
   /** Bring the agent's tab to the front: the session's, or the first agent tab. */
   | { type: "agent.show"; sessionId?: string }
   /** Type into a running agent session (default: the one started last). */
@@ -187,8 +187,6 @@ export type UiRequest =
   | { type: "account.migrate" }
   /** "Not now" on the offer to move local tasks. */
   | { type: "account.dismissMigration" }
-  /** A Stripe page to open in a new tab (see BillingAction). */
-  | ({ type: "account.billing" } & BillingLinkRequest)
   | { type: "account.keys.list" }
   | { type: "account.keys.create"; name: string; role: KeyRole }
   | { type: "account.keys.revoke"; id: string }
@@ -232,7 +230,6 @@ export interface UiResults {
   "run.newChat": { ok: boolean };
   "chat.bind": UiState;
   "tab.focus": { ok: boolean };
-  "session.log": { path: string; text: string; truncated: boolean };
   "agent.show": { ok: boolean };
   "run.say": { ok: boolean };
   "schedule.pause": UiState;
@@ -250,7 +247,6 @@ export interface UiResults {
   "account.refresh": UiState;
   "account.migrate": { moved: number; failed: number; errors: string[]; state: UiState };
   "account.dismissMigration": UiState;
-  "account.billing": { url: string };
   "account.keys.list": { keys: ApiKeyInfo[] };
   /** key: the new key, shown once. */
   "account.keys.create": CreatedApiKey;

@@ -97,11 +97,18 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  // The helper went away: nothing useful left to do.
-  void pipe.closed.then(() => {
-    warn("pipe closed, exiting");
+  let exiting = false;
+  const exit = (why: string) => {
+    if (exiting) return;
+    exiting = true;
+    warn(`${why}, exiting`);
+    pipe.close();
     void server.close().finally(() => process.exit(0));
-  });
+  };
+  // The helper went away: nothing useful left to do.
+  void pipe.closed.then(() => exit("pipe closed"));
+  // Claude Code went away (the SDK's stdio transport does not notice): without this, the open pipe would keep this process alive until the helper stops.
+  process.stdin.once("end", () => exit("stdin closed"));
 }
 
 main().catch((e) => {

@@ -49,14 +49,11 @@ export interface VoiceTip {
   action?: { label: string; run: () => void };
 }
 
-/** The tip for a failure: plan and credit come with the page that fixes them. */
-export function errorTip(err: unknown, links: { openPlans(): void; openUrl(url: string): void }): VoiceTip {
+/** The tip for a failure: plan and credit come with the dashboard's Billing page, which fixes them. */
+export function errorTip(err: unknown, openBilling: () => void): VoiceTip {
   if (err instanceof VoiceError) {
-    if (err.kind === "plan") return { text: err.message, tone: "bad", action: { label: "Get a plan", run: () => links.openPlans() } };
-    if (err.kind === "credit" && err.url) {
-      const url = err.url;
-      return { text: err.message, tone: "bad", action: { label: "Top up", run: () => links.openUrl(url) } };
-    }
+    if (err.kind === "plan") return { text: err.message, tone: "bad", action: { label: "Get a plan", run: openBilling } };
+    if (err.kind === "credit") return { text: err.message, tone: "bad", action: { label: "Top up", run: openBilling } };
     return { text: err.message, tone: "bad" };
   }
   return { text: `Voice stopped: ${errorMessage(err)}`, tone: "bad" };
@@ -75,9 +72,8 @@ export interface VoiceInputDeps {
     /** Calls back when the permission changes; returns the unsubscribe. */
     watch(onChange: (state: MicPermission) => void): Promise<() => void>;
   };
-  /** Settings > Account (pick a plan). */
-  openPlans(): void;
-  openUrl(url: string): void;
+  /** The dashboard's Billing page (pick a plan, top up). */
+  openBilling(): void;
   /** Where the listening orb goes (the panel's body). */
   host: HTMLElement;
 }
@@ -166,7 +162,7 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
     tip.append(h("button.voice-tip-close", { type: "button", "aria-label": "Dismiss", onclick: () => showTip(null) }, "×"));
   }
 
-  const lockedTip = (): VoiceTip => ({ text: LOCKED_TEXT, tone: "info", action: { label: "Get a plan", run: () => deps.openPlans() } });
+  const lockedTip = (): VoiceTip => ({ text: LOCKED_TEXT, tone: "info", action: { label: "Get a plan", run: () => deps.openBilling() } });
 
   /** Draws attention to the button (the shortcut was pressed while voice is locked). */
   function nudge(): void {
@@ -204,7 +200,7 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
     } catch (err) {
       finish();
       if (isMicRefused(err)) return askForMic();
-      showTip(errorTip(err, deps));
+      showTip(errorTip(err, () => deps.openBilling()));
       return;
     }
     const current = draft;

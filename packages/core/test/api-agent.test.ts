@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent, RunConfig } from "@browsertodo/shared";
-import { startApiAgentWith } from "../src/api-agent.js";
+import { MAX_RETRY_AFTER_MS, RETRY_JITTER, retryWaitMs, startApiAgentWith } from "../src/api-agent.js";
+import { retryAfterMs } from "../src/anthropic.js";
 import { ENDED_WITHOUT_RESULT } from "../src/failures.js";
 import type { ApiAgentOptions, BrowserCaller, JevLike } from "../src/types.js";
 import { FakeX } from "./fake-x.js";
@@ -25,6 +26,8 @@ function start(
     delays?: number[];
     sleep?: (ms: number) => Promise<void>;
     browser?: BrowserCaller;
+    /** Jitter source; default 0.5, which is no jitter. */
+    random?: () => number;
   } = {},
 ) {
   const server = fakeMessagesServer(replies);
@@ -41,7 +44,7 @@ function start(
     onEvent,
     fetch: server.fetchImpl,
   };
-  const session = startApiAgentWith(opts, { sleep: over.sleep ?? noSleep, retryDelaysMs: over.delays ?? [1000, 3000, 9000] });
+  const session = startApiAgentWith(opts, { sleep: over.sleep ?? noSleep, retryDelaysMs: over.delays ?? [1000, 3000, 9000], random: over.random ?? (() => 0.5) });
   return { session, server, events };
 }
 
@@ -232,6 +235,33 @@ describe("startApiAgent", () => {
     expect(server.served).toBe(4);
   });
 
+  it("waits as long as the server's retry-after-ms / retry-after says (capped), else the backoff with jitter", async () => {
+    const waits: number[] = [];
+    const busy = (headers: Record<string, string>) => ({ status: 429, body: { type: "error", error: { type: "rate_limit_error", message: "slow down" } }, headers });
+    const { session } = start(
+      new FakeX(),
+      [busy({ "retry-after-ms": "1500.4" }), busy({ "retry-after": "7" }), busy({ "retry-after": "3600" }), msg(tool("task_complete", { summary: "ok" }))],
+      { sleep: async (ms) => void waits.push(ms), delays: [1000, 3000, 9000, 9000] },
+    );
+    expect(await session.done).toMatchObject({ outcome: "done" });
+    expect(waits).toEqual([1500, 7000, MAX_RETRY_AFTER_MS]);
+
+    // Without a retry-after: the backoff, varied by at most RETRY_JITTER either way.
+    const jittered = [0, 0.25, 1].map((r) => retryWaitMs(1, [1000, 3000], undefined, () => r));
+    expect(jittered).toEqual([3000 * (1 - RETRY_JITTER), 3000 * (1 - RETRY_JITTER / 2), 3000 * (1 + RETRY_JITTER)]);
+  });
+
+  it("reads retry-after-ms, retry-after in seconds, and retry-after as an HTTP date", () => {
+    const now = Date.parse("2026-09-26T10:00:00Z");
+    expect(retryAfterMs(new Headers({ "retry-after-ms": "250" }), now)).toBe(250);
+    expect(retryAfterMs(new Headers({ "retry-after-ms": "250", "retry-after": "9" }), now)).toBe(250);
+    expect(retryAfterMs(new Headers({ "retry-after": "2" }), now)).toBe(2000);
+    expect(retryAfterMs(new Headers({ "retry-after": "Sat, 26 Sep 2026 10:00:30 GMT" }), now)).toBe(30_000);
+    expect(retryAfterMs(new Headers({ "retry-after": "Sat, 26 Sep 2026 09:00:00 GMT" }), now)).toBe(0);
+    expect(retryAfterMs(new Headers({ "retry-after": "soon" }), now)).toBeUndefined();
+    expect(retryAfterMs(new Headers(), now)).toBeUndefined();
+  });
+
   it("gives up after 3 retries with outcome retry", async () => {
     const { session, server } = start(new FakeX(), [{ status: 503, body: { type: "error", error: { type: "api_error", message: "down" } } }]);
     const r = await session.done;
@@ -340,6 +370,18 @@ describe("startApiAgent: conversation (continueWith)", () => {
     // The user's message shows in the event stream, and each turn ends with its own task_end.
     expect(events.filter((e) => e.type === "user_message")).toEqual([{ type: "user_message", text: "now do the second thing" }]);
     expect(events.filter((e) => e.type === "task_end").map((e) => (e as { summary?: string }).summary)).toEqual(["first done", "second done"]);
+  });
+
+  it("an empty answer ends the turn without entering the history, so the next turn is still a valid request", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    const { session, server } = start(x, [msg(), msg(tool("task_complete", { summary: "second done" }))]);
+    expect(await session.done).toEqual({ outcome: "failed", reason: ENDED_WITHOUT_RESULT });
+    expect(await session.continueWith!("try again").done).toEqual({ outcome: "done", summary: "second done" });
+    const messages = server.requests[1]!.body.messages as { role: string; content: unknown[] }[];
+    expect(messages.every((m) => m.content.length > 0)).toBe(true);
+    // The task and the follow-up are one user message: roles still alternate.
+    expect(messages.map((m) => m.role)).toEqual(["user"]);
+    expect(messages[0]!.content.at(-1)).toEqual({ type: "text", text: expect.stringMatching(/try again$/) });
   });
 
   it("after a stop, the next turn answers the tool calls that never ran", async () => {

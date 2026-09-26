@@ -41,7 +41,7 @@ export const CONFIG: RunConfig = { maxToolCalls: 60, maxTaskMinutes: 10, jevEnab
 
 type Block = Record<string, any>;
 /** One answer of the fake Messages server: a status and JSON body, or a thrown network error. */
-export type FakeReply = { status?: number; body?: unknown; throws?: string };
+export type FakeReply = { status?: number; body?: unknown; throws?: string; headers?: Record<string, string> };
 /** A fixed reply, or one computed from the request body. */
 export type FakeReplySource = FakeReply | ((body: any) => FakeReply);
 export interface RecordedRequest {
@@ -73,7 +73,7 @@ export function fakeMessagesServer(replies: FakeReplySource[]) {
     if (r.throws) throw new TypeError(r.throws);
     const status = r.status ?? 200;
     if (body.stream === true && status === 200) return new Response(messageSse(r.body as MessageShape), { status, headers: { "content-type": "text/event-stream" } });
-    return new Response(JSON.stringify(r.body ?? {}), { status, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify(r.body ?? {}), { status, headers: { "content-type": "application/json", ...r.headers } });
   }) as typeof fetch;
   return {
     fetchImpl,

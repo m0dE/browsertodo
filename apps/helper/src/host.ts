@@ -21,17 +21,17 @@ import {
 import { createJev, createToolExecutor, type JevLike } from "@browsertodo/core";
 import { HELPER_VERSION, loadConfig } from "./config.js";
 import { LiveLog, redirectConsole, summarize } from "./logger.js";
-import { encodeNativeMessage, FrameTooLargeError, NativeDecoder } from "./native-framing.js";
+import { encodeNativeMessage, FrameTooLargeError, MAX_NATIVE_OUT, NativeDecoder } from "./native-framing.js";
 import { pipePathFor, startPipeServer, type PipeServer } from "./pipe-server.js";
 import { rpcBrowser, ToolRouter, type InteractiveTools } from "./tool-router.js";
 import { INTERACTIVE_TASK_ID } from "./mcp-tools.js";
 import { TaskRunner } from "./task-runner.js";
 import { ClaudeCodeBrain } from "./brains/claude-code.js";
-import { CLAUDE_NOT_FOUND, resolveClaudePath } from "./claude-process.js";
+import { apiBillingVarsIn, CLAUDE_NOT_FOUND, resolveClaudePath } from "./claude-process.js";
 import { ScriptedBrain } from "./brains/scripted.js";
 import type { Brain } from "./brains/brain.js";
 import { SelfTestCache } from "./self-test.js";
-import { readRunLog } from "./run-log.js";
+import { pruneRuns, readRunLog } from "./run-log.js";
 import { removeHelperFile, writeHelperFile } from "./helper-file.js";
 
 /** On shutdown, how long the sessions get to stop their Claude Code processes before the helper exits anyway. */
@@ -44,6 +44,8 @@ async function main(): Promise<void> {
   const logLine = (line: string) => live.write(`helper ${line}`);
   const scripted = config.brain === "scripted";
   logLine(`start v${HELPER_VERSION} pid=${process.pid} brain=${config.brain} jev=${config.typesafeApiKey ? "on" : "off"}`);
+  const stripped = apiBillingVarsIn();
+  if (stripped.length) logLine(`not passing ${stripped.join(", ")} to Claude Code: it runs on your Claude Code login, never an API key`);
 
   const writeFrame = (msg: RpcMessage) => {
     let frame: Buffer;
@@ -53,7 +55,7 @@ async function main(): Promise<void> {
       if (!(e instanceof FrameTooLargeError)) throw e;
       logLine(`dropping oversize message ${msg.id ?? msg.method}: ${e.message}`);
       if (msg.id === undefined) return;
-      frame = encodeNativeMessage({ id: msg.id, error: { message: e.message } });
+      frame = encodeNativeMessage({ id: msg.id, error: { message: `The helper's answer was too large for Chrome (the limit is ${MAX_NATIVE_OUT / (1024 * 1024)} MB).` } });
     }
     process.stdout.write(frame);
   };
@@ -125,6 +127,11 @@ async function main(): Promise<void> {
   } catch (e) {
     logLine(`pipe failed to start: ${errorMessage(e)}`);
   }
+
+  // Old run folders go (RUN_RETENTION), in the background: start-up does not wait for it.
+  void pruneRuns(config.runsDir)
+    .then((r) => r.removed && logLine(`pruned ${r.removed} old run folder(s), ${Math.round(r.freedBytes / 1048576)} MB freed; ${Math.round(r.keptBytes / 1048576)} MB kept`))
+    .catch((e: unknown) => logLine(`could not prune ${config.runsDir}: ${errorMessage(e)}`));
 
   peer.handle("helper.hello", async ({ selfTest: rerun }) => {
     const st = await selfTest.get(rerun === true);

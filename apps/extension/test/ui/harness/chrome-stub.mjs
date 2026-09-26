@@ -49,7 +49,6 @@ export function installChromeStub(data) {
       setTimeout(() => window.__activateTab(req.tabId), 0);
       return { ok: true };
     },
-    "session.log": () => ({ path: "C:\\runs\\s-conv\\log.jsonl", text: '{"type":"task_start"}\n', truncated: false }),
     "agent.show": () => ({ ok: true }),
     "schedule.pause": () => ({ ...data.state, paused: true }),
     "schedule.resume": () => ({ ...data.state, paused: false }),
@@ -61,7 +60,7 @@ export function installChromeStub(data) {
     },
     "account.signOut": () => {
       const a = data.state.account;
-      data.state = { ...data.state, account: { signedIn: false, signInConfigured: a.signInConfigured, apiBase: a.apiBase, dashboardUrl: a.dashboardUrl } };
+      data.state = { ...data.state, account: { signedIn: false, signInConfigured: a.signInConfigured, apiBase: a.apiBase, dashboardUrl: a.dashboardUrl, billingUrl: a.billingUrl } };
       return data.state;
     },
     "account.refresh": () => data.state,
@@ -74,7 +73,6 @@ export function installChromeStub(data) {
       data.state = { ...data.state, account: { ...data.state.account, localTasks: undefined } };
       return data.state;
     },
-    "account.billing": () => ({ url: "https://checkout.stripe.com/c/pay/cs_test_harness" }),
     "account.keys.list": () => ({ keys: data.keys ?? [] }),
     "account.keys.create": (req) => {
       const k = { id: `k${(data.keys?.length ?? 0) + 1}`, name: req.name, role: req.role, createdAt: new Date().toISOString(), revokedAt: null };

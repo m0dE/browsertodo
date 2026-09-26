@@ -1,4 +1,4 @@
-import { ExtensionSettings, parseSettings, REDACTED, SECRET_SETTING_KEYS } from "@browsertodo/shared";
+import { currentAccountApiBase, ExtensionSettings, parseSettings, REDACTED, SECRET_SETTING_KEYS } from "@browsertodo/shared";
 
 /** The periodic due check, every intervalMinutes. */
 export const ALARM_NAME = "browsertodo-run";
@@ -10,6 +10,21 @@ const RUNNER_ID_KEY = "runnerId";
 export async function loadSettings(): Promise<ExtensionSettings> {
   const got = await chrome.storage.local.get(SETTINGS_KEY);
   return parseSettings(got[SETTINGS_KEY]);
+}
+
+/**
+ * Writes the stored account server back at its current address when it is an
+ * earlier default (loadSettings already reads it that way), so storage, the
+ * Advanced tab and the session agree. Runs at every service worker start:
+ * install, update and browser start. True when it wrote.
+ */
+export async function migrateStoredSettings(): Promise<boolean> {
+  const raw: unknown = (await chrome.storage.local.get(SETTINGS_KEY))[SETTINGS_KEY];
+  if (!raw || typeof raw !== "object") return false;
+  const stored = (raw as Record<string, unknown>).accountApiBase;
+  if (typeof stored !== "string" || currentAccountApiBase(stored) === stored) return false;
+  await chrome.storage.local.set({ [SETTINGS_KEY]: { ...raw, accountApiBase: currentAccountApiBase(stored) } });
+  return true;
 }
 
 /** Raw partial update (the runner's paused flag): no secret rules. */

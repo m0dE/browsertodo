@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentEvent } from "@browsertodo/shared";
 import { ClaudeCodeBrain, buildClaudeArgs } from "../src/brains/claude-code.js";
-import { claudeEnv, resolveClaudePath } from "../src/claude-process.js";
+import { apiBillingVarsIn, claudeEnv, resolveClaudePath } from "../src/claude-process.js";
 import { UserInput, type BrainContext } from "../src/brains/brain.js";
 import { SelfTestCache, parseSelfTestOutput, runSelfTest, selfTestArgs } from "../src/self-test.js";
 
@@ -232,5 +232,12 @@ describe("Claude Code executable", () => {
   it("strips nested-session variables from the child env", () => {
     const env = claudeEnv({ PATH: "p", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_CODE_CHILD_SESSION: "1", BROWSERTODO_BRAIN: "scripted" });
     expect(env).toEqual({ PATH: "p" });
+  });
+
+  it("never passes an API key or another endpoint to Claude Code: it runs on the user's own login", () => {
+    const parent = { PATH: "p", ANTHROPIC_API_KEY: "sk-ant-x", ANTHROPIC_AUTH_TOKEN: "t", ANTHROPIC_BASE_URL: "https://proxy", ANTHROPIC_MODEL: "m" };
+    expect(claudeEnv(parent)).toEqual({ PATH: "p", ANTHROPIC_MODEL: "m" });
+    expect(apiBillingVarsIn(parent)).toEqual(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"]);
+    expect(apiBillingVarsIn({ PATH: "p" })).toEqual([]);
   });
 });

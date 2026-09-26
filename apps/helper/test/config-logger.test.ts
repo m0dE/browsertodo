@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, loadEnv, parseDotEnv } from "../src/config.js";
-import { LiveLog, RunLog } from "../src/logger.js";
+import { SecretRedactor } from "@browsertodo/core";
+import { LiveLog, LIVE_LOG_TAIL_MAX_BYTES, RunLog } from "../src/logger.js";
+import { encodeNativeMessage, MAX_NATIVE_OUT } from "../src/native-framing.js";
 
 let dir: string;
 beforeEach(() => {
@@ -74,6 +76,29 @@ describe("logger", () => {
     const live = new LiveLog(dir);
     live.write("a\nb");
     expect(live.tail(10).split("\n")).toHaveLength(1);
+  });
+
+  it("a tail of Korean text still fits one native message: capped in bytes, starting at a whole line", () => {
+    const live = new LiveLog(dir, 50 * 1024 * 1024);
+    // ~3 bytes per character and quotes that JSON escapes: 400,000 characters of this were 1.2+ MB.
+    const line = `"작업" ${"한국어 로그 줄입니다 ".repeat(40)}`;
+    for (let i = 0; i < 1500; i++) live.write(`${i} ${line}`);
+    const tail = live.tail(5000);
+    expect(Buffer.byteLength(tail, "utf8")).toBeLessThanOrEqual(LIVE_LOG_TAIL_MAX_BYTES);
+    expect(tail).toMatch(/^\d{4}-\d\d-\d\dT/);
+    expect(tail).toMatch(/1499 "작업"/);
+    expect(encodeNativeMessage({ id: "h1", result: { text: tail } }).length).toBeLessThan(MAX_NATIVE_OUT);
+  });
+
+  it("a run log never contains a secret the session knows, nor does live.log", () => {
+    const live = new LiveLog(join(dir, "logs"));
+    const secrets = new SecretRedactor();
+    const run = new RunLog(join(dir, "run", "log.jsonl"), live, "T1", secrets);
+    secrets.add("s3cret-pw");
+    run.event({ type: "claude", event: { type: "user", message: { content: [{ type: "tool_result", content: [{ type: "text", text: "username: u\npassword: s3cret-pw" }] }] } } });
+    expect(readFileSync(run.path, "utf8")).not.toContain("s3cret-pw");
+    expect(readFileSync(run.path, "utf8")).toContain("[redacted]");
+    expect(live.tail(10)).not.toContain("s3cret-pw");
   });
 
   it("rotates live.log past the size limit", () => {

@@ -50,8 +50,8 @@
   "commands": {
     "open-chat": {
       "suggested_key": {
-        "default": "Ctrl+Shift+K",
-        "mac": "Command+Shift+K"
+        "default": "Ctrl+Period",
+        "mac": "Command+Period"
       },
       "description": "Open browsertodo in the side panel and focus the chat input; press again there for voice input"
     }

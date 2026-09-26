@@ -5,7 +5,6 @@
 import { errorMessage, IssuableKeyRole, redactSettings, type ExtensionSettings, type HelperInfo, type HelperMethods } from "@browsertodo/shared";
 import type { AccountService } from "../account/account.js";
 import { LocalTodo, type TodoSource } from "../account/todo-source.js";
-import { BILLING_ACTIONS } from "../account/types.js";
 import { HELPER_CALL_TIMEOUT_MS } from "../helper-link.js";
 import type { BrainStatus, UiRequest, UiResponse, UiResults, UiState } from "../ui-protocol.js";
 import { transcribeForPanel, type VoiceAccount } from "../voice/transcribe.js";
@@ -33,7 +32,7 @@ export interface RouterVault {
 /** The account side the router uses, and voice input (one WAV clip to text). */
 export type RouterAccount = Pick<
   AccountService,
-  "view" | "signIn" | "signOut" | "refresh" | "migrateLocalTasks" | "dismissMigration" | "billingLink" | "listKeys" | "createKey" | "revokeKey"
+  "view" | "signIn" | "signOut" | "refresh" | "migrateLocalTasks" | "dismissMigration" | "listKeys" | "createKey" | "revokeKey"
 > &
   VoiceAccount;
 
@@ -52,7 +51,7 @@ export interface UiRouterDeps {
     readonly info: HelperInfo | null;
     readonly lastError: string | null;
     connect(timeoutMs?: number, opts?: { selfTest?: boolean }): Promise<HelperInfo>;
-    call<M extends "helper.getLog" | "helper.runLog">(method: M, params: HelperMethods[M]["params"], opts?: { timeoutMs?: number }): Promise<HelperMethods[M]["result"]>;
+    call<M extends "helper.getLog">(method: M, params: HelperMethods[M]["params"], opts?: { timeoutMs?: number }): Promise<HelperMethods[M]["result"]>;
   };
   brainStatus(settings: ExtensionSettings): BrainStatus;
   nextRunAt(): Promise<string | undefined>;
@@ -195,14 +194,6 @@ export class UiRouter {
         await d.tabChats.bind(tab, sessionId);
         return this.getState() satisfies Promise<UiResults["chat.bind"]>;
       }
-      case "session.log": {
-        const session = await d.sessions.get(String(msg.sessionId ?? ""));
-        if (!session) throw new Error(`No session ${String(msg.sessionId)}`);
-        if (!session.logPath) throw new Error("This session has no run log (only Claude Code sessions do)");
-        if (!d.helper.info) throw new Error("The helper is not connected");
-        const log = await d.helper.call("helper.runLog", { path: session.logPath }, { timeoutMs: HELPER_CALL_TIMEOUT_MS });
-        return { path: session.logPath, ...log } satisfies UiResults["session.log"];
-      }
       case "run.due":
         return d.runner.runDue("manual");
       case "run.stop":
@@ -255,13 +246,6 @@ export class UiRouter {
       case "account.dismissMigration":
         await this.account().dismissMigration();
         return this.getState();
-      case "account.billing": {
-        if (!BILLING_ACTIONS.includes(msg.action)) throw new Error(`Unknown billing action ${String(msg.action)}`);
-        const req: Parameters<RouterAccount["billingLink"]>[0] = { action: msg.action, returnUrl: String(msg.returnUrl ?? "") };
-        if (msg.plan) req.plan = msg.plan;
-        if (typeof msg.amountCents === "number") req.amountCents = msg.amountCents;
-        return { url: await this.account().billingLink(req) } satisfies UiResults["account.billing"];
-      }
       case "account.keys.list":
         return { keys: await this.account().listKeys() } satisfies UiResults["account.keys.list"];
       case "account.keys.create": {

@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_SETTINGS, type ExtensionSettings } from "@browsertodo/shared";
-import { NOT_SET_UP } from "@browsertodo/shared";
+import { ACCOUNT_API_BASE, DEFAULT_SETTINGS, parseSettings, PREVIOUS_ACCOUNT_API_BASES, type ExtensionSettings } from "@browsertodo/shared";
 import { ACCOUNT_KEY, AccountService, type AccountLocalTasks } from "../../src/account/account.js";
 import { SIGN_IN_NOT_SET_UP } from "../../src/account/google-auth.js";
 import { memoryStorageArea } from "../chrome-fake.js";
@@ -90,7 +89,7 @@ describe("AccountService sign-in", () => {
     const me = t.api.calls.find((c) => c.path === "/v1/me")!;
     expect(me.headers.authorization).toBe("Bearer bt_s_abc");
     const view = await t.account.view();
-    expect(view).toMatchObject({ signedIn: true, user: { email: USER.email }, plan: FREE_PLAN, stripeConfigured: true, dashboardUrl: "https://api.test/" });
+    expect(view).toMatchObject({ signedIn: true, user: { email: USER.email }, plan: FREE_PLAN, stripeConfigured: true, dashboardUrl: "https://api.test/", billingUrl: "https://api.test/billing" });
     expect(t.onChange).toHaveBeenCalled();
   });
 
@@ -179,6 +178,28 @@ describe("AccountService sign-in", () => {
     expect(await t.account.runnerApi()).toBeNull();
   });
 
+  it("a session issued at an earlier default address stays signed in at the current one, stored there", async () => {
+    const old = PREVIOUS_ACCOUNT_API_BASES[0]!;
+    const storage = memoryStorageArea();
+    storage.data[ACCOUNT_KEY] = { session: { token: "bt_s_old", user: USER, expiresAt: "2026-11-23T12:00:00.000Z", apiBase: old } };
+    const account = new AccountService({
+      // What loadSettings reads from settings stored with the old default.
+      loadSettings: async () => parseSettings({ accountApiBase: old }),
+      clientId: CLIENT,
+      localTasks: localTasks(),
+      storage,
+      now: () => new Date("2026-09-24T12:00:00.000Z"),
+    });
+    expect(await account.view()).toMatchObject({
+      signedIn: true,
+      apiBase: ACCOUNT_API_BASE,
+      dashboardUrl: `${ACCOUNT_API_BASE}/`,
+      billingUrl: `${ACCOUNT_API_BASE}/billing`,
+    });
+    expect(account.session()).toMatchObject({ token: "bt_s_old", apiBase: ACCOUNT_API_BASE });
+    expect((storage.data[ACCOUNT_KEY] as any).session.apiBase).toBe(ACCOUNT_API_BASE);
+  });
+
   it("a 401 from the server ends the session", async () => {
     const t = setup();
     await t.account.signIn();
@@ -207,11 +228,11 @@ describe("AccountService plan, credit and billing", () => {
     expect(setup().account.brainAccount()).toEqual({ signedIn: false, hostedUsable: false, outOfCredit: false });
   });
 
-  it("a 402 marks the account out of credit with the top-up link until the credit is back", async () => {
+  it("a 402 marks the account out of credit until the credit is back; Top up goes to the dashboard's Billing page", async () => {
     const t = await signedIn({}, { body: { plan: FREE_PLAN, credit: credit(0, 500), stripeConfigured: true } });
-    await t.account.markOutOfCredit("https://api.test/billing");
+    await t.account.markOutOfCredit();
     expect(t.account.brainAccount()).toMatchObject({ hostedUsable: false, outOfCredit: true });
-    expect((await t.account.view()).outOfCredit).toEqual({ topupUrl: "https://api.test/billing" });
+    expect(await t.account.view()).toMatchObject({ outOfCredit: true, billingUrl: "https://api.test/billing" });
     t.api.on("GET /v1/me/billing", { body: { plan: FREE_PLAN, credit: credit(0, 2500), stripeConfigured: true } });
     await t.account.refresh(true);
     expect((await t.account.view()).outOfCredit).toBeUndefined();
@@ -221,33 +242,6 @@ describe("AccountService plan, credit and billing", () => {
   it("a server without billing (404 on /v1/me/billing) reports stripeConfigured false and uses /v1/me's plan", async () => {
     const t = await signedIn({ plan: FREE_PLAN, credit: credit(0, 0) }, { status: 404, body: { error: "not found" } });
     expect(await t.account.view()).toMatchObject({ stripeConfigured: false, plan: FREE_PLAN });
-  });
-
-  it("billing links: checkout, top-up and portal send returnUrl; 503 says billing is not set up", async () => {
-    const t = await signedIn({});
-    const ret = "chrome-extension://bfff/options.html";
-    t.api.on("POST /v1/billing/checkout", { body: { url: "https://checkout.stripe.test/c1" } });
-    t.api.on("POST /v1/billing/topup", { body: { url: "https://checkout.stripe.test/t1" } });
-    t.api.on("POST /v1/billing/portal", { body: { url: "https://billing.stripe.test/p1" } });
-    expect(await t.account.billingLink({ action: "checkout", plan: "plus", returnUrl: ret })).toBe("https://checkout.stripe.test/c1");
-    expect(await t.account.billingLink({ action: "topup", amountCents: 2500, returnUrl: ret })).toBe("https://checkout.stripe.test/t1");
-    expect(await t.account.billingLink({ action: "portal", returnUrl: ret })).toBe("https://billing.stripe.test/p1");
-    const bodies = t.api.calls.filter((c) => c.path.startsWith("/v1/billing/")).map((c) => [c.path, c.body]);
-    expect(bodies).toEqual([
-      ["/v1/billing/checkout", { plan: "plus", returnUrl: ret }],
-      ["/v1/billing/topup", { amountCents: 2500, returnUrl: ret }],
-      ["/v1/billing/portal", { returnUrl: ret }],
-    ]);
-    t.api.on("POST /v1/billing/topup", { status: 503, body: { error: "Billing is not set up on this server yet" } });
-    await expect(t.account.billingLink({ action: "topup", amountCents: 1000, returnUrl: ret })).rejects.toThrow(NOT_SET_UP.billing);
-    expect((await t.account.view()).stripeConfigured).toBe(false);
-  });
-
-  it("changing an existing paid plan: checkout 409 { portal: true } opens the portal instead", async () => {
-    const t = await signedIn({});
-    t.api.on("POST /v1/billing/checkout", { status: 409, body: { error: "already subscribed", portal: true } });
-    t.api.on("POST /v1/billing/portal", { body: { url: "https://billing.stripe.test/p2" } });
-    expect(await t.account.billingLink({ action: "checkout", plan: "pro", returnUrl: "chrome-extension://x/options.html" })).toBe("https://billing.stripe.test/p2");
   });
 
   it("API keys: list, create (the key is returned once), revoke", async () => {

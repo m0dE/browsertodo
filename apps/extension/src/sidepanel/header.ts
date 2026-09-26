@@ -1,7 +1,7 @@
 /**
  * The side panel's header: the status line (the brain in use, or what is
  * wrong and the button that fixes it) and the account menu (Log in,
- * Settings, pausing scheduled runs, Account & billing, Sign out).
+ * Settings, pausing scheduled runs, Plan & billing, Sign out).
  */
 import { formatCents, OUT_OF_CREDIT, PLAN_FEATURE_TEXT, planName } from "@browsertodo/shared";
 import { todoAllowed } from "../account/types.js";
@@ -21,14 +21,14 @@ const ACTION_LABELS: Record<StatusAction, string> = { settings: "Set up", resume
 const ACTION_TITLES: Record<StatusAction, string> = {
   settings: "Open the settings",
   resume: "Run scheduled tasks again",
-  topup: "Buy usage credit (opens the billing page)",
+  topup: "Buy usage credit (opens the dashboard's Billing page)",
   pause: "Pause scheduled runs",
 };
 
 export interface HeaderDeps {
   onState(state: UiState): void;
-  /** Top up: the account's top-up page. */
-  onTopup(): void;
+  /** Top up, and Plan & billing in the menu: the dashboard's Billing page. */
+  onBilling(): void;
   /** Log in: the Google sign-in (shown on the TODO tab). */
   onSignIn(): void;
 }
@@ -106,7 +106,7 @@ export function initHeader(deps: HeaderDeps): Header {
   statusAction.addEventListener("click", () => {
     const action = statusAction.dataset.action as StatusAction;
     if (action === "settings") return void openSettings("ai");
-    if (action === "topup") return deps.onTopup();
+    if (action === "topup") return deps.onBilling();
     void busy(statusAction, () => request(action === "resume" ? "schedule.resume" : "schedule.pause"), say);
   });
 
@@ -119,7 +119,7 @@ export function initHeader(deps: HeaderDeps): Header {
   );
   signOutBtn.addEventListener("click", () => void busy(signOutBtn, () => request("account.signOut"), say));
   $("acct-open-settings").addEventListener("click", () => void openSettings());
-  $("acct-settings").addEventListener("click", () => void openSettings("account"));
+  $("acct-billing").addEventListener("click", () => deps.onBilling());
   $("acct-login").addEventListener("click", () => deps.onSignIn());
 
   return {

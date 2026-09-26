@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 /** The panel's shortcut as the manifest suggests it (what chrome.commands reports when Chrome assigned it). */
 export const SHORTCUT = JSON.parse(readFileSync(join(root, "static", "manifest.json"), "utf8")).commands["open-chat"].suggested_key.default;
+/** How the panel writes it ("Ctrl+Period" reads "Ctrl+."). */
+export const SHORTCUT_LABEL = SHORTCUT.split("+").map((k) => ({ Period: ".", Comma: "," })[k] ?? k).join("+");
 
 /** A small JPEG "screenshot" for thumbnails (base64), rendered once by renderThumbnail(browser). */
 export let thumbnail = "";
@@ -123,7 +125,7 @@ export function scenario(kind) {
   const PLUS = { id: "plus", status: "active", currentPeriodEnd: iso(60 * 24 * 30), cancelAtPeriodEnd: false };
   const money = (sub, top, grant = 0) => ({ subscriptionCents: sub, topupCents: top, totalCents: sub + top, periodGrantCents: grant, periodEnd: grant ? iso(60 * 24 * 30) : null });
   state.account = {
-    signedIn: true, signInConfigured: true, apiBase: API, dashboardUrl: `${API}/`,
+    signedIn: true, signInConfigured: true, apiBase: API, dashboardUrl: `${API}/`, billingUrl: `${API}/billing`,
     user: { email: "ada.lovelace@example.com", name: "Ada Lovelace", pictureUrl: avatar },
     plan: PLUS, credit: money(0, 0), stripeConfigured: true, fetchedAt: iso(0),
   };
@@ -132,7 +134,7 @@ export function scenario(kind) {
   let tasksLocked = false;
   let keys = [];
   if (kind === "loggedout" || kind === "loggedout-noclient") {
-    state.account = { signedIn: false, signInConfigured: kind === "loggedout", apiBase: API, dashboardUrl: `${API}/` };
+    state.account = { signedIn: false, signInConfigured: kind === "loggedout", apiBase: API, dashboardUrl: `${API}/`, billingUrl: `${API}/billing` };
     state.running = null;
   }
   if (kind === "account" || kind === "hosted-out") {
@@ -144,7 +146,7 @@ export function scenario(kind) {
     tasksSource = "account";
   }
   if (kind === "hosted-out") {
-    state.account = { ...state.account, plan: FREE, credit: money(0, 0), localTasks: undefined, outOfCredit: { topupUrl: `${API}/billing` } };
+    state.account = { ...state.account, plan: FREE, credit: money(0, 0), localTasks: undefined, outOfCredit: true };
   }
   if (kind === "opt-free" || kind === "free") state.account = { ...state.account, plan: FREE, credit: money(0, 0) };
   if (kind === "todo-locked" || kind === "todo-locked-empty") {
@@ -161,9 +163,11 @@ export function scenario(kind) {
       { id: "k2", name: "weekly scheduler script", role: "creator", createdAt: iso(-60 * 24 * 3), revokedAt: null },
     ];
   }
-  if (kind === "opt-out") state.account = { ...state.account, plan: FREE, credit: money(0, 0), outOfCredit: { topupUrl: `${API}/billing` } };
+  if (kind === "opt-out") state.account = { ...state.account, plan: FREE, credit: money(0, 0), outOfCredit: true };
+  // A paid plan whose usage credit ran out (runs paused on a 402).
+  if (kind === "opt-paid-out") state.account = { ...state.account, plan: PLUS, credit: money(0, 0, 2000), outOfCredit: true };
   if (kind === "opt-nobilling") state.account = { ...state.account, plan: FREE, credit: money(0, 0), stripeConfigured: false };
-  if (kind === "opt-signedout") state.account = { signedIn: false, signInConfigured: true, apiBase: API, dashboardUrl: `${API}/` };
+  if (kind === "opt-signedout") state.account = { signedIn: false, signInConfigured: true, apiBase: API, dashboardUrl: `${API}/`, billingUrl: `${API}/billing` };
   if (kind === "idle" || kind === "free" || kind === "empty" || kind === "noshortcut") state.running = null;
   if (kind === "nobrain") {
     state.brain = { effective: null, note: "No AI set up. Log in, add a Claude API key, or install the helper.", helper: null, helperError: "Helper not installed", hasApiKey: false, jevActive: false };

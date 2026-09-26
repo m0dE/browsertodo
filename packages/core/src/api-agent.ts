@@ -27,6 +27,17 @@ import {
 } from "./anthropic.js";
 
 export const RETRY_DELAYS_MS = [1000, 3000, 9000];
+/** Each backoff delay varies by up to this fraction either way, so clients that failed together do not retry together. */
+export const RETRY_JITTER = 0.2;
+/** Longest wait a server's retry-after may ask for; a longer one is cut to this (the turn has a time limit). */
+export const MAX_RETRY_AFTER_MS = 60_000;
+
+/** How long to wait before retry `attempt` (0-based): the server's retry-after when it gave one, else the jittered backoff. */
+export function retryWaitMs(attempt: number, delays: number[], retryAfterMs: number | undefined, random: () => number): number {
+  if (retryAfterMs !== undefined) return Math.min(retryAfterMs, MAX_RETRY_AFTER_MS);
+  const base = delays[attempt]!;
+  return Math.round(base * (1 + RETRY_JITTER * (2 * random() - 1)));
+}
 /** Screenshots kept in the conversation; older ones are replaced by a note to save tokens. */
 export const MAX_IMAGES_IN_HISTORY = 3;
 export const KEY_REJECTED = "Claude API key rejected";
@@ -38,6 +49,8 @@ export interface ApiAgentInternals {
   retryDelaysMs?: number[];
   /** Used for retry backoff and by the tool executor. */
   sleep?: Sleep;
+  /** Backoff jitter source, 0..1. Default Math.random. */
+  random?: () => number;
 }
 
 export function startApiAgent(opts: ApiAgentOptions): AgentSession {
@@ -48,6 +61,7 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
   const doFetch: typeof fetch = opts.fetch ?? ((input, init) => globalThis.fetch(input, init));
   const sleep = internals.sleep ?? delay;
   const delays = internals.retryDelaysMs ?? RETRY_DELAYS_MS;
+  const random = internals.random ?? Math.random;
   const jevOn = opts.jev !== null;
   const label = opts.label ?? "Claude API";
   const transport: MessagesTransport = {
@@ -187,8 +201,8 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
           finish({ outcome: "retry", reason: `${r.reason}; gave up after ${attempt + 1} attempts` });
           return null;
         }
-        const wait = delays[attempt]!;
-        emit({ type: "status", text: `${r.reason}; retrying in ${Math.round(wait / 1000)} s` });
+        const wait = retryWaitMs(attempt, delays, r.retryAfterMs, random);
+        emit({ type: "status", text: `${r.reason}; retrying in ${Math.max(1, Math.round(wait / 1000))} s` });
         await sleep(wait);
         if (ended) return null;
       }
@@ -204,7 +218,8 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
         const msg = await request();
         if (!msg || ended) return;
         const content = Array.isArray(msg.content) ? msg.content : [];
-        messages.push({ role: "assistant", content });
+        // The API rejects a history with an empty assistant message, which would break every later turn.
+        if (content.length) messages.push({ role: "assistant", content });
         content.forEach((b, i) => {
           if (b.type === "text" && typeof (b as TextBlock).text === "string" && (b as TextBlock).text.trim()) {
             // The id of the streamed block this text completes (the chat swaps its live text for it).
@@ -215,7 +230,8 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
         if (uses.length === 0) {
           if (pendingUser.length) {
             // The human said something while Claude was finishing; let Claude answer it.
-            messages.push({ role: "user", content: takeUserText() });
+            // (After an empty answer the last message is still the user's: the next round adds the text to it.)
+            if (content.length) messages.push({ role: "user", content: takeUserText() });
             continue;
           }
           const why = msg.stop_reason === "refusal" ? CLAUDE_DECLINED : ENDED_WITHOUT_RESULT;

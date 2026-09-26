@@ -76,14 +76,27 @@ export function killTree(child: ChildProcess): void {
 }
 
 /**
+ * Variables that would make Claude Code use (and bill) an API key or another
+ * endpoint instead of the user's own Claude Code login and subscription.
+ */
+export const API_BILLING_VARS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"] as const;
+
+/** The API_BILLING_VARS set in `env` (what claudeEnv strips), for the helper's start-up notice. */
+export function apiBillingVarsIn(env: NodeJS.ProcessEnv = process.env): string[] {
+  return API_BILLING_VARS.filter((k) => env[k] !== undefined);
+}
+
+/**
  * Environment for a Claude process: drop variables that make it think it is
  * nested (an inherited CLAUDE_CODE_CHILD_SESSION, for one, turns off
- * transcript saving).
+ * transcript saving), and API_BILLING_VARS, so it always runs on the user's
+ * Claude Code login.
  */
 export function claudeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out = { ...env };
   for (const k of Object.keys(out)) {
     if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_") || k === ENV.brain) delete out[k];
   }
+  for (const k of API_BILLING_VARS) delete out[k];
   return out;
 }

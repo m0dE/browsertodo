@@ -35,19 +35,43 @@ export function outOfCreditError(body: string): OutOfCreditError {
   return new OutOfCreditError(message ? `${OUT_OF_CREDIT}: ${message}` : OUT_OF_CREDIT, topupUrl || undefined);
 }
 
-/** The browsertodo API answers { error: "code or text", message? }; Anthropic answers { error: { type, message } }. */
+/**
+ * The browsertodo API answers { error: "code or text", message? }; Anthropic
+ * answers { error: { type, message } }; some proxies just { message }.
+ */
 const ErrorBody = z.object({
-  error: z.union([z.string(), z.object({ type: z.string().optional(), message: z.string().optional() })]),
+  error: z.union([z.string(), z.object({ type: z.string().optional(), message: z.string().optional() })]).optional(),
   message: z.string().optional(),
 });
 
-/** What an error answer says, from either API's error body, else the start of the text. */
+/**
+ * What an error answer says, from either API's error body, else the start of
+ * a plain-text body. An HTML error page or JSON of another shape says nothing
+ * a user can read: "" (callers then show just the status).
+ */
 export function errorDetail(body: string, maxChars = 300): string {
-  const parsed = ErrorBody.safeParse(parseJsonBody(body));
+  const json = parseJsonBody(body);
+  const parsed = ErrorBody.safeParse(json);
   if (parsed.success) {
     const { error, message } = parsed.data;
     if (typeof error === "string") return message ? `${error}: ${message}` : error;
-    if (error.message) return `${error.type ? `${error.type}: ` : ""}${error.message}`;
+    if (error?.message) return `${error.type ? `${error.type}: ` : ""}${error.message}`;
+    if (message) return message;
   }
-  return body.slice(0, maxChars);
+  const text = body.trim();
+  if (json !== undefined || text.startsWith("<")) return "";
+  return text.replace(/\s+/g, " ").slice(0, maxChars);
+}
+
+/**
+ * Error text from elsewhere (e.g. Claude Code's "API Error: 529 {...}") with
+ * an embedded JSON error body replaced by what it says, so the user never
+ * reads raw JSON. Text without one is returned as it is.
+ */
+export function plainErrorText(text: string): string {
+  const start = text.indexOf("{");
+  if (start < 0 || parseJsonBody(text.slice(start)) === undefined) return text;
+  const prefix = text.slice(0, start).trim();
+  const detail = errorDetail(text.slice(start));
+  return [prefix, detail].filter(Boolean).join(" ") || "an error without details";
 }

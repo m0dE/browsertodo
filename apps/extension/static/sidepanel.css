@@ -120,7 +120,7 @@ button.login-btn {
 .menu.acct summary { width: 26px; height: 26px; border-radius: 50%; padding: 0; overflow: hidden; flex: none; }
 #acct-anon { color: var(--muted); }
 .acct:hover #acct-anon, .acct[open] #acct-anon { color: var(--text); }
-.acct[data-signed-in] #acct-anon, .acct:not([data-signed-in]) #acct-who, .acct:not([data-signed-in]) #acct-settings, .acct:not([data-signed-in]) #acct-signout, .acct[data-signed-in] #acct-login { display: none; }
+.acct[data-signed-in] #acct-anon, .acct:not([data-signed-in]) #acct-who, .acct:not([data-signed-in]) #acct-billing, .acct:not([data-signed-in]) #acct-signout, .acct[data-signed-in] #acct-login { display: none; }
 .acct-pop { top: 30px; }
 .menu.acct summary:hover, .menu.acct[open] summary { background: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
 #acct-avatar { width: 26px; height: 26px; border-radius: 50%; display: block; object-fit: cover; }
@@ -158,7 +158,7 @@ button.login-btn {
 button[aria-disabled="true"] { opacity: 0.45; cursor: default; }
 button[aria-disabled="true"]:hover { border-color: var(--border); }
 
-/* Chat tab: the action bar under the tab row (New chat | Show tab | Raw log) */
+/* Chat tab: the action bar under the tab row (New chat | Show tab) */
 .chat, .history-tab { display: flex; flex-direction: column; }
 .chat-bar {
   display: flex; align-items: center; gap: 2px; padding: 3px 5px;
@@ -172,7 +172,7 @@ button[aria-disabled="true"]:hover { border-color: var(--border); }
 .bar-btn[aria-disabled="true"] { opacity: 0.5; }
 .bar-sep { flex: none; width: 1px; height: 12px; background: var(--border); }
 
-/* Chat and Activity log: the conversation header */
+/* Chat: the conversation header */
 .act-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .act-title { flex: 1; min-width: 0; }
 .act-title .title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -359,14 +359,9 @@ button.title-btn:hover { color: var(--accent); }
 .log .empty { margin: auto; max-width: 240px; }
 .log .chat-empty { margin: auto 0; border: 0; }
 
-/* Activity log tab: the list of runs, and one run read-only */
+/* Activity log tab: the list of runs (one opens in Chat) */
 .history { flex: 1; min-height: 0; padding: 4px 12px 12px; }
 .history .empty-state { margin-top: 8px; }
-.hist-past { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.hist-past .act-head { padding-top: 4px; row-gap: 2px; }
-.hist-nav { flex-basis: 100%; display: flex; align-items: center; gap: 4px; margin: 0 -6px 0 -7px; }
-.hist-nav .ghost.small { padding: 2px 9px; }
-.hist-past .act-title { flex-basis: 100%; }
 .sessions { list-style: none; padding: 0; margin: 0; }
 .sessions li { border-bottom: 1px solid var(--border); }
 .sessions button {

@@ -3,7 +3,7 @@
 // size's browser context and label, the checks (checks.mjs) and the panel helpers below.
 import { join } from "node:path";
 import { installChromeStub } from "./chrome-stub.mjs";
-import { EMAIL_ANSWER, scenario, SHORTCUT, SUGGESTION, thumbnail } from "./scenarios.mjs";
+import { EMAIL_ANSWER, scenario, SHORTCUT_LABEL, SUGGESTION, thumbnail } from "./scenarios.mjs";
 
 export const SIZES = [
   { w: 360, h: 800 },
@@ -33,7 +33,7 @@ export function panelHelpers(label, problem) {
   const chatBar = (p) =>
     p.evaluate(() =>
       Object.fromEntries(
-        ["chat-new", "chat-show", "chat-rawlog"].map((id) => {
+        ["chat-new", "chat-show"].map((id) => {
           const b = document.getElementById(id);
           return [id, { text: b.textContent, on: b.getAttribute("aria-disabled") !== "true", title: b.title }];
         }),
@@ -42,7 +42,7 @@ export function panelHelpers(label, problem) {
   const expectBar = async (p, want, what) => {
     const bar = await chatBar(p);
     const order = await p.evaluate(() => [...document.querySelectorAll(".chat-bar .bar-btn")].map((b) => b.textContent).join(" | "));
-    if (order !== "New chat | Show tab | Raw log") fail(`chat bar order "${order}"`);
+    if (order !== "New chat | Show tab") fail(`chat bar order "${order}"`);
     for (const [id, on] of Object.entries(want)) {
       if (bar[id].on !== on) fail(`${what}: #${id} ${bar[id].on ? "enabled" : "disabled"}`);
       if (!bar[id].title) fail(`${what}: #${id} has no tooltip`);
@@ -65,12 +65,11 @@ export const PANEL_CASES = [
     async run({ ctx, size, scheme, label, fail, expectBar, tabsText, want, openPanel, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "idle", ".chat-empty");
       if ((await tabsText(p)) !== "Chat | TODO | Activity log") fail(`tabs "${await tabsText(p)}"`);
-      const bar = await expectBar(p, { "chat-new": false, "chat-show": false, "chat-rawlog": false }, "idle chat");
+      const bar = await expectBar(p, { "chat-new": false, "chat-show": false }, "idle chat");
       if (!/already a new chat/.test(bar["chat-new"].title)) fail(`New Chat tooltip "${bar["chat-new"].title}"`);
       // Disabled bar buttons do nothing.
       await p.click("#chat-show", { force: true });
-      await p.click("#chat-rawlog", { force: true });
-      if (await p.evaluate(() => window.__requests.some((r) => r.type === "agent.show" || r.type === "session.log"))) fail("disabled bar button sent a request");
+      if (await p.evaluate(() => window.__requests.some((r) => r.type === "agent.show"))) fail("disabled bar button sent a request");
       await checkLayout(p, `idle ${label}`);
       await shoot(p, "panel-chat-idle", size, scheme);
       if (want("panel-composer-long", size, scheme)) {
@@ -140,7 +139,7 @@ export const PANEL_CASES = [
       if (!look.focused) fail("empty send: the box is not focused when the panel opens");
       if (look.opacity !== "1") fail(`empty send: Send looks unavailable (opacity ${look.opacity})`);
       if (!/look at this page/.test(look.title)) fail(`empty send: Send tooltip "${look.title}"`);
-      if (look.hint !== `Press ${SHORTCUT} to open this chat at any time.`) fail(`empty send: shortcut hint "${look.hint}"`);
+      if (look.hint !== `Press ${SHORTCUT_LABEL} to open this chat at any time.`) fail(`empty send: shortcut hint "${look.hint}"`);
       if (!look.hello) fail("empty send: the panel did not tell the background its window");
       // The placeholder is one line at this width (measured with the box's font).
       const oneLine = await p.evaluate((text) => {
@@ -265,7 +264,7 @@ export const PANEL_CASES = [
   },
   // A running session: TODO, then Chat with its action bar, then the Activity Log.
   {
-    names: ["panel-todo", "panel-model-running", "panel-add-form", "panel-finished-menu", "panel-chat-running", "panel-activity-log", "panel-activity-log-past"],
+    names: ["panel-todo", "panel-model-running", "panel-add-form", "panel-finished-menu", "panel-chat-running", "panel-activity-log", "panel-activity-log-open"],
     async run({ ctx, size, scheme, label, fail, expectBar, expectChipHints, want, only, openPanel, shoot, checkLayout, reportErrors, wantAny, shots, taken }) {
       const page = await openPanel(ctx, "ok", ".ev-tool");
       await page.click("#tab-btn-todo");
@@ -304,12 +303,11 @@ export const PANEL_CASES = [
         await shoot(page, "panel-finished-menu", size, scheme);
         await page.locator("#tab-todo .section-head h2").click();
       }
-      if (wantAny(["panel-chat-running", "panel-activity-log", "panel-activity-log-past"], size, scheme)) {
+      if (wantAny(["panel-chat-running", "panel-activity-log", "panel-activity-log-open"], size, scheme)) {
         await page.click("#tab-btn-chat");
         await page.waitForSelector("#chat-log .ev-tool", { state: "attached" });
-        // Running on the Claude API: Show Tab works, Raw Log does not exist for this brain.
-        const bar = await expectBar(page, { "chat-new": true, "chat-show": true, "chat-rawlog": false }, "running chat");
-        if (!/only local Claude Code runs/.test(bar["chat-rawlog"].title)) fail(`Raw Log tooltip "${bar["chat-rawlog"].title}"`);
+        // Running: New chat and Show Tab work.
+        await expectBar(page, { "chat-new": true, "chat-show": true }, "running chat");
         // One steps group unfolded, with one long result open.
         await page.locator("details.ev-result").first().evaluate((d) => {
           d.open = true;
@@ -322,26 +320,33 @@ export const PANEL_CASES = [
         const shown = await page.evaluate(() => window.__requests.find((r) => r.type === "agent.show"));
         if (shown?.sessionId !== "s-live") fail(`Show Tab sent ${JSON.stringify(shown)}`);
 
-        // Activity Log: the list of runs, no composer; a finished run opens read-only with a way back.
+        // Activity Log: the list of runs, no composer. Picking a finished run (by keyboard) opens it in Chat, bound to this tab.
         await page.click("#tab-btn-history");
         await page.waitForSelector(".sessions li");
         await expectChipHints(page, "activity log");
         await checkLayout(page, `activity log ${label}`);
         await shoot(page, "panel-activity-log", size, scheme);
-        await page.locator(".sessions li button").nth(1).click();
-        await page.waitForSelector("#hist-log .ev-text");
-        const past = await page.evaluate(() => ({
-          title: document.getElementById("hist-title").textContent,
-          open: !document.getElementById("hist-open").hidden,
-          raw: !document.getElementById("hist-rawlog").hidden,
-          composer: document.getElementById("composer").hidden,
+        if (await page.evaluate(() => !!document.querySelector("#hist-past, #hist-log, #hist-open, #hist-rawlog"))) fail("the read-only run view is still in the page");
+        const pastRow = page.locator(".sessions li button").nth(1);
+        const pastId = await pastRow.getAttribute("data-id");
+        await pastRow.focus();
+        await page.keyboard.press("Enter");
+        await page.waitForSelector("#tab-chat:not([hidden]) #chat-log .ev-text");
+        const opened = await page.evaluate(() => ({
+          tab: document.querySelector(".tabs [aria-selected=true]")?.id,
+          title: document.getElementById("chat-title").textContent,
+          bind: window.__requests.filter((r) => r.type === "chat.bind").at(-1),
+          composer: !document.getElementById("composer").hidden,
+          focus: document.activeElement?.id,
         }));
-        if (past.title !== "Post 'good morning' on X" || !past.open || past.raw || !past.composer) fail(`past run view ${JSON.stringify(past)}`);
-        await checkLayout(page, `activity log past ${label}`);
-        await shoot(page, "panel-activity-log-past", size, scheme);
-        await page.click("#hist-back");
-        await page.waitForSelector("#hist-list:not([hidden]) .sessions li");
-        // A running one opens in Chat.
+        if (opened.tab !== "tab-btn-chat" || opened.title !== "Post 'good morning' on X" || opened.bind?.sessionId !== pastId || opened.bind?.tabId !== 1 || !opened.composer || opened.focus !== "now-text") {
+          fail(`Activity Log row did not open the run in Chat: ${JSON.stringify(opened)}`);
+        }
+        await checkLayout(page, `activity log open ${label}`);
+        await shoot(page, "panel-activity-log-open", size, scheme);
+        // A running one opens in Chat too.
+        await page.click("#tab-btn-history");
+        await page.waitForSelector(".sessions li");
         await page.locator(".sessions li button").first().click();
         await page.waitForSelector("#tab-chat:not([hidden]) #chat-log .ev-tool", { state: "attached" });
       }
@@ -440,11 +445,11 @@ export const PANEL_CASES = [
       await p.waitForFunction(() => !document.querySelector("dialog.sheet"));
       if ((await p.evaluate(() => document.activeElement?.dataset?.taskId)) !== "t1") fail("backdrop click did not return focus to the task");
 
-      // Activity Log: a past one-off chat shows the whole message typed.
+      // Activity Log: a past one-off chat opens in Chat; its title's details show the whole message typed.
       await p.click("#tab-btn-history");
       await p.locator(".sessions li button", { hasText: "Lisbon" }).click();
-      await p.waitForSelector("#hist-past:not([hidden]) #hist-title");
-      await p.click("#hist-title");
+      await p.waitForFunction(() => !document.getElementById("tab-chat").hidden && document.getElementById("chat-title").textContent.includes("Lisbon"));
+      await p.click("#chat-title");
       await p.waitForSelector("dialog.sheet[open]");
       const msg = await sheet();
       checkSheet(msg, "details of a chat message");
@@ -454,7 +459,7 @@ export const PANEL_CASES = [
       await shoot(p, "panel-details-message", size, scheme);
       await p.locator("dialog.sheet button", { hasText: "Close" }).click();
       await p.waitForFunction(() => !document.querySelector("dialog.sheet"));
-      if ((await p.evaluate(() => document.activeElement?.id)) !== "hist-title") fail("Close did not return focus to the run title");
+      if ((await p.evaluate(() => document.activeElement?.id)) !== "chat-title") fail("Close did not return focus to the chat title");
       reportErrors(p, `details ${label}`);
       await p.close();
     },
@@ -499,8 +504,8 @@ export const PANEL_CASES = [
       if (JSON.stringify(view.picks) !== JSON.stringify(wantPicks) || view.loosePicks !== 0) fail(`end card picks ${JSON.stringify(view)}`);
       if (view.note !== "Conversation open · Claude Code session kept 30 min") fail(`note "${view.note}"`);
       if (!/2 messages/.test(view.meta)) fail(`meta ${JSON.stringify(view)}`);
-      // Ended Claude Code conversation: no agent tab any more, but its raw log is there.
-      const bar = await expectBar(p, { "chat-new": true, "chat-show": false, "chat-rawlog": true }, "ended conversation");
+      // Ended Claude Code conversation: no agent tab any more.
+      const bar = await expectBar(p, { "chat-new": true, "chat-show": false }, "ended conversation");
       if (!/only has one while it is working/.test(bar["chat-show"].title)) fail(`Show Tab tooltip "${bar["chat-show"].title}"`);
       await expectComposer(CHAT, "not in conversation mode on Chat");
       await checkLayout(p, `conversation ${label}`);
@@ -514,12 +519,6 @@ export const PANEL_CASES = [
       await checkLayout(p, `conversation-todo ${label}`);
       await shoot(p, "panel-conversation-todo", size, scheme);
       await p.click("#tab-btn-chat");
-
-      // Raw log asks the background for the helper's run log.
-      const popup = p.context().waitForEvent("page", { timeout: 3000 }).catch(() => null);
-      await p.click("#chat-rawlog");
-      await p.waitForFunction(() => window.__requests.some((r) => r.type === "session.log" && r.sessionId === "s-conv"));
-      await (await popup)?.close();
 
       // A message goes to the same conversation.
       await p.click("#now-text");
@@ -542,7 +541,7 @@ export const PANEL_CASES = [
       if (closed?.sessionId !== "s-conv") fail(`newChat sent ${JSON.stringify(closed)}`);
       if (!(await p.locator("#chat-conv").isHidden())) fail("conversation note still shown after New Chat");
       if (!(await p.locator(".chat-empty").isVisible())) fail("thread not emptied by New Chat");
-      await expectBar(p, { "chat-new": false, "chat-show": false, "chat-rawlog": false }, "after New Chat");
+      await expectBar(p, { "chat-new": false, "chat-show": false }, "after New Chat");
       await checkLayout(p, `conversation-newchat ${label}`);
       await shoot(p, "panel-conversation-newchat", size, scheme);
       // The next text starts a new conversation.
@@ -888,7 +887,7 @@ export const PANEL_CASES = [
         }));
       const a = await view();
       if (!a.title?.startsWith("Summarize this pull request") || a.empty || a.chips.length || !a.stop) fail(`tab A ${JSON.stringify(a)}`);
-      await expectBar(p, { "chat-new": true, "chat-show": true, "chat-rawlog": false }, "tab A");
+      await expectBar(p, { "chat-new": true, "chat-show": true }, "tab A");
       await checkLayout(p, `tabs-a ${label}`);
       await shoot(p, "panel-tabs-a", size, scheme);
       // The user switches to tab 2: a new chat there, with a chip for tab 1's running chat.
@@ -896,7 +895,7 @@ export const PANEL_CASES = [
       await p.waitForSelector("#chat-log .chat-empty");
       const b = await view();
       if (b.title !== null || b.chips.join() !== "s-live" || b.stop || b.placeholder !== "Figure out what to do based on the current screen") fail(`tab B ${JSON.stringify(b)}`);
-      await expectBar(p, { "chat-new": false, "chat-show": false, "chat-rawlog": false }, "tab B");
+      await expectBar(p, { "chat-new": false, "chat-show": false }, "tab B");
       await checkLayout(p, `tabs-b ${label}`);
       await shoot(p, "panel-tabs-b", size, scheme);
       // A task typed in tab 2 starts there, and its chat shows in tab 2.
@@ -1064,8 +1063,16 @@ export const PANEL_CASES = [
         // The account menu says what Free lacks.
         const plan = await p.evaluate(() => document.getElementById("acct-plan").textContent);
         if (plan !== "Free plan, no TODO list · $0.00 usage credit") fail(`account menu plan "${plan}"`);
+        // Get a plan: the dashboard's Billing page, in a new tab; back in the panel, the account is refreshed.
         await p.click("#todo-plan-btn");
-        await p.waitForFunction(() => window.__created.some((u) => u.endsWith("options.html#account")));
+        await p.waitForFunction(() => window.__created.includes("https://app.browsertodo.com/billing"));
+        const forced = () => p.evaluate(() => window.__requests.filter((r) => r.type === "account.refresh" && r.force === true).length);
+        const before = await forced();
+        await p.evaluate(() => {
+          dispatchEvent(new Event("blur"));
+          dispatchEvent(new Event("focus"));
+        });
+        await p.waitForFunction((n) => window.__requests.filter((r) => r.type === "account.refresh" && r.force === true).length === n + 1, before);
         // One-off chats stay free: Chat keeps its composer.
         await p.click("#tab-btn-chat");
         if (!(await p.locator("#composer").isVisible())) fail("composer hidden on Chat on Free");
@@ -1085,20 +1092,27 @@ export const PANEL_CASES = [
       }
     },
   },
-  // Out of usage credit: the status line says so with Top up; the paused run's card links to the top-up page.
+  // Out of usage credit: the status line says so with Top up; the paused run's card has Top up too. Every one opens the dashboard's Billing page.
   {
     names: ["panel-out-of-credit"],
     async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "hosted-out", "#chat-log .ev-end");
       const st = await p.evaluate(() => ({ text: document.getElementById("status-text").textContent, action: document.getElementById("status-action").textContent, chip: document.getElementById("now-model-label").textContent }));
       if (st.text !== "Out of usage credit" || st.action !== "Top up" || st.chip !== "Out of usage credit") fail(`out of credit status ${JSON.stringify(st)}`);
-      const link = await p.evaluate(() => document.querySelector("#chat-log .ev-topup")?.getAttribute("href"));
-      if (link !== "https://app.browsertodo.com/billing") fail(`Top up link ${link}`);
+      if ((await p.locator("#chat-log .ev-topup").textContent()) !== "Top up") fail("no Top up in the paused run's card");
       await checkLayout(p, `out-of-credit ${label}`);
       await shoot(p, "panel-out-of-credit", size, scheme);
+      await p.click("#chat-log .ev-topup");
       await p.click("#status-action");
-      const opened = await p.evaluate(() => window.__opened);
-      if (opened[0] !== "https://app.browsertodo.com/billing") fail(`status Top up opened ${JSON.stringify(opened)}`);
+      // Plan & billing in the account menu.
+      await p.click("#acct-btn");
+      await p.click("#acct-billing");
+      // The model menu's Top up...
+      await p.click("#now-model");
+      await p.locator("#model-menu .mm-item", { hasText: "Top up" }).click();
+      const opened = await p.evaluate(() => ({ created: window.__created, opened: window.__opened }));
+      const billing = "https://app.browsertodo.com/billing";
+      if (JSON.stringify(opened.created) !== JSON.stringify([billing, billing, billing, billing]) || opened.opened.length) fail(`Top up / Plan & billing opened ${JSON.stringify(opened)}`);
       reportErrors(p, `out-of-credit ${label}`);
       await p.close();
     },
@@ -1139,7 +1153,7 @@ export const PANEL_CASES = [
   },
   // Stopped by the user after typing the post: the next message continues that conversation.
   {
-    names: ["panel-continue", "panel-continue-note", "panel-continue-newtask", "panel-continue-task-menu", "panel-continue-past"],
+    names: ["panel-continue", "panel-continue-note", "panel-continue-newtask", "panel-continue-task-menu", "panel-continue-past-chat"],
     async run({ ctx, size, scheme, label, fail, want, only, openPanel, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "stopped", "#chat-log .ev-tool");
       const data = scenario("stopped");
@@ -1190,19 +1204,15 @@ export const PANEL_CASES = [
       await checkLayout(p, `continue-newtask ${label}`);
       await shoot(p, "panel-continue-newtask", size, scheme);
 
-      // A past stopped run from the Activity Log: read-only there; Open in Chat hands it to the composer.
-      if (want("panel-continue-past", size, scheme)) {
+      // A past stopped run from the Activity Log opens straight in Chat, with Continue, and the composer talks to it.
+      if (want("panel-continue-past-chat", size, scheme)) {
         await p.click("#tab-btn-history");
         await p.waitForSelector(".sessions li");
         await p.locator(".sessions li button", { hasText: "cheapest flight" }).click();
-        await p.waitForSelector("#hist-log .ev-continue");
-        await checkLayout(p, `continue-past ${label}`);
-        await shoot(p, "panel-continue-past", size, scheme);
-        await p.click("#hist-open");
         await p.waitForSelector("#tab-chat:not([hidden]) #chat-log .ev-continue");
-        if (!(await p.locator("#chat-title").textContent()).includes("cheapest flight")) fail("Open in Chat did not show the run in Chat");
-        await expectMode(CHAT, "not talking to a past stopped run after Open in Chat");
-        if ((await p.evaluate(() => document.activeElement?.id)) !== "now-text") fail("Open in Chat did not focus the box");
+        if (!(await p.locator("#chat-title").textContent()).includes("cheapest flight")) fail("the Activity Log row did not show the run in Chat");
+        await expectMode(CHAT, "not talking to a past stopped run opened from the Activity Log");
+        if ((await p.evaluate(() => document.activeElement?.id)) !== "now-text") fail("opening from the Activity Log did not focus the box");
         await checkLayout(p, `continue-past-chat ${label}`);
         await shoot(p, "panel-continue-past-chat", size, scheme);
       }
@@ -1252,7 +1262,7 @@ export const PANEL_CASES = [
           return out;
         });
 
-      // Free plan: a lock; the tooltip and a click explain, "Get a plan" opens Settings > Account.
+      // Free plan: a lock; the tooltip and a click explain, "Get a plan" opens the dashboard's Billing page.
       {
         const p = await openPanel(ctx, "free", ".chat-empty");
         if ((await voiceState(p)) !== "locked") fail(`free plan mic ${await voiceState(p)}`);
@@ -1264,7 +1274,7 @@ export const PANEL_CASES = [
         await checkLayout(p, `voice-locked ${label}`);
         await shoot(p, "panel-voice-locked", size, scheme);
         await p.click(".voice-tip button.link");
-        await p.waitForFunction(() => window.__created.some((u) => u.endsWith("options.html#account")));
+        await p.waitForFunction(() => window.__created.includes("https://app.browsertodo.com/billing"));
         // The shortcut while locked points at the mic.
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         if (!(await p.evaluate(() => document.querySelector(".voice-mic").classList.contains("nudge")))) fail("locked shortcut did not point at the mic");
@@ -1276,7 +1286,7 @@ export const PANEL_CASES = [
       {
         const p = await openPanel(ctx, "account", ".chat-empty");
         if ((await voiceState(p)) !== "idle") fail(`paid plan mic ${await voiceState(p)}`);
-        if ((await p.getAttribute(mic, "title")) !== `Voice · ${SHORTCUT}`) fail(`mic tooltip "${await p.getAttribute(mic, "title")}"`);
+        if ((await p.getAttribute(mic, "title")) !== `Voice · ${SHORTCUT_LABEL}`) fail(`mic tooltip "${await p.getAttribute(mic, "title")}"`);
         await checkLayout(p, `voice-idle ${label}`);
         await shoot(p, "panel-voice-idle", size, scheme);
 

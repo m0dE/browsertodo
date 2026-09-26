@@ -33,9 +33,11 @@ export async function* readSse(body: ReadableStream<Uint8Array>): AsyncGenerator
     if (field === "event") event = value;
     else if (field === "data") data.push(value);
   };
+  let ended = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
+      ended = done;
       buf += done ? decoder.decode() : decoder.decode(value, { stream: true });
       // A lone \r at the end may be the first half of \r\n: wait for more.
       let m: RegExpExecArray | null;
@@ -54,6 +56,8 @@ export async function* readSse(body: ReadableStream<Uint8Array>): AsyncGenerator
       }
     }
   } finally {
+    // The reader stopped early (message_stop, a bad event, an abort): close the connection instead of leaving it streaming.
+    if (!ended) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }

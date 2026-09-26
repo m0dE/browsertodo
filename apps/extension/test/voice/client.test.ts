@@ -49,14 +49,14 @@ describe("AccountApi.transcribe", () => {
   });
 
   it.each([
-    [403, { error: "plan_required", feature: "voice", message: "Voice input needs the Plus or Pro plan.", upgradeUrl: "https://dash.test/billing" }, "plan", "Voice needs the Plus or Pro plan.", true, "https://dash.test/billing"],
-    [402, { error: "out_of_credit", message: "x", topupUrl: "https://dash.test/billing" }, "credit", "You're out of usage credit. Top up to keep using voice.", true, "https://dash.test/billing"],
-    [401, { error: "invalid key" }, "signed-out", "Log in to use voice.", true, undefined],
-    [413, { error: "audio is longer than 60 seconds" }, "too-long", "Voice messages can be up to 60 seconds.", true, undefined],
-    [429, { error: "rate limit" }, "rate", "Too many voice requests. Try again in a minute.", true, undefined],
-    [502, { error: "transcription failed: 3040" }, "server", "Voice isn't working right now. Try again in a moment.", false, undefined],
-  ])("HTTP %i becomes a plain message", async (status, body, kind, message, fatal, url) => {
-    expect(await failure(status, body)).toEqual({ kind, message, fatal, ...(url ? { url } : {}) });
+    [403, { error: "plan_required", feature: "voice", message: "Voice input needs the Plus or Pro plan.", upgradeUrl: "https://dash.test/billing" }, "plan", "Voice needs the Plus or Pro plan.", true],
+    [402, { error: "out_of_credit", message: "x", topupUrl: "https://dash.test/billing" }, "credit", "You're out of usage credit. Top up to keep using voice.", true],
+    [401, { error: "invalid key" }, "signed-out", "Log in to use voice.", true],
+    [413, { error: "audio is longer than 60 seconds" }, "too-long", "Voice messages can be up to 60 seconds.", true],
+    [429, { error: "rate limit" }, "rate", "Too many voice requests. Try again in a minute.", true],
+    [502, { error: "transcription failed: 3040" }, "server", "Voice isn't working right now. Try again in a moment.", false],
+  ])("HTTP %i becomes a plain message (the fix is on the dashboard's Billing page, not in the error)", async (status, body, kind, message, fatal) => {
+    expect(await failure(status, body)).toEqual({ kind, message, fatal });
   });
 
   it("signed out and unreachable", async () => {
@@ -80,10 +80,10 @@ describe("the panel's transcriber (through the background)", () => {
   });
 
   it("rejects with the VoiceError the background reported", async () => {
-    const send = async (): Promise<VoiceTranscribeResult> => ({ error: { kind: "plan", message: "Voice needs the Plus or Pro plan.", fatal: true, url: "https://x" } });
+    const send = async (): Promise<VoiceTranscribeResult> => ({ error: { kind: "plan", message: "Voice needs the Plus or Pro plan.", fatal: true } });
     const err = await panelTranscriber(send)(wav, req).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(VoiceError);
-    expect(err).toMatchObject({ kind: "plan", fatal: true, url: "https://x" });
+    expect(err).toMatchObject({ kind: "plan", fatal: true });
   });
 
   it("treats a background that does not answer as a network blip", async () => {

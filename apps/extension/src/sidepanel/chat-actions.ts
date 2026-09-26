@@ -1,10 +1,9 @@
 /**
- * The Chat tab's action bar (New chat | Show tab | Raw log): whether each
+ * The Chat tab's action bar (New chat | Show tab): whether each
  * action applies to the chat on screen, and a tooltip that says what it does
  * or why it cannot be used. Pure.
  */
 import type { SessionInfo } from "@browsertodo/shared";
-import { brainLabel } from "../ui/labels.js";
 
 export interface BarAction {
   disabled: boolean;
@@ -14,10 +13,9 @@ export interface BarAction {
 export interface ChatActions {
   newChat: BarAction;
   showTab: BarAction;
-  rawLog: BarAction;
 }
 
-type Shown = Pick<SessionInfo, "sessionId" | "brain" | "logPath" | "endedAt">;
+type Shown = Pick<SessionInfo, "sessionId" | "endedAt">;
 
 /** shown: the conversation the Chat tab shows (null: an empty, new chat). running: ids of running sessions. */
 export function chatActions(shown: Shown | null, running: ReadonlySet<string>): ChatActions {
@@ -25,7 +23,6 @@ export function chatActions(shown: Shown | null, running: ReadonlySet<string>): 
     return {
       newChat: { disabled: true, title: "This is already a new chat: type below to start" },
       showTab: { disabled: true, title: "No chat yet, so there is no agent tab to show" },
-      rawLog: { disabled: true, title: "No chat yet, so there is no log" },
     };
   }
   const isRunning = running.has(shown.sessionId) && !shown.endedAt;
@@ -40,16 +37,5 @@ export function chatActions(shown: Shown | null, running: ReadonlySet<string>): 
     showTab: isRunning
       ? { disabled: false, title: "Switch to the tab the agent is using" }
       : { disabled: true, title: "The agent has no tab for this chat right now: it only has one while it is working" },
-    rawLog:
-      shown.brain !== "claude-code"
-        ? { disabled: true, title: `No raw log: only local Claude Code runs keep one (this chat used ${brainLabel(shown.brain)})` }
-        : !shown.logPath
-          ? { disabled: true, title: "No raw log was recorded for this chat" }
-          : { disabled: false, title: "Every Claude Code event of this chat, as the helper logged it" },
   };
-}
-
-/** A past conversation can be picked up in Chat (the composer then talks to it); cloud runs cannot. */
-export function canOpenInChat(s: Pick<SessionInfo, "source">): boolean {
-  return s.source !== "cloud";
 }

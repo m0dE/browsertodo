@@ -1,5 +1,5 @@
 /**
- * Options page: tabs for the account, the AI (brain, key, model, helper),
+ * Options page: tabs for the account, API keys, the AI (brain, key, model, helper),
  * Jev, task scheduling, site logins and self-hosting. Settings save by
  * themselves as they change; keys save with their own Save button.
  * What shows when comes from settingsView() (settings-view.ts).
@@ -7,7 +7,7 @@
 import { openShortcutSettings, readShortcut } from "../shortcut.js";
 import { errorMessage, type BrainMode, type ExtensionSettings } from "@browsertodo/shared";
 import { uiRequest, type UiState } from "../ui-protocol.js";
-import { $, busy, find, flash, h, restartAnimation } from "../ui/dom.js";
+import { $, busy, find, flash, h } from "../ui/dom.js";
 import { brainLabel } from "../ui/labels.js";
 import { initAccountSection } from "./account-section.js";
 import { SaveQueue } from "./autosave.js";
@@ -52,7 +52,7 @@ const form = $<HTMLFormElement>("form");
 const saveMsg = $("save-msg");
 const modelSelect = $<HTMLSelectElement>("model-select");
 const input = (key: string) => $<HTMLInputElement>(`f-${key}`);
-const tabs = initTabs();
+initTabs();
 
 let state: UiState | null = null;
 let saved: ExtensionSettings | null = null;
@@ -274,18 +274,11 @@ function applyState(s: UiState): void {
   renderState(s);
 }
 
-/** Plan and credit on the Account tab, highlighted. */
-function showBilling(): void {
-  tabs.show("account");
-  const target = $("acct-in").hidden ? $("account-card") : $("plan-box");
-  target.scrollIntoView({ behavior: "smooth", block: "center" });
-  restartAnimation(target, "flash-target");
-}
-
-const accountSection = initAccountSection({ onState: (s) => renderState(s), showBilling });
+const accountSection = initAccountSection({ onState: (s) => renderState(s) });
 const hostedSignIn = $<HTMLButtonElement>("hosted-signin");
 hostedSignIn.addEventListener("click", () => accountSection.signIn(hostedSignIn, $("hosted-signin-msg")));
-$("hosted-action").addEventListener("click", showBilling);
+// Get a plan / Top up under browsertodo AI: the dashboard's Billing page.
+$("hosted-action").addEventListener("click", () => accountSection.openBilling());
 
 // ------------------------------------------------------------ tests and helper
 
@@ -332,7 +325,7 @@ async function main(): Promise<void> {
     fillForm(s.settings);
     applyState(s);
     showErrors(false);
-    // Fresh plan and credit (e.g. back from a Stripe page).
+    // Fresh plan and credit (they may have changed on the dashboard).
     renderState(await uiRequest({ type: "account.refresh", force: true }));
   } catch (err) {
     $("now-text").textContent = `Background not reachable: ${errorMessage(err)}`;

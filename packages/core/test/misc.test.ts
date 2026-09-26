@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SUGGESTION_CHARS, normalizeHandle, SUGGESTION_NEVER, TOOL_NAMES, type PageSnapshot } from "@browsertodo/shared";
+import { z } from "zod";
+import { MAX_SUGGESTION_CHARS, normalizeHandle, SUGGESTION_NEVER, TOOL_NAMES, toolArgsSchema, toolsFor, type PageSnapshot } from "@browsertodo/shared";
+import { errorDetail, plainErrorText } from "../src/api-errors.js";
+import { mapStrings, MIN_SECRET_CHARS, REDACTED, SecretRedactor } from "../src/redact.js";
 import { SCREEN_HELP_TEXT } from "@browsertodo/shared";
 import { agentError, buildFollowUpMessage, buildSystemPrompt, buildTaskPrompt, classifyFailure, createJev, ENDED_WITHOUT_RESULT, EXITED_WITHOUT_RESULT, formatSnapshot, timeLimitReached, toolCallLimitExceeded, verifyXPost } from "../src/index.js";
 import { buildJevQuestions, buildJevState, jevFromClient, type JevClientLike } from "../src/jev.js";
@@ -256,6 +259,26 @@ describe("prompts", () => {
     expect(noJev).toMatch(/- read_page: .*indexed list/);
   });
 
+  it("rules and tool descriptions agree: sign-in with get_credential off X, verify once, act without Jev needs indices", () => {
+    const tools = toolsFor();
+    for (const jev of [false, true]) {
+      const p = buildSystemPrompt({ tools, jev });
+      // A non-X login page is get_credential's job; pausing is for X, or when no login is saved.
+      expect(p).toContain("On a login page of a site other than X, call get_credential for that site");
+      expect(p).not.toContain("Call task_pause (never guess) when you see a login page,");
+      // One verify rule, not "verify once" next to "verify important steps".
+      expect(p.match(/Verify once at the end/g)).toHaveLength(1);
+      expect(p).not.toContain("Verify important steps");
+      expect(p).not.toMatch(/switch_x_account: [^\n]*Verify with a screenshot/);
+    }
+    // Without Jev, act's description and arguments never offer a fast model that is not there.
+    const noJev = buildSystemPrompt({ tools, jev: false });
+    expect(noJev).not.toMatch(/- act: [^\n]*fast model/);
+    expect(JSON.stringify(z.toJSONSchema(toolArgsSchema("act", false)))).not.toContain("fast model");
+    // Without get_credential among the tools, a login page simply pauses.
+    expect(buildSystemPrompt({ tools: tools.filter((n) => n !== "get_credential"), jev: false })).toContain("Call task_pause (never guess) when you see a login page,");
+  });
+
   it("task prompt covers every website, information tasks and greetings", () => {
     const p = buildSystemPrompt({ tools: TOOL_NAMES, jev: false });
     expect(p).toMatch(/any website the user can: Gmail, LinkedIn, X/);
@@ -386,5 +409,47 @@ describe("verifyXPost missing-post page", () => {
     const r = await verifyXPost(browser as never, "https://x.com/a/status/1", "");
     expect(r.ok).toBe(false);
     expect(r.detail).toMatch(/does not exist/);
+  });
+});
+
+describe("error text the user reads", () => {
+  it("errorDetail: either API's error body, a bare message, else plain text; never an HTML page or unknown JSON", () => {
+    expect(errorDetail(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }))).toBe("overloaded_error: Overloaded");
+    expect(errorDetail(JSON.stringify({ error: "plan_required", message: "Upgrade to Plus" }))).toBe("plan_required: Upgrade to Plus");
+    expect(errorDetail(JSON.stringify({ message: "Internal error" }))).toBe("Internal error");
+    expect(errorDetail("<html><head><title>502 Bad Gateway</title></head><body>cloudflare</body></html>")).toBe("");
+    expect(errorDetail(JSON.stringify({ unexpected: { shape: true } }))).toBe("");
+    expect(errorDetail("  Bad gateway\n  try later ")).toBe("Bad gateway try later");
+    expect(errorDetail("x".repeat(500), 10)).toBe("x".repeat(10));
+  });
+
+  it("plainErrorText replaces an embedded JSON error body with what it says", () => {
+    expect(plainErrorText('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}')).toBe("API Error: 529 overloaded_error: Overloaded");
+    expect(plainErrorText("Claude AI usage limit reached|1760000000")).toBe("Claude AI usage limit reached|1760000000");
+    expect(plainErrorText("Not JSON { at all")).toBe("Not JSON { at all");
+    expect(plainErrorText('{"weird":1}')).toBe("an error without details");
+    // Still sorted as temporary: the status and the error type survive.
+    expect(classifyFailure(plainErrorText('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'))).toBe("transient");
+  });
+});
+
+describe("SecretRedactor", () => {
+  it("replaces known secrets in every string of a value, and leaves values alone while it knows none", () => {
+    const r = new SecretRedactor();
+    const value = { a: "pw is hunter22", b: ["hunter22", 3, null], c: { d: "x hunter22 y hunter22" } };
+    expect(r.redact(value)).toBe(value);
+    r.add("hunter22");
+    expect(r.redact(value)).toEqual({ a: `pw is ${REDACTED}`, b: [REDACTED, 3, null], c: { d: `x ${REDACTED} y ${REDACTED}` } });
+    expect(value.a).toBe("pw is hunter22");
+  });
+
+  it("ignores secrets too short to redact without garbling ordinary text", () => {
+    const r = new SecretRedactor();
+    r.add("a".repeat(MIN_SECRET_CHARS - 1));
+    expect(r.redact("aaa bbb")).toBe("aaa bbb");
+  });
+
+  it("mapStrings walks objects and arrays only", () => {
+    expect(mapStrings({ s: "a", n: 1, list: ["b"], nested: { t: "c" } }, (s) => s.toUpperCase())).toEqual({ s: "A", n: 1, list: ["B"], nested: { t: "C" } });
   });
 });

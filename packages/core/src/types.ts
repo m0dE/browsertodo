@@ -16,6 +16,7 @@ import type {
   ToolName,
   ToolResult,
 } from "@browsertodo/shared";
+import type { SecretRedactor } from "./redact.js";
 
 /** Something that performs browser.* and vault.* methods (extension driver, or RPC to it). */
 export interface BrowserCaller {
@@ -58,6 +59,12 @@ export interface ToolExecutorOptions {
   onTaskEnd?: (r: TaskRunResult) => void;
   /** Absolute local paths the task may upload. upload rejects other paths. */
   mediaPaths: string[];
+  /**
+   * Where passwords get_credential hands out are remembered, so events never
+   * show them. Pass one to redact the same secrets elsewhere (the helper's run
+   * log). Default: the executor's own.
+   */
+  secrets?: SecretRedactor;
   /** For tests. Default: real setTimeout. */
   sleep?: Sleep;
 }

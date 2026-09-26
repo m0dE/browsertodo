@@ -21,6 +21,12 @@ describe("the manifest's command", () => {
 describe("shortcutLabel", () => {
   it("as written elsewhere, as symbols on a Mac (either way Chrome reports it)", () => {
     expect(shortcutLabel("Ctrl+Shift+K", false)).toBe("Ctrl+Shift+K");
+    // Chrome names punctuation keys in words: they read as the character.
+    expect(shortcutLabel("Ctrl+Period", false)).toBe("Ctrl+.");
+    expect(shortcutLabel("Command+Period", true)).toBe("⌘.");
+    expect(shortcutLabel("Ctrl+Period", true)).toBe("⌘.");
+    expect(shortcutLabel("⌘.", true)).toBe("⌘.");
+    expect(shortcutLabel("Alt+Shift+Comma", false)).toBe("Alt+Shift+,");
     expect(shortcutLabel("Command+Shift+K", true)).toBe("⌘⇧K");
     expect(shortcutLabel("⇧⌘K", true)).toBe("⌘⇧K");
     expect(shortcutLabel("Ctrl+Shift+K", true)).toBe("⌘⇧K");
@@ -51,7 +57,7 @@ describe("readShortcut", () => {
 
   it("without chrome.commands: the manifest's suggestion, per platform", async () => {
     stub(undefined);
-    expect(await readShortcut()).toBe(suggested.default);
+    expect(await readShortcut()).toBe(shortcutLabel(suggested.default, false));
     stub(undefined, "MacIntel");
     expect(await readShortcut()).toBe(shortcutLabel(suggested.mac, true));
   });

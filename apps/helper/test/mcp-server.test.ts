@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -84,6 +84,25 @@ describe("mcp-server.js over stdio", () => {
       expect(received.length).toBe(before);
     } finally {
       await client.close();
+    }
+  });
+
+  it("exits when Claude Code goes away (stdin closes), though the helper's pipe is still open", async () => {
+    const child = spawn(process.execPath, [MCP_JS], {
+      env: { ...getDefaultEnvironment(), BROWSERTODO_PIPE: pipePath, BROWSERTODO_TASK: "T9", BROWSERTODO_TOOLS: "read_page" },
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    try {
+      // Once it answers initialize, it is connected to the pipe and serving.
+      const answered = new Promise<void>((resolve) => child.stdout.once("data", () => resolve()));
+      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } } }) + "\n");
+      await answered;
+      const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+      child.stdin.end();
+      expect(await Promise.race([exited, new Promise<"still running">((r) => setTimeout(() => r("still running"), 5000))])).toBe(0);
+    } finally {
+      if (child.exitCode === null) child.kill();
     }
   });
 

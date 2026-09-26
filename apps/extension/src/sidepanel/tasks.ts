@@ -58,8 +58,8 @@ export function initTasks(opts: {
   onState?: (state: UiState) => void;
   /** A task's title was picked: show its details. */
   onDetails?: (task: Row, source: "local" | "account", trigger: HTMLElement) => void;
-  /** Get a plan: Settings > Account. */
-  openPlans?: () => void;
+  /** Get a plan: the dashboard's Billing page. */
+  openBilling?: () => void;
   /** The tab switched between its list and a call to action (the composer shows only with the list). */
   onGateChange?: () => void;
 }): TasksView {
@@ -117,7 +117,7 @@ export function initTasks(opts: {
   $("todo-locked-why").textContent = TODO_LOCKED.why;
   const planBtn = $("todo-plan-btn");
   planBtn.textContent = TODO_LOCKED.action;
-  planBtn.addEventListener("click", () => opts.openPlans?.());
+  planBtn.addEventListener("click", () => opts.openBilling?.());
 
   const renderAccount = () => {
     const signedIn = !!account?.signedIn;

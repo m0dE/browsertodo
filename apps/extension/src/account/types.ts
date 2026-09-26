@@ -4,7 +4,7 @@
  * credit may be missing from GET /v1/me).
  */
 import type { z } from "zod";
-import { CreditInfo, GOOD_STANDING, PLAN_CATALOG, planAllows, PlanInfo, User, type IssuableKeyRole, type PlanId } from "@browsertodo/shared";
+import { CreditInfo, GOOD_STANDING, planAllows, PlanInfo, User, type IssuableKeyRole, type PlanId } from "@browsertodo/shared";
 
 export type { CreditInfo, PlanId, PlanInfo };
 
@@ -31,21 +31,6 @@ export interface CreatedApiKey {
 /** The roles a key made in the extension can have. */
 export type KeyRole = IssuableKeyRole;
 
-/** A Stripe page: subscribe or change plan (checkout), buy credit (topup), manage billing (portal). */
-export type BillingAction = "checkout" | "topup" | "portal";
-export const BILLING_ACTIONS: readonly BillingAction[] = ["checkout", "topup", "portal"];
-
-export interface BillingLinkRequest {
-  action: BillingAction;
-  plan?: PlanId;
-  amountCents?: number;
-  /** Where Stripe sends the user back. */
-  returnUrl: string;
-}
-
-/** The plans of the contract (the shared catalog the server serves too). */
-export const PLANS = Object.values(PLAN_CATALOG);
-
 /** The plan includes voice input and is in good standing. */
 export function voiceAllowed(plan: PlanInfo | undefined | null): boolean {
   return planAllows(plan, "voice");
@@ -56,7 +41,12 @@ export function todoAllowed(plan: PlanInfo | undefined | null): boolean {
   return planAllows(plan, "todo");
 }
 
-/** A paid plan in good standing (includes API keys and monthly credit). */
+/** The plan includes API keys and is in good standing. */
+export function apiKeysAllowed(plan: PlanInfo | undefined | null): boolean {
+  return planAllows(plan, "apiKeys");
+}
+
+/** A paid plan in good standing (it comes with monthly credit). */
 export function isPaidActive(plan: PlanInfo | undefined | null): boolean {
   return !!plan && plan.id !== "free" && GOOD_STANDING.includes(plan.status);
 }

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { DeltaBatcher, type AgentEvent } from "@browsertodo/shared";
 import { UserInput } from "../src/brains/brain.js";
 import { extractPostText, extractStartUrl } from "../src/brains/scripted.js";
-import { ClaudeStreamMapper, buildClaudeArgs, isNoisyStreamLine, userMessageLine } from "../src/brains/claude-code.js";
+import { ClaudeStreamMapper, buildClaudeArgs, isNoisyStreamLine, userMessageLine, withoutBase64Data } from "../src/brains/claude-code.js";
 
 describe("UserInput", () => {
   it("queues until subscribed, and refuses after close", () => {
@@ -139,6 +139,34 @@ describe("Claude Code partial messages (recorded fixture)", () => {
     expect(m.map({ type: "assistant", message: { id: "m1", content: [{ type: "text", text: "Done." }] } })).toEqual([{ type: "assistant_text", text: "Done.", id: "m1:2" }]);
     // Subagent streams are ignored.
     expect(m.map({ type: "stream_event", parent_tool_use_id: "tu", event: { type: "content_block_delta", index: 2, delta: { type: "text_delta", text: "no" } } })).toEqual([]);
+  });
+});
+
+describe("Claude Code events in the run log and the chat", () => {
+  it("keeps screenshots' base64 data out of the run log (the image files are saved beside it)", () => {
+    const data = "A".repeat(200_000);
+    const toolResult = {
+      type: "user",
+      message: { role: "user", content: [{ tool_use_id: "toolu_1", type: "tool_result", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data } }, { type: "text", text: "ok" }] }] },
+    };
+    const logged = withoutBase64Data(toolResult);
+    expect(JSON.stringify(logged).length).toBeLessThan(500);
+    expect(logged).toEqual({
+      type: "user",
+      message: { role: "user", content: [{ tool_use_id: "toolu_1", type: "tool_result", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: "[147 KB of base64 data not logged]" } }, { type: "text", text: "ok" }] }] },
+    });
+    // The original event is untouched (the mapper still sees it whole).
+    expect(toolResult.message.content[0]!.content[0]!.source!.data).toBe(data);
+  });
+
+  it("an error result with an API error body reads as plain text, never raw JSON", () => {
+    const [e] = new ClaudeStreamMapper().map({
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      result: 'API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"},"request_id":"req_1"}',
+    });
+    expect(e).toEqual({ type: "error", text: "Claude Code: API Error: 500 api_error: Internal server error" });
   });
 });
 

@@ -4,7 +4,7 @@
  */
 import { z } from "zod";
 import * as core from "@browsertodo/core";
-import type { ExtensionSettings } from "@browsertodo/shared";
+import { errorMessage, type ExtensionSettings } from "@browsertodo/shared";
 import { AccountService, browserTimeZone, type AccountServiceDeps } from "./account/account.js";
 import type { AccountTaskList } from "./account/account-api.js";
 import { AccountTodo, LocalTodo, type TodoSource } from "./account/todo-source.js";
@@ -30,7 +30,7 @@ import { HelperLink } from "./helper-link.js";
 import { logger } from "./log.js";
 import { notify } from "./notify.js";
 import { PanelCommands } from "./panel-command.js";
-import { ALARM_NAME, DUE_ALARM, ensureAlarm, getRunnerId, handleStorageChange, loadSettings, saveSettings, saveSettingsPatch } from "./settings-store.js";
+import { ALARM_NAME, DUE_ALARM, ensureAlarm, getRunnerId, handleStorageChange, loadSettings, migrateStoredSettings, saveSettings, saveSettingsPatch } from "./settings-store.js";
 import type { UiRequest } from "./ui-protocol.js";
 import { TabChats } from "./tab-chats.js";
 import { Vault } from "./vault.js";
@@ -98,7 +98,7 @@ const hostedBrain = new ApiBrain({
   backend: hostedBackend({
     core,
     session: () => account.session(),
-    onOutOfCredit: (topupUrl) => void account.markOutOfCredit(topupUrl).catch(() => {}),
+    onOutOfCredit: () => void account.markOutOfCredit().catch(() => {}),
     afterTurn: () => void account.refresh(true).catch(() => {}),
   }),
 });
@@ -267,6 +267,8 @@ function maybeConnectHelper(): void {
 }
 
 function onStart(): void {
+  // An install saved with an earlier default account server moves to its current address (also on update).
+  void migrateStoredSettings().catch((err: unknown) => logger("settings")(`migration failed: ${errorMessage(err)}`));
   void ensureAlarm();
   void chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   void runner.recover().catch(() => {});

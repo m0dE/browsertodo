@@ -24,7 +24,7 @@ beforeAll(() => {
   home = mkdtempSync(join(tmpdir(), "bt-host-"));
   x = new FakeX({ account: "alice" });
   host = startHost({
-    env: { ...process.env, [ENV.brain]: "scripted", [ENV.home]: home, [ENV.typesafeApiKey]: "" },
+    env: { ...process.env, [ENV.brain]: "scripted", [ENV.home]: home, [ENV.typesafeApiKey]: "", ANTHROPIC_API_KEY: "sk-ant-host-test" },
     browser: async (m: BrowserMethod, p) => {
       if (m === "browser.readPage" && gate) await gate;
       return x.handle(m, p as never);
@@ -127,6 +127,9 @@ describe("dist/host.js over native messaging", () => {
     const { text } = await host.ext.call("helper.getLog", { lines: 300 }, { timeoutMs: 5000 });
     expect(text).toContain("runTask S-HOST -> done");
     expect(text).toContain("S-HOST tool_call");
+    // One notice that the API key is not passed on (and never the key itself).
+    expect(text.match(/not passing ANTHROPIC_API_KEY to Claude Code/g)).toHaveLength(1);
+    expect(text).not.toContain("sk-ant-host-test");
   });
 
   it("never writes anything but frames to stdout, and exits (removing helper.json) when stdin closes", async () => {

@@ -6,6 +6,17 @@ export const ACCOUNT_API_BASE = "https://app.browsertodo.com";
 /** Earlier defaults of accountApiBase; a saved one is moved to ACCOUNT_API_BASE. (The old address still answers.) */
 export const PREVIOUS_ACCOUNT_API_BASES: readonly string[] = ["https://browsertodo-api.jaeyun.workers.dev"];
 
+/**
+ * An account server address as it is kept: trimmed, without a trailing
+ * slash, and an earlier default (PREVIOUS_ACCOUNT_API_BASES) moved to
+ * ACCOUNT_API_BASE. Stored settings and the session issued by that server
+ * both go through it, so they keep naming the same server.
+ */
+export function currentAccountApiBase(url: string): string {
+  const u = url.trim().replace(/\/+$/, "");
+  return PREVIOUS_ACCOUNT_API_BASES.includes(u) ? ACCOUNT_API_BASE : u;
+}
+
 export const BrainMode = z.enum(["auto", "claude-code", "claude-api", "browsertodo"]);
 export type BrainMode = z.infer<typeof BrainMode>;
 
@@ -68,9 +79,8 @@ export function parseSettings(raw: unknown): ExtensionSettings {
   const s = out as ExtensionSettings;
   if (s.delayMaxSec < s.delayMinSec) s.delayMaxSec = s.delayMinSec;
   s.apiBase = s.apiBase.replace(/\/+$/, "");
-  s.accountApiBase = s.accountApiBase.trim().replace(/\/+$/, "");
   // Installs saved with an earlier default follow the default to its new address.
-  if (PREVIOUS_ACCOUNT_API_BASES.includes(s.accountApiBase)) s.accountApiBase = ACCOUNT_API_BASE;
+  s.accountApiBase = currentAccountApiBase(s.accountApiBase);
   return s;
 }
 

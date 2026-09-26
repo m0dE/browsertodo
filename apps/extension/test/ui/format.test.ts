@@ -176,6 +176,7 @@ describe("hosted AI in the status line and the model chip", () => {
     signInConfigured: true,
     apiBase: "https://api.test",
     dashboardUrl: "https://api.test/",
+    billingUrl: "https://api.test/billing",
     user: { email: "ada@example.com", name: "Ada", pictureUrl: null },
     credit: { subscriptionCents: 421, topupCents: 1000, totalCents: 1421, periodGrantCents: 500, periodEnd: null },
     ...over,
@@ -186,7 +187,7 @@ describe("hosted AI in the status line and the model chip", () => {
   });
 
   it("out of credit: the status line says so with a Top up action", () => {
-    const out = account({ outOfCredit: { topupUrl: "https://api.test/billing" }, credit: { subscriptionCents: 0, topupCents: 0, totalCents: 0, periodGrantCents: 0, periodEnd: null } });
+    const out = account({ outOfCredit: true, credit: { subscriptionCents: 0, topupCents: 0, totalCents: 0, periodGrantCents: 0, periodEnd: null } });
     expect(statusLine(state({ account: out }, { effective: "browsertodo" }))).toEqual({ tone: "warn", text: "Out of usage credit", action: "topup" });
     // Auto fell back to nothing usable: still the credit message.
     expect(statusLine(state({ account: out }, { effective: null, note: "x" })).action).toBe("topup");
@@ -199,7 +200,7 @@ describe("hosted AI in the status line and the model chip", () => {
     expect(chip).toMatchObject({ hosted: true, label: "Sonnet 5 · Jev", credit: "$14.21 usage credit left", outOfCredit: false, jevPossible: true });
     const custom = state({ account: account(), settings: { ...DEFAULT_SETTINGS, anthropicModel: "my-model" } }, { effective: "browsertodo" });
     expect(modelChip(custom)).toMatchObject({ model: "claude-sonnet-5", label: "Sonnet 5" });
-    const out = modelChip(state({ account: account({ outOfCredit: { topupUrl: "u" } }) }, { effective: "browsertodo" }));
+    const out = modelChip(state({ account: account({ outOfCredit: true }) }, { effective: "browsertodo" }));
     expect(out).toMatchObject({ label: "Out of usage credit", outOfCredit: true });
     expect(modelChip(state({ account: account() })).hosted).toBe(false);
   });
@@ -232,6 +233,7 @@ describe("TODO tab gate (the TODO list is a paid feature)", () => {
     signInConfigured: true,
     apiBase: "https://api.test",
     dashboardUrl: "https://api.test/",
+    billingUrl: "https://api.test/billing",
     ...(plan ? { plan: { id: plan, status: plan === "free" ? "none" : "active", currentPeriodEnd: null, cancelAtPeriodEnd: false } as const } : {}),
   });
   it("signed out: Log in; Free: Get a plan; a paid plan: the list", () => {

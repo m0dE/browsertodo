@@ -24,7 +24,7 @@
             <button type="button" id="acct-login">Log in with Google</button>
             <button type="button" id="acct-pause">Pause scheduled runs</button>
             <button type="button" id="acct-open-settings">Settings</button>
-            <button type="button" id="acct-settings">Account &amp; billing</button>
+            <button type="button" id="acct-billing">Plan &amp; billing</button>
             <button type="button" id="acct-signout" class="bad">Sign out</button>
           </div>
         </details>
@@ -43,8 +43,6 @@
           <button id="chat-new" type="button" class="bar-btn">New chat</button>
           <span class="bar-sep" aria-hidden="true"></span>
           <button id="chat-show" type="button" class="bar-btn">Show tab</button>
-          <span class="bar-sep" aria-hidden="true"></span>
-          <button id="chat-rawlog" type="button" class="bar-btn">Raw log</button>
         </div>
         <div id="chat-head" class="act-head">
           <div id="chat-titles" class="act-title">
@@ -126,7 +124,7 @@
         </details>
       </section>
 
-      <!-- Activity log: every run, newest first; one opens read-only -->
+      <!-- Activity log: every run, newest first; one opens in Chat -->
       <section id="tab-history" class="tab history-tab" role="tabpanel" aria-labelledby="tab-btn-history" hidden>
         <div id="hist-list" class="scroll history">
           <ul id="history-list" class="sessions"></ul>
@@ -134,21 +132,6 @@
             <p class="empty-title">No runs yet</p>
             <p>Every task the agent works on shows up here.</p>
           </div>
-        </div>
-        <div id="hist-past" class="hist-past" hidden>
-          <div class="act-head">
-            <div class="hist-nav">
-              <button id="hist-back" type="button" class="bar-btn back">← All runs</button>
-              <span class="spacer"></span>
-              <button id="hist-rawlog" type="button" class="bar-btn" title="Every Claude Code event of this run, as the helper logged it" hidden>Raw log</button>
-              <button id="hist-open" type="button" class="ghost small" title="Show this conversation in Chat, where your next message continues it" hidden>Open in Chat</button>
-            </div>
-            <div class="act-title">
-              <button id="hist-title" type="button" class="title title-btn" aria-haspopup="dialog"></button>
-              <div id="hist-meta" class="meta"></div>
-            </div>
-          </div>
-          <div id="hist-log" class="log scroll"></div>
         </div>
       </section>
     </main>

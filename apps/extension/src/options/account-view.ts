@@ -1,6 +1,6 @@
-/** Pure helpers for the options page's Account and API keys sections. */
-import { formatCents, formatDate, PLAN_CATALOG, planIncludesText, planName, planStatusText } from "@browsertodo/shared";
-import { PLANS, isPaidActive, type PlanId, type PlanInfo } from "../account/types.js";
+/** Pure helpers for the options page's Account and API keys tabs. */
+import { formatCents, formatDate, PLAN_CATALOG, PLAN_FEATURE_TEXT, planIncludesText, planName, plansWithText, planStatusText } from "@browsertodo/shared";
+import { apiKeysAllowed, isPaidActive, type PlanInfo } from "../account/types.js";
 import type { AccountView } from "../ui-protocol.js";
 
 export interface AccountSummary {
@@ -15,9 +15,11 @@ export interface AccountSummary {
   /** "$4.40 subscription (expires Oct 24) + $8.00 top-up" */
   creditDetail: string;
   paid: boolean;
-  /** API keys come with a paid plan. */
+  /** The plan includes API keys (the catalog's apiKeys) and is in good standing. */
   keysAllowed: boolean;
-  /** Stripe is set up on the server; false: billing buttons are replaced by a plain note. undefined: not known yet. */
+  /** The one billing button, which opens the dashboard's Billing page: "Choose a plan" (Free), "Manage plan & billing" (paid), "Top up or change plan" (paid, out of credit). */
+  billingLabel: string;
+  /** Stripe is set up on the server; false: the billing button is replaced by a plain note. undefined: not known yet. */
   billing: "ready" | "not-set-up" | "unknown";
   outOfCredit: boolean;
 }
@@ -57,30 +59,15 @@ export function accountSummary(a: AccountView): AccountSummary {
     credit: c ? formatCents(c.totalCents) : "",
     creditDetail: parts.join(" + "),
     paid,
-    keysAllowed: paid,
+    keysAllowed: apiKeysAllowed(plan),
+    // On Free a plan is the way to credit (a top-up is on the same page).
+    billingLabel: !paid ? "Choose a plan" : a.outOfCredit ? "Top up or change plan" : "Manage plan & billing",
     billing: a.stripeConfigured === true ? "ready" : a.stripeConfigured === false ? "not-set-up" : "unknown",
     outOfCredit: !!a.outOfCredit,
   };
 }
 
-/** The paid plans as the Subscribe choices show them: "Starter", "$9.99/mo · $5.00 usage credit", "Includes TODO list, …". */
-export function planChoices(): { id: PlanId; label: string; detail: string; includes: string }[] {
-  return PLANS.filter((p) => p.id !== "free").map((p) => ({
-    id: p.id,
-    label: p.name,
-    detail: `${formatCents(p.priceCents)}/mo · ${formatCents(p.creditCents)} usage credit`,
-    includes: planIncludesText(p),
-  }));
-}
-
-/**
- * Where Stripe sends the user back: the dashboard's billing page (same
- * origin as the API). Stripe may refuse chrome-extension:// URLs.
- */
-export function billingReturnUrl(dashboardUrl: string): string {
-  try {
-    return new URL("billing", dashboardUrl).toString();
-  } catch {
-    return "";
-  }
+/** The API keys tab on a plan without them, from the catalog: "API access to add TODO tasks comes with a paid plan." */
+export function keysLockedText(): string {
+  return `${PLAN_FEATURE_TEXT.apiKeys.has} comes with ${plansWithText("apiKeys")}.`;
 }

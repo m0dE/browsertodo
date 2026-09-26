@@ -22,6 +22,9 @@ const onPlus = (data) => {
   };
 };
 
+/** The visible billing buttons' labels (the Account tab has one at most). */
+const billingButtons = (p) => p.locator("#panel-account button.billing-open:visible").allTextContents();
+
 const onFree = (data) => {
   data.state.account = { ...data.state.account, plan: { id: "free", status: "none", currentPeriodEnd: null, cancelAtPeriodEnd: false } };
 };
@@ -112,27 +115,53 @@ export const OPTION_CASES = [
     ["account server", async () => (await p.inputValue("#f-accountApiBase")) === scenario("ok").state.settings.accountApiBase],
     ["cloud fields shown", () => shown(p, "[data-secret=runnerKey]")],
   ]],
+  // Account: plan and credit, and one billing button to the dashboard's Billing page (no Stripe buttons here).
   ["options-account-free", "opt-free", "#account", () => {}, (p) => [
     ["signed in", () => shown(p, "#acct-in")],
-    ["plans", async () => (await p.locator("#acct-plans .plan").count()) === 3],
-    ["keys locked", () => shown(p, "#keys-locked")],
+    ["one billing button: Choose a plan", async () => (await billingButtons(p)).join() === "Choose a plan"],
+    ["says where plans are", async () => /Plans, top-ups and invoices are on your browsertodo dashboard\./.test(await p.textContent("#acct-billing"))],
+    ["no subscribe, top-up or portal buttons", async () => (await p.locator("#panel-account button").allTextContents()).every((t) => !/Subscribe|Top up \$|\$\d|Manage billing|Change plan/.test(t))],
+    ["API keys are not on the Account tab", async () => (await p.locator("#panel-account #keys-card").count()) === 0],
   ]],
   ["options-account-paid", "opt-paid", "#account", () => {}, (p) => [
-    ["portal", () => shown(p, "#acct-portal")],
-    ["keys listed", async () => (await p.locator("#keys-list li:not(.empty)").count()) === 2],
+    ["one billing button: Manage plan & billing", async () => (await billingButtons(p)).join() === "Manage plan & billing"],
     ["credit", async () => (await p.textContent("#acct-credit")) === "$25.40"],
+    ["plan", async () => (await p.textContent("#acct-plan")) === "Plus"],
   ]],
   ["options-account-outofcredit", "opt-out", "#account", () => {}, (p) => [
     ["out of credit", async () => (await p.textContent("#acct-credit")) === "Out of usage credit"],
     ["note", async () => /paused until you top up/.test(await p.textContent("#acct-note"))],
+    // On Free a plan is the way to credit.
+    ["one billing button: Choose a plan", async () => (await billingButtons(p)).join() === "Choose a plan"],
+  ]],
+  ["options-account-paid-outofcredit", "opt-paid-out", "#account", () => {}, (p) => [
+    ["plan", async () => (await p.textContent("#acct-plan")) === "Plus"],
+    ["out of credit", async () => (await p.textContent("#acct-credit")) === "Out of usage credit"],
+    ["one billing button: Top up or change plan", async () => (await billingButtons(p)).join() === "Top up or change plan"],
   ]],
   ["options-account-nobilling", "opt-nobilling", "#account", () => {}, (p) => [
-    ["no billing buttons", async () => !(await shown(p, "#acct-plans")) && !(await shown(p, "#acct-portal"))],
+    ["no billing button", async () => (await billingButtons(p)).length === 0],
     ["note", async () => /Billing isn't set up/.test(await p.textContent("#acct-note"))],
   ]],
   ["options-account-signedout", "opt-signedout", "#account", () => {}, (p) => [
     ["log in", () => shown(p, "#acct-signin")],
-    ["no account", async () => !(await shown(p, "#acct-in")) && !(await shown(p, "#keys-card"))],
+    ["no account", async () => !(await shown(p, "#acct-in"))],
+  ]],
+  // API keys: their own tab.
+  ["options-keys-free", "opt-free", "#keys", () => {}, (p) => [
+    ["on the API keys tab", async () => (await p.getAttribute("#tab-keys", "aria-selected")) === "true"],
+    ["what keys come with, from the catalog", async () => (await p.textContent("#keys-locked-text")) === "API access to add TODO tasks comes with a paid plan."],
+    ["Choose a plan", async () => (await p.textContent("#keys-billing-open")) === "Choose a plan" && (await shown(p, "#keys-billing-open"))],
+    ["no key form", async () => !(await shown(p, "#keys-body"))],
+  ]],
+  ["options-keys-paid", "opt-paid", "#keys", () => {}, (p) => [
+    ["keys listed", async () => (await p.locator("#keys-list li:not(.empty)").count()) === 2],
+    ["create form", () => shown(p, "#key-create")],
+    ["no plan button", async () => !(await shown(p, "#keys-locked"))],
+  ]],
+  ["options-keys-signedout", "opt-signedout", "#keys", () => {}, (p) => [
+    ["log in", () => shown(p, "#keys-signin")],
+    ["no key form", async () => !(await shown(p, "#keys-body")) && !(await shown(p, "#keys-locked"))],
   ]],
 ];
 
@@ -166,6 +195,9 @@ export const OPTION_FLOWS = [
 
       check("first tab by default", await selected("account"));
       await p.focus("#tab-account");
+      await p.keyboard.press("ArrowRight");
+      check("ArrowRight -> API keys, focused", (await selected("keys")) && (await p.evaluate(() => document.activeElement.id)) === "tab-keys");
+      check("hash #keys", (await p.evaluate(() => location.hash)) === "#keys");
       await p.keyboard.press("ArrowRight");
       check("ArrowRight -> AI, focused", (await selected("ai")) && (await p.evaluate(() => document.activeElement.id)) === "tab-ai");
       check("hash #ai", (await p.evaluate(() => location.hash)) === "#ai");
@@ -239,25 +271,47 @@ export const OPTION_FLOWS = [
       await p.ctx.close();
     },
   },
-  // Free plan: "Get a plan" under browsertodo AI opens the Account tab; Subscribe and Top up ask for a Stripe page.
+  // Free plan: every billing button opens the dashboard's Billing page in a new tab (never a Stripe page from
+  // here); coming back to the page refreshes the account. #keys deep-links to the API keys tab, remembered.
   {
     name: "options-account-free",
     size: { w: 420 },
     scheme: "light",
-    async run({ openOptions, optChecks }) {
+    async run({ base, openOptions, optChecks }) {
       const p = await openOptions({ w: 420, h: 900 }, "light", "opt-free", "#ai");
       const checks = [];
       const check = (what, ok) => checks.push([what, async () => ok]);
+      const BILLING = "https://app.browsertodo.com/billing";
+      const created = () => p.evaluate(() => window.__created.slice());
+      const forced = () => p.evaluate(() => window.__requests.filter((r) => r.type === "account.refresh" && r.force === true).length);
       check("Get a plan", (await p.textContent("#hosted-action")) === "Get a plan");
       await p.click("#hosted-action");
-      check("-> Account tab", (await p.getAttribute("#tab-account", "aria-selected")) === "true");
-      await p.locator("#acct-plans .plan").nth(1).click();
-      // Stripe opens in a new tab (chrome.tabs.create, as in the extension).
-      await p.waitForFunction(() => window.__created.includes("https://checkout.stripe.com/c/pay/cs_test_harness"));
-      const req = await p.evaluate(() => window.__requests.find((r) => r.type === "account.billing"));
-      check("checkout request", req.action === "checkout" && req.plan === "plus" && req.returnUrl === "https://app.browsertodo.com/billing");
-      await p.locator("#acct-topup button", { hasText: "$25.00" }).click();
-      await p.waitForFunction(() => window.__requests.some((r) => r.type === "account.billing" && r.action === "topup" && r.amountCents === 2500));
+      await p.waitForFunction((u) => window.__created.includes(u), BILLING);
+      check("AI tab Get a plan -> Billing page", (await created()).join() === BILLING);
+      check("stays on the AI tab", (await p.getAttribute("#tab-ai", "aria-selected")) === "true");
+      // Back from the dashboard: blur then focus (the tab was left) refreshes plan and credit once.
+      const before = await forced();
+      await p.evaluate(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+        dispatchEvent(new Event("blur"));
+        dispatchEvent(new Event("focus"));
+      });
+      await p.waitForFunction((n) => window.__requests.filter((r) => r.type === "account.refresh" && r.force === true).length === n + 1, before);
+      check("refreshed once on return", (await forced()) === before + 1);
+      await p.click("#tab-account");
+      await p.click("#acct-billing-open");
+      await p.waitForFunction((u) => window.__created.filter((c) => c === u).length === 2, BILLING);
+      await p.click("#acct-dashboard");
+      await p.waitForFunction(() => window.__created.includes("https://app.browsertodo.com/"));
+      await p.click("#tab-keys");
+      await p.click("#keys-billing-open");
+      await p.waitForFunction((u) => window.__created.filter((c) => c === u).length === 3, BILLING);
+      check("no Stripe page asked for", !(await p.evaluate(() => window.__requests.some((r) => /billing/.test(r.type)))));
+      check("only dashboard pages opened", (await created()).every((u) => u.startsWith("https://app.browsertodo.com/")));
+      // A plain options.html opens the tab used last: API keys.
+      await p.goto(`${base}/options.html`);
+      await p.waitForSelector("#keys-locked:not([hidden])");
+      check("last tab remembered: API keys", (await p.getAttribute("#tab-keys", "aria-selected")) === "true");
       await optChecks(p, "billing", checks);
       await p.ctx.close();
     },
@@ -268,7 +322,7 @@ export const OPTION_FLOWS = [
     size: { w: 420 },
     scheme: "light",
     async run({ openOptions, optChecks, shots, taken }) {
-      const p = await openOptions({ w: 420, h: 900 }, "light", "opt-paid", "#account");
+      const p = await openOptions({ w: 420, h: 900 }, "light", "opt-paid", "#keys");
       await p.fill("#key-name", "ci pipeline");
       await p.click("#key-create");
       await p.waitForSelector("#key-new:not([hidden])");

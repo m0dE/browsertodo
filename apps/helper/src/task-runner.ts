@@ -27,7 +27,7 @@ import {
   type TaskRunResult,
   type ToolName,
 } from "@browsertodo/shared";
-import { buildSystemPrompt, buildTaskPrompt, FOLLOW_UP_PREFIX, type BrowserCaller, type JevLike } from "@browsertodo/core";
+import { buildSystemPrompt, buildTaskPrompt, FOLLOW_UP_PREFIX, SecretRedactor, type BrowserCaller, type JevLike } from "@browsertodo/core";
 import { RunLog, type LiveLog } from "./logger.js";
 import type { Brain } from "./brains/brain.js";
 import { INTERACTIVE_TASK_ID } from "./mcp-tools.js";
@@ -86,6 +86,8 @@ export interface TaskRunnerDeps {
 
 export class TaskRunner {
   private readonly sessions = new Map<string, TaskSession>();
+  /** Sessions no longer open (replaced, or closed to make room) whose agent has not exited yet. */
+  private readonly closing = new Set<TaskSession>();
   /** Sessions whose turn is running. */
   private readonly active = new Set<TaskSession>();
   /** Waiting for every session to close (see whenAllClosed). */
@@ -98,14 +100,14 @@ export class TaskRunner {
     return this.active.size > 0;
   }
 
-  /** Resolves once no session is open and no turn is running (e.g. after shutdown). */
+  /** Resolves once no session is open or closing and no turn is running (e.g. after shutdown). */
   whenAllClosed(): Promise<void> {
     if (this.allClosed) return Promise.resolve();
     return new Promise((resolve) => this.allClosedWaiters.push(resolve));
   }
 
   private get allClosed(): boolean {
-    return this.sessions.size === 0 && this.active.size === 0;
+    return this.sessions.size === 0 && this.closing.size === 0 && this.active.size === 0;
   }
 
   private checkAllClosed(): void {
@@ -150,22 +152,24 @@ export class TaskRunner {
     return s !== undefined;
   }
 
-  /** Abort everything (used when Chrome closes the port). */
+  /** Abort everything, closing sessions included (used when Chrome closes the port). */
   shutdown(reason: string): void {
-    for (const id of [...this.sessions.keys()]) this.abort(id, reason);
+    for (const s of [...this.sessions.values(), ...this.closing]) s.abort(reason);
   }
 
   async run(params: RunTaskParams): Promise<TaskRunResult> {
     const { sessionId, task, mediaPaths, config } = params;
     if (sessionId === INTERACTIVE_TASK_ID) throw new Error(`sessionId "${INTERACTIVE_TASK_ID}" is reserved`);
     // A session runs one turn at a time; other sessions may run beside it.
-    if (this.sessions.get(sessionId)?.turn) throw new RpcError("busy", HelperErrorCode.busy);
-    if (this.sessions.has(sessionId)) this.endSession(sessionId, "replaced by a new run");
+    const previous = this.sessions.get(sessionId);
+    if (previous?.turn) throw new RpcError("busy", HelperErrorCode.busy);
+    if (previous) this.retire(previous, "replaced by a new run");
     this.makeRoom();
 
     const runDir = runDirFor(this.deps.runsDir, sessionId);
     mkdirSync(runDir, { recursive: true });
-    const log = new RunLog(join(runDir, "log.jsonl"), this.deps.live ?? null, sessionId);
+    const secrets = new SecretRedactor();
+    const log = new RunLog(join(runDir, "log.jsonl"), this.deps.live ?? null, sessionId, secrets);
     const jevKey = config.jevApiKey?.trim() || this.deps.envJevKey;
     const jev = config.jevEnabled && jevKey ? this.deps.makeJev(jevKey) : null;
     // act replaces click and type (steps can still name an exact element index).
@@ -182,6 +186,7 @@ export class TaskRunner {
       jev,
       jevThreshold: config.jevThreshold,
       mediaPaths,
+      secrets,
       notify: this.deps.notify,
       finishGraceMs: this.deps.finishGraceMs ?? RUNNER_DEFAULTS.finishGraceMs,
       abortWaitMs: this.deps.abortWaitMs ?? RUNNER_DEFAULTS.abortWaitMs,
@@ -280,6 +285,7 @@ export class TaskRunner {
 
   private onBrainExit(s: TaskSession): void {
     if (!s.markEnded()) return;
+    this.closing.delete(s);
     if (this.sessions.get(s.sessionId) === s) this.sessions.delete(s.sessionId);
     this.sessionsChanged();
     s.log.event({ type: "session_closed" });
@@ -298,11 +304,14 @@ export class TaskRunner {
   private makeRoom(): void {
     const max = this.deps.maxSessions ?? RUNNER_DEFAULTS.maxSessions;
     const idle = [...this.sessions.values()].filter((x) => !x.turn && !x.ended).sort((a, b) => a.lastTurnAt - b.lastTurnAt);
-    while (this.sessions.size >= max && idle.length) {
-      const oldest = idle.shift()!;
-      this.endSession(oldest.sessionId, "closed to make room for a new session");
-      this.sessions.delete(oldest.sessionId);
-    }
+    while (this.sessions.size >= max && idle.length) this.retire(idle.shift()!, "closed to make room for a new session");
+  }
+
+  /** Takes an idle session out of the open ones and ends it; it counts as closing until its agent exits. */
+  private retire(s: TaskSession, why: string): void {
+    if (this.sessions.get(s.sessionId) === s) this.sessions.delete(s.sessionId);
+    if (!s.ended) this.closing.add(s);
+    s.end(why);
   }
 
   private sessionsChanged(): void {

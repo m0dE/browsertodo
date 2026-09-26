@@ -26,6 +26,7 @@ import {
 import type { BrowserCaller, ToolExecutor, ToolExecutorOptions } from "./types.js";
 import { createActGate, runAct } from "./act.js";
 import { formatScroll, formatSnapshot, formatTabs, formatTabSnapshots } from "./page-format.js";
+import { mapStrings, SecretRedactor } from "./redact.js";
 import { switchXAccount } from "./x-account.js";
 
 /** Answer of task_* tools when the executor has no task to end (mcp-server --attach). */
@@ -54,7 +55,9 @@ function pathKey(p: string): string {
 
 export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
   const sleep = opts.sleep ?? delay;
-  const allowedMedia = new Set(opts.mediaPaths.map(pathKey));
+  const secrets = opts.secrets ?? new SecretRedactor();
+  /** Allowed upload paths by pathKey, to the exact path the task listed. */
+  const allowedMedia = new Map(opts.mediaPaths.map((p) => [pathKey(p), p]));
   let nextId = 1;
   /** Jev on: read_page lists elements in words and act steps name indices only after Jev was unsure. */
   const jevOn = opts.jev !== null;
@@ -62,7 +65,7 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
 
   const emit = (e: AgentEvent) => {
     try {
-      opts.onEvent(e);
+      opts.onEvent(secrets.redact(e));
     } catch {
       /* a listener must not break tool execution */
     }
@@ -164,7 +167,8 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
           const allowed = opts.mediaPaths.length ? opts.mediaPaths.map((p) => `- ${p}`).join("\n") : "(none)";
           return err(`upload refused: ${bad.join(", ")} ${bad.length === 1 ? "is" : "are"} not in the task's media list. Allowed files:\n${allowed}`);
         }
-        await browser("browser.upload", { index, paths });
+        // The files exactly as the task listed them: the check above ignores case and slashes, a file system may not.
+        await browser("browser.upload", { index, paths: paths.map((p) => allowedMedia.get(pathKey(p))!) });
         return { text: `Attached ${paths.length} file(s) to [${index}].` };
       }
       case "get_credential": {
@@ -181,6 +185,7 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
                 `No login is saved for ${host}. First check whether the user is already signed in there. Only if it shows a sign-in page, call task_pause with the reason "Please sign in to ${host} in this tab, then press Continue." Never mention a vault.`,
               );
         }
+        secrets.add(r.password);
         return { text: `username: ${r.username}\npassword: ${r.password}` };
       }
       case "switch_x_account":
@@ -223,7 +228,8 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
       const id = `t${nextId++}`;
       // Candidates Jev left to the model stay valid only while the page is left alone.
       if (!KEEPS_PENDING.has(name)) gate.pending.clear();
-      emit({ type: "tool_call", id, name, args: args ?? {} });
+      // Arguments can be long (a pasted text): each string is clipped like any other event text.
+      emit({ type: "tool_call", id, name, args: mapStrings(args ?? {}, (s) => clipEventText(s)) });
       let result: ToolResult;
       try {
         if (!(TOOL_NAMES as string[]).includes(name)) {

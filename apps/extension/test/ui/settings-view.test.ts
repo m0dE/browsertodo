@@ -18,7 +18,7 @@ import type { AccountView, BrainStatus } from "../../src/ui-protocol.js";
 import { installChromeFake } from "../chrome-fake.js";
 
 const HELPER: HelperInfo = { version: "0.2.0", jevAvailable: true, claudePath: "C:\\claude.exe", logDir: "C:\\logs", selfTest: { ok: true, ms: 5000, at: "2026-09-25T00:00:00Z" } } as HelperInfo;
-const SIGNED_OUT: AccountView = { signedIn: false, signInConfigured: true, apiBase: "https://api.test", dashboardUrl: "https://api.test/" };
+const SIGNED_OUT: AccountView = { signedIn: false, signInConfigured: true, apiBase: "https://api.test", dashboardUrl: "https://api.test/", billingUrl: "https://api.test/billing" };
 const user = { email: "a@example.com", name: "Ada", pictureUrl: null };
 const credit = (cents: number) => ({ subscriptionCents: 0, topupCents: cents, totalCents: cents, periodGrantCents: 0, periodEnd: null });
 const FREE_EMPTY: AccountView = { ...SIGNED_OUT, signedIn: true, user, plan: { id: "free", status: "none", currentPeriodEnd: null, cancelAtPeriodEnd: false }, credit: credit(0), stripeConfigured: true };
@@ -53,12 +53,19 @@ describe("tabs", () => {
     expect(tabFromHash("#jev")).toBe("speed");
     expect(tabFromHash("#vault")).toBe("logins");
     expect(tabFromHash("#brain")).toBe("ai");
+    // API keys have their own tab (deep link #keys); billing still lands on Account.
+    expect(tabFromHash("#keys")).toBe("keys");
+    expect(tabFromHash("#api-keys")).toBe("keys");
+    expect(tabFromHash("#billing")).toBe("account");
     expect(tabFromHash("#nope")).toBeNull();
     expect(tabFromHash("")).toBeNull();
     expect(tabFromHash(null)).toBeNull();
   });
   it("arrow keys move and wrap; Home and End go to the ends; other keys do nothing", () => {
-    expect(nextTab("account", "ArrowRight")).toBe("ai");
+    expect(TABS.map((t) => t.label)).toEqual(["Account", "API keys", "AI", "Speed", "Tasks", "Site logins", "Advanced"]);
+    expect(nextTab("account", "ArrowRight")).toBe("keys");
+    expect(nextTab("keys", "ArrowRight")).toBe("ai");
+    expect(nextTab("ai", "ArrowLeft")).toBe("keys");
     expect(nextTab("account", "ArrowLeft")).toBe(TABS[TABS.length - 1]!.id);
     expect(nextTab("advanced", "ArrowRight")).toBe("account");
     expect(nextTab("tasks", "Home")).toBe("account");

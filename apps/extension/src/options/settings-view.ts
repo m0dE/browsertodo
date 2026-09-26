@@ -22,6 +22,7 @@ import type { AccountView, BrainStatus } from "../ui-protocol.js";
 
 export const TABS = [
   { id: "account", label: "Account" },
+  { id: "keys", label: "API keys" },
   { id: "ai", label: "AI" },
   { id: "speed", label: "Speed" },
   { id: "tasks", label: "Tasks" },
@@ -36,7 +37,7 @@ const TAB_ALIASES: Record<string, TabId> = {
   model: "ai",
   helper: "ai",
   jev: "speed",
-  keys: "account",
+  "api-keys": "keys",
   billing: "account",
   schedule: "tasks",
   vault: "logins",
@@ -89,7 +90,7 @@ export interface HostedAccount {
   /** "$4.21 usage credit left" or "No usage credit left". */
   credit: string;
   tone: Tone;
-  /** get-plan: on the free plan; top-up: a paid plan with no credit left. null: nothing to buy (or billing is off). */
+  /** Opens the dashboard's Billing page. get-plan: on the free plan; top-up: a paid plan with no credit left. null: nothing to buy (or billing is off). */
   action: { kind: "get-plan" | "top-up"; label: string } | null;
 }
 

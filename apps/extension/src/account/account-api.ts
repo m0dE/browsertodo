@@ -2,7 +2,6 @@
 import {
   AuthResponse,
   MeBillingResponse,
-  RedirectUrlResponse,
   SESSION_HEADER,
   Task,
   TaskListResponse,
@@ -15,7 +14,7 @@ import {
   type UpdateTaskInput,
 } from "@browsertodo/shared";
 import { HttpClient } from "../http-client.js";
-import { Me, type ApiKeyInfo, type BillingAction, type CreatedApiKey, type KeyRole } from "./types.js";
+import { Me, type ApiKeyInfo, type CreatedApiKey, type KeyRole } from "./types.js";
 
 export interface AccountApiOptions {
   apiBase: string;
@@ -70,14 +69,6 @@ export class AccountApi {
 
   billing(): Promise<MeBillingResponse> {
     return this.http.json(MeBillingResponse, "GET", "/v1/me/billing");
-  }
-
-  /** POST /v1/billing/checkout | topup | portal: the Stripe page to open. */
-  async billingLink(kind: BillingAction, body: Record<string, unknown>): Promise<string> {
-    const res = await this.http.request("POST", `/v1/billing/${kind}`, body);
-    const parsed = RedirectUrlResponse.safeParse(await res.json().catch(() => null));
-    if (!parsed.success || !parsed.data.url) throw new Error("The server did not return a billing page");
-    return parsed.data.url;
   }
 
   async listKeys(): Promise<ApiKeyInfo[]> {

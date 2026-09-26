@@ -1,52 +1,34 @@
 /**
- * Options page: the Account section (sign-in, plan, credit, billing buttons,
- * dashboard link, sign out) and the API keys section. Billing buttons ask
- * the background for a Stripe page (returnUrl = the dashboard billing page) and open it in a
- * new tab. When the server has no billing, a plain note replaces them.
+ * Options page: the Account tab (sign-in, plan and credit, the one billing
+ * button, sign out) and the API keys tab. Buying happens on the dashboard's
+ * Billing page only: the billing buttons open it in a new tab (ui/billing.ts),
+ * and coming back refreshes the plan and credit. When the server has no
+ * billing, a plain note replaces the button.
  */
-import { API_KEY_LIMITS, API_KEY_ROLE_LABELS, apiKeyRoleLabel, formatCents, OUT_OF_CREDIT, TOPUP_AMOUNTS_CENTS } from "@browsertodo/shared";
+import { API_KEY_LIMITS, API_KEY_ROLE_LABELS, apiKeyRoleLabel, OUT_OF_CREDIT } from "@browsertodo/shared";
 import { SIGN_IN_NOT_SET_UP } from "../account/google-auth.js";
-import type { BillingAction, KeyRole, PlanId } from "../account/types.js";
+import type { KeyRole } from "../account/types.js";
 import { showAvatar } from "../ui/avatar.js";
+import { openBilling, openDashboard, refreshOnReturn } from "../ui/billing.js";
 import { $, busy, flash, h, showError } from "../ui/dom.js";
 import { signIn, SIGNED_OUT } from "../ui/sign-in.js";
 import { uiRequest, type AccountView, type ApiKeyInfo, type UiState } from "../ui-protocol.js";
-import { accountSummary, billingReturnUrl, dateLabel, planChoices } from "./account-view.js";
+import { accountSummary, dateLabel, keysLockedText } from "./account-view.js";
 
 export const BILLING_NOT_SET_UP_NOTE = "Billing isn't set up on this server yet, so plans and top-ups can't be bought here.";
-
-/** How long "Opened in a new tab..." stays after a billing page opened. */
-const BILLING_OPENED_MS = 8000;
 
 export interface AccountSection {
   render(state: UiState): void;
   /** Google sign-in from any button; progress and errors go to `note`. */
   signIn(button: HTMLButtonElement, note: HTMLElement): void;
+  /** The dashboard's Billing page for this account, in a new tab. */
+  openBilling(): void;
 }
 
-export function initAccountSection(opts: { onState(state: UiState): void; showBilling(): void }): AccountSection {
-  let account: AccountView | null = null;
+export function initAccountSection(opts: { onState(state: UiState): void }): AccountSection {
+  let account: AccountView = SIGNED_OUT;
   const msg = $("acct-msg");
   const keysMsg = $("keys-msg");
-
-  /** A Stripe page for this account, opened in a new tab. */
-  const billing = (button: HTMLButtonElement, req: { action: BillingAction; plan?: PlanId; amountCents?: number }) =>
-    void busy(
-      button,
-      async () => {
-        flash(msg, "Opening the billing page…");
-        try {
-          const { url } = await uiRequest({ type: "account.billing", ...req, returnUrl: billingReturnUrl(account?.dashboardUrl ?? "") });
-          void chrome.tabs.create({ url });
-          flash(msg, "Opened in a new tab. Come back here when you are done; the credit updates by itself.", "ok", { ms: BILLING_OPENED_MS });
-        } catch (err) {
-          // The server may have just told us billing is not set up.
-          await refresh(true);
-          throw err;
-        }
-      },
-      msg,
-    );
 
   async function refresh(force = false): Promise<void> {
     try {
@@ -56,30 +38,29 @@ export function initAccountSection(opts: { onState(state: UiState): void; showBi
     }
   }
 
-  // Sign in / out (also from the AI tab's "Log in to use browsertodo AI").
+  const billing = (): void => void openBilling(account).catch((err: unknown) => showError(msg, err));
+  // Back from the dashboard: the plan and credit may have changed.
+  refreshOnReturn(() => void refresh(true));
+
+  // Sign in / out (also from the AI tab's "Log in to use browsertodo AI" and the API keys tab).
   const signInWith = (button: HTMLButtonElement, note: HTMLElement): void => signIn(button, note, account, opts.onState);
   const signInBtn = $<HTMLButtonElement>("acct-signin");
-  const signInMsg = $("acct-signin-msg");
-  signInBtn.addEventListener("click", () => signInWith(signInBtn, signInMsg));
+  signInBtn.addEventListener("click", () => signInWith(signInBtn, $("acct-signin-msg")));
+  const keysSignIn = $<HTMLButtonElement>("keys-signin");
+  keysSignIn.addEventListener("click", () => signInWith(keysSignIn, $("keys-signin-msg")));
   const signOut = $<HTMLButtonElement>("acct-signout");
   signOut.addEventListener("click", () => void busy(signOut, async () => opts.onState(await uiRequest({ type: "account.signOut" })), msg));
   const reload = $<HTMLButtonElement>("acct-reload");
   reload.addEventListener("click", () => void busy(reload, () => refresh(true), msg));
-  const change = $<HTMLButtonElement>("acct-change");
-  change.addEventListener("click", () => billing(change, { action: "portal" }));
-  const portal = $<HTMLButtonElement>("acct-portal");
-  portal.addEventListener("click", () => billing(portal, { action: "portal" }));
-  $("keys-subscribe").addEventListener("click", () => opts.showBilling());
-  // Coming back from Stripe: the plan and credit changed.
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && account?.signedIn) void refresh(true);
-  });
+  const billingButtons = [$<HTMLButtonElement>("acct-billing-open"), $<HTMLButtonElement>("keys-billing-open")];
+  for (const b of billingButtons) b.addEventListener("click", billing);
+  $("acct-dashboard").addEventListener("click", () => void openDashboard(account).catch((err: unknown) => showError(msg, err)));
 
   function renderAccount(a: AccountView): void {
     $("acct-out").hidden = a.signedIn;
     $("acct-in").hidden = !a.signedIn;
     signOut.hidden = !a.signedIn;
-    signInBtn.title = a.signInConfigured ? "" : SIGN_IN_NOT_SET_UP;
+    for (const b of [signInBtn, keysSignIn]) b.title = a.signInConfigured ? "" : SIGN_IN_NOT_SET_UP;
     if (!a.signedIn || !a.user) return;
     const u = a.user;
     $("acct-name").textContent = u.name || u.email;
@@ -106,42 +87,14 @@ export function initAccountSection(opts: { onState(state: UiState): void; showBi
     note.textContent = noteText;
     note.dataset.tone = a.error || sum.outOfCredit ? "warn" : "";
 
-    // Billing buttons only when the server can take payments (unknown: shown; a 503 turns them into the note).
-    const canBill = sum.billing !== "not-set-up";
-    $("acct-billing").hidden = !canBill;
-    const plans = $("acct-plans");
-    plans.hidden = sum.paid;
-    plans.replaceChildren(
-      ...planChoices().map((p) => {
-        const b = h(
-          "button.plan",
-          { type: "button", title: `Subscribe to ${p.label}` },
-          h("b", null, `Subscribe · ${p.label}`),
-          h("small", null, p.detail),
-          h("small", null, p.includes),
-        );
-        b.addEventListener("click", () => billing(b, { action: "checkout", plan: p.id }));
-        return b;
-      }),
-    );
-    $("acct-manage").hidden = !sum.paid;
-    const topup = $("acct-topup");
-    topup.replaceChildren(
-      h("span", null, "Top up"),
-      ...TOPUP_AMOUNTS_CENTS.map((cents) => {
-        const b = h("button.small", { type: "button", title: `Buy ${formatCents(cents)} of usage credit (never expires)` }, formatCents(cents));
-        b.addEventListener("click", () => billing(b, { action: "topup", amountCents: cents }));
-        return b;
-      }),
-    );
-    const dash = $<HTMLAnchorElement>("acct-dashboard");
-    dash.href = a.dashboardUrl || "#";
-    dash.hidden = !a.dashboardUrl;
+    // The billing button only when the server can take payments (unknown: shown).
+    $("acct-billing").hidden = $("keys-billing").hidden = sum.billing === "not-set-up";
+    for (const b of billingButtons) b.textContent = sum.billingLabel;
+    $("acct-dashboard").hidden = !a.dashboardUrl;
     if (a.fetchedAt) reload.title = `Loaded ${dateLabel(a.fetchedAt)}; load plan and credit again`;
   }
 
   // API keys
-  const keysCard = $("keys-card");
   const keysList = $("keys-list");
   const keyName = $<HTMLInputElement>("key-name");
   const keyRole = $<HTMLSelectElement>("key-role");
@@ -149,6 +102,7 @@ export function initAccountSection(opts: { onState(state: UiState): void; showBi
   let keysLoadedFor = "";
   keyRole.replaceChildren(...Object.entries(API_KEY_ROLE_LABELS).map(([role, r]) => h("option", { value: role, title: r.hint }, r.label)));
   $("keys-rate").textContent = String(API_KEY_LIMITS.requestsPerMinute);
+  $("keys-locked-text").textContent = keysLockedText();
 
   async function loadKeys(): Promise<void> {
     try {
@@ -206,18 +160,19 @@ export function initAccountSection(opts: { onState(state: UiState): void; showBi
     ),
   );
 
-  function renderKeysCard(a: AccountView): void {
-    keysCard.hidden = !a.signedIn;
-    if (!a.signedIn) {
+  /** Signed out: Log in. A plan without keys: what they come with, and the billing button. Else the keys. */
+  function renderKeysTab(a: AccountView): void {
+    const allowed = a.signedIn && accountSummary(a).keysAllowed;
+    $("keys-out").hidden = a.signedIn;
+    $("keys-locked").hidden = !a.signedIn || allowed;
+    $("keys-body").hidden = !allowed;
+    if (!allowed) {
       keysLoadedFor = "";
       $("key-new").hidden = true;
       return;
     }
-    const allowed = accountSummary(a).keysAllowed;
-    $("keys-locked").hidden = allowed;
-    $("keys-body").hidden = !allowed;
-    const who = `${a.user?.email}:${allowed}`;
-    if (allowed && keysLoadedFor !== who) {
+    const who = a.user?.email ?? "";
+    if (keysLoadedFor !== who) {
       keysLoadedFor = who;
       void loadKeys();
     }
@@ -225,10 +180,11 @@ export function initAccountSection(opts: { onState(state: UiState): void; showBi
 
   return {
     signIn: signInWith,
+    openBilling: billing,
     render(state) {
       account = state.account ?? SIGNED_OUT;
       renderAccount(account);
-      renderKeysCard(account);
+      renderKeysTab(account);
     },
   };
 }

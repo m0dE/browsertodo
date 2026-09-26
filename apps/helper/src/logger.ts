@@ -4,12 +4,17 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { SecretRedactor } from "@browsertodo/core";
 
 export const LIVE_LOG_MAX_BYTES = 5 * 1024 * 1024;
 /** Most lines one tail() returns. */
 export const LIVE_LOG_TAIL_MAX_LINES = 5000;
-/** Most characters one tail() returns: keeps getLog answers well under native messaging's 1 MB cap. */
-export const LIVE_LOG_TAIL_MAX_CHARS = 400_000;
+/**
+ * Most UTF-8 bytes one tail() returns. JSON escaping at most doubles them
+ * (quotes, backslashes), which keeps getLog answers under native messaging's
+ * 1 MB cap. Bytes, not characters: Korean or emoji text takes 3-4 bytes each.
+ */
+export const LIVE_LOG_TAIL_MAX_BYTES = 400_000;
 
 /** Combined human-readable log, one line per event, tailed by the options page. */
 export class LiveLog {
@@ -39,7 +44,11 @@ export class LiveLog {
     const all = readFileSync(this.path, "utf8").split("\n");
     if (all[all.length - 1] === "") all.pop();
     const text = n === 0 ? "" : all.slice(-n).join("\n");
-    return text.length > LIVE_LOG_TAIL_MAX_CHARS ? text.slice(-LIVE_LOG_TAIL_MAX_CHARS) : text;
+    const bytes = Buffer.from(text, "utf8");
+    if (bytes.length <= LIVE_LOG_TAIL_MAX_BYTES) return text;
+    // Cut by bytes, then start at the next whole line (the cut may split a line, even a character).
+    const cut = bytes.subarray(bytes.length - LIVE_LOG_TAIL_MAX_BYTES).toString("utf8");
+    return cut.slice(cut.indexOf("\n") + 1);
   }
 
   private rotateIfNeeded(): void {
@@ -71,11 +80,14 @@ export class RunLog {
     readonly path: string,
     private readonly live: LiveLog | null,
     private readonly taskId: string,
+    /** Passwords the session's agent was given: never written to either log. */
+    private readonly secrets: SecretRedactor = new SecretRedactor(),
   ) {
     mkdirSync(dirname(path), { recursive: true });
   }
 
-  event(event: Record<string, unknown>): void {
+  event(raw: Record<string, unknown>): void {
+    const event = this.secrets.redact(raw);
     const record = { ts: new Date().toISOString(), taskId: this.taskId, ...event };
     try {
       appendFileSync(this.path, JSON.stringify(record) + "\n");

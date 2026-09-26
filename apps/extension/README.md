@@ -19,6 +19,14 @@ redirect URI `https://<extension id>.chromiumapp.org/` (the ID is in
 `extension-id.txt`), and the account server must accept the same client ID
 (`GOOGLE_CLIENT_ID`, see `apps/api/README.md`).
 
-The account server defaults to `https://app.browsertodo.com`.
-Self-hosters can change it in Settings > Self-hosting > Account server URL.
+The account server defaults to `https://app.browsertodo.com`. An install
+saved with an earlier default (`PREVIOUS_ACCOUNT_API_BASES` in
+`packages/shared/src/settings.ts`) moves to it by itself, signed in session
+included, when the service worker starts (install, update, browser start).
+Self-hosters can change it in Settings > Advanced > Account server.
 The runner-key cloud sync stays there as well, for servers without accounts.
+
+Plans, top-ups and invoices are on the dashboard's Billing page
+(`<account server origin>/billing`); every plan or top-up button in the
+extension opens it in a new tab (`src/ui/billing.ts`, URLs from
+`src/account/dashboard.ts`).

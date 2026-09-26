@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { OUT_OF_CREDIT, type TaskRunResult } from "@browsertodo/shared";
-import { createToolExecutor } from "../src/index.js";
+import { clipEventText, MAX_EVENT_TEXT, OUT_OF_CREDIT, type TaskRunResult } from "@browsertodo/shared";
+import { createToolExecutor, SecretRedactor } from "../src/index.js";
+import { REDACTED } from "../src/redact.js";
 import { picksEvent } from "../src/executor.js";
 import { OutOfCreditError } from "../src/api-errors.js";
 import { goalKey, rankCandidates } from "../src/act.js";
@@ -118,6 +119,40 @@ describe("createToolExecutor: plain tools", () => {
     expect((await exec.call("get_credential", { site: "other.com" })).text).toMatch(/No login is saved for other.com. First check whether the user is already signed in/);
     x.vaultLocked = true;
     expect((await exec.call("get_credential", { site: "example.com" })).text).toMatch(/saved site logins are locked/);
+  });
+
+  it("a password from get_credential never appears in events, also when the agent types it (and a shared redactor hides it too)", async () => {
+    const x = new FakeX({ credentials: { "example.com": { username: "u", password: "s3cret-pw" } } });
+    const secrets = new SecretRedactor();
+    const { events, onEvent } = collect();
+    const exec = createToolExecutor({ browser: x.caller(), jev: null, jevThreshold: 0.8, onEvent, mediaPaths: [], secrets, sleep: noSleep });
+    expect((await exec.call("get_credential", { site: "example.com" })).text).toContain("s3cret-pw");
+    await exec.call("type", { index: 2, text: "s3cret-pw" });
+    await exec.call("act", { steps: [{ goal: "type the password", index: 2, text: "s3cret-pw" }] });
+    await exec.call("paste", { text: "s3cret-pw" });
+    // The browser got the real password; nothing the user or a log sees has it.
+    expect(x.calls.filter((c) => c.method === "browser.type").map((c) => (c.params as { text: string }).text)).toEqual(["s3cret-pw", "s3cret-pw"]);
+    expect(JSON.stringify(events)).not.toContain("s3cret-pw");
+    expect(events.find((e) => e.type === "tool_call" && e.name === "type")).toMatchObject({ args: { index: 2, text: REDACTED } });
+    expect(secrets.redact({ line: "password: s3cret-pw" })).toEqual({ line: `password: ${REDACTED}` });
+  });
+
+  it("clips long tool arguments in tool_call events (the tool still gets them whole)", async () => {
+    const x = new FakeX();
+    const { exec, events } = setup(x);
+    const long = "a".repeat(MAX_EVENT_TEXT + 500);
+    await exec.call("paste", { text: long });
+    expect((x.calls[0]!.params as { text: string }).text).toBe(long);
+    const args = events.find((e) => e.type === "tool_call")!.args as { text: string };
+    expect(args.text).toBe(clipEventText(long));
+  });
+
+  it("upload sends the exact paths the task listed, whatever case or slashes the agent used", async () => {
+    const x = new FakeX();
+    const listed = "C:\\Users\\Me\\Downloads\\browsertodo-media\\S1\\Cat.png";
+    const { exec } = setup(x, { mediaPaths: [listed] });
+    await exec.call("upload", { index: 3, paths: ["c:/users/me/downloads/browsertodo-media/s1/cat.png"] });
+    expect(x.calls.find((c) => c.method === "browser.upload")!.params).toEqual({ index: 3, paths: [listed] });
   });
 
   it("switch_x_account switches through the account menu", async () => {

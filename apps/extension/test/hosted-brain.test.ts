@@ -74,11 +74,11 @@ describe("browsertodo AI brain", () => {
     expect(agentOpts.jev).not.toBeNull();
   });
 
-  it("402 out_of_credit pauses the run with 'Out of usage credit' and reports the top-up link", async () => {
+  it("402 out_of_credit pauses the run with 'Out of usage credit' and flags the account", async () => {
     const t = brain([{ status: 402, body: { error: "out_of_credit", message: "No usage credit left", topupUrl: "https://api.test/billing" } }]);
     const result = await t.b.start(startOpts({ jevEnabled: false })).done;
     expect(result).toEqual({ outcome: "paused", reason: "Out of usage credit" });
-    expect(t.onOutOfCredit).toHaveBeenCalledWith("https://api.test/billing");
+    expect(t.onOutOfCredit).toHaveBeenCalledOnce();
     expect(t.s.requests).toHaveLength(1);
   });
 
@@ -93,7 +93,7 @@ describe("browsertodo AI brain", () => {
     });
     b.start(startOpts());
     await expect(jev!.decide({ goal: "g", snapshot: { url: "", title: "", text: "", elements: [], truncated: false } })).rejects.toThrow(/credit/);
-    expect(onOutOfCredit).toHaveBeenCalledWith("https://api.test/b");
+    expect(onOutOfCredit).toHaveBeenCalledOnce();
   });
 
   it("signed out: the run fails before any request", async () => {

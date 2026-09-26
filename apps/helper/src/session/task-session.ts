@@ -5,7 +5,7 @@
  * limits, the task_* result, user messages and stopping.
  */
 import { type Sleep, type AgentEvent, type RunConfig, type TaskRunResult, type ToolName } from "@browsertodo/shared";
-import { createToolExecutor, turnEndEvents, type BrowserCaller, type JevLike } from "@browsertodo/core";
+import { createToolExecutor, turnEndEvents, type BrowserCaller, type JevLike, type SecretRedactor } from "@browsertodo/core";
 import type { RunLog } from "../logger.js";
 import { UserInput } from "../brains/brain.js";
 import type { ToolSession } from "../tool-router.js";
@@ -23,6 +23,8 @@ export interface TaskSessionOptions {
   jev: JevLike | null;
   jevThreshold: number;
   mediaPaths: string[];
+  /** Passwords the agent is given (shared with the run log, which redacts them too). */
+  secrets: SecretRedactor;
   /** helper.event notifications. */
   notify: (sessionId: string, event: AgentEvent) => void;
   /** Single-turn brains: time the agent gets to exit after its task_* call. */
@@ -60,6 +62,7 @@ export class TaskSession {
       onEvent: (e) => this.emit(e),
       onTaskEnd: (r) => this.recordFinish(r),
       mediaPaths: opts.mediaPaths,
+      secrets: opts.secrets,
       ...(opts.sleep ? { sleep: opts.sleep } : {}),
     });
     this.tools = { taskId: opts.sessionId, allowedTools: opts.allowed, jev: opts.jev !== null, beforeCall: (name) => this.beforeCall(name), executor };
@@ -69,8 +72,9 @@ export class TaskSession {
     return this.controller.signal.aborted;
   }
 
-  /** To the run log and the extension (helper.event). */
-  emit(e: AgentEvent): void {
+  /** To the run log and the extension (helper.event), without any password the agent was given. */
+  emit(raw: AgentEvent): void {
+    const e = this.opts.secrets.redact(raw);
     if (e.type === "error" && this.turn) this.turn.lastError = e.text;
     // Live text deltas only go to the chat; the run log keeps the final text.
     if (e.type !== "assistant_text_delta") this.log.event({ ...e });
@@ -100,10 +104,13 @@ export class TaskSession {
    * the brain gets abortWaitMs to exit. Then the turn is over.
    */
   async waitForTurn(turn: Turn): Promise<void> {
+    // Removed when the turn ends: a kept-open session has many turns on one signal.
+    let onAbort: (() => void) | undefined;
     try {
       const aborted = new Promise<void>((resolve) => {
+        onAbort = resolve;
         if (this.aborted) resolve();
-        else this.controller.signal.addEventListener("abort", () => resolve(), { once: true });
+        else this.controller.signal.addEventListener("abort", onAbort, { once: true });
       });
       await Promise.race([this.brainDone, turn.settled, aborted]);
       if (!this.aborted) return;
@@ -114,6 +121,7 @@ export class TaskSession {
       clearTimeout(timer);
       if (r === "timeout") this.log.event({ type: "brain_stuck", waitMs });
     } finally {
+      if (onAbort) this.controller.signal.removeEventListener("abort", onAbort);
       clearTurnTimers(turn);
       if (this.turn === turn) this.turn = null;
     }

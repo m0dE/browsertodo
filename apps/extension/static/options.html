@@ -58,15 +58,11 @@
                 <div class="box-body">
                   <p id="acct-note" class="note" hidden></p>
                   <div id="acct-billing" class="acct-billing">
-                    <div id="acct-plans" class="plan-grid" hidden></div>
-                    <div id="acct-manage" class="row" hidden>
-                      <button id="acct-change" type="button" class="small">Change plan</button>
-                      <button id="acct-portal" type="button" class="small">Manage billing</button>
-                    </div>
-                    <div class="row"><span id="acct-topup" class="topups"></span></div>
+                    <button id="acct-billing-open" type="button" class="primary billing-open">Choose a plan</button>
+                    <p class="hint">Plans, top-ups and invoices are on your browsertodo dashboard.</p>
                   </div>
                   <div class="row">
-                    <a id="acct-dashboard" href="#" target="_blank" rel="noopener">Usage &amp; billing dashboard</a>
+                    <button id="acct-dashboard" type="button" class="small link">Usage on the dashboard</button>
                     <span class="spacer"></span>
                     <button id="acct-reload" type="button" class="small ghost" title="Load plan and credit again">Refresh</button>
                   </div>
@@ -75,16 +71,29 @@
               </div>
             </div>
           </div>
+        </section>
 
-          <div class="group" id="keys-card" hidden>
+        <!-- API keys -->
+        <section class="panel" id="panel-keys" role="tabpanel" aria-labelledby="tab-keys" tabindex="-1" hidden>
+          <div class="group" id="keys-card">
             <h2 class="group-title" id="h-keys">API keys</h2>
             <p class="group-hint">For your own scripts (Add tasks) or another browser that works through them (Run tasks). Fair use: <span id="keys-rate"></span> requests a minute per key.</p>
             <div class="box pad">
-              <div id="keys-locked" class="row" hidden>
-                <span class="muted">API keys come with a paid plan.</span>
-                <button id="keys-subscribe" type="button" class="small primary">Get a plan</button>
+              <div id="keys-out" class="keys-gate" hidden>
+                <p class="hint">Log in with Google to create API keys for your account.</p>
+                <div class="row">
+                  <button id="keys-signin" type="button" class="primary">Log in with Google</button>
+                  <span id="keys-signin-msg" class="msg"></span>
+                </div>
               </div>
-              <div id="keys-body" class="keys-body">
+              <div id="keys-locked" class="keys-gate" hidden>
+                <p id="keys-locked-text" class="hint"></p>
+                <div id="keys-billing" class="keys-gate">
+                  <button id="keys-billing-open" type="button" class="primary billing-open">Choose a plan</button>
+                  <p class="hint">Plans, top-ups and invoices are on your browsertodo dashboard.</p>
+                </div>
+              </div>
+              <div id="keys-body" class="keys-body" hidden>
                 <ul id="keys-list" class="keys-list"></ul>
                 <div class="key-new-form">
                   <input id="key-name" type="text" placeholder="Key name, e.g. laptop scheduler" aria-label="Key name" autocomplete="off" spellcheck="false" />

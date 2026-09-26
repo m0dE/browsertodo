@@ -17,25 +17,21 @@ export interface VoiceErrorInfo {
   message: string;
   /** Ends the listening session (asking again will not help). */
   fatal: boolean;
-  /** Where to fix it (pick a plan, top up), when there is such a page. */
-  url?: string;
 }
 
 export class VoiceError extends Error {
   readonly kind: VoiceErrorKind;
   readonly fatal: boolean;
-  readonly url?: string;
 
   constructor(info: VoiceErrorInfo) {
     super(info.message);
     this.name = "VoiceError";
     this.kind = info.kind;
     this.fatal = info.fatal;
-    if (info.url) this.url = info.url;
   }
 
   get info(): VoiceErrorInfo {
-    return { kind: this.kind, message: this.message, fatal: this.fatal, ...(this.url ? { url: this.url } : {}) };
+    return { kind: this.kind, message: this.message, fatal: this.fatal };
   }
 }
 
@@ -47,10 +43,9 @@ export function toVoiceError(err: unknown): VoiceError {
   if (err instanceof NotSignedInError) return new VoiceError(SIGNED_OUT);
   if (err instanceof ApiRequestError) {
     const plan = PlanRequiredError.safeParse(err.body);
-    if (plan.success) return new VoiceError({ kind: "plan", message: `Voice needs ${plansWithText("voice")}.`, fatal: true, url: plan.data.upgradeUrl });
-    const credit = OutOfCreditError.safeParse(err.body);
-    if (credit.success) {
-      return new VoiceError({ kind: "credit", message: "You're out of usage credit. Top up to keep using voice.", fatal: true, url: credit.data.topupUrl });
+    if (plan.success) return new VoiceError({ kind: "plan", message: `Voice needs ${plansWithText("voice")}.`, fatal: true });
+    if (OutOfCreditError.safeParse(err.body).success) {
+      return new VoiceError({ kind: "credit", message: "You're out of usage credit. Top up to keep using voice.", fatal: true });
     }
     switch (err.status) {
       case 401:

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
+  ACCOUNT_API_BASE,
   BatchCreateInput,
   CreateTaskInput,
+  currentAccountApiBase,
   DEFAULT_SETTINGS,
   INTERACTIVE_TOOL_NAMES,
   isXSite,
@@ -78,6 +80,12 @@ describe("settings", () => {
     expect(parseSettings({ accountApiBase: "https://browsertodo-api.jaeyun.workers.dev/" }).accountApiBase).toBe("https://app.browsertodo.com");
     expect(parseSettings({ accountApiBase: "https://api.example.org" }).accountApiBase).toBe("https://api.example.org");
     expect(parseSettings({}).accountApiBase).toBe("https://app.browsertodo.com");
+  });
+  it("currentAccountApiBase: one rule for settings and sessions", () => {
+    expect(currentAccountApiBase(" https://browsertodo-api.jaeyun.workers.dev// ")).toBe(ACCOUNT_API_BASE);
+    expect(currentAccountApiBase("https://app.browsertodo.com/")).toBe(ACCOUNT_API_BASE);
+    expect(currentAccountApiBase("http://127.0.0.1:8787/")).toBe("http://127.0.0.1:8787");
+    expect(currentAccountApiBase("")).toBe("");
   });
   it("fixes an inverted delay range", () => {
     const s = parseSettings({ delayMinSec: 100, delayMaxSec: 10 });

@@ -1,13 +1,15 @@
 /**
  * The browsertodo account in the background: the Google sign-in, the
  * session token (chrome.storage.local), the cached profile, plan and credit,
- * the out-of-credit flag, billing links, API keys, and moving local tasks
- * into the account after the first sign-in.
+ * the out-of-credit flag, API keys, and moving local tasks into the account
+ * after the first sign-in. Plans and top-ups are bought on the dashboard
+ * (see dashboard.ts), never from here.
  *
  * A session belongs to the server it was issued by: when the account server
- * URL setting changes, the extension is signed out of it.
+ * URL setting changes, the extension is signed out of it. An earlier default
+ * address of the same server (currentAccountApiBase) is not a change.
  */
-import { errorMessage, NOT_SET_UP, type ExtensionSettings, type MeBillingResponse, type TranscribeResponse } from "@browsertodo/shared";
+import { currentAccountApiBase, errorMessage, type ExtensionSettings, type MeBillingResponse, type TranscribeResponse } from "@browsertodo/shared";
 import { ApiClient } from "../api-client.js";
 import type { StorageLike } from "../engine/kv.js";
 import type { StoredLocalTask } from "../engine/local-task-rules.js";
@@ -15,9 +17,10 @@ import { ApiRequestError, NotSignedInError } from "../http-client.js";
 import { callSafely } from "../listeners.js";
 import type { AccountView } from "../ui-protocol.js";
 import { AccountApi } from "./account-api.js";
+import { dashboardUrl } from "./dashboard.js";
 import { googleIdToken, SIGN_IN_NOT_SET_UP, SignInError } from "./google-auth.js";
 import { accountTaskInput } from "./todo-source.js";
-import { isPaidActive, todoAllowed, type ApiKeyInfo, type BillingLinkRequest, type CreatedApiKey, type CreditInfo, type KeyRole, type Me, type PlanInfo } from "./types.js";
+import { isPaidActive, todoAllowed, type ApiKeyInfo, type CreatedApiKey, type CreditInfo, type KeyRole, type Me, type PlanInfo } from "./types.js";
 
 export const ACCOUNT_KEY = "account";
 /** Profile and credit are refetched when older than this (or on demand). */
@@ -44,7 +47,7 @@ export interface StoredAccount {
     error?: string;
   };
   /** A hosted AI request was refused with 402 (cleared when credit is back). */
-  outOfCredit?: { topupUrl: string; at: string };
+  outOfCredit?: { at: string };
   /** "Not now" on the offer to move local tasks into the account. */
   migrationDismissed?: boolean;
 }
@@ -84,15 +87,6 @@ export interface AccountServiceDeps {
   log?(message: string): void;
 }
 
-/** The dashboard lives at the API origin (e.g. https://browsertodo-api.example.com/). */
-export function dashboardUrl(apiBase: string): string {
-  try {
-    return `${new URL(apiBase).origin}/`;
-  } catch {
-    return "";
-  }
-}
-
 export function browserTimeZone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -122,10 +116,23 @@ export class AccountService {
     this.loading ??= (async () => {
       const [got, settings] = await Promise.all([this.storage().get(ACCOUNT_KEY), this.deps.loadSettings()]);
       this.apiBase = settings.accountApiBase;
-      this.cache = (got[ACCOUNT_KEY] as StoredAccount | undefined) ?? {};
+      this.cache = await this.migrateSession((got[ACCOUNT_KEY] as StoredAccount | undefined) ?? {});
       return this.cache;
     })().finally(() => (this.loading = null));
     return this.loading;
+  }
+
+  /**
+   * A session issued at an earlier default address of the account server is
+   * kept at its current address (the same server answers at both), like the
+   * setting (currentAccountApiBase), so the move does not sign anyone out.
+   */
+  private async migrateSession(stored: StoredAccount): Promise<StoredAccount> {
+    const s = stored.session;
+    if (!s || currentAccountApiBase(s.apiBase) === s.apiBase) return stored;
+    const next = { ...stored, session: { ...s, apiBase: currentAccountApiBase(s.apiBase) } };
+    await this.storage().set({ [ACCOUNT_KEY]: next });
+    return next;
   }
 
   /** The usable session (right server, not expired), from the cache. */
@@ -161,7 +168,13 @@ export class AccountService {
     const a = await this.load();
     const base = this.apiBase;
     // Without a built-in client ID the account server names one at sign-in (and says so when it has none).
-    const view: AccountView = { signedIn: false, signInConfigured: !!this.deps.clientId || !!base, apiBase: base, dashboardUrl: dashboardUrl(base) };
+    const view: AccountView = {
+      signedIn: false,
+      signInConfigured: !!this.deps.clientId || !!base,
+      apiBase: base,
+      dashboardUrl: dashboardUrl(base),
+      billingUrl: dashboardUrl(base, "billing"),
+    };
     const s = this.session();
     if (!s) return view;
     view.signedIn = true;
@@ -172,7 +185,7 @@ export class AccountService {
     if (a.info?.error) view.error = a.info.error;
     if (a.info?.fetchedAt) view.fetchedAt = a.info.fetchedAt;
     const brain = this.brainAccount();
-    if (brain.outOfCredit) view.outOfCredit = { topupUrl: a.outOfCredit?.topupUrl || view.dashboardUrl };
+    if (brain.outOfCredit) view.outOfCredit = true;
     if (!a.migrationDismissed && this.todoAllowed()) {
       try {
         const n = (await this.deps.localTasks.list()).filter(movable).length;
@@ -307,44 +320,13 @@ export class AccountService {
   }
 
   /** A hosted request answered 402: show "Out of usage credit" until the credit is back. */
-  async markOutOfCredit(topupUrl?: string): Promise<void> {
+  async markOutOfCredit(): Promise<void> {
     await this.load();
     if (!this.session()) return;
-    const url = topupUrl || this.cache?.outOfCredit?.topupUrl || dashboardUrl(this.apiBase);
     const info = this.cache?.info;
-    const next: StoredAccount = { ...this.cache, outOfCredit: { topupUrl: url, at: this.now().toISOString() } };
+    const next: StoredAccount = { ...this.cache, outOfCredit: { at: this.now().toISOString() } };
     if (info?.credit) next.info = { ...info, credit: { ...info.credit, totalCents: Math.min(0, info.credit.totalCents) } };
     await this.store(next);
-  }
-
-  /**
-   * A Stripe page for the account: subscribe (checkout), buy credit (topup)
-   * or manage billing (portal). Changing an existing paid plan goes through
-   * the portal (the server answers checkout with 409 { portal: true }).
-   */
-  async billingLink(req: BillingLinkRequest): Promise<string> {
-    const api = await this.api();
-    try {
-      if (req.action === "checkout") {
-        if (!req.plan || req.plan === "free") throw new Error("Pick a paid plan");
-        try {
-          return await api.billingLink("checkout", { plan: req.plan, returnUrl: req.returnUrl });
-        } catch (err) {
-          if (err instanceof ApiRequestError && err.status === 409 && err.body?.portal) {
-            return await api.billingLink("portal", { returnUrl: req.returnUrl });
-          }
-          throw err;
-        }
-      }
-      if (req.action === "topup") return await api.billingLink("topup", { amountCents: req.amountCents, returnUrl: req.returnUrl });
-      return await api.billingLink("portal", { returnUrl: req.returnUrl });
-    } catch (err) {
-      if (err instanceof ApiRequestError && (err.status === 503 || err.status === 404)) {
-        if (this.cache?.info) await this.store({ ...this.cache, info: { ...this.cache.info, stripeConfigured: false } });
-        throw new Error(NOT_SET_UP.billing);
-      }
-      throw err;
-    }
   }
 
   async listKeys(): Promise<ApiKeyInfo[]> {

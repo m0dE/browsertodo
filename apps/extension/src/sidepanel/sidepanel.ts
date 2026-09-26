@@ -10,7 +10,7 @@ import { initChat } from "./chat.js";
 import { initComposer } from "./composer.js";
 import { showDetails } from "./details-sheet.js";
 import { $, closeMenusOnOutsideClick } from "../ui/dom.js";
-import { setTopupUrl } from "./event-render.js";
+import { setTopup } from "./event-render.js";
 import { conversationNote } from "./format.js";
 import { initHeader } from "./header.js";
 import { initHistory } from "./history.js";
@@ -18,9 +18,9 @@ import { connectBackground } from "./port.js";
 import { chatForTab, isBound, tabOfSession } from "./tab-chat.js";
 import { initPanelTabs, tabHasComposer, type TabName } from "./tabs.js";
 import { initTasks } from "./tasks.js";
-import { openSettings } from "./open-settings.js";
 import { openShortcutSettings, readShortcut } from "../shortcut.js";
 import { voiceAllowed } from "../account/types.js";
+import { openBilling, refreshOnReturn } from "../ui/billing.js";
 import { browserMicAccessDeps, watchMicPermission } from "../voice/mic-access.js";
 import { MicSource } from "../voice/recorder.js";
 import { panelTranscriber } from "../voice/transcribe.js";
@@ -68,7 +68,7 @@ async function switchTo(sessionId: string): Promise<boolean> {
   }
 }
 
-/** "Open in Chat": a conversation of another tab is switched to; any other is bound to this tab. */
+/** A run picked in the Activity log: a running conversation of another tab is switched to; any other is bound to this tab. */
 async function openHere(s: SessionInfo): Promise<void> {
   tabs.show("chat");
   const st = state ?? {};
@@ -95,19 +95,12 @@ function openInTodo(taskId: string): void {
   void tasks.reveal(taskId);
 }
 
-/** The details sheet of a run's task (Chat, Activity log): "Open in TODO" when the list has it. */
+/** The details sheet of a run's task (the Chat title): "Open in TODO" when the list has it. */
 const runDetails = (s: SessionInfo, trigger: HTMLElement) => void showDetails({ session: s }, trigger, { onOpenInTodo: openInTodo });
 
-/** The account's top-up page: the link a 402 carried, or the dashboard. */
-function topupUrl(s: UiState | null): string | null {
-  return s?.account?.outOfCredit?.topupUrl || s?.account?.dashboardUrl || null;
-}
-
-/** Top up: the account's top-up page, or Settings > Account when there is none. */
-function openTopup(): void {
-  const url = topupUrl(state);
-  if (url) window.open(url, "_blank", "noopener");
-  else void openSettings("account");
+/** Get a plan, Top up, Plan & billing: the dashboard's Billing page. */
+function billing(): void {
+  void openBilling(state?.account);
 }
 
 const tasks = initTasks({
@@ -116,14 +109,14 @@ const tasks = initTasks({
   onState: (s) => applyState(s),
   tabId: () => activeTab,
   onDetails: (task, listSource, trigger) => void showDetails({ task, listSource }, trigger),
-  openPlans: () => void openSettings("account"),
+  openBilling: billing,
   onGateChange: () => updateComposer(),
 });
 const composer = initComposer({
   onStarted: startedHere,
   onState: (s) => applyState(s),
   onTargetChange: () => updateNote(),
-  onTopup: openTopup,
+  onTopup: billing,
   tabId: () => activeTab,
   // The keyboard shortcut toggles voice input when pressed while the cursor is in the box.
   onInputFocus: (focused) => port.send({ type: "panel.input", focused }),
@@ -138,8 +131,7 @@ const voice = initVoiceInput({
   ),
   createSource: () => new MicSource(),
   mic: { ...micAccess, watch: (onChange) => watchMicPermission(onChange) },
-  openPlans: () => void openSettings("account"),
-  openUrl: (url) => void chrome.tabs.create({ url }),
+  openBilling: billing,
   host: document.body,
 });
 const chat = initChat({
@@ -168,10 +160,10 @@ const chat = initChat({
   onDetails: runDetails,
   onShortcuts: () => void openShortcutSettings(),
 });
-const history = initHistory({ onOpenInChat: (s) => void openHere(s), onDetails: runDetails });
+const history = initHistory({ onOpenInChat: (s) => void openHere(s) });
 const header = initHeader({
   onState: (s) => applyState(s),
-  onTopup: openTopup,
+  onBilling: billing,
   // Log in from the menu: the TODO tab's sign-in, where its progress shows.
   onSignIn: () => {
     tabs.show("todo");
@@ -235,7 +227,7 @@ function applyState(s: UiState): void {
   state = s;
   header.render(s);
   voice.setAllowed(!!s.account?.signedIn && voiceAllowed(s.account.plan));
-  setTopupUrl(topupUrl(s));
+  setTopup(s.account?.signedIn ? billing : null);
   chat.setRunning(s.runningSessions);
   composer.setRunning(s.runningSessions);
   composer.setState(s);
@@ -312,6 +304,8 @@ const port = connectBackground(onPush, () => {
   void loadState();
 });
 void loadShortcut();
+// Back from the dashboard's Billing page: a new plan or credit shows without Refresh (the push brings it).
+refreshOnReturn(() => void uiRequest({ type: "account.refresh", force: true }).then(applyState, () => {}));
 // The shortcut may have been changed on chrome://extensions/shortcuts meanwhile.
 window.addEventListener("focus", () => void loadShortcut());
 // Opened (by the shortcut or the toolbar button): the cursor is in the box.

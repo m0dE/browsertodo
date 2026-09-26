@@ -54,9 +54,9 @@ export const ToolArgs = {
   }),
   screenshot: z.object({}),
   act: actArgs({
-    goal: "One small step in plain words, e.g. 'open the post composer'",
-    index: "Element index from read_page. When given, the step runs directly on it (types text if given, else clicks) without asking the fast model",
-    steps: "Steps done in order by the fast model; stops at the first step it is not confident about",
+    goal: "What this step does, in plain words, e.g. 'open the post composer'",
+    index: "Element index from read_page (every step needs one). The step types its text into that element, or clicks it when there is no text",
+    steps: "Steps done in order; stops at the first step that fails",
   }),
   click: z.object({ index: z.number().int().describe("Element index from read_page") }),
   type: z.object({
@@ -108,7 +108,7 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   read_page:
     "Get the page URL, title, visible text and an indexed list of interactive elements. Give `tabs` to read several tabs in one call (each under its own header) without switching to them.",
   screenshot: "Capture the visible part of the current tab as an image.",
-  act: "Do up to 8 small steps in order, in one call. For each step either describe it in plain words (a fast model picks the element) or give the element index you already know (runs directly). Give text for steps that type. Stops at the first step the fast model is not confident about and returns the page's element list, so you can retry that step with an index.",
+  act: "Do up to 8 small steps in order, in one call. Each step names the element index from read_page: a step with text types it into that element, a step without text clicks it. Stops at the first step that fails and returns the page's element list, so you can send the rest again.",
   click: "Click an element by index from read_page.",
   type: "Focus an element by index and insert text into it.",
   paste: "Insert text at the current keyboard focus.",
@@ -120,7 +120,7 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   switch_tab: "Make another tab the current tab: read_page, act, navigate, scroll, screenshot and the other tools then act on it.",
   list_tabs: "List this task's tabs with id, URL, title, and which one is current.",
   close_tabs: "Close tabs you opened and no longer need. The tab the task started on is never closed.",
-  switch_x_account: "Switch X (Twitter) to another signed-in account using X's account switcher. Verify with a screenshot afterwards.",
+  switch_x_account: "Switch X (Twitter) to another signed-in account using X's account switcher. It checks that the switcher shows the new account before it answers.",
   get_credential: "Get the stored username and password for a site. Never use this for X.",
   task_complete:
     "Finish the task successfully. Call exactly once when the task is fully done. For questions and information tasks, write the full answer to the user as normal message text first (Markdown is rendered), then call this with a one-line summary; never put the answer or long text in the summary. Add a suggestion only when a next step is clearly likely.",

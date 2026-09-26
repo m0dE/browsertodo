@@ -48,7 +48,7 @@ function setup() {
       helper.lastError = null;
       return INFO;
     }),
-    call: vi.fn(async (method: string, _p?: unknown, _o?: unknown): Promise<any> => (method === "helper.runLog" ? { text: "{\"type\":\"task_start\"}\n", truncated: false } : { text: "log lines" })),
+    call: vi.fn(async (_method: string, _p?: unknown, _o?: unknown): Promise<any> => ({ text: "log lines" })),
   };
   const localStore = new LocalStore({ db });
   const sessions = new SessionStore(db);
@@ -210,17 +210,10 @@ describe("UiRouter", () => {
     expect((await t.req({ type: "state.get" })).openConversations).toEqual(["S-open"]);
   });
 
-  it("session.log fetches a Claude Code session's run log from the helper", async () => {
+  it("there is no raw log request any more (the helper's run logs stay on disk)", async () => {
     const t = setup();
-    await t.sessions.create({ sessionId: "cc", source: "adhoc", title: "x", brain: "claude-code", jev: false, startedAt: "2026-09-24T10:00:00Z" });
-    await t.sessions.update("cc", { endedAt: "2026-09-24T10:01:00Z", outcome: "done", logPath: "C:\\bt\\runs\\cc-1\\log.jsonl" });
-    expect(await t.router.handle({ type: "session.log", sessionId: "cc" })).toEqual({ ok: false, error: "The helper is not connected" });
-    t.helper.info = INFO;
-    expect(await t.req({ type: "session.log", sessionId: "cc" })).toEqual({ path: "C:\\bt\\runs\\cc-1\\log.jsonl", text: '{"type":"task_start"}\n', truncated: false });
-    expect(t.helper.call).toHaveBeenLastCalledWith("helper.runLog", { path: "C:\\bt\\runs\\cc-1\\log.jsonl" }, { timeoutMs: 15_000 });
-    await t.sessions.create({ sessionId: "api", source: "adhoc", title: "x", brain: "claude-api", jev: false, startedAt: "2026-09-24T10:00:00Z" });
-    expect(await t.router.handle({ type: "session.log", sessionId: "api" })).toEqual({ ok: false, error: "This session has no run log (only Claude Code sessions do)" });
-    expect(await t.router.handle({ type: "session.log", sessionId: "nope" })).toEqual({ ok: false, error: "No session nope" });
+    expect(await t.router.handle({ type: "session.log", sessionId: "cc" } as never)).toMatchObject({ ok: false });
+    expect(t.helper.call).not.toHaveBeenCalled();
   });
 
   it("extra requests: helper.getLog and vault.*", async () => {
@@ -264,7 +257,7 @@ describe("UiHub", () => {
 describe("UiRouter: account", () => {
   function withAccount(signedIn: boolean) {
     const t = setup();
-    const view = { signedIn, signInConfigured: true, apiBase: "https://api.test", dashboardUrl: "https://api.test/" };
+    const view = { signedIn, signInConfigured: true, apiBase: "https://api.test", dashboardUrl: "https://api.test/", billingUrl: "https://api.test/billing" };
     const account = {
       view: vi.fn(async () => view),
       signIn: vi.fn(async () => void (view.signedIn = true)),
@@ -272,7 +265,6 @@ describe("UiRouter: account", () => {
       refresh: vi.fn(async (_force?: boolean) => {}),
       migrateLocalTasks: vi.fn(async () => ({ moved: 2, failed: 0, errors: [] })),
       dismissMigration: vi.fn(async () => {}),
-      billingLink: vi.fn(async (_r: unknown) => "https://checkout.stripe.test/x"),
       listKeys: vi.fn(async () => []),
       createKey: vi.fn(async (name: string, role: string) => ({ id: "k1", name, role, key: "bt_new" })),
       revokeKey: vi.fn(async (_id: string) => {}),
@@ -318,13 +310,11 @@ describe("UiRouter: account", () => {
     expect(await t.router.handle({ type: "tasks.cancel", id: local.tasks[0].id })).toMatchObject({ ok: false, error: expect.stringMatching(/delete it instead/) });
   });
 
-  it("migrate, billing links and keys", async () => {
+  it("migrate and keys; no billing request (plans are bought on the dashboard)", async () => {
     const t = withAccount(true);
     const m = await t.req({ type: "account.migrate" });
     expect(m).toMatchObject({ moved: 2, failed: 0, state: { account: { signedIn: true } } });
-    expect(await t.req({ type: "account.billing", action: "topup", amountCents: 1000, returnUrl: "chrome-extension://x/options.html" })).toEqual({ url: "https://checkout.stripe.test/x" });
-    expect(t.account.billingLink).toHaveBeenCalledWith({ action: "topup", amountCents: 1000, returnUrl: "chrome-extension://x/options.html" });
-    expect(await t.router.handle({ type: "account.billing", action: "steal", returnUrl: "" } as never)).toMatchObject({ ok: false });
+    expect(await t.router.handle({ type: "account.billing", action: "topup", amountCents: 1000, returnUrl: "chrome-extension://x/options.html" } as never)).toMatchObject({ ok: false });
     expect(await t.req({ type: "account.keys.create", name: " cli ", role: "creator" })).toEqual({ id: "k1", name: "cli", role: "creator", key: "bt_new" });
     expect(await t.router.handle({ type: "account.keys.create", name: "", role: "creator" })).toEqual({ ok: false, error: "Give the key a name" });
     expect(await t.req({ type: "account.keys.revoke", id: "k1" })).toEqual({ ok: true });
@@ -346,7 +336,7 @@ describe("UiRouter: account", () => {
       new ApiRequestError(403, "plan_required", { error: "plan_required", feature: "voice", message: "Voice input needs the Plus or Pro plan.", upgradeUrl: "https://dash.test/billing" }),
     );
     expect(await t.req({ type: "voice.transcribe", wav, speechMs: 900 })).toEqual({
-      error: { kind: "plan", message: "Voice needs the Plus or Pro plan.", fatal: true, url: "https://dash.test/billing" },
+      error: { kind: "plan", message: "Voice needs the Plus or Pro plan.", fatal: true },
     });
     t.account.transcribe.mockRejectedValueOnce(new NotSignedInError());
     expect(await t.req({ type: "voice.transcribe", wav, speechMs: 900 })).toMatchObject({ error: { kind: "signed-out" } });

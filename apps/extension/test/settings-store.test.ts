@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS } from "@browsertodo/shared";
+import { ACCOUNT_API_BASE, DEFAULT_SETTINGS, PREVIOUS_ACCOUNT_API_BASES } from "@browsertodo/shared";
 import { installChromeFake, type ChromeFake } from "./chrome-fake.js";
 import {
   ALARM_NAME,
@@ -7,6 +7,7 @@ import {
   getRunnerId,
   handleStorageChange,
   loadSettings,
+  migrateStoredSettings,
   saveSettings,
   saveSettingsPatch,
 } from "../src/settings-store.js";
@@ -97,5 +98,28 @@ describe("alarm scheduling", () => {
     await handleStorageChange({ other: { newValue: 1 } }, "local");
     await handleStorageChange({ settings: { newValue: { intervalMinutes: 99 } } }, "session");
     expect(chrome.alarms.all.get(ALARM_NAME)).toBe(before);
+  });
+});
+
+describe("the account server's earlier default in stored settings", () => {
+  const OLD = PREVIOUS_ACCOUNT_API_BASES[0]!;
+
+  it("is read at its current address, and written back there once at worker start", async () => {
+    chrome.storage.local.data.settings = { accountApiBase: OLD, brain: "browsertodo", intervalMinutes: 30 };
+    expect((await loadSettings()).accountApiBase).toBe(ACCOUNT_API_BASE);
+    expect(await migrateStoredSettings()).toBe(true);
+    // Only the address changes; the rest stays as stored.
+    expect(chrome.storage.local.data.settings).toEqual({ accountApiBase: ACCOUNT_API_BASE, brain: "browsertodo", intervalMinutes: 30 });
+    expect(await migrateStoredSettings()).toBe(false);
+  });
+
+  it("leaves a self-hosted server, the current default and a fresh install alone", async () => {
+    expect(await migrateStoredSettings()).toBe(false);
+    expect(chrome.storage.local.data.settings).toBeUndefined();
+    for (const accountApiBase of ["https://api.example.org", ACCOUNT_API_BASE]) {
+      chrome.storage.local.data.settings = { accountApiBase };
+      expect(await migrateStoredSettings()).toBe(false);
+      expect(chrome.storage.local.data.settings).toEqual({ accountApiBase });
+    }
   });
 });

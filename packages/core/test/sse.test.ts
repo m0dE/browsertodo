@@ -187,3 +187,46 @@ describe("postMessages with stream", () => {
     expect(await r).toEqual({ kind: "error", reason: "aborted" });
   });
 });
+
+describe("stopping early and error pages", () => {
+  const body: MessagesRequest = { model: "m", max_tokens: 10, system: [], tools: [], messages: [] };
+
+  /** A stream that sends `text` once and then stays open, recording whether the reader cancelled it. */
+  function openStream(text: string) {
+    const state = { cancelled: false };
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode(text));
+      },
+      cancel() {
+        state.cancelled = true;
+      },
+    });
+    return { stream, state };
+  }
+
+  it("cancels the response body once message_stop came (the connection is not left open)", async () => {
+    const complete = [
+      ev("message_start", { type: "message_start", message: { id: "m1", type: "message", role: "assistant", content: [], stop_reason: null } }),
+      ev("message_stop", { type: "message_stop" }),
+    ].join("");
+    const { stream, state } = openStream(complete);
+    const f = (async () => new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+    const r = await postMessages(f, "k", body, undefined, {}, { onText: () => {} });
+    expect(r.kind).toBe("ok");
+    expect(state.cancelled).toBe(true);
+  });
+
+  it("cancels the response body after an error event", async () => {
+    const { stream, state } = openStream(ev("error", { type: "error", error: { type: "overloaded_error", message: "Overloaded" } }));
+    const f = (async () => new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+    const r = await postMessages(f, "k", body, undefined, {}, { onText: () => {} });
+    expect(r).toEqual({ kind: "transient", reason: "Claude API stream error (overloaded_error: Overloaded)" });
+    expect(state.cancelled).toBe(true);
+  });
+
+  it("an HTML error page is summed up by its status, never shown", async () => {
+    const f = (async () => new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", { status: 502, headers: { "content-type": "text/html" } })) as typeof fetch;
+    expect(await postMessages(f, "k", body)).toEqual({ kind: "transient", reason: "Claude API server error (HTTP 502)" });
+  });
+});

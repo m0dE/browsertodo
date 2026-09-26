@@ -137,6 +137,28 @@ try {
     return JSON.stringify(map);
   });
 
+  await step("the Activity Log: clicking a past run opens that conversation in Chat, bound to the active tab", async () => {
+    await ui({ type: "run.newChat", sessionId: b.sessionId, tabId: tabB });
+    await waitFor(async () => (await panelView()).empty, "tab B's new chat");
+    await panel.click("#tab-btn-history");
+    const row = panel.locator(`.sessions li button[data-id="${b.sessionId}"]`);
+    await row.waitFor();
+    await row.click();
+    const shown = await waitFor(
+      () =>
+        panel.evaluate(() => ({
+          tab: document.querySelector(".tabs [aria-selected=true]")?.id,
+          title: document.getElementById("chat-title").textContent,
+          ends: document.querySelectorAll("#chat-log .ev-end").length,
+          readOnlyView: !!document.getElementById("hist-past"),
+        })).then((v) => (v.tab === "tab-btn-chat" && v.title === "task B" && v.ends > 0 ? v : null)),
+      "task B in Chat",
+    );
+    assert.equal(shown.readOnlyView, false, "no read-only run view any more");
+    assert.equal((await bindings())[tabB], b.sessionId, "bound to the active tab");
+    return JSON.stringify(shown);
+  });
+
   await step("a chat whose tab shows a chrome:// page moves to a new tab, and the panel follows it", async () => {
     const pageC = await context.newPage();
     await pageC.goto(`${base}/c`);

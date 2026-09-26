@@ -43,9 +43,12 @@ export function picksEvent(picks: ElementPicks): AgentEvent | null {
   return { type: "status", text: picksText(picks), picks };
 }
 
-/** A task_* result with the agent's follow-up suggestion, when it gave one. */
-function withSuggestion(r: TaskRunResult, suggestion: string | undefined): TaskRunResult {
-  return suggestion ? { ...r, suggestion } : r;
+/** A task_* result with the agent's follow-up suggestion and spoken line, when it gave them. */
+function withExtras(r: TaskRunResult, extras: { suggestion?: string | undefined; spoken?: string | undefined }): TaskRunResult {
+  const out = { ...r };
+  if (extras.suggestion) out.suggestion = extras.suggestion;
+  if (extras.spoken) out.spoken = extras.spoken;
+  return out;
 }
 
 /** Case- and slash-insensitive path key, for comparing upload paths with mediaPaths. */
@@ -202,18 +205,18 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
           outOfCredit: () => endTask({ outcome: "paused", reason: OUT_OF_CREDIT }, "Task paused: the account is out of usage credit. Stop now."),
         });
       case "task_complete": {
-        const { summary, url, suggestion } = a as ToolArgsOf<"task_complete">;
+        const { summary, url, ...extras } = a as ToolArgsOf<"task_complete">;
         const r: TaskRunResult = { outcome: "done", summary };
         if (url) r.url = url;
-        return endTask(withSuggestion(r, suggestion), "Task recorded as done. Stop now.");
+        return endTask(withExtras(r, extras), "Task recorded as done. Stop now.");
       }
       case "task_fail": {
-        const { reason, suggestion } = a as ToolArgsOf<"task_fail">;
-        return endTask(withSuggestion({ outcome: "failed", reason }, suggestion), "Task recorded as failed. Stop now.");
+        const { reason, ...extras } = a as ToolArgsOf<"task_fail">;
+        return endTask(withExtras({ outcome: "failed", reason }, extras), "Task recorded as failed. Stop now.");
       }
       case "task_pause": {
-        const { reason, suggestion } = a as ToolArgsOf<"task_pause">;
-        return endTask(withSuggestion({ outcome: "paused", reason }, suggestion), "Task paused for the human. Stop now.");
+        const { reason, ...extras } = a as ToolArgsOf<"task_pause">;
+        return endTask(withExtras({ outcome: "paused", reason }, extras), "Task paused for the human. Stop now.");
       }
     }
   }

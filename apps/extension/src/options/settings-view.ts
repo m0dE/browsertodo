@@ -24,19 +24,20 @@ export const TABS = [
   { id: "account", label: "Account" },
   { id: "keys", label: "API keys" },
   { id: "ai", label: "AI" },
-  { id: "speed", label: "Speed" },
   { id: "tasks", label: "Tasks" },
   { id: "logins", label: "Site logins" },
   { id: "advanced", label: "Advanced" },
 ] as const;
 export type TabId = (typeof TABS)[number]["id"];
 
-/** Other names a link may use for a tab (options.html#jev opens Speed). */
+/** Other names a link may use for a tab (options.html#jev opens AI, at its Jev section). "speed" was Jev's own tab. */
 const TAB_ALIASES: Record<string, TabId> = {
   brain: "ai",
   model: "ai",
   helper: "ai",
-  jev: "speed",
+  jev: "ai",
+  speed: "ai",
+  voice: "ai",
   "api-keys": "keys",
   billing: "account",
   schedule: "tasks",
@@ -51,6 +52,14 @@ export function tabFromHash(hash: string | null | undefined): TabId | null {
   if (!id) return null;
   if (TABS.some((t) => t.id === id)) return id as TabId;
   return TAB_ALIASES[id] ?? null;
+}
+
+/** Links that name a section inside a tab -> that section's element id. */
+const SECTIONS: Record<string, string> = { jev: "jev-group", speed: "jev-group", voice: "voice-group" };
+
+/** "#jev" -> "jev-group": the section to scroll to once its tab shows; null for a tab's own link. */
+export function sectionFromHash(hash: string | null | undefined): string | null {
+  return SECTIONS[(hash ?? "").replace(/^#/, "").trim().toLowerCase()] ?? null;
 }
 
 /** The tab an arrow key moves to (wraps around); Home / End go to the ends. */

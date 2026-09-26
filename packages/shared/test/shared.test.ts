@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
+  MAX_SPOKEN_CHARS,
   ACCOUNT_API_BASE,
   BatchCreateInput,
   CreateTaskInput,
@@ -212,6 +213,32 @@ describe("follow-up suggestion (task_* suggestion)", () => {
     expect(schema.properties.suggestion!.description).toContain(SUGGESTION_NEVER);
     expect(schema.required).toEqual(["summary"]);
     for (const [name] of ends) expect(TOOL_DESCRIPTIONS[name]).toMatch(/suggestion/);
+  });
+});
+
+describe("spoken line (task_* spoken)", () => {
+  const ends = [
+    ["task_complete", { summary: "Summarized 4 unread emails" }],
+    ["task_fail", { reason: "The page would not load" }],
+    ["task_pause", { reason: "Sign in to example.com" }],
+  ] as const;
+
+  it("is optional on task_complete, task_fail and task_pause, trimmed, and capped at MAX_SPOKEN_CHARS", () => {
+    for (const [name, args] of ends) {
+      const withIt = ToolArgs[name].safeParse({ ...args, spoken: "  Done. Jordan needs your signature by Friday. " });
+      expect(withIt.success && withIt.data.spoken).toBe("Done. Jordan needs your signature by Friday.");
+      expect(ToolArgs[name].safeParse({ ...args, spoken: "x".repeat(MAX_SPOKEN_CHARS) }).success).toBe(true);
+      expect(ToolArgs[name].safeParse({ ...args, spoken: "x".repeat(MAX_SPOKEN_CHARS + 1) }).success).toBe(false);
+      expect(ToolArgs[name].safeParse({ ...args, spoken: "  " }).success).toBe(false);
+    }
+    expect(MAX_SPOKEN_CHARS).toBe(200);
+  });
+
+  it("the schema the model sees states the cap and asks for natural speech", () => {
+    const schema = z.toJSONSchema(ToolArgs.task_pause, { io: "input" }) as { properties: Record<string, { maxLength?: number; description?: string }>; required: string[] };
+    expect(schema.properties.spoken!.maxLength).toBe(MAX_SPOKEN_CHARS);
+    expect(schema.properties.spoken!.description).toMatch(/read aloud/);
+    expect(schema.required).toEqual(["reason"]);
   });
 });
 

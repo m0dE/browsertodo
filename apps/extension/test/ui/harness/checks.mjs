@@ -49,12 +49,16 @@ export function createChecks({ browser, base, only, shots }) {
     taken.push(file);
   }
 
-  async function openPanel(ctx, kind, waitFor = "#chat-log > *") {
+  /** Opens the side panel on a scenario; `opts.edit` changes its canned data, `opts.init` are more init scripts (e.g. installVoiceFakes). */
+  async function openPanel(ctx, kind, waitFor = "#chat-log > *", opts = {}) {
     const page = await ctx.newPage();
     const errors = [];
     page.on("pageerror", (e) => errors.push(String(e.stack ?? e)));
     page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
-    await page.addInitScript(installChromeStub, scenario(kind));
+    const data = scenario(kind);
+    opts.edit?.(data);
+    for (const init of opts.init ?? []) await page.addInitScript(init);
+    await page.addInitScript(installChromeStub, data);
     await page.goto(`${base}/sidepanel.html`);
     await page.evaluate(() => localStorage.clear());
     await page.reload();

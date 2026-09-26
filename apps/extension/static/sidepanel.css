@@ -116,43 +116,7 @@ button.login-btn {
 .migrate { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); background: var(--accent-soft); }
 .migrate-text { margin: 0; }
 
-/* The account in the header: avatar button and its menu */
-.menu.acct summary { width: 26px; height: 26px; border-radius: 50%; padding: 0; overflow: hidden; flex: none; }
-#acct-anon { color: var(--muted); }
-.acct:hover #acct-anon, .acct[open] #acct-anon { color: var(--text); }
-.acct[data-signed-in] #acct-anon, .acct:not([data-signed-in]) #acct-who, .acct:not([data-signed-in]) #acct-billing, .acct:not([data-signed-in]) #acct-signout, .acct[data-signed-in] #acct-login { display: none; }
-.acct-pop { top: 30px; }
-.menu.acct summary:hover, .menu.acct[open] summary { background: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
-#acct-avatar { width: 26px; height: 26px; border-radius: 50%; display: block; object-fit: cover; }
-#acct-initial {
-  width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
-  background: var(--accent); color: var(--on-accent); font-size: var(--text-sm); font-weight: 600;
-}
-#acct-initial:empty { display: none; }
-.acct-pop { min-width: 210px; margin-left: 0; max-width: calc(100vw - 24px); }
-.acct-who { padding: 5px 8px 7px; border-bottom: 1px solid var(--border); margin-bottom: 3px; }
-.acct-email { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.acct-plan { color: var(--muted); font-size: var(--text-sm); }
-.acct-plan[data-tone="warn"] { color: var(--warn); }
-
-/* A task's overflow menu */
-.menu { position: relative; }
-.menu summary {
-  list-style: none; cursor: pointer; color: var(--muted);
-  width: 24px; height: 22px; border-radius: var(--radius-sm);
-  display: grid; place-items: center; font-size: 16px; line-height: 1;
-}
-.menu summary::-webkit-details-marker { display: none; }
-.menu summary:hover, .menu[open] summary { background: var(--hover); color: var(--text); }
-.menu-pop {
-  position: absolute; right: 0; top: 24px; z-index: var(--z-popup);
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-  box-shadow: 0 6px 20px rgb(0 0 0 / 0.14);
-  padding: 4px; display: flex; flex-direction: column; min-width: 120px;
-}
-.menu-pop button { border: 0; background: none; justify-content: flex-start; padding: 5px 8px; }
-.menu-pop button:hover { background: var(--hover); }
-.menu-pop button.bad { color: var(--bad); }
+/* A task's overflow menu: .menu in ui.css. */
 
 /* Buttons that say why they cannot be used: aria-disabled keeps their tooltip. */
 button[aria-disabled="true"] { opacity: 0.45; cursor: default; }
@@ -546,10 +510,10 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / 0.35); }
   display: block; position: absolute; right: 2px; bottom: 3px;
   color: var(--muted); background: var(--surface); border-radius: 3px; padding: 0.5px;
 }
-.voice-mic[data-state="listening"], .voice-mic[data-state="opening"], .voice-mic[data-state="transcribing"] {
+.voice-mic[data-state="listening"], .voice-mic[data-state="opening"], .voice-mic[data-state="transcribing"], .voice-mic[data-state="handsfree"] {
   color: var(--on-accent); background: var(--accent);
 }
-.voice-mic[data-state="listening"]:hover { color: var(--on-accent); background: var(--accent); filter: brightness(1.08); }
+.voice-mic[data-state="listening"]:hover, .voice-mic[data-state="handsfree"]:hover { color: var(--on-accent); background: var(--accent); filter: brightness(1.08); }
 /* The level ring around the button while listening. */
 .voice-mic::after {
   content: ""; position: absolute; inset: -3px; border-radius: var(--radius-lg); pointer-events: none;
@@ -557,7 +521,7 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / 0.35); }
   opacity: 0; transform: scale(1);
   transition: transform 90ms linear, opacity 160ms ease;
 }
-.voice-mic[data-state="listening"]::after { opacity: calc(0.35 + var(--level, 0) * 0.65); transform: scale(calc(1 + var(--level, 0) * 0.18)); }
+.voice-mic[data-state="listening"]::after, .voice-mic[data-state="handsfree"]::after { opacity: calc(0.35 + var(--level, 0) * 0.65); transform: scale(calc(1 + var(--level, 0) * 0.18)); }
 .voice-mic.nudge { animation: voice-nudge 1.2s ease 2; }
 @keyframes voice-nudge {
   0%, 100% { box-shadow: 0 0 0 0 transparent; }
@@ -577,11 +541,11 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / 0.35); }
 .voice-tip[data-tone="bad"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--border)); }
 .voice-tip > span { flex: 1; min-width: 0; }
 .voice-tip button.link { flex: none; font-size: var(--text-sm); white-space: nowrap; }
-.now-bar .voice-tip .voice-tip-close {
+.now-bar .voice-tip .voice-tip-close, .hf-bar .voice-tip .voice-tip-close {
   flex: none; height: 20px; width: 20px; padding: 0; border: 0; background: none;
   color: var(--faint); font-size: 15px; line-height: 1; border-radius: var(--radius-sm);
 }
-.now-bar .voice-tip .voice-tip-close:hover { color: var(--text); background: var(--hover); }
+.now-bar .voice-tip .voice-tip-close:hover, .hf-bar .voice-tip .voice-tip-close:hover { color: var(--text); background: var(--hover); }
 
 /* The listening orb: calm, breathing, and swelling with the voice, on a veil that lets the chat recede.
    The composer sits above the veil, so the orb never covers the input; nothing here takes clicks. */
@@ -608,16 +572,53 @@ body:has(.voice-orb:not([hidden])) .composer { z-index: var(--z-above-veil); }
   transition: transform 90ms ease-out;
 }
 .voice-caption {
-  grid-area: 2 / 1; margin: 18px 0 0; padding: 5px 11px; border-radius: var(--radius-pill);
+  grid-area: 2 / 1; margin: 18px 0 0; padding: 5px 11px; border-radius: 14px;
   background: color-mix(in srgb, var(--surface) 88%, transparent); border: 1px solid var(--border);
-  color: var(--muted); font-size: var(--text-sm); white-space: nowrap;
+  color: var(--muted); font-size: var(--text-sm); line-height: 1.4; text-align: center;
+  max-width: min(320px, calc(100vw - 48px)); overflow-wrap: anywhere;
 }
 .voice-orb[data-state="opening"] .voice-orb-core, .voice-orb[data-state="transcribing"] .voice-orb-core { opacity: 0.7; }
 .voice-orb[data-state="transcribing"] .voice-orb-halo { animation-duration: 1.4s; }
+/* Hands-free: a quicker breath while a message waits to be sent; the core breathes while a line is said. */
+.voice-orb[data-state="sending"] .voice-orb-halo { animation-duration: 0.9s; }
+.voice-orb[data-state="speaking"] .voice-orb-core { animation: voice-breathe 1.2s ease-in-out infinite; }
 @keyframes voice-breathe { 50% { opacity: 0.6; } }
+/* Hands-free (hands-free.ts): a compact pill just above the input while a session is on (also while the agent
+   works and the chat is in view), with a caption of what is being said. Only the pill and caption take clicks. */
+.hf-bar {
+  position: absolute; left: 10px; right: 10px; bottom: 100%; z-index: var(--z-sticky);
+  display: flex; flex-direction: column; align-items: center; gap: 4px; padding-bottom: 2px; pointer-events: none;
+}
+.hf-pill {
+  pointer-events: auto; display: inline-flex; align-items: center; gap: 7px; max-width: 100%; min-width: 0;
+  padding: 2px 3px 2px 10px; border-radius: var(--radius-pill);
+  background: var(--surface); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.08); font-size: var(--text-sm); color: var(--text);
+}
+.hf-label { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hf-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+.hf-bar[data-phase="sending"] .hf-dot { background: var(--warn); animation-duration: 0.6s; }
+.hf-bar[data-phase="speaking"] .hf-dot { animation-duration: 0.9s; }
+.hf-pill .hf-stop {
+  flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: none;
+  color: var(--muted); font-size: 15px; line-height: 1;
+}
+.hf-pill .hf-stop:hover { background: var(--hover); color: var(--text); }
+.hf-caption {
+  pointer-events: auto; margin: 0; max-width: 100%; padding: 4px 10px; border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface) 94%, transparent); border: 1px solid var(--border);
+  color: var(--muted); font-size: var(--text-sm); line-height: 1.4; text-align: center; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+/* With the orb in view its caption carries the words. */
+body:has(.voice-orb:not([hidden])) .hf-caption { display: none; }
+
 @media (prefers-reduced-motion: reduce) {
+  .hf-dot { animation: none; }
   .voice-orb { backdrop-filter: none; }
   .voice-orb-halo, .voice-orb-core { animation: none; transform: none; transition: none; }
   .voice-mic::after { transition: none; transform: none; }
   .voice-mic.nudge { animation: none; outline: 2px solid var(--accent); }
 }
+/* A voice tip in the hands-free bar (hands-free.ts): in the column above the pill instead of floating over it. */
+.hf-bar .voice-tip.hf-note { position: static; pointer-events: auto; max-width: 100%; }

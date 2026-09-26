@@ -7,6 +7,7 @@ import {
   formValues,
   nextTab,
   parseForm,
+  sectionFromHash,
   settingsView,
   TABS,
   tabFromHash,
@@ -50,7 +51,11 @@ describe("tabs", () => {
   it("maps hashes and aliases to tabs", () => {
     expect(tabFromHash("#ai")).toBe("ai");
     expect(tabFromHash("AI")).toBe("ai");
-    expect(tabFromHash("#jev")).toBe("speed");
+    // Speed (Jev) is part of the AI tab; its old links and a remembered "speed" land there.
+    expect(tabFromHash("#jev")).toBe("ai");
+    expect(tabFromHash("#speed")).toBe("ai");
+    expect(tabFromHash("speed")).toBe("ai");
+    expect(tabFromHash("#voice")).toBe("ai");
     expect(tabFromHash("#vault")).toBe("logins");
     expect(tabFromHash("#brain")).toBe("ai");
     // API keys have their own tab (deep link #keys); billing still lands on Account.
@@ -62,7 +67,7 @@ describe("tabs", () => {
     expect(tabFromHash(null)).toBeNull();
   });
   it("arrow keys move and wrap; Home and End go to the ends; other keys do nothing", () => {
-    expect(TABS.map((t) => t.label)).toEqual(["Account", "API keys", "AI", "Speed", "Tasks", "Site logins", "Advanced"]);
+    expect(TABS.map((t) => t.label)).toEqual(["Account", "API keys", "AI", "Tasks", "Site logins", "Advanced"]);
     expect(nextTab("account", "ArrowRight")).toBe("keys");
     expect(nextTab("keys", "ArrowRight")).toBe("ai");
     expect(nextTab("ai", "ArrowLeft")).toBe("keys");
@@ -71,6 +76,13 @@ describe("tabs", () => {
     expect(nextTab("tasks", "Home")).toBe("account");
     expect(nextTab("tasks", "End")).toBe("advanced");
     expect(nextTab("tasks", "a")).toBeNull();
+  });
+  it("sectionFromHash: the section a link names inside its tab (Jev, Voice), else none", () => {
+    expect(sectionFromHash("#jev")).toBe("jev-group");
+    expect(sectionFromHash("#speed")).toBe("jev-group");
+    expect(sectionFromHash("#voice")).toBe("voice-group");
+    expect(sectionFromHash("#ai")).toBeNull();
+    expect(sectionFromHash("")).toBeNull();
   });
 });
 

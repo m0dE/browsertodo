@@ -2,7 +2,7 @@
 // matches one of its names (or `when(t)` says so) at every panel size and colour scheme. `t` has the
 // size's browser context and label, the checks (checks.mjs) and the panel helpers below.
 import { join } from "node:path";
-import { installChromeStub } from "./chrome-stub.mjs";
+import { installChromeStub, installVoiceFakes } from "./chrome-stub.mjs";
 import { EMAIL_ANSWER, scenario, SHORTCUT_LABEL, SUGGESTION, thumbnail, VOICE_SHORTCUT_LABEL } from "./scenarios.mjs";
 
 export const SIZES = [
@@ -1039,7 +1039,7 @@ export const PANEL_CASES = [
             dy: Math.abs((b.top + b.bottom) / 2 - (tab.top + tab.bottom) / 2),
             tabH: tab.height, shown, text: btn.textContent,
             composer: document.getElementById("composer").hidden,
-            acct: (() => { const d = document.getElementById("acct"); const shown = (id) => getComputedStyle(document.getElementById(id)).display !== "none"; return !d.hidden && !d.hasAttribute("data-signed-in") && shown("acct-anon") && shown("acct-login") && shown("acct-open-settings") && !shown("acct-signout") && !shown("acct-who"); })(),
+            acct: (() => { const d = document.getElementById("acct"); const shown = (sel) => getComputedStyle(d.querySelector(sel)).display !== "none"; return !d.hidden && !d.hasAttribute("data-signed-in") && shown(".acct-anon") && shown("#acct-login") && shown("#acct-open-settings") && !shown("#acct-signout") && !shown(".acct-who"); })(),
           };
         });
         if (cta.text !== "Log in") fail(`login button says "${cta.text}"`);
@@ -1100,7 +1100,7 @@ export const PANEL_CASES = [
         await p.waitForSelector("#acct[open] .acct-pop");
         const pop = await p.evaluate(() => {
           const r = document.querySelector("#acct .acct-pop").getBoundingClientRect();
-          return { left: r.left, right: r.right, email: document.getElementById("acct-email").textContent, plan: document.getElementById("acct-plan").textContent };
+          return { left: r.left, right: r.right, email: document.querySelector("#acct .acct-email").textContent, plan: document.querySelector("#acct .acct-plan").textContent };
         });
         if (pop.left < 0 || pop.right > size.w) fail(`account menu off screen ${JSON.stringify(pop)}`);
         if (pop.email !== "ada.lovelace@example.com" || pop.plan !== "Plus plan · $14.21 usage credit") fail(`account menu ${JSON.stringify(pop)}`);
@@ -1164,7 +1164,7 @@ export const PANEL_CASES = [
         await checkLayout(p, `${kind} ${label}`);
         await shoot(p, name, size, scheme);
         // The account menu says what Free lacks.
-        const plan = await p.evaluate(() => document.getElementById("acct-plan").textContent);
+        const plan = await p.evaluate(() => document.querySelector("#acct .acct-plan").textContent);
         if (plan !== "Free plan, no TODO list · $0.00 usage credit") fail(`account menu plan "${plan}"`);
         // Get a plan: the dashboard's Billing page, in a new tab; back in the panel, the account is refreshed.
         await p.click("#todo-plan-btn");
@@ -1506,11 +1506,11 @@ export const PANEL_CASES = [
         await waitVoice(p, "idle");
         if ((await p.inputValue("#now-text")) !== "On LinkedIn:") fail(`Esc left "${await p.inputValue("#now-text")}"`);
 
-        // The voice shortcut starts listening (the panel tells the background, so the next press stops); Enter stops,
+        // Dictating (the mic): the panel tells the background, so the voice shortcut reaches it; Enter stops,
         // finishes the text and sends it like a typed message.
         await p.fill("#now-text", "");
         await p.evaluate(() => (window.__voiceClips = 0));
-        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await p.click(mic);
         await waitVoice(p, "listening");
         if (!(await p.evaluate(() => window.__portSent.some((m) => m.type === "panel.listening" && m.listening === true)))) fail("listening not reported to the background");
         await p.waitForFunction(() => document.getElementById("now-text").value.length > 0, null, { timeout: 15_000 });
@@ -1522,8 +1522,9 @@ export const PANEL_CASES = [
         await waitVoice(p, "idle");
         if ((await p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.listening").at(-1)?.listening)) !== false) fail("stopping not reported to the background");
 
-        // Pressed again while listening, the voice shortcut stops and sends (it does not just stop, as the mic does).
-        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        // The voice shortcut while dictating stops and sends (it does not just stop, as the mic does); it starts
+        // hands-free voice only when nothing is being dictated (see the hands-free case).
+        await p.click(mic);
         await waitVoice(p, "listening");
         await p.waitForFunction(() => document.getElementById("now-text").value.length > 0, null, { timeout: 15_000 });
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
@@ -1555,6 +1556,200 @@ export const PANEL_CASES = [
         await checkLayout(p, `voice-permission ${label}`);
         await shoot(p, "panel-voice-permission", size, scheme);
         reportErrors(p, `voice-permission ${label}`);
+        await p.close();
+      }
+    },
+  },
+  // Hands-free voice (the voice shortcut): the orb and the pill while listening, "Sending…" with the utterance in the
+  // box, the pill while the agent works, a spoken line with its caption; Realtime's one-time cost notice, the
+  // narrator speaking and its send_to_agent starting a task; the fallback note when Realtime is unavailable.
+  {
+    names: [
+      "panel-handsfree-listening",
+      "panel-handsfree-sending",
+      "panel-handsfree-speaking",
+      "panel-handsfree-working",
+      "panel-handsfree-cost",
+      "panel-handsfree-narrator",
+      "panel-handsfree-fallback",
+    ],
+    async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors, base, want }) {
+      await ctx.grantPermissions(["microphone"], { origin: base });
+      const phase = (p) => p.evaluate(() => (document.querySelector(".hf-bar:not([hidden])") ? document.querySelector(".hf-bar").dataset.phase : "off"));
+      /** Waits for the hands-free phase; on timeout says what the panel shows instead. */
+      const waitPhase = (p, wanted, timeout = 20_000) =>
+        p.waitForFunction((w) => document.querySelector(".hf-bar:not([hidden])")?.dataset.phase === w, wanted, { timeout }).catch(async (err) => {
+          const seen = await p.evaluate(() => ({
+            phase: document.querySelector(".hf-bar")?.dataset.phase,
+            hidden: document.querySelector(".hf-bar")?.hidden,
+            pill: document.querySelector(".hf-label")?.textContent,
+            tip: document.querySelector(".voice-tip:not([hidden])")?.textContent,
+          }));
+          throw new Error(`waiting for hands-free "${wanted}": ${JSON.stringify(seen)} (${err.message.split("\n")[0]})`);
+        });
+      const pillText = (p) => p.textContent(".hf-label");
+      /** The pill sits inside the panel, just above the input, without covering it. */
+      const pillCheck = (p) =>
+        p.evaluate(() => {
+          const pill = document.querySelector(".hf-pill").getBoundingClientRect();
+          const box = document.querySelector(".now").getBoundingClientRect();
+          const out = [];
+          if (pill.left < 0 || pill.right > window.innerWidth) out.push("pill off screen");
+          if (pill.bottom > box.top + 1) out.push(`pill covers the input (${Math.round(pill.bottom)} > ${Math.round(box.top)})`);
+          return out;
+        });
+      /** The background's state with `session` running in tab 1 (pushed as the runner would). */
+      const pushRunning = (p, session) =>
+        p.evaluate((s) => {
+          const st = window.__data.state;
+          window.__push({ type: "state", state: { ...st, running: s, runningSessions: [s], tabChats: { 1: s.sessionId }, runningTabs: { [s.sessionId]: [1] } } });
+        }, session);
+      const newSession = (title) => ({ sessionId: "s-new", source: "adhoc", title, instructions: title, brain: "claude-api", jev: true, model: "claude-sonnet-5", startedAt: new Date().toISOString() });
+      const spokenLast = (p) => p.evaluate(() => window.__spoken.at(-1));
+
+      // Standard: listening -> sending -> the task starts -> a line is said -> working -> the result is said -> stopped.
+      if (["listening", "sending", "speaking", "working"].some((n) => want(`panel-handsfree-${n}`, size, scheme))) {
+        const p = await openPanel(ctx, "account", ".chat-empty", { edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
+        await p.evaluate(() => (window.__ttsHold = true));
+        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await waitPhase(p, "listening");
+        if ((await pillText(p)) !== "Hands-free · listening") fail(`listening pill "${await pillText(p)}"`);
+        if (!(await p.evaluate(() => !document.querySelector(".voice-orb").hidden))) fail("no orb while hands-free listens");
+        if ((await p.getAttribute("#now-actions .voice-mic", "data-state")) !== "handsfree") fail("the mic does not show hands-free");
+        if (!(await p.evaluate(() => window.__portSent.some((m) => m.type === "panel.listening" && m.listening === true)))) fail("hands-free not reported to the background");
+        if (await p.evaluate(() => window.__requests.some((r) => r.type === "voice.realtime"))) fail("Standard asked for the realtime relay");
+        await checkLayout(p, `handsfree-listening ${label}`);
+        const pl = await pillCheck(p);
+        if (pl.length) fail(`listening pill: ${pl.join("; ")}`);
+        await shoot(p, "panel-handsfree-listening", size, scheme);
+
+        // The fake microphone talks, then pauses: the utterance waits in "Sending…" with its words in the box.
+        await waitPhase(p, "sending", 25_000);
+        if ((await pillText(p)) !== "Sending… (say “cancel” or Esc)") fail(`sending pill "${await pillText(p)}"`);
+        if (!/^Open Gmail/.test(await p.inputValue("#now-text"))) fail(`sending: box "${await p.inputValue("#now-text")}"`);
+        await shoot(p, "panel-handsfree-sending", size, scheme);
+        await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.adhoc"), null, { timeout: 5000 });
+        const sent = await p.evaluate(() => window.__requests.find((r) => r.type === "run.adhoc").instructions);
+        if (!/^Open Gmail/.test(sent)) fail(`hands-free sent "${sent}"`);
+
+        // The task runs: its short plan is said (with a caption), then the pill stays while it works.
+        await pushRunning(p, newSession(sent));
+        await p.evaluate(() =>
+          window.__push({ type: "event", event: { type: "assistant_text", text: "I'll open Gmail and read your newest email. Starting now.", ts: new Date().toISOString(), sessionId: "s-new" } }),
+        );
+        await waitPhase(p, "speaking");
+        if ((await spokenLast(p)) !== "I'll open Gmail and read your newest email.") fail(`said "${await spokenLast(p)}"`);
+        if ((await p.textContent(".hf-caption")) !== "I'll open Gmail and read your newest email.") fail(`caption "${await p.textContent(".hf-caption")}"`);
+        if (!(await p.evaluate(() => document.querySelector(".voice-orb").hidden))) fail("the orb still covers the chat after sending");
+        await checkLayout(p, `handsfree-speaking ${label}`);
+        await shoot(p, "panel-handsfree-speaking", size, scheme);
+        await p.evaluate(() => window.__ttsRelease());
+        await waitPhase(p, "working");
+        if ((await pillText(p)) !== "Hands-free · listening while it works") fail(`working pill "${await pillText(p)}"`);
+        await p.evaluate(() => {
+          const ev = (e) => window.__push({ type: "event", event: { ...e, ts: new Date().toISOString(), sessionId: "s-new" } });
+          ev({ type: "tool_call", id: "1", name: "navigate", args: { url: "https://mail.google.com/mail/u/0/#inbox" } });
+          ev({ type: "tool_result", id: "1", name: "navigate", text: "Opened https://mail.google.com/mail/u/0/#inbox (title: Inbox)" });
+        });
+        await waitPhase(p, "speaking");
+        if ((await spokenLast(p)) !== "Opening mail.google.com") fail(`milestone "${await spokenLast(p)}"`);
+        await p.evaluate(() => window.__ttsRelease());
+        await waitPhase(p, "working");
+        const wl = await pillCheck(p);
+        if (wl.length) fail(`working pill: ${wl.join("; ")}`);
+        await checkLayout(p, `handsfree-working ${label}`);
+        await shoot(p, "panel-handsfree-working", size, scheme);
+
+        // The result is said in the agent's own spoken words, not the long answer.
+        await p.evaluate(() => (window.__ttsHold = false));
+        await p.evaluate(() => {
+          const at = new Date().toISOString();
+          window.__push({ type: "event", event: { type: "assistant_text", text: "You have **1 new email** from Sarah: dinner moved to 8.", ts: at, sessionId: "s-new" } });
+          window.__push({ type: "event", event: { type: "task_end", outcome: "done", summary: "Read the newest email", spoken: "Sarah says dinner moved to eight.", ts: at, sessionId: "s-new" } });
+        });
+        await p.waitForFunction(() => window.__spoken.at(-1) === "Sarah says dinner moved to eight.");
+        if (await p.evaluate(() => window.__spoken.some((l) => /\*\*/.test(l)))) fail("a Markdown answer was read out");
+
+        // The shortcut again ends it: the pill goes, the background hears the mic is off.
+        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await p.waitForFunction(() => document.querySelector(".hf-bar").hidden);
+        if ((await p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.listening").at(-1)?.listening)) !== false) fail("hands-free end not reported to the background");
+        if ((await p.getAttribute("#now-actions .voice-mic", "data-state")) !== "idle") fail("the mic still shows hands-free");
+        reportErrors(p, `handsfree ${label}`);
+        await p.close();
+      }
+
+      // Realtime: the cost notice the first time, the narrator talking (caption), and its send_to_agent starting a task.
+      if (want("panel-handsfree-cost", size, scheme) || want("panel-handsfree-narrator", size, scheme)) {
+        const p = await openPanel(ctx, "account", ".chat-empty", { edit: (d) => (d.state.settings.realtimeCostNoticed = false), init: [installVoiceFakes] });
+        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await waitPhase(p, "listening");
+        await p.waitForSelector(".voice-tip:not([hidden])");
+        const tip = await p.textContent(".voice-tip:not([hidden])");
+        if (!/Realtime voice uses about 5¢ of usage credit a minute \(Standard: 0\.067¢ of usage credit a minute\)\./.test(tip) || !/Use Standard/.test(tip)) fail(`cost notice "${tip}"`);
+        if (!(await p.evaluate(() => window.__requests.some((r) => r.type === "settings.save" && r.settings.realtimeCostNoticed === true)))) fail("the cost notice is not remembered");
+        const rt = await p.evaluate(() => ({ protocols: window.__rt.protocols, sent: window.__rt.sent.map((e) => e.type), first: window.__rt.sent[0] }));
+        if (JSON.stringify(rt.protocols) !== JSON.stringify(["browsertodo", "bt.tok"])) fail(`subprotocols ${JSON.stringify(rt.protocols)}`);
+        if (rt.first?.type !== "session.update" || rt.first.session.model !== undefined) fail(`first event ${JSON.stringify(rt.first)?.slice(0, 120)}; sent ${rt.sent.slice(0, 5)}`);
+        const covered = await p.evaluate(() => {
+          const pill = document.querySelector(".hf-pill").getBoundingClientRect();
+          const note = document.querySelector(".hf-note").getBoundingClientRect();
+          return note.bottom > pill.top + 1;
+        });
+        if (covered) fail("the cost notice covers the pill");
+        await checkLayout(p, `handsfree-cost ${label}`);
+        await shoot(p, "panel-handsfree-cost", size, scheme);
+        await p.click(".voice-tip:not([hidden]) .voice-tip-close");
+
+        // The narrator says hello: its words under the orb while its audio plays.
+        await p.evaluate(() => {
+          const pcm = btoa(String.fromCharCode(...new Uint8Array(24_000 * 2 * 1.5)));
+          window.__rt.emit({ type: "response.created", response: { id: "r1" } });
+          window.__rt.emit({ type: "response.output_audio_transcript.delta", item_id: "a1", delta: "Hi! What should I do?" });
+          window.__rt.emit({ type: "response.output_audio.delta", item_id: "a1", response_id: "r1", delta: pcm });
+        });
+        await waitPhase(p, "speaking");
+        if ((await p.textContent(".voice-caption")) !== "Hi! What should I do?") fail(`narrator caption "${await p.textContent(".voice-caption")}"`);
+        await shoot(p, "panel-handsfree-narrator", size, scheme);
+
+        // The user asks; the narrator hands it to the agent: after the sending window it goes out as a new task.
+        await p.evaluate(() => {
+          window.__rt.emit({ type: "response.done", response: { id: "r1", status: "completed", output: [] } });
+          window.__rt.emit({ type: "response.created", response: { id: "r2" } });
+          window.__rt.emit({ type: "response.function_call_arguments.done", call_id: "c1", name: "send_to_agent", arguments: JSON.stringify({ text: "Open Gmail and read my newest email" }) });
+        });
+        await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.adhoc"), null, { timeout: 5000 });
+        const sent = await p.evaluate(() => window.__requests.find((r) => r.type === "run.adhoc").instructions);
+        if (sent !== "Open Gmail and read my newest email") fail(`send_to_agent sent "${sent}"`);
+        const output = await p.evaluate(() => window.__rt.sent.find((e) => e.item?.type === "function_call_output")?.item.output);
+        if (!/^Sent to the agent/.test(output ?? "")) fail(`tool output "${output}"`);
+
+        // The chat's events reach the narrator as notes; the result asks it to reply.
+        await pushRunning(p, newSession(sent));
+        await p.evaluate(() =>
+          window.__push({ type: "event", event: { type: "task_end", outcome: "done", summary: "Read the newest email", spoken: "Sarah says dinner moved to eight.", ts: new Date().toISOString(), sessionId: "s-new" } }),
+        );
+        await p.waitForFunction(() => window.__rt.sent.some((e) => e.type === "conversation.item.create" && /Sarah says dinner moved to eight/.test(e.item?.content?.[0]?.text ?? "")));
+        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await p.waitForFunction(() => window.__rt.closedWith === 1000);
+        reportErrors(p, `handsfree-realtime ${label}`);
+        await p.close();
+      }
+
+      // Realtime unavailable on the server: one line, and Standard takes over.
+      if (want("panel-handsfree-fallback", size, scheme)) {
+        const p = await openPanel(ctx, "account", ".chat-empty", { init: [installVoiceFakes, () => (window.__rtMode = "unavailable")] });
+        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await waitPhase(p, "listening");
+        await p.waitForSelector(".voice-tip:not([hidden])");
+        const tip = await p.textContent(".voice-tip:not([hidden])");
+        if (!/Realtime voice isn't available right now, so this uses Standard voice\./.test(tip)) fail(`fallback note "${tip}"`);
+        // Standard is listening: the utterance goes through Whisper (voice.transcribe).
+        await p.waitForFunction(() => window.__requests.some((r) => r.type === "voice.transcribe"), null, { timeout: 15_000 });
+        if ((await phase(p)) === "off") fail("hands-free ended instead of falling back");
+        await checkLayout(p, `handsfree-fallback ${label}`);
+        await shoot(p, "panel-handsfree-fallback", size, scheme);
+        reportErrors(p, `handsfree-fallback ${label}`);
         await p.close();
       }
     },

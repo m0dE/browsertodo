@@ -64,6 +64,8 @@ export interface TaskRunResult {
   reason?: string;
   /** The agent's proposed next request for the user (task_* `suggestion`), offered faded in the chat's input box. */
   suggestion?: string;
+  /** The outcome in one or two spoken sentences (task_* `spoken`), read aloud in hands-free voice. */
+  spoken?: string;
   logPath?: string;
 }
 

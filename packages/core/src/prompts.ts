@@ -1,5 +1,5 @@
 /** System prompt and per-task prompt for both brains. */
-import { MAX_ACT_STEPS, MAX_SUGGESTION_CHARS, SUGGESTION_NEVER, toolDescription, xProfileUrl, type AgentTask, type ToolName, type UserTab } from "@browsertodo/shared";
+import { MAX_ACT_STEPS, MAX_SPOKEN_CHARS, MAX_SUGGESTION_CHARS, SUGGESTION_NEVER, toolDescription, xProfileUrl, type AgentTask, type ToolName, type UserTab } from "@browsertodo/shared";
 
 /** Framing of a follow-up message (the next turn of a conversation), so the agent knows it continues the same conversation. */
 export const FOLLOW_UP_PREFIX = "Next message from the user (same conversation; the browser tab is as you left it): ";
@@ -26,6 +26,13 @@ const SUGGESTION_RULE = [
   `the request in the user's own words, a short imperative of at most ${MAX_SUGGESTION_CHARS} characters (e.g. "Reply to Jordan and say I'll sign by Thursday", "Open the verification link", "I've signed in, go on").`,
   "It is shown faded in the user's input box and runs only if they accept and send it. Omit it when no next step is clearly likely; never pad it with a generic offer.",
   `${SUGGESTION_NEVER}.`,
+].join(" ");
+
+/** The line hands-free voice reads aloud when a turn ends (task_* `spoken`). */
+const SPOKEN_RULE = [
+  "In every task_complete, task_fail or task_pause call, also give `spoken`: the outcome, or the question the user must answer, as one or two short sentences in natural speech,",
+  `at most ${MAX_SPOKEN_CHARS} characters, the way you would say it to them out loud (the user may be listening, not reading).`,
+  "No Markdown, lists, URLs or IDs; name the key facts only (e.g. \"Done. You have four unread emails; Jordan needs your signature by Friday.\").",
 ].join(" ");
 
 /**
@@ -84,6 +91,7 @@ export function buildSystemPrompt(opts: { tools: ToolName[]; jev: boolean; follo
     "Do only what the task asks. Do not like, follow, reply or post anything else.",
     `Finish by calling exactly one of task_complete, task_fail or task_pause, then stop. For questions and information tasks, first write the answer as message text, then call task_complete with a one-line summary. When you create a post, include its URL in task_complete. ${POST_URL_RULE}`,
     SUGGESTION_RULE,
+    SPOKEN_RULE,
   );
 
   const prompt = `${intro}

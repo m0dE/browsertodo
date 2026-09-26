@@ -288,6 +288,11 @@ describe("UiRouter: account", () => {
       createKey: vi.fn(async (name: string, role: string) => ({ id: "k1", name, role, key: "bt_new" })),
       revokeKey: vi.fn(async (_id: string) => {}),
       transcribe: vi.fn(async (wav: Uint8Array, _opts: unknown) => ({ text: `heard ${wav.length} bytes` })),
+      voiceEngines: vi.fn(async () => ({ engines: [], default: "standard" as const })),
+      realtimeSession: vi.fn(async () => {
+        if (!view.signedIn) throw new NotSignedInError();
+        return { apiBase: "https://api.test", token: "tok" };
+      }),
     };
     const accountTodo = {
       kind: "account" as const,
@@ -359,6 +364,31 @@ describe("UiRouter: account", () => {
     });
     t.account.transcribe.mockRejectedValueOnce(new NotSignedInError());
     expect(await t.req({ type: "voice.transcribe", wav, speechMs: 900 })).toMatchObject({ error: { kind: "signed-out" } });
+  });
+});
+
+describe("UiRouter: hands-free voice", () => {
+  it("voice.engines: the account server's list; a failure comes back as data", async () => {
+    const t = setup();
+    expect(await t.req({ type: "voice.engines" })).toEqual({ error: "Accounts are not available" });
+  });
+
+  it("voice.realtime: the relay's wss address (with the chat) and the session token; signed out as data", async () => {
+    const t = setup();
+    const view = { signedIn: true };
+    t.deps.account = {
+      voiceEngines: vi.fn(async () => {
+        throw new Error("Couldn't reach the account server");
+      }),
+      realtimeSession: vi.fn(async () => {
+        if (!view.signedIn) throw new NotSignedInError();
+        return { apiBase: "https://api.test", token: "tok" };
+      }),
+    } as never;
+    expect(await t.req({ type: "voice.realtime", sessionId: "s1" })).toEqual({ url: "wss://api.test/v1/ai/realtime?session=s1", token: "tok" });
+    expect(await t.req({ type: "voice.engines" })).toEqual({ error: "Couldn't reach the account server" });
+    view.signedIn = false;
+    expect(await t.req({ type: "voice.realtime" })).toEqual({ error: { kind: "signed-out", message: "Log in to use voice.", fatal: true } });
   });
 });
 

@@ -14,6 +14,7 @@ import type {
   SessionInfo,
   StampedAgentEvent,
 } from "@browsertodo/shared";
+import type { RealtimeTicketResult, VoiceEnginesResult } from "./voice/realtime-access.js";
 import type { VoiceClipRequest, VoiceTranscribeResult } from "./voice/transcribe.js";
 import type { ApiKeyInfo, CreatedApiKey, CreditInfo, KeyRole, PlanId, PlanInfo } from "./account/types.js";
 
@@ -202,7 +203,11 @@ export type UiRequest =
   /** Erase every saved login and the passphrase (the only way out of a forgotten passphrase). */
   | { type: "vault.reset" }
   /** Voice input: one clip of the live dictation to text, with the signed-in account (see voice/transcribe.ts). */
-  | ({ type: "voice.transcribe" } & VoiceClipRequest);
+  | ({ type: "voice.transcribe" } & VoiceClipRequest)
+  /** Hands-free voice: the engines and what a minute of each costs (the account server's list). */
+  | { type: "voice.engines" }
+  /** Realtime voice: where to connect and the token to offer (sessionId: the chat, recorded with the usage). */
+  | { type: "voice.realtime"; sessionId?: string };
 
 export type UiResponse<T = unknown> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -265,6 +270,8 @@ export interface UiResults {
   "vault.reset": { ok: boolean };
   /** Failures come back as data (plan, credit, ...), not as a failed request. */
   "voice.transcribe": VoiceTranscribeResult;
+  "voice.engines": VoiceEnginesResult;
+  "voice.realtime": RealtimeTicketResult;
 }
 
 /** Pushed by the background on the UI port. */
@@ -278,7 +285,7 @@ export type UiPush =
    * `draft`: the text the box had before the shortcut recreated the panel.
    */
   | { type: "panel.focus"; draft?: string }
-  /** The voice shortcut: start voice input, or (listening) stop and send. */
+  /** The voice shortcut: hands-free voice on or off (a dictation from the mic button is stopped and sent). */
   | { type: "panel.voice" };
 
 /** Typed helper for UI pages. */

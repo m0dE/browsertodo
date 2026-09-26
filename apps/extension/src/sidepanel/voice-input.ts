@@ -3,8 +3,9 @@
  * orb in the middle of the panel, and the keys.
  *
  * - Click toggles listening; holding the button (push-to-talk) stops when
- *   let go. The voice shortcut (panel-command.ts) starts listening, and
- *   pressed again stops and sends.
+ *   let go. The voice shortcut (panel-command.ts) starts a hands-free
+ *   session instead (hands-free.ts), which shows itself on this button and
+ *   orb; pressed again, or the button clicked, it ends.
  * - The text streams into the box while you speak (Dictation), after what
  *   you had typed (VoiceDraft). Enter stops, finishes the text and sends it
  *   the way Enter always does; Esc cancels and removes the voice text.
@@ -22,10 +23,10 @@ import type { ComposerView } from "./composer.js";
 import { FIXES } from "./error-help.js";
 import { h, restartAnimation } from "../ui/dom.js";
 
-/** What the mic button shows. */
-export type VoiceUiState = "locked" | "idle" | "opening" | "listening" | "transcribing";
+/** What the mic button shows ("handsfree": a hands-free session is on). */
+export type VoiceUiState = "locked" | "idle" | "opening" | "listening" | "transcribing" | "handsfree";
 
-/** Listening, starting to, or finishing the text: the voice shortcut then stops and sends. */
+/** Dictating (the mic button), starting to, or finishing the text: the voice shortcut then stops and sends. */
 export const isListening = (state: VoiceUiState): boolean => state === "listening" || state === "transcribing" || state === "opening";
 
 /** From the plan catalog, e.g. "Voice needs the Plus or Pro plan". */
@@ -36,6 +37,7 @@ export const FINISHING_CAPTION = "Finishing…";
 /** The mic button's tooltip and accessible name. */
 export function micButtonTitle(state: VoiceUiState, shortcut: string | null): string {
   if (state === "locked") return LOCKED_TEXT;
+  if (state === "handsfree") return shortcut ? `Stop hands-free · ${shortcut}` : "Stop hands-free";
   const base = state === "listening" || state === "opening" ? "Stop voice" : "Voice";
   return shortcut ? `${base} · ${shortcut}` : base;
 }
@@ -85,14 +87,46 @@ export interface VoiceInputDeps {
   host: HTMLElement;
 }
 
+/** How a hands-free session shows on the mic button and the orb (null: none is on). */
+export interface HandsFreeLook {
+  /** The orb in the middle of the panel (the pill carries the session once something was sent). */
+  orb: boolean;
+  /** Under the orb. */
+  caption: string;
+  /** "sending" / "speaking" change the orb's rhythm. */
+  phase: string;
+}
+
+/** What voice input needs of the hands-free session (hands-free.ts). */
+export interface HandsFreeControl {
+  readonly active: boolean;
+  start(): void;
+  stop(reason: "shortcut" | "button"): void;
+}
+
 export interface VoiceInput {
   /** The account may use voice (signed in, a plan with voice in good standing). */
   setAllowed(allowed: boolean): void;
   /** The voice shortcut's label for the tooltip (null: none assigned). */
   setShortcut(label: string | null): void;
-  /** The voice shortcut: start listening, or stop and send what was said; locked, it points at the button and says why. */
+  /**
+   * The voice shortcut: start or end a hands-free session (a dictation started with the button is
+   * stopped and sent instead); locked, it points at the button and says why.
+   */
   shortcut(): void;
   readonly state: VoiceUiState;
+  /** Wires the hands-free session in (the shortcut and the button then start and end it). */
+  attachHandsFree(control: HandsFreeControl): void;
+  /** The hands-free session's look on the button and the orb. */
+  showHandsFree(look: HandsFreeLook | null): void;
+  /** The microphone level (the hands-free session's), 0..1. */
+  setLevel(level: number): void;
+  /** Shows (or clears) the message under the mic button. */
+  showTip(tip: VoiceTip | null): void;
+  /** Tips show in `slot` instead (the hands-free bar), or under the mic again with null. */
+  setTipSlot(slot: HTMLElement | null): void;
+  /** True when the microphone may be used; otherwise asks for it (the permission page) and says so. */
+  ensureMic(): Promise<boolean>;
 }
 
 const MIC_ICON =
@@ -111,6 +145,8 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
   /** This press started listening (push-to-talk if held). */
   let pressStartedAt: number | null = null;
   let unwatchMic: (() => void) | null = null;
+  let handsFree: HandsFreeControl | null = null;
+  let hfLook: HandsFreeLook | null = null;
 
   const button = h("button.now-tool.voice-mic", { type: "button", "data-state": ui });
   button.innerHTML = MIC_ICON;
@@ -142,35 +178,49 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
 
   function render(next: VoiceUiState): void {
     ui = next;
-    const title = micButtonTitle(ui, shortcutLabel);
-    button.dataset.state = ui;
+    const shown = hfLook && ui !== "locked" ? "handsfree" : ui;
+    const title = micButtonTitle(shown, shortcutLabel);
+    button.dataset.state = shown;
     button.title = title;
     button.setAttribute("aria-label", title);
-    button.setAttribute("aria-pressed", String(ui === "listening" || ui === "transcribing"));
+    button.setAttribute("aria-pressed", String(ui === "listening" || ui === "transcribing" || !!hfLook));
     const active = isListening(ui);
     if (active !== wasActive) deps.onListening?.(active);
     wasActive = active;
-    orb.hidden = !active;
-    orb.dataset.state = ui;
-    composer.setDictating(active);
-    caption.textContent = ui === "transcribing" ? FINISHING_CAPTION : LISTENING_CAPTION;
-    if (!active) setLevel(0);
+    orb.hidden = !(active || hfLook?.orb);
+    orb.dataset.state = hfLook && !active ? hfLook.phase : ui;
+    composer.setDictating(active || !!hfLook);
+    caption.textContent = hfLook && !active ? hfLook.caption : ui === "transcribing" ? FINISHING_CAPTION : LISTENING_CAPTION;
+    if (!active && !hfLook) setLevel(0);
   }
 
   /** Not listening: ready, or locked without a plan that includes voice. */
   const settle = () => render(allowed ? "idle" : "locked");
 
+  /** Where tips show: under the mic, or the hands-free bar's slot while a session is on (so they never cover its pill). */
+  let tipEl: HTMLElement = tip;
+  let shownTip: VoiceTip | null = null;
+
   function showTip(t: VoiceTip | null): void {
-    tip.replaceChildren();
-    tip.hidden = !t;
+    shownTip = t;
+    tipEl.replaceChildren();
+    tipEl.hidden = !t;
     if (!t) return;
-    tip.dataset.tone = t.tone;
-    tip.append(h("span", null, t.text));
+    tipEl.dataset.tone = t.tone;
+    tipEl.append(h("span", null, t.text));
     if (t.action) {
       const run = t.action.run;
-      tip.append(h("button.link", { type: "button", onclick: () => (showTip(null), run()) }, t.action.label));
+      tipEl.append(h("button.link", { type: "button", onclick: () => (showTip(null), run()) }, t.action.label));
     }
-    tip.append(h("button.voice-tip-close", { type: "button", "aria-label": "Dismiss", onclick: () => showTip(null) }, "×"));
+    tipEl.append(h("button.voice-tip-close", { type: "button", "aria-label": "Dismiss", onclick: () => showTip(null) }, "×"));
+  }
+
+  /** Moves tips (and the one shown) into `slot`, or back under the mic with null. */
+  function setTipSlot(slot: HTMLElement | null): void {
+    const current = shownTip;
+    showTip(null);
+    tipEl = slot ?? tip;
+    showTip(current);
   }
 
   const lockedTip = (): VoiceTip => ({ text: LOCKED_TEXT, tone: "info", action: { label: FIXES.plans.label, run: () => deps.openBilling() } });
@@ -257,21 +307,26 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
     if (ui === "locked") {
       showTip(lockedTip());
       nudge();
-    } else if (ui === "idle") void start();
+    } else if (handsFree?.active) handsFree.stop("button");
+    else if (ui === "idle") void start();
     else if (ui === "listening" || ui === "opening") stop("toggle");
   }
 
-  /** The voice shortcut: like the button, except that stopping sends (the way Enter does); finishing, it waits. */
+  /** The voice shortcut: hands-free on or off; a dictation from the button is stopped and sent (the way Enter does). */
   function shortcut(): void {
-    if (ui === "listening" || ui === "opening") stop("send");
-    else if (ui !== "transcribing") toggle();
+    if (ui === "locked") return toggle();
+    if (ui === "listening" || ui === "opening") return stop("send");
+    if (ui === "transcribing") return;
+    if (!handsFree) return toggle();
+    if (handsFree.active) handsFree.stop("shortcut");
+    else handsFree.start();
   }
 
   // Pointer: a press starts or stops; holding past pushToTalkMs and letting go stops (push-to-talk).
   button.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     e.preventDefault(); // keep the cursor in the box
-    if (ui === "idle") {
+    if (ui === "idle" && !handsFree?.active) {
       pressStartedAt = e.timeStamp;
       void start();
     } else {
@@ -296,7 +351,7 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
       return false;
     }
     if (!dictation) {
-      if (!tip.hidden && tip.dataset.tone === "info" && e.key.length === 1) showTip(null);
+      if (shownTip?.tone === "info" && e.key.length === 1) showTip(null);
       return false;
     }
     if (e.key === "Escape") {
@@ -331,6 +386,21 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
     shortcut,
     get state() {
       return ui;
+    },
+    attachHandsFree(control) {
+      handsFree = control;
+    },
+    showHandsFree(look) {
+      hfLook = look;
+      render(ui);
+    },
+    setLevel,
+    showTip,
+    setTipSlot,
+    async ensureMic() {
+      if ((await deps.mic.permission()) === "granted") return true;
+      await askForMic();
+      return false;
     },
   };
 }

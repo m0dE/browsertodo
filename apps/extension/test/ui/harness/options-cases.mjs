@@ -50,8 +50,39 @@ async function armErase(p, click = (sel) => p.click(sel)) {
 const choosingPassphrase = async (p) =>
   (await p.getAttribute("#vault-pass", "placeholder")) === "Choose a passphrase" && (await p.textContent("#vault-unlock")) === "Set passphrase" && (await shown(p, "#vault-create-note"));
 
+/**
+ * The header is one row: the tabs (scrolling sideways on a narrow page), then the save notice and the account avatar
+ * pinned right. No "Settings" title and no status line. `open`: the account menu is opened for the screenshot.
+ */
+const headerChecks = (p, signedIn) => [
+  ["no title, no status line", async () => (await p.locator(".head h1, #now-using").count()) === 0],
+  ["tabs and avatar on one row", () =>
+    p.evaluate(() => {
+      const tabs = document.getElementById("tabs").getBoundingClientRect();
+      const acct = document.querySelector(".head .acct summary").getBoundingClientRect();
+      return Math.abs(tabs.top + tabs.height / 2 - (acct.top + acct.height / 2)) < 4;
+    })],
+  ["avatar pinned right, inside the page", () =>
+    p.evaluate(() => {
+      const head = document.querySelector(".head").getBoundingClientRect();
+      const acct = document.querySelector(".head .acct summary").getBoundingClientRect();
+      return acct.right <= head.right - 8 && acct.right >= head.right - 40;
+    })],
+  ["no Speed tab", async () => (await p.locator("#tab-speed").count()) === 0],
+  ["menu opens with the account", async () => {
+    await p.click("#menu-acct-btn");
+    const shownItems = await p.locator("#menu-acct-menu button:visible").allTextContents();
+    const who = signedIn ? await p.textContent("#menu-acct-menu .acct-email") : "";
+    return signedIn
+      ? who === "ada.lovelace@example.com" && /Plus plan · \$25\.40 usage credit/.test(await p.textContent("#menu-acct-menu .acct-plan")) && shownItems.join("|") === "Plan & billing|Sign out"
+      : shownItems.join("|") === "Log in with Google" && (await p.locator("#menu-acct-btn .acct-anon").isVisible());
+  }],
+];
+
 /** [name, scenario kind, hash, data edit, checks(page)] */
 export const OPTION_CASES = [
+  ["options-header-signedin", "opt-paid", "#ai", () => {}, (p) => headerChecks(p, true)],
+  ["options-header-signedout", "opt-signedout", "#ai", () => {}, (p) => headerChecks(p, false)],
   ["options-ai-auto", "ok", "#ai", onFree, (p) => [
     ["Auto checked", () => p.isChecked(radio("auto"))],
     ["Auto says what it picks", async () => /picks Local Claude Code/.test(await p.textContent("#auto-pick"))],
@@ -118,15 +149,41 @@ export const OPTION_CASES = [
     ["missing key hint", () => shown(p, "#api-key-missing")],
     ["Save disabled until typed", async () => !(await p.isEnabled("[data-secret=anthropicApiKey] button.primary"))],
   ]],
+  // Jev (it had its own Speed tab): #jev and #speed open the AI tab scrolled to it.
   ["options-speed-on", "ok", "#jev", () => {}, (p) => [
-    ["on the Speed tab", async () => (await p.getAttribute("#tab-speed", "aria-selected")) === "true"],
-    ["hash normalised", async () => (await p.evaluate(() => location.hash)) === "#speed"],
+    ["on the AI tab", async () => (await p.getAttribute("#tab-ai", "aria-selected")) === "true"],
+    ["no Speed tab", async () => (await p.locator("#tab-speed").count()) === 0],
+    ["hash normalised", async () => (await p.evaluate(() => location.hash)) === "#ai"],
+    // Under the sticky tab row, or as far as a short page scrolls.
+    ["scrolled to Jev", () =>
+      eventually(() =>
+        p.evaluate(() => {
+          const top = document.getElementById("jev-group").getBoundingClientRect().top;
+          const atEnd = Math.ceil(window.scrollY + window.innerHeight) >= document.documentElement.scrollHeight;
+          return window.scrollY > 0 && top >= 0 && (Math.abs(top - 56) < 40 || atEnd);
+        }),
+      )],
+    ["order: Brain, Model, Jev, Voice", async () =>
+      (await p.evaluate(() => [...document.querySelectorAll("#panel-ai > .group > h2")].map((e) => e.textContent).join(" | "))) === "Brain | Model | Speed (Jev) | Voice"],
     ["Jev key shown", () => shown(p, "[data-secret=jevApiKey]")],
     ["threshold shown", () => shown(p, "#f-jevThreshold")],
   ]],
   ["options-speed-off", "ok", "#speed", (d) => (d.state.settings.jevEnabled = false), (p) => [
+    ["on the AI tab", async () => (await p.getAttribute("#tab-ai", "aria-selected")) === "true"],
     ["Jev key hidden", async () => !(await shown(p, "[data-secret=jevApiKey]"))],
     ["test hidden", async () => !(await shown(p, "#test-jev"))],
+  ]],
+  // Voice: the two engines with the server's cost a minute, the Standard voice and speed, Test.
+  ["options-voice", "opt-paid", "#voice", () => {}, (p) => [
+    ["on the AI tab", async () => (await p.getAttribute("#tab-ai", "aria-selected")) === "true"],
+    ["Realtime checked by default", () => p.isChecked("input[name=voiceEngine][value=realtime]")],
+    ["names", async () => (await p.locator(".opt[data-voice] .voice-name").allTextContents()).join(" | ") === "Realtime (OpenAI) | Standard"],
+    ["costs from the server", () =>
+      eventually(async () => (await p.locator(".opt[data-voice] .voice-cost").allTextContents()).join(" | ") === "about 5¢ of usage credit a minute | about 0.067¢ of usage credit a minute")],
+    ["cost assumption as tooltip", async () => /speaks for 18 seconds/.test(await p.getAttribute(".opt[data-voice=realtime] .voice-cost", "title"))],
+    ["no plan note on Plus", async () => !(await shown(p, "#voice-note"))],
+    ["voices listed", async () => (await p.locator("#speech-voice option").count()) >= 1],
+    ["speed", async () => (await p.inputValue("#speech-rate")) === "1"],
   ]],
   ["options-tasks", "ok", "#tasks", () => {}, (p) => [
     // Both shortcuts, as Chrome assigned them, each with Change.
@@ -250,6 +307,31 @@ export const OPTION_CASES = [
 ];
 
 export const OPTION_FLOWS = [
+  // Voice: picking Standard and a speed saves them; a stored "speed" tab (the old Speed tab) reopens as AI.
+  {
+    name: "options-voice-choice",
+    size: { w: 1280 },
+    scheme: "light",
+    async run({ openOptions, optChecks }) {
+      const p = await openOptions({ w: 1280, h: 1000 }, "light", "opt-paid", "#voice");
+      const saved = () => p.evaluate(() => window.__requests.filter((r) => r.type === "settings.save").map((r) => r.settings));
+      const checks = [];
+      const check = (what, ok) => checks.push([what, async () => ok]);
+      await p.click("input[name=voiceEngine][value=standard]");
+      check("Standard saved", await eventually(async () => (await saved()).some((s) => s.voiceEngine === "standard")));
+      check("Standard checked after the save", await p.isChecked("input[name=voiceEngine][value=standard]"));
+      await p.fill("#speech-rate", "1.4");
+      await p.dispatchEvent("#speech-rate", "change");
+      check("speed saved", await eventually(async () => (await saved()).some((s) => s.speechRate === 1.4)));
+      await p.selectOption("#speech-voice", { index: 0 });
+      await p.evaluate(() => localStorage.setItem("browsertodo.options.tab", "speed"));
+      await p.goto(p.url().replace(/#.*$/, ""));
+      await p.waitForSelector("#helper-headline:not(:empty)", { state: "attached" });
+      check("a remembered Speed tab opens AI", (await p.getAttribute("#tab-ai", "aria-selected")) === "true");
+      await optChecks(p, "voice choice", checks);
+      await p.ctx.close();
+    },
+  },
   // Interactions (wide, light): tabs by keyboard and hash, reveals, auto-save, keys, model, validation, Jev, sign-in.
   {
     name: "options-validation",
@@ -344,8 +426,8 @@ export const OPTION_FLOWS = [
       check("longest pause below shortest", /at least the shortest/.test(await p.textContent("#err-delayMaxSec")));
       await optShot(p, "options-validation", size, "light");
 
-      // Jev off hides its key; on shows it again.
-      await p.click("#tab-speed");
+      // Jev off hides its key; on shows it again (Jev is on the AI tab).
+      await p.click("#tab-ai");
       await autoSaved(() => p.click("#f-jevEnabled"));
       check("Jev off saved", (await saves()).some((s) => s.jevEnabled === false));
       check("Jev key hidden", !(await shown(p, "[data-secret=jevApiKey]")));

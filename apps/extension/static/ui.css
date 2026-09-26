@@ -158,3 +158,41 @@ button.icon:hover { color: var(--text); background: var(--hover); }
 .dot[data-tone="bad"] { background: var(--bad); }
 
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* A <details> menu (task menus, the account menu): its button and its pop-up. */
+.menu { position: relative; }
+.menu summary {
+  list-style: none; cursor: pointer; color: var(--muted);
+  width: 24px; height: 22px; border-radius: var(--radius-sm);
+  display: grid; place-items: center; font-size: 16px; line-height: 1;
+}
+.menu summary::-webkit-details-marker { display: none; }
+.menu summary:hover, .menu[open] summary { background: var(--hover); color: var(--text); }
+.menu-pop {
+  position: absolute; right: 0; top: 24px; z-index: var(--z-popup);
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.14);
+  padding: 4px; display: flex; flex-direction: column; min-width: 120px;
+}
+.menu-pop button { border: 0; background: none; justify-content: flex-start; padding: 5px 8px; }
+.menu-pop button:hover { background: var(--hover); }
+.menu-pop button.bad { color: var(--bad); }
+
+/* The account avatar and its menu (ui/account-menu.ts), in the side panel's and the options page's header. */
+.menu.acct summary { width: 26px; height: 26px; border-radius: 50%; padding: 0; overflow: hidden; flex: none; }
+.menu.acct summary:hover, .menu.acct[open] summary { background: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+.acct .acct-anon { color: var(--muted); }
+.acct:hover .acct-anon, .acct[open] .acct-anon { color: var(--text); }
+.acct[data-signed-in] .acct-anon, .acct:not([data-signed-in]) .acct-who,
+.acct:not([data-signed-in]) [data-show="signed-in"], .acct[data-signed-in] [data-show="signed-out"] { display: none; }
+.acct-avatar { width: 26px; height: 26px; border-radius: 50%; display: block; object-fit: cover; }
+.acct-initial {
+  width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent); color: var(--on-accent); font-size: var(--text-sm); font-weight: 600;
+}
+.acct-initial:empty { display: none; }
+.acct-pop { top: 30px; min-width: 210px; margin-left: 0; max-width: calc(100vw - 24px); }
+.acct-who { padding: 5px 8px 7px; border-bottom: 1px solid var(--border); margin-bottom: 3px; }
+.acct-email { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-plan { color: var(--muted); font-size: var(--text-sm); }
+.acct-plan[data-tone="warn"] { color: var(--warn); }

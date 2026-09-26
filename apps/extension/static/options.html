@@ -9,15 +9,12 @@
   </head>
   <body>
     <div class="page">
+      <!-- One row, like a navbar: the tabs, the save notice, the account avatar and its menu (options.ts). -->
       <header class="head">
-        <div class="head-row">
-          <h1>Settings</h1>
-          <span id="save-msg" class="save-msg" role="status" aria-live="polite"></span>
-        </div>
-        <p id="now-using" class="now"><span class="dot" id="now-dot"></span><span id="now-text">Loading…</span></p>
+        <div id="tabs" class="tabs" role="tablist" aria-label="Settings sections"></div>
+        <span id="save-msg" class="save-msg" role="status" aria-live="polite"></span>
+        <span id="head-acct"></span>
       </header>
-
-      <div id="tabs" class="tabs" role="tablist" aria-label="Settings sections"></div>
 
       <form id="form" autocomplete="off" novalidate>
         <!-- Account -->
@@ -202,12 +199,9 @@
               </div>
             </div>
           </div>
-        </section>
 
-        <!-- Speed (Jev) -->
-        <section class="panel" id="panel-speed" role="tabpanel" aria-labelledby="tab-speed" tabindex="-1" hidden>
-          <div class="group">
-            <h2 class="group-title">Jev</h2>
+          <div class="group" id="jev-group">
+            <h2 class="group-title">Speed (Jev)</h2>
             <p class="group-hint">Optional. Jev handles simple clicks and typing faster than Claude. Without it, Claude does every step.</p>
             <div class="box">
               <div class="srow">
@@ -230,7 +224,42 @@
               </div></div>
             </div>
           </div>
+
+          <div class="group" id="voice-group">
+            <h2 class="group-title" id="h-voice">Voice</h2>
+            <p class="group-hint">Hands-free voice (<span id="voice-group-key">the voice shortcut</span>): talk to browsertodo while it works; it answers with short spoken summaries.</p>
+            <div class="box options" role="radiogroup" aria-labelledby="h-voice">
+              <div class="opt" data-voice="realtime">
+                <label class="opt-head">
+                  <input type="radio" name="voiceEngine" value="realtime" />
+                  <span class="opt-text"><b class="voice-name"></b><small class="opt-detail voice-detail"></small><small class="voice-cost"></small></span>
+                </label>
+              </div>
+              <div class="opt" data-voice="standard">
+                <label class="opt-head">
+                  <input type="radio" name="voiceEngine" value="standard" />
+                  <span class="opt-text"><b class="voice-name"></b><small class="opt-detail voice-detail"></small><small class="voice-cost"></small></span>
+                </label>
+              </div>
+            </div>
+            <p id="voice-note" class="note" data-tone="warn" role="status" hidden></p>
+            <div class="box" id="speech-box">
+              <div class="srow">
+                <label class="srow-label" for="speech-voice"><b>Standard voice</b><small>What Standard voice (and a fallback from Realtime) sounds like: your browser's voices.</small></label>
+                <div class="srow-control"><select id="speech-voice"></select></div>
+              </div>
+              <div class="srow">
+                <label class="srow-label" for="speech-rate"><b>Speaking speed</b><small>0.5 to 2; 1 is normal.</small></label>
+                <div class="srow-control"><input id="speech-rate" type="number" min="0.5" max="2" step="0.1" /></div>
+              </div>
+              <div class="srow">
+                <div class="srow-label"><b>Hear it</b><small>Says a sample line with this voice and speed.</small></div>
+                <div class="srow-control"><div class="row"><button id="speech-test" type="button" class="small">Test voice</button><span id="speech-test-msg" class="msg" role="status"></span></div></div>
+              </div>
+            </div>
+          </div>
         </section>
+
 
         <!-- Tasks -->
         <section class="panel" id="panel-tasks" role="tabpanel" aria-labelledby="tab-tasks" tabindex="-1" hidden>

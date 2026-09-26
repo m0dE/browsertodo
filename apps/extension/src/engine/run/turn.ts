@@ -242,8 +242,8 @@ export class TurnRunner {
       }
       if (!ok) {
         this.emit(active, { type: "status", text: `Post not verified: ${detail}` });
-        // The agent's follow-up assumed the post went out: not offered.
-        const { suggestion: _unverified, ...unverified } = result;
+        // The agent's follow-up and spoken line assumed the post went out: neither is offered.
+        const { suggestion: _unverified, spoken: _unverifiedLine, ...unverified } = result;
         return { ...unverified, outcome: "retry", reason: `could not verify the post${detail ? `: ${detail}` : ""}` };
       }
       this.emit(active, { type: "status", text: "Post verified" });

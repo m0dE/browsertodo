@@ -9,6 +9,8 @@ import {
   TRANSCRIBE_PATH,
   TRANSCRIBE_QUERY,
   TranscribeResponse,
+  VOICE_ENGINES_PATH,
+  VoiceEnginesResponse,
   type CreateTaskInput,
   type MediaInfo,
   type UpdateTaskInput,
@@ -124,6 +126,11 @@ export class AccountApi {
 
   uploadMedia(blob: Blob, filename: string): Promise<MediaInfo> {
     return this.http.uploadMedia(blob, filename);
+  }
+
+  /** GET /v1/billing/voice-engines (public): the hands-free voice engines and what a minute of each costs. */
+  voiceEngines(): Promise<VoiceEnginesResponse> {
+    return this.http.json(VoiceEnginesResponse, "GET", VOICE_ENGINES_PATH, undefined, { auth: false });
   }
 
   /** POST /v1/ai/transcribe: a WAV clip to text (voice input; paid plans). */

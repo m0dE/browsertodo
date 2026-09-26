@@ -2,10 +2,12 @@
  * The keyboard shortcuts (the manifest's "commands", see shortcut.ts).
  * OPEN_CHAT_COMMAND opens the side panel of the window and puts the cursor
  * in the chat input; when the panel is already open, it switches it to Chat
- * and focuses the input. VOICE_COMMAND does the same and then starts voice
- * input there; pressed while the panel is listening, it stops and sends
- * what was said (the panel decides: without a plan that includes voice it
- * points at the locked mic button and says why). A listening panel is
+ * and focuses the input. VOICE_COMMAND does the same and then starts a
+ * hands-free session there (sidepanel/hands-free.ts); pressed while the
+ * panel is listening (hands-free, or a dictation from the mic button), it
+ * reaches that panel, which ends the session (or stops and sends the
+ * dictation). The panel decides: without a plan that includes voice it
+ * points at the locked mic button and says why. A listening panel is
  * never recreated: stopping needs no keyboard focus.
  *
  * Chrome counts a command as a user gesture, which sidePanel.open() needs,
@@ -109,7 +111,7 @@ export class PanelCommands {
     return this.panelsOf(windowId).length > 0;
   }
 
-  /** The window's side panel is listening (the voice shortcut then stops and sends). */
+  /** The window's side panel is listening (the voice shortcut then goes to it: hands-free ends, a dictation is sent). */
   listening(windowId: number): boolean {
     return this.panelsOf(windowId).some(([, p]) => p.listening);
   }

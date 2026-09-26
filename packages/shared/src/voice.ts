@@ -85,3 +85,124 @@ export const VOICE_TUNING = {
   /** Holding the mic button at least this long is push-to-talk: letting go stops listening. */
   pushToTalkMs: 400,
 } as const;
+
+// ---- Realtime voice (GET /v1/ai/realtime) ----------------------------------------------------
+// A WebSocket relay to OpenAI's Realtime API: the extension speaks OpenAI Realtime events,
+// the server holds the key, filters what the client may change and meters every response.
+// Contract: docs/BILLING-CONTRACT.md ("Realtime voice"); server: apps/api/src/realtime/.
+
+/** GET: the WebSocket (with Upgrade), or a JSON check of whether it would be accepted (without). */
+export const REALTIME_PATH = "/v1/ai/realtime";
+
+/**
+ * Browsers cannot set headers on a WebSocket, so the session token rides in the subprotocol
+ * list: `new WebSocket(url, [REALTIME_PROTOCOL, REALTIME_TOKEN_PROTOCOL_PREFIX + token])`.
+ * The server selects REALTIME_PROTOCOL (the token is never echoed).
+ */
+export const REALTIME_PROTOCOL = "browsertodo";
+export const REALTIME_TOKEN_PROTOCOL_PREFIX = "bt.";
+
+/** Query parameters of REALTIME_PATH. */
+export const REALTIME_QUERY = {
+  /** Optional chat/run id, recorded with the session's usage (like X-Browsertodo-Session). */
+  session: "session",
+} as const;
+
+/** Limits of one realtime session (the server enforces them). */
+export const REALTIME_LIMITS = {
+  /** Longest session; then it closes with REALTIME_CLOSE.sessionLimit. */
+  maxSessionMs: 30 * 60_000,
+  /**
+   * No activity this long closes the session (REALTIME_CLOSE.idle). Activity: the user
+   * speaking (the server VAD's input_audio_buffer.speech_started), or the client sending
+   * input_audio_buffer.commit, conversation.item.create or response.create. Streaming
+   * silent microphone audio alone is not activity.
+   */
+  idleMs: 5 * 60_000,
+  /** Largest client message; a bigger one closes the session with 1009. */
+  maxClientMessageBytes: 2 * 1024 * 1024,
+  /** Realtime sessions one user may have open at once (another answers 409 / REALTIME_CLOSE.concurrent). */
+  sessionsPerUser: 1,
+} as const;
+
+/**
+ * WebSocket close codes of a realtime session. A refusal before the session starts
+ * (auth, plan, credit, not configured, another session open) also arrives this way on an
+ * upgrade request: the server accepts, sends one `browsertodo.error` event and closes, so
+ * browsers (which cannot read an HTTP refusal) learn why.
+ */
+export const REALTIME_CLOSE = {
+  /** The client closed, or the server closed after the client did. */
+  normal: 1000,
+  /** A client message over REALTIME_LIMITS.maxClientMessageBytes. */
+  tooBig: 1009,
+  /** Not signed in, or the session token is invalid or expired. */
+  auth: 4401,
+  /** Out of usage credit (before the start, or mid-session after a response was charged). */
+  credit: 4402,
+  /** The plan does not include voice. */
+  plan: 4403,
+  /** Idle for REALTIME_LIMITS.idleMs. */
+  idle: 4408,
+  /** Another realtime session of this user is open. */
+  concurrent: 4409,
+  /** REALTIME_LIMITS.maxSessionMs reached. */
+  sessionLimit: 4410,
+  /** OpenAI failed or closed the connection. */
+  upstream: 4500,
+  /** Realtime is unavailable on this server (not configured, or OpenAI refused the server's key). */
+  unavailable: 4503,
+} as const;
+
+/** The server's own event type (every other event is OpenAI's, relayed verbatim). */
+export const REALTIME_ERROR_EVENT = "browsertodo.error";
+
+/** `error` codes of a REALTIME_ERROR_EVENT. */
+export const RealtimeErrorCode = z.enum([
+  "unauthorized",
+  "plan_required",
+  "out_of_credit",
+  "realtime_unavailable",
+  "session_open",
+  "denied",
+  "idle_timeout",
+  "session_limit",
+  "message_too_big",
+  "upstream_error",
+]);
+export type RealtimeErrorCode = z.infer<typeof RealtimeErrorCode>;
+
+/**
+ * `{ type: "browsertodo.error", error, message, ... }`. Extra fields by code: out_of_credit has
+ * `topupUrl`; plan_required has `feature` and `upgradeUrl`; denied has `event_id` (of the
+ * refused client event, when it had one) and is not followed by a close.
+ */
+export const RealtimeErrorEvent = z.looseObject({ type: z.literal(REALTIME_ERROR_EVENT), error: RealtimeErrorCode, message: z.string() });
+export type RealtimeErrorEvent = z.infer<typeof RealtimeErrorEvent>;
+
+/** `error` of a refusal before the session starts (HTTP status for a plain GET, close code for an upgrade). */
+export const REALTIME_UNAVAILABLE_CODE = "realtime_unavailable";
+
+// ---- Voice engines (GET /v1/billing/voice-engines, public) -------------------------------------
+
+export const VOICE_ENGINES_PATH = "/v1/billing/voice-engines";
+export const VoiceEngineId = z.enum(["realtime", "standard"]);
+export type VoiceEngineId = z.infer<typeof VoiceEngineId>;
+
+export const VoiceEngine = z.object({
+  id: VoiceEngineId,
+  name: z.string(),
+  /** The provider model (realtime: the OpenAI model; standard: the speech-to-text model). */
+  model: z.string(),
+  /** Usage credit per minute of conversation, in (fractional) cents, under `assumption`. */
+  approxCentsPerMinute: z.number(),
+  /** What a "minute of conversation" is assumed to contain, in words users can read. */
+  assumption: z.string(),
+  /** False when this server cannot run the engine (e.g. no OpenAI key): clients fall back to the other. */
+  available: z.boolean(),
+});
+export type VoiceEngine = z.infer<typeof VoiceEngine>;
+
+/** 200 of VOICE_ENGINES_PATH. `default`: the engine to use unless the user picked one. */
+export const VoiceEnginesResponse = z.object({ engines: z.array(VoiceEngine), default: VoiceEngineId });
+export type VoiceEnginesResponse = z.infer<typeof VoiceEnginesResponse>;

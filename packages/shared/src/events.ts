@@ -49,8 +49,11 @@ export type AgentEvent =
     }
   /** A message the human typed into the running session. */
   | { type: "user_message"; text: string }
-  /** suggestion: the agent's proposed next request (TaskRunResult.suggestion). */
-  | { type: "task_end"; outcome: TaskOutcome; summary?: string; url?: string; reason?: string; suggestion?: string }
+  /**
+   * suggestion: the agent's proposed next request (TaskRunResult.suggestion);
+   * spoken: the outcome as one or two sentences hands-free voice reads aloud (TaskRunResult.spoken).
+   */
+  | { type: "task_end"; outcome: TaskOutcome; summary?: string; url?: string; reason?: string; suggestion?: string; spoken?: string }
   | { type: "error"; text: string };
 
 /** Element picks of act steps (clicks and typing) in a turn: by Jev, or by Claude naming an index. */

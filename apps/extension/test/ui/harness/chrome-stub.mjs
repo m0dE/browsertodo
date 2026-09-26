@@ -4,6 +4,13 @@
 
 /** Runs in the page before any script: a minimal chrome.runtime. */
 export function installChromeStub(data) {
+  const VOICE_ENGINES = {
+    engines: [
+      { id: "realtime", name: "Realtime", model: "gpt-realtime-2.1", approxCentsPerMinute: 5.4912, assumption: "Per minute of conversation: you talk or it listens for 1 minute and it speaks for 18 seconds.", available: true },
+      { id: "standard", name: "Standard", model: "whisper-large-v3-turbo", approxCentsPerMinute: 0.0667, assumption: "Per minute of speech transcribed; replies are read aloud by your browser at no charge.", available: true },
+    ],
+    default: "realtime",
+  };
   // Like the real background (engine/ui-router.ts), every state lists all running sessions;
   // scenarios name only the latest (`running`) unless they set more.
   const withRunning = (s) => (s.runningSessions ? s : { ...s, runningSessions: s.running ? [s.running] : [] });
@@ -123,6 +130,10 @@ export function installChromeStub(data) {
     },
     // Voice input: each clip says a little more of the sentence. __voiceHold keeps the next answer
     // back until __voiceRelease() (to show "Finishing…").
+    // Hands-free voice: the engines with the server's prices (as scenario Q of the e2e gets them), and the relay's address
+    // (the page's WebSocket to it is installVoiceFakes' fake).
+    "voice.engines": () => data.voiceEngines ?? VOICE_ENGINES,
+    "voice.realtime": () => data.realtimeTicket ?? { url: "ws://127.0.0.1:9/v1/ai/realtime?session=s-new", token: "tok" },
     "voice.transcribe": () => {
       const words = "Open Gmail and reply to Sarah that I will be there at seven.".split(" ");
       window.__voiceClips = (window.__voiceClips ?? 0) + 1;
@@ -195,5 +206,79 @@ export function installChromeStub(data) {
       onDetached: noEvent,
     },
     windows: { getCurrent: async () => ({ id: 1 }), update: async () => ({}), onFocusChanged: noEvent },
+  };
+}
+
+/**
+ * Runs in the page before any script (hands-free voice cases): the browser's speech and the Realtime relay, faked.
+ * speechSynthesis records each line in window.__spoken and ends it after window.__ttsMs (default 600 ms), or, with
+ * window.__ttsHold, when window.__ttsRelease() is called. A WebSocket to /v1/ai/realtime is window.__rt: it opens,
+ * sends OpenAI's session.created (or, with window.__rtMode = "unavailable", the relay's refusal and close 4503), keeps
+ * what the panel sent in __rt.sent, and __rt.emit(event) plays a server event.
+ */
+export function installVoiceFakes() {
+  window.__spoken = [];
+  window.__ttsCancels = 0;
+  window.SpeechSynthesisUtterance = class {
+    constructor(text) {
+      this.text = text;
+      this.rate = 1;
+      this.voice = null;
+      this.lang = "";
+    }
+  };
+  let current = null;
+  const end = (u) => {
+    if (current === u) current = null;
+    u.onend?.();
+  };
+  Object.defineProperty(window, "speechSynthesis", {
+    configurable: true,
+    value: {
+      speak(u) {
+        window.__spoken.push(u.text);
+        current = u;
+        if (window.__ttsHold) window.__ttsRelease = () => end(u);
+        else setTimeout(() => end(u), window.__ttsMs ?? 600);
+      },
+      cancel() {
+        window.__ttsCancels++;
+        if (current) end(current);
+      },
+      getVoices: () => [{ name: "Test Voice", lang: "en-US" }],
+      addEventListener() {},
+      removeEventListener() {},
+    },
+  });
+  const RealSocket = window.WebSocket;
+  window.WebSocket = class {
+    constructor(url, protocols) {
+      if (!String(url).includes("/v1/ai/realtime")) return new RealSocket(url, protocols);
+      Object.assign(this, { url, protocols, readyState: 0, sent: [], closedWith: null });
+      window.__rt = this;
+      setTimeout(() => {
+        this.readyState = 1;
+        this.onopen?.({});
+        if (window.__rtMode === "unavailable") {
+          this.emit({ type: "browsertodo.error", error: "realtime_unavailable", message: "Realtime voice is not set up on this server yet" });
+          this.readyState = 3;
+          this.onclose?.({ code: 4503, reason: "realtime_unavailable" });
+          return;
+        }
+        this.emit({ type: "session.created", event_id: "ev_session", session: { type: "realtime", model: "gpt-realtime-2.1" } });
+      }, 20);
+    }
+    send(text) {
+      this.sent.push(JSON.parse(text));
+    }
+    close(code = 1000) {
+      if (this.readyState === 3) return;
+      this.readyState = 3;
+      this.closedWith = code;
+      setTimeout(() => this.onclose?.({ code, reason: "" }), 0);
+    }
+    emit(event) {
+      this.onmessage?.({ data: JSON.stringify(event) });
+    }
   };
 }

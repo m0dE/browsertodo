@@ -196,6 +196,16 @@ describe("createToolExecutor: plain tools", () => {
     expect(ended).toHaveLength(3);
   });
 
+  it("task_* tools pass the agent's spoken line on (hands-free voice reads it aloud)", async () => {
+    const { exec, ended } = setup(new FakeX());
+    await exec.call("task_complete", { summary: "Summarized 4 unread emails", spoken: "You have four unread emails." });
+    await exec.call("task_pause", { reason: "2FA", spoken: "What's the code X sent you?" });
+    expect(ended).toEqual([
+      { outcome: "done", summary: "Summarized 4 unread emails", spoken: "You have four unread emails." },
+      { outcome: "paused", reason: "2FA", spoken: "What's the code X sent you?" },
+    ]);
+  });
+
   it("task_* tools without onTaskEnd answer that there is no task to end", async () => {
     const { exec } = setup(new FakeX(), { onTaskEnd: null });
     const r = await exec.call("task_complete", { summary: "x" });

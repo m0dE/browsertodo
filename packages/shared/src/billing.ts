@@ -81,6 +81,7 @@ export const NOT_SET_UP = {
   hostedAi: "Hosted AI is not set up on this server yet",
   jev: "Hosted Jev is not set up on this server yet",
   voice: "Voice input is not set up on this server yet",
+  realtime: "Realtime voice is not set up on this server yet",
 } as const;
 
 /** The plans (decided by the owner; docs/BILLING-CONTRACT.md). The one plan table: API, dashboard, extension and the Stripe setup script read it. */
@@ -206,8 +207,13 @@ export const CSRF_HEADER = "X-Requested-With";
 export const CSRF_HEADER_VALUE = "browsertodo";
 export const SESSION_COOKIE = "bt_session";
 
-/** "transcribe" = voice input (Workers AI speech-to-text), billed by audio length. */
-export const UsageKind = z.enum(["ai_messages", "jev", "transcribe"]);
+/**
+ * "transcribe" = voice input (Workers AI speech-to-text), billed by audio length.
+ * "realtime" = a realtime voice session (GET /v1/ai/realtime): one event per model
+ * response (tokens), and one per transcribed user turn when input transcription is on
+ * (model = the transcription model, billed by audio length).
+ */
+export const UsageKind = z.enum(["ai_messages", "jev", "transcribe", "realtime"]);
 export type UsageKind = z.infer<typeof UsageKind>;
 
 export const UsageEvent = z.object({
@@ -221,7 +227,7 @@ export const UsageEvent = z.object({
   costMicroCents: z.number().int(),
   chargedCents: z.number(),
   sessionId: z.string().nullable().optional(),
-  /** transcribe only: seconds of audio billed. */
+  /** Seconds of audio billed by length (transcribe, and realtime input transcription). */
   audioSeconds: z.number().optional(),
 });
 export type UsageEvent = z.infer<typeof UsageEvent>;

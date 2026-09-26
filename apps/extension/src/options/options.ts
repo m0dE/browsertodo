@@ -1,18 +1,19 @@
 /**
- * Options page: tabs for the account, API keys, the AI (brain, key, model, helper),
- * Jev, task scheduling, site logins and self-hosting. Settings save by
+ * Options page: tabs for the account, API keys, the AI (brain, key, model,
+ * helper, Jev, hands-free voice), task scheduling, site logins and self-hosting. Settings save by
  * themselves as they change; keys save with their own Save button.
  * What shows when comes from settingsView() (settings-view.ts).
  */
 import { OPEN_CHAT_COMMAND, openShortcutSettings, readShortcut, VOICE_COMMAND, type ShortcutCommand } from "../shortcut.js";
 import { errorMessage, type BrainMode, type ExtensionSettings } from "@browsertodo/shared";
 import { uiRequest, type UiState } from "../ui-protocol.js";
-import { $, busy, find, flash, h } from "../ui/dom.js";
-import { brainLabel } from "../ui/labels.js";
+import { createAccountMenu } from "../ui/account-menu.js";
+import { $, busy, closeMenusOnOutsideClick, find, flash, h } from "../ui/dom.js";
 import { initAccountSection } from "./account-section.js";
 import { SaveQueue } from "./autosave.js";
 import { initSecretFields } from "./secret-field.js";
 import { initVaultSection } from "./vault-section.js";
+import { initVoiceSection } from "./voice-section.js";
 import { adjustedFields, buildSettingsPatch, helperStatus } from "./settings-patch.js";
 import {
   BOOL_FIELDS,
@@ -247,16 +248,9 @@ function render(): void {
 function renderState(s: UiState): void {
   state = s;
   accountSection.render(s);
+  voiceSection.render(s);
+  accountMenu.render(s.account);
   const b = s.brain;
-  const now = $("now-using");
-  if (b.effective) {
-    $("now-text").textContent = `Running tasks with ${brainLabel(b.effective, b.jevActive)}${b.note ? ` · ${b.note}` : ""}`;
-    now.dataset.tone = "ok";
-  } else {
-    $("now-text").textContent = b.note || "Nothing can run tasks yet. Pick a brain on the AI tab.";
-    now.dataset.tone = "bad";
-  }
-  setTone($("now-dot"), b.effective ? "ok" : "bad");
 
   const hs = helperStatus(b.helper, b.helperError);
   $("helper-dot").dataset.tone = hs.tone;
@@ -275,6 +269,25 @@ function applyState(s: UiState): void {
 }
 
 const accountSection = initAccountSection({ onState: (s) => renderState(s) });
+// The header's account avatar and menu (the side panel's, see ui/account-menu.ts); what fails says so in the save notice.
+const accountMenu = createAccountMenu({
+  id: "menu-acct",
+  signedOutTitle: "Log in",
+  items: [
+    { id: "menu-acct-login", label: "Log in with Google", show: "signed-out", run: (b) => accountSection.signIn(b, saveMsg) },
+    { id: "menu-acct-billing", label: "Plan & billing", show: "signed-in", run: () => accountSection.openBilling() },
+    {
+      id: "menu-acct-signout",
+      label: "Sign out",
+      show: "signed-in",
+      tone: "bad",
+      run: (b) => void busy(b, async () => applyState(await uiRequest({ type: "account.signOut" })), (m) => status(`Not signed out: ${m}`, "bad")),
+    },
+  ],
+});
+$("head-acct").replaceWith(accountMenu.el);
+closeMenusOnOutsideClick("details.menu");
+const voiceSection = initVoiceSection({ onState: (s) => applyState(s) });
 const hostedSignIn = $<HTMLButtonElement>("hosted-signin");
 hostedSignIn.addEventListener("click", () => accountSection.signIn(hostedSignIn, $("hosted-signin-msg")));
 // Get a plan / Top up under BrowserTODO AI: the dashboard's Billing page.
@@ -328,8 +341,7 @@ async function main(): Promise<void> {
     // Fresh plan and credit (they may have changed on the dashboard).
     renderState(await uiRequest({ type: "account.refresh", force: true }));
   } catch (err) {
-    $("now-text").textContent = `Background not reachable: ${errorMessage(err)}`;
-    $("now-using").dataset.tone = "bad";
+    status(`Background not reachable: ${errorMessage(err)}`, "bad");
   }
 }
 

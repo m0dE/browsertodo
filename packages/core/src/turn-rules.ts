@@ -43,6 +43,7 @@ export function turnEndEvents(r: TaskRunResult, picks: ElementPicks | null): Age
   if (r.url !== undefined) end.url = r.url;
   if (r.reason !== undefined) end.reason = r.reason;
   if (r.suggestion !== undefined) end.suggestion = r.suggestion;
+  if (r.spoken !== undefined) end.spoken = r.spoken;
   events.push(end);
   return events;
 }

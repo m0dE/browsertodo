@@ -24,7 +24,12 @@ const ui = await serveUi();
 const browser = await chromium.launch({
   headless: !headed,
   // Voice input: Chrome's fake microphone plays speech-like audio; prompts are answered Allow.
-  args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", `--use-file-for-fake-audio-capture=${writeSpeechLikeWav(join(ui.out, "speech.wav"))}`],
+  // 10 s looped: talking, a short pause, talking, then 3.5 s quiet (long enough for hands-free voice to end an utterance and send it).
+  args: [
+    "--use-fake-device-for-media-stream",
+    "--use-fake-ui-for-media-stream",
+    `--use-file-for-fake-audio-capture=${writeSpeechLikeWav(join(ui.out, "speech.wav"), { seconds: 10 })}`,
+  ],
 });
 await renderThumbnail(browser);
 const h = createChecks({ browser, base: ui.base, only, shots: join(here, "screenshots") });

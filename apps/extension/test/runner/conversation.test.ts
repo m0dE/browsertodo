@@ -123,12 +123,22 @@ describe("Runner: conversations", () => {
   it("a post that is not verified drops the follow-up suggestion (it assumed the post went out)", async () => {
     const h = harness();
     h.verify.mockResolvedValue({ ok: false, detail: "no such post" });
-    h.brain.script = () => ({ outcome: "done", summary: "posted", url: "https://x.com/alpha/status/9", suggestion: "Pin the post" });
+    h.brain.script = () => ({ outcome: "done", summary: "posted", url: "https://x.com/alpha/status/9", suggestion: "Pin the post", spoken: "Posted it." });
     const { sessionId } = await h.runner.runAdhoc({ instructions: "Post gm" });
     await settle(h);
     const s = (await h.sessions.get(sessionId))!;
     expect(s.outcome).toBe("retry");
     expect(s.suggestion).toBeUndefined();
+    // Nor is the spoken line said: it claims the post went out.
+    expect((await h.sessions.eventsOf(sessionId)).at(-1)).not.toHaveProperty("spoken");
+  });
+
+  it("the turn's spoken line goes with its task_end event (hands-free voice reads it aloud)", async () => {
+    const h = harness();
+    h.brain.script = () => ({ outcome: "done", summary: "Checked email", spoken: "You have two new emails." });
+    const { sessionId } = await h.runner.runAdhoc({ instructions: "check my email" });
+    await settle(h);
+    expect((await h.sessions.eventsOf(sessionId)).at(-1)).toMatchObject({ type: "task_end", outcome: "done", spoken: "You have two new emails." });
   });
 
   it("falls back to a fresh session with a summary when the agent session is gone", async () => {

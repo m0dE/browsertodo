@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { MAX_SUGGESTION_CHARS, normalizeHandle, SUGGESTION_NEVER, TOOL_NAMES, toolArgsSchema, toolsFor, type PageSnapshot } from "@browsertodo/shared";
+import { MAX_SPOKEN_CHARS, MAX_SUGGESTION_CHARS, normalizeHandle, SUGGESTION_NEVER, TOOL_NAMES, toolArgsSchema, toolsFor, type PageSnapshot } from "@browsertodo/shared";
 import { errorDetail, plainErrorText } from "../src/api-errors.js";
 import { mapStrings, MIN_SECRET_CHARS, REDACTED, SecretRedactor } from "../src/redact.js";
 import { SCREEN_HELP_TEXT } from "@browsertodo/shared";
@@ -245,6 +245,15 @@ describe("prompts", () => {
       expect(p).toContain("runs only if they accept and send it");
       expect(p).toContain("Omit it when no next step is clearly likely");
       expect(p).toContain(SUGGESTION_NEVER);
+    }
+  });
+
+  it("system prompt: a spoken line in natural speech on every task_* call", () => {
+    for (const jev of [false, true]) {
+      const p = buildSystemPrompt({ tools: TOOL_NAMES, jev });
+      expect(p).toContain("give `spoken`");
+      expect(p).toMatch(/natural speech/);
+      expect(p).toContain(`at most ${MAX_SPOKEN_CHARS} characters`);
     }
   });
 

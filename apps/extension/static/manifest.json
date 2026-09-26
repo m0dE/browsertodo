@@ -60,7 +60,7 @@
         "default": "Ctrl+Comma",
         "mac": "MacCtrl+Comma"
       },
-      "description": "Talk to browsertodo: start voice input in the side panel; press again to send"
+      "description": "Talk to browsertodo hands-free in the side panel; press again to stop"
     }
   }
 }

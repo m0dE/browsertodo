@@ -11,10 +11,13 @@
 // - createFakeStripe(): customers, Checkout Sessions and portal sessions
 //   (enough for the checkout/topup/portal routes); records what was created.
 // - createFakeTypeSafe(): the Jev systemOne endpoint.
+// - createFakeOpenAiRealtime(): OpenAI's Realtime WebSocket (/v1/realtime), a minimal RFC 6455
+//   server (no dependencies): session.created on connect, and each response.create answered with
+//   response.created, one audio delta and a response.done carrying FAKE_REALTIME_USAGE.
 // - stripeEvent(), signStripeWebhook(): a Stripe event and its Stripe-Signature
 //   header, the way Stripe sends webhooks.
 
-import { createHmac, createSign, generateKeyPairSync, randomBytes } from "node:crypto";
+import { createHash, createHmac, createSign, generateKeyPairSync, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
 
@@ -371,4 +374,132 @@ export function createFakeWorkersAi() {
     });
   });
   return Object.assign(srv, { requests: () => requests });
+}
+
+// ---- OpenAI Realtime ------------------------------------------------------------
+
+/** The usage of every fake response.done (the shape of OpenAI's documented example). */
+export const FAKE_REALTIME_USAGE = {
+  total_tokens: 1_900,
+  input_tokens: 1_000,
+  output_tokens: 900,
+  input_token_details: { text_tokens: 400, audio_tokens: 600, image_tokens: 0, cached_tokens: 200, cached_tokens_details: { text_tokens: 200, audio_tokens: 0, image_tokens: 0 } },
+  output_token_details: { text_tokens: 300, audio_tokens: 600 },
+};
+
+const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+/** One server-side WebSocket over a raw socket: text frames out (unmasked), frames in (masked, maybe fragmented). */
+function serverSocket(socket, { onText, onClose }) {
+  let buf = Buffer.alloc(0);
+  let fragments = [];
+  let closed = false;
+  const frame = (opcode, payload) => {
+    const len = payload.length;
+    const head = len < 126 ? Buffer.from([0x80 | opcode, len]) : len < 65536 ? Buffer.from([0x80 | opcode, 126, len >> 8, len & 255]) : Buffer.concat([Buffer.from([0x80 | opcode, 127]), (() => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(len)); return b; })()]);
+    if (!socket.destroyed) socket.write(Buffer.concat([head, payload]));
+  };
+  const close = (code = 1000) => {
+    if (closed) return;
+    closed = true;
+    const p = Buffer.alloc(2);
+    p.writeUInt16BE(code);
+    frame(8, p);
+    socket.end();
+  };
+  socket.on("data", (chunk) => {
+    buf = Buffer.concat([buf, chunk]);
+    for (;;) {
+      if (buf.length < 2) return;
+      const fin = (buf[0] & 0x80) !== 0;
+      const opcode = buf[0] & 0x0f;
+      const masked = (buf[1] & 0x80) !== 0;
+      let len = buf[1] & 0x7f;
+      let at = 2;
+      if (len === 126) {
+        if (buf.length < 4) return;
+        len = buf.readUInt16BE(2);
+        at = 4;
+      } else if (len === 127) {
+        if (buf.length < 10) return;
+        len = Number(buf.readBigUInt64BE(2));
+        at = 10;
+      }
+      const mask = masked ? buf.subarray(at, at + 4) : null;
+      if (masked) at += 4;
+      if (buf.length < at + len) return;
+      const payload = Buffer.from(buf.subarray(at, at + len));
+      buf = buf.subarray(at + len);
+      if (mask) for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i % 4];
+      if (opcode === 8) {
+        const code = payload.length >= 2 ? payload.readUInt16BE(0) : 1005;
+        close(code === 1005 ? 1000 : code);
+        onClose(code);
+        return;
+      }
+      if (opcode === 9) frame(10, payload);
+      if (opcode === 1 || opcode === 0) {
+        fragments.push(payload);
+        if (fin) {
+          const text = Buffer.concat(fragments).toString("utf8");
+          fragments = [];
+          onText(text);
+        }
+      }
+    }
+  });
+  socket.on("close", () => {
+    if (!closed) onClose(1006);
+    closed = true;
+  });
+  return { send: (text) => frame(1, Buffer.from(text, "utf8")), close };
+}
+
+export function createFakeOpenAiRealtime() {
+  const connections = [];
+  const srv = makeServer((req, res) => sendJson(res, 426, { error: { message: "WebSocket only" } }));
+  srv.server.on("upgrade", (req, socket) => {
+    const url = new URL(req.url, "http://x");
+    const key = req.headers["sec-websocket-key"];
+    /** An HTTP/1.1 response head (and body) on the raw socket. */
+    const head = (status, headers, body = "") => [status, ...headers, "", body].join("\r\n");
+    if (url.pathname !== "/v1/realtime" || !key) {
+      socket.end(head("HTTP/1.1 404 Not Found", ["Content-Length: 0"]));
+      return;
+    }
+    if (req.headers.authorization !== "Bearer fake-openai") {
+      const body = JSON.stringify({ error: { message: "Incorrect API key provided.", type: "invalid_request_error", code: "invalid_api_key" } });
+      socket.end(head("HTTP/1.1 401 Unauthorized", ["Content-Type: application/json", `Content-Length: ${Buffer.byteLength(body)}`], body));
+      return;
+    }
+    const accept = createHash("sha1").update(key + WS_GUID).digest("base64");
+    socket.write(head("HTTP/1.1 101 Switching Protocols", ["Upgrade: websocket", "Connection: Upgrade", `Sec-WebSocket-Accept: ${accept}`]));
+    const conn = { model: url.searchParams.get("model"), headers: req.headers, received: [], closedWith: null };
+    connections.push(conn);
+    let responses = 0;
+    const ws = serverSocket(socket, {
+      onText(text) {
+        conn.received.push(text);
+        let event;
+        try {
+          event = JSON.parse(text);
+        } catch {
+          return;
+        }
+        if (event.type === "response.create") {
+          const id = `resp_fake_${++responses}`;
+          ws.send(JSON.stringify({ type: "response.created", event_id: `ev_${id}_1`, response: { id, status: "in_progress" } }));
+          ws.send(JSON.stringify({ type: "response.output_audio.delta", event_id: `ev_${id}_2`, response_id: id, delta: "AAAA" }));
+          ws.send(JSON.stringify({ type: "response.done", event_id: `ev_${id}_3`, response: { id, status: "completed", usage: FAKE_REALTIME_USAGE } }));
+        }
+      },
+      onClose(code) {
+        conn.closedWith = code;
+      },
+    });
+    /** Plays a server event to the client (e.g. a function call of the model), as OpenAI would send it. */
+    conn.emit = (event) => ws.send(JSON.stringify(event));
+    ws.send(JSON.stringify({ type: "session.created", event_id: "ev_session", session: { type: "realtime", model: conn.model } }));
+  });
+  return Object.assign(srv, { connections: () => connections });
 }

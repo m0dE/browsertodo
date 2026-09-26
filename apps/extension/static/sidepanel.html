@@ -14,20 +14,8 @@
         <span id="status-text" class="status-text">Connecting…</span>
         <span id="status-meta" class="status-meta"></span>
         <button id="status-action" type="button" class="link" hidden></button>
-        <details id="acct" class="menu acct">
-          <summary id="acct-btn" aria-label="Account and settings"><img id="acct-avatar" alt="" referrerpolicy="no-referrer" hidden /><span id="acct-initial" aria-hidden="true"></span><svg id="acct-anon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5.6" r="2.6"/><path d="M2.8 13.6c.9-2.4 2.9-3.6 5.2-3.6s4.3 1.2 5.2 3.6" stroke-linecap="round"/></svg></summary>
-          <div id="acct-menu" class="menu-pop acct-pop">
-            <div class="acct-who" id="acct-who">
-              <div id="acct-email" class="acct-email"></div>
-              <div id="acct-plan" class="acct-plan"></div>
-            </div>
-            <button type="button" id="acct-login">Log in with Google</button>
-            <button type="button" id="acct-pause">Pause scheduled runs</button>
-            <button type="button" id="acct-open-settings">Settings</button>
-            <button type="button" id="acct-billing">Plan &amp; billing</button>
-            <button type="button" id="acct-signout" class="bad">Sign out</button>
-          </div>
-        </details>
+        <!-- The account avatar and its menu (ui/account-menu.ts, built by header.ts). -->
+        <span id="acct-slot" class="acct-slot"></span>
       </div>
       <nav class="tabs" role="tablist">
         <button type="button" role="tab" id="tab-btn-chat" data-tab="chat" aria-controls="tab-chat" aria-selected="true">Chat <span id="live-dot" class="live-dot" title="The agent is working" hidden></span></button>

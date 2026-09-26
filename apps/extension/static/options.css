@@ -2,27 +2,30 @@
 body { font-size: var(--text-lg); }
 .page { max-width: 720px; margin: 0 auto; padding: 28px 16px 64px; }
 
-/* Header */
-.head { display: flex; flex-direction: column; gap: 4px; }
-.head-row { display: flex; align-items: center; gap: 12px; }
-.head h1 { font-size: 22px; letter-spacing: -0.01em; }
-.now { margin: 0; display: flex; align-items: baseline; gap: 8px; color: var(--muted); font-size: var(--text-md); }
-.now .dot { transform: translateY(-1px); }
-.now[data-tone="bad"] { color: var(--bad); }
+/* Header: one sticky row, like a navbar. The tabs scroll sideways on a narrow page; the save notice and the
+   account avatar stay pinned at the right. */
+.head {
+  position: sticky; top: 0; z-index: var(--z-sticky);
+  display: flex; align-items: center; gap: 10px;
+  margin: -28px -16px 0; padding: 0 16px;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}
+.head .acct { flex: none; }
 .save-msg {
-  margin-left: auto; font-size: var(--text-sm); color: var(--muted);
+  flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--text-sm); color: var(--muted);
   opacity: 0; transition: opacity 0.25s ease;
 }
-.save-msg.show { opacity: 1; }
+.save-msg:empty { display: none; }
+/* Shown while it has something to say; a "Saved" fades (status() in options.ts). Sign-in from the account menu writes here too. */
+.save-msg.show, .save-msg[data-tone="bad"], .save-msg[data-tone=""]:not(:empty) { opacity: 1; }
 .save-msg[data-tone="ok"] { color: var(--ok); }
 .save-msg[data-tone="bad"] { color: var(--bad); }
 
 /* Tabs */
 .tabs {
-  position: sticky; top: 0; z-index: var(--z-sticky);
-  display: flex; gap: 2px; margin: 18px -16px 0; padding: 0 16px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
+  flex: 1; min-width: 0; align-self: stretch;
+  display: flex; gap: 2px;
   overflow-x: auto; scrollbar-width: none;
 }
 .tabs::-webkit-scrollbar { display: none; }
@@ -31,7 +34,8 @@ body { font-size: var(--text-lg); }
   padding: 10px 12px; border: 0; border-radius: 6px 6px 0 0; background: none;
   color: var(--muted); font-size: 13.5px; font-weight: 500;
 }
-.tab:first-child { margin-left: -12px; }
+/* The first tab's label lines up with the page's text (the tab row starts inside the header's padding). */
+.head .tabs { margin-left: -12px; }
 .tab:hover { color: var(--text); border-color: transparent; }
 .tab[aria-selected="true"] { color: var(--text); }
 .tab[aria-selected="true"]::after {
@@ -41,7 +45,7 @@ body { font-size: var(--text-lg); }
 .tab:focus-visible { outline-offset: -3px; }
 
 /* Panels and groups */
-.panel { padding-top: 8px; outline: none; }
+.panel { padding-top: 20px; outline: none; }
 .group { margin-top: 22px; }
 .group-title { font-size: var(--text-md); font-weight: 600; margin: 22px 0 6px; color: var(--text); }
 .group > .group-title:first-child, .acct-block > .group-title:first-child { margin-top: 0; }
@@ -198,7 +202,7 @@ input[aria-invalid="true"] { border-color: var(--bad); }
 
 @media (max-width: 480px) {
   .tab { padding: 10px 8px; }
-  .tab:first-child { margin-left: -8px; }
+  .head .tabs { margin-left: -8px; }
   .tab[aria-selected="true"]::after { left: 6px; right: 6px; }
 }
 
@@ -208,3 +212,9 @@ input[aria-invalid="true"] { border-color: var(--bad); }
   font: inherit; font-size: var(--text-sm); padding: 2px 7px; border-radius: var(--radius-sm);
   border: 1px solid var(--border); background: var(--surface); color: var(--text); white-space: nowrap;
 }
+
+/* Voice (voice-section.ts): each engine's cost a minute, from the server, under its description. */
+.opt-text .voice-cost { color: var(--text); font-variant-numeric: tabular-nums; }
+#speech-box { margin-top: 8px; }
+/* A section link (#jev, #voice) scrolls its section under the sticky tab row, not behind it. */
+#panel-ai > .group { scroll-margin-top: 56px; }

@@ -9,7 +9,7 @@
  * URL setting changes, the extension is signed out of it. An earlier default
  * address of the same server (currentAccountApiBase) is not a change.
  */
-import { currentAccountApiBase, errorMessage, type ExtensionSettings, type MeBillingResponse, type TranscribeResponse } from "@browsertodo/shared";
+import { currentAccountApiBase, errorMessage, type ExtensionSettings, type MeBillingResponse, type TranscribeResponse, type VoiceEnginesResponse } from "@browsertodo/shared";
 import { ApiClient } from "../api-client.js";
 import type { StorageLike } from "../engine/kv.js";
 import type { StoredLocalTask } from "../engine/local-task-rules.js";
@@ -208,6 +208,20 @@ export class AccountService {
   /** Voice input: a WAV clip to text (POST /v1/ai/transcribe). Throws NotSignedInError or ApiRequestError. */
   async transcribe(wav: Uint8Array, opts: { speechMs?: number; context?: string; sessionId?: string } = {}): Promise<TranscribeResponse> {
     return (await this.api()).transcribe(wav, opts);
+  }
+
+  /** Hands-free voice: the engines and their prices (public; the account server's answer). */
+  async voiceEngines(): Promise<VoiceEnginesResponse> {
+    await this.load();
+    return new AccountApi(this.apiOpts(this.apiBase)).voiceEngines();
+  }
+
+  /** Realtime voice: the session's server and token, which the side panel offers the relay. Throws NotSignedInError. */
+  async realtimeSession(): Promise<{ apiBase: string; token: string }> {
+    await this.load();
+    const s = this.session();
+    if (!s) throw new NotSignedInError();
+    return { apiBase: s.apiBase, token: s.token };
   }
 
   /**

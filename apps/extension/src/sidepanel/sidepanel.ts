@@ -23,7 +23,12 @@ import { voiceAllowed } from "../account/types.js";
 import { openBilling, refreshOnReturn } from "../ui/billing.js";
 import { browserMicAccessDeps, watchMicPermission } from "../voice/mic-access.js";
 import { MicSource } from "../voice/recorder.js";
-import { panelTranscriber } from "../voice/transcribe.js";
+import { REALTIME_SAMPLE_RATE } from "../voice/realtime-client.js";
+import { RealtimeEngine } from "../voice/realtime-engine.js";
+import { Speaker } from "../voice/speaker.js";
+import { StandardEngine } from "../voice/standard-engine.js";
+import { panelTranscriber, VoiceError } from "../voice/transcribe.js";
+import { initHandsFree } from "./hands-free.js";
 import { initVoiceInput, isListening } from "./voice-input.js";
 
 /** Relative times (the status line's next check, task times) are redrawn this often. */
@@ -120,18 +125,72 @@ const composer = initComposer({
 });
 // Voice input: the mic left of Send; clips are transcribed by the background with the account.
 const micAccess = browserMicAccessDeps();
+const transcribe = panelTranscriber(
+  (clip) => uiRequest({ type: "voice.transcribe", ...clip }),
+  () => composer.target()?.sessionId,
+);
+/** Dictation (the mic button) or a hands-free session is on: the voice shortcut then reaches this panel, wherever the focus is. */
+const listening = { dictation: false, handsFree: false };
+const reportListening = () => port.send({ type: "panel.listening", listening: listening.dictation || listening.handsFree });
 const voice = initVoiceInput({
   composer,
-  transcribe: panelTranscriber(
-    (clip) => uiRequest({ type: "voice.transcribe", ...clip }),
-    () => composer.target()?.sessionId,
-  ),
+  transcribe,
   createSource: () => new MicSource(),
   mic: { ...micAccess, watch: (onChange) => watchMicPermission(onChange) },
   openBilling: billing,
   host: document.body,
-  // The voice shortcut stops and sends while listening, wherever the keyboard focus is.
-  onListening: (listening) => port.send({ type: "panel.listening", listening }),
+  onListening: (on) => {
+    listening.dictation = on;
+    reportListening();
+  },
+});
+/** The chat hands-free voice follows: the one Chat shows, or the one just started from this tab. */
+const followedChat = () => focused?.sessionId ?? pending?.sessionId ?? null;
+// Hands-free voice (the voice shortcut): Realtime or Standard, see hands-free.ts.
+const handsFree = initHandsFree({
+  voice,
+  composer,
+  followed: followedChat,
+  settings: () => state?.settings ?? null,
+  account: () => state?.account,
+  engines: async () => {
+    const r = await uiRequest({ type: "voice.engines" });
+    return "error" in r ? null : r;
+  },
+  saveSettings: async (patch) => applyState(await uiRequest({ type: "settings.save", settings: patch })),
+  createEngine: (id, events) =>
+    id === "realtime"
+      ? new RealtimeEngine({
+          ticket: async () => {
+            const sessionId = followedChat();
+            const r = await uiRequest({ type: "voice.realtime", ...(sessionId ? { sessionId } : {}) });
+            if ("error" in r) throw new VoiceError(r.error);
+            return r;
+          },
+          createSource: () => new MicSource(undefined, REALTIME_SAMPLE_RATE),
+          events,
+          log: (m) => console.info(`[browsertodo] ${m}`),
+        })
+      : new StandardEngine({
+          createSource: () => new MicSource(),
+          transcribe,
+          speaker: new Speaker(() => ({ voice: state?.settings.speechVoice ?? "", rate: state?.settings.speechRate ?? 1 })),
+          events,
+        }),
+  stopTask: async () => {
+    const t = composer.target();
+    if (!t || composer.mode() !== "running") return "No task is running.";
+    await uiRequest({ type: "run.stop", sessionId: t.sessionId });
+    return "Stopped the task.";
+  },
+  openBilling: billing,
+  signIn: () => signIn(),
+  onActive: (on) => {
+    listening.handsFree = on;
+    reportListening();
+  },
+  host: $("composer"),
+  log: (m) => console.info(`[browsertodo] ${m}`),
 });
 const chat = initChat({
   // Continue in an end card: go on now (with the note typed in the box, if any).
@@ -139,6 +198,7 @@ const chat = initChat({
   onFocus: (s) => {
     focused = s;
     composer.setConversation(s);
+    handsFree.setWorking(composer.mode() === "running");
   },
   // New chat: this tab has no conversation any more (the session stays in the Activity log).
   onLeave: (s) => {
@@ -241,6 +301,7 @@ function applyState(s: UiState): void {
   }
   chat.setRunning(s.runningSessions);
   composer.setRunning(s.runningSessions);
+  handsFree.setWorking(composer.mode() === "running");
   composer.setState(s);
   tasks.setState(s);
   // A left running session that ended no longer needs hiding.
@@ -256,6 +317,7 @@ function onPush(msg: UiPush): void {
       break;
     case "event":
       chat.onEvent(msg.event);
+      handsFree.onEvent(msg.event);
       break;
     case "session":
       chat.onSession(msg.session);
@@ -274,7 +336,7 @@ function onPush(msg: UiPush): void {
       composer.focus();
       break;
     case "panel.voice":
-      // The voice shortcut (after panel.focus): start listening, or stop and send.
+      // The voice shortcut (after panel.focus): hands-free on or off (see voice-input.ts shortcut()).
       tabs.show("chat");
       if (state) voice.shortcut();
       else voicePending = true;
@@ -288,7 +350,7 @@ function hello(): void {
   port.send({ type: "panel.hello", windowId });
   reportDocumentFocus();
   // A background that restarted meanwhile learns it again (the voice shortcut stops a listening panel).
-  if (isListening(voice.state)) port.send({ type: "panel.listening", listening: true });
+  if (isListening(voice.state) || handsFree.active) port.send({ type: "panel.listening", listening: true });
 }
 
 /** Whether this page has the keyboard focus, for the shortcut (see panel-command.ts), with the text in the box. */

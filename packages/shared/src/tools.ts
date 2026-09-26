@@ -52,6 +52,20 @@ const suggestionArg = z
     `Only when the user very likely wants one specific next step: that request as a short imperative in their words, at most ${MAX_SUGGESTION_CHARS} characters (e.g. "Reply to Jordan and say I'll sign by Thursday"). Shown faded in their input box; it runs only if they accept and send it. Omit otherwise. ${SUGGESTION_NEVER}.`,
   );
 
+/** Longest spoken line (task_* `spoken`): what hands-free voice reads aloud when the turn ends. */
+export const MAX_SPOKEN_CHARS = 200;
+
+/** task_complete / task_fail / task_pause: the turn's outcome as one or two sentences to say aloud. */
+const spokenArg = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_SPOKEN_CHARS)
+  .optional()
+  .describe(
+    `One or two short sentences, read aloud to a user who talks to browsertodo hands-free, at most ${MAX_SPOKEN_CHARS} characters: the result, or the question they must answer. Natural speech, as you would say it to them: no Markdown, lists, URLs or IDs (e.g. "Done. You have four unread emails, and Jordan needs your signature by Friday.").`,
+  );
+
 export const ToolArgs = {
   navigate: z.object({ url: z.string().describe("Absolute URL to open") }),
   read_page: z.object({
@@ -104,9 +118,10 @@ export const ToolArgs = {
       .describe("One short line for the task list: what was done (e.g. 'Answered the question', 'Posted the reply'). Not the answer itself: write answers as message text before this call"),
     url: z.string().optional().describe("URL of the created post or result, if any"),
     suggestion: suggestionArg,
+    spoken: spokenArg,
   }),
-  task_fail: z.object({ reason: z.string(), suggestion: suggestionArg }),
-  task_pause: z.object({ reason: z.string().describe("Why a human is needed"), suggestion: suggestionArg }),
+  task_fail: z.object({ reason: z.string(), suggestion: suggestionArg, spoken: spokenArg }),
+  task_pause: z.object({ reason: z.string().describe("Why a human is needed"), suggestion: suggestionArg, spoken: spokenArg }),
 } as const;
 
 export type ToolName = keyof typeof ToolArgs;

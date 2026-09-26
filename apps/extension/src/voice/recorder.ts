@@ -2,7 +2,8 @@
  * The microphone as an AudioSource: getUserMedia with the browser's noise
  * suppression, echo cancellation and gain control, captured as PCM by an
  * AudioWorklet (a ScriptProcessor where worklets are missing) and delivered
- * mono at VOICE_LIMITS.sampleRate.
+ * mono at the rate asked for: VOICE_LIMITS.sampleRate for Whisper, 24 kHz for
+ * Realtime voice.
  */
 import { VOICE_LIMITS } from "@browsertodo/shared";
 import type { AudioSource } from "./dictation.js";
@@ -14,8 +15,8 @@ const SCRIPT_PROCESSOR_SAMPLES = 2048;
 
 export interface MicDeps {
   getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream>;
-  /** An AudioContext, asked for VOICE_LIMITS.sampleRate (Chrome resamples the microphone to it). */
-  createContext(): AudioContext;
+  /** An AudioContext, asked for `sampleRate` (Chrome resamples the microphone to it). */
+  createContext(sampleRate: number): AudioContext;
   /** URL of the worklet module; null forces the ScriptProcessor path. */
   workletUrl: string | null;
 }
@@ -23,7 +24,7 @@ export interface MicDeps {
 export function browserMicDeps(): MicDeps {
   return {
     getUserMedia: (c) => navigator.mediaDevices.getUserMedia(c),
-    createContext: () => new AudioContext({ sampleRate: VOICE_LIMITS.sampleRate }),
+    createContext: (sampleRate) => new AudioContext({ sampleRate }),
     workletUrl: chrome.runtime.getURL(PCM_WORKLET_FILE),
   };
 }
@@ -33,15 +34,19 @@ export class MicSource implements AudioSource {
   private ctx: AudioContext | null = null;
   private stopped = false;
 
-  constructor(private readonly deps: MicDeps = browserMicDeps()) {}
+  constructor(
+    private readonly deps: MicDeps = browserMicDeps(),
+    /** The rate samples are delivered at. */
+    private readonly sampleRate: number = VOICE_LIMITS.sampleRate,
+  ) {}
 
   async start(onSamples: (samples: Float32Array) => void): Promise<void> {
     const stream = await this.deps.getUserMedia({ audio: MIC_CONSTRAINTS });
     this.stream = stream;
     if (this.stopped) return this.release();
-    const ctx = this.deps.createContext();
+    const ctx = this.deps.createContext(this.sampleRate);
     this.ctx = ctx;
-    const resampler = new Resampler(ctx.sampleRate, VOICE_LIMITS.sampleRate);
+    const resampler = new Resampler(ctx.sampleRate, this.sampleRate);
     const deliver = (chunk: Float32Array) => {
       if (this.stopped) return;
       const out = resampler.push(chunk);

@@ -7,6 +7,7 @@ import type { AccountService } from "../account/account.js";
 import { LocalTodo, type TodoSource } from "../account/todo-source.js";
 import { HELPER_CALL_TIMEOUT_MS } from "../helper-link.js";
 import type { BrainStatus, UiRequest, UiResponse, UiResults, UiState } from "../ui-protocol.js";
+import { realtimeTicketForPanel, voiceEnginesForPanel, type RealtimeAccount } from "../voice/realtime-access.js";
 import { transcribeForPanel, type VoiceAccount } from "../voice/transcribe.js";
 import type { LocalStore } from "./local-store.js";
 import { uploadToBlob } from "./local-store.js";
@@ -24,12 +25,13 @@ export type RouterRunner = Pick<
 
 export type RouterVault = Pick<Vault, "unlock" | "lock" | "list" | "set" | "delete" | "reset">;
 
-/** The account side the router uses, and voice input (one WAV clip to text). */
+/** The account side the router uses, and voice (one WAV clip to text; the Realtime voice engines and session). */
 export type RouterAccount = Pick<
   AccountService,
   "view" | "signIn" | "signOut" | "refresh" | "migrateLocalTasks" | "dismissMigration" | "listKeys" | "createKey" | "revokeKey"
 > &
-  VoiceAccount;
+  VoiceAccount &
+  Partial<RealtimeAccount>;
 
 export interface UiRouterDeps {
   loadSettings(): Promise<ExtensionSettings>;
@@ -291,10 +293,19 @@ export class UiRouter {
           ...(typeof msg.context === "string" ? { context: msg.context } : {}),
           ...(typeof msg.sessionId === "string" ? { sessionId: msg.sessionId } : {}),
         }) satisfies Promise<UiResults["voice.transcribe"]>;
+      case "voice.engines":
+        return voiceEnginesForPanel(realtimeAccount(d.account)) satisfies Promise<UiResults["voice.engines"]>;
+      case "voice.realtime":
+        return realtimeTicketForPanel(realtimeAccount(d.account), optId(msg.sessionId)) satisfies Promise<UiResults["voice.realtime"]>;
       default:
         throw new Error(`Unknown request type: ${String((msg as { type?: unknown }).type)}`);
     }
   }
+}
+
+/** The account's Realtime voice side, when it has one. */
+function realtimeAccount(a: RouterAccount | undefined): RealtimeAccount | undefined {
+  return a?.voiceEngines && a.realtimeSession ? { voiceEngines: () => a.voiceEngines!(), realtimeSession: () => a.realtimeSession!() } : undefined;
 }
 
 /** A browser tab id from a UI message, or undefined. */

@@ -3,10 +3,8 @@
  * wrong and the button that fixes it) and the account menu (Log in,
  * Settings, pausing scheduled runs, Plan & billing, Sign out).
  */
-import { formatCents, OUT_OF_CREDIT, PLAN_FEATURE_TEXT, planName } from "@browsertodo/shared";
-import { todoAllowed } from "../account/types.js";
 import { uiRequest, type UiState } from "../ui-protocol.js";
-import { showAvatar } from "../ui/avatar.js";
+import { createAccountMenu } from "../ui/account-menu.js";
 import { $, busy } from "../ui/dom.js";
 import { clip } from "../text.js";
 import type { ErrorFixKind } from "./error-help.js";
@@ -35,12 +33,28 @@ export function initHeader(deps: HeaderDeps): Header {
   const statusEl = $("status");
   const statusText = $("status-text");
   const statusAction = $<HTMLButtonElement>("status-action");
-  const acct = $<HTMLDetailsElement>("acct");
-  const pauseItem = $<HTMLButtonElement>("acct-pause");
-  const signOutBtn = $<HTMLButtonElement>("acct-signout");
   /** A failed header action says why in the status line. */
   const say = (message: string) => (statusText.textContent = message);
   const request = async (type: "schedule.pause" | "schedule.resume" | "account.signOut") => deps.onState(await uiRequest({ type }));
+  // Always shown: signed out it offers Log in and Settings, signed in the account too.
+  const menu = createAccountMenu({
+    id: "acct",
+    signedOutTitle: "Log in or open settings",
+    items: [
+      { id: "acct-login", label: "Log in with Google", show: "signed-out", run: () => deps.onSignIn() },
+      {
+        id: "acct-pause",
+        label: "Pause scheduled runs",
+        show: "always",
+        run: (b) => void busy(b, () => request(b.dataset.paused ? "schedule.resume" : "schedule.pause"), say),
+      },
+      { id: "acct-open-settings", label: "Settings", show: "always", run: () => void openSettings() },
+      { id: "acct-billing", label: "Plan & billing", show: "signed-in", run: () => deps.onBilling() },
+      { id: "acct-signout", label: "Sign out", show: "signed-in", tone: "bad", run: (b) => void busy(b, () => request("account.signOut"), say) },
+    ],
+  });
+  $("acct-slot").replaceWith(menu.el);
+  const pauseItem = menu.item("acct-pause");
 
   function renderStatus(s: UiState): void {
     const line = statusLine(s);
@@ -74,28 +88,6 @@ export function initHeader(deps: HeaderDeps): Header {
     $("live-dot").hidden = !s.running;
   }
 
-  function renderAccount(s: UiState): void {
-    const a = s.account;
-    // Always shown: signed out it offers Log in and Settings, signed in the account too.
-    const user = a?.signedIn ? a.user : undefined;
-    acct.toggleAttribute("data-signed-in", !!user);
-    showAvatar($<HTMLImageElement>("acct-avatar"), $("acct-initial"), user ?? null);
-    if (!a || !user) {
-      $("acct-btn").title = "Log in or open settings";
-      return;
-    }
-    const who = user.name ? `${user.name} (${user.email})` : user.email;
-    $("acct-btn").title = `Signed in as ${who}`;
-    $("acct-email").textContent = user.email;
-    $("acct-email").title = who;
-    // A plan without the TODO list says so: the TODO tab then only offers a plan.
-    const plan = a.plan ? `${planName(a.plan.id)} plan${todoAllowed(a.plan) ? "" : `, no ${PLAN_FEATURE_TEXT.todo.name}`}` : "";
-    const credit = a.credit ? `${formatCents(a.credit.totalCents)} usage credit` : "";
-    const line = $("acct-plan");
-    line.textContent = [plan, a.outOfCredit ? OUT_OF_CREDIT : credit].filter(Boolean).join(" · ");
-    line.dataset.tone = a.outOfCredit ? "warn" : "";
-  }
-
   statusAction.addEventListener("click", () => {
     const action = statusAction.dataset.action;
     if (action === "resume") return void busy(statusAction, () => request("schedule.resume"), say);
@@ -103,22 +95,11 @@ export function initHeader(deps: HeaderDeps): Header {
     if (action && !runErrorFix(action as ErrorFixKind)) void openSettings("ai");
   });
 
-  // Any item closes the menu (a failure then shows in the status line).
-  $("acct-menu").addEventListener("click", (e) => {
-    if ((e.target as Element).closest("button")) acct.open = false;
-  });
-  pauseItem.addEventListener("click", () =>
-    void busy(pauseItem, () => request(pauseItem.dataset.paused ? "schedule.resume" : "schedule.pause"), say),
-  );
-  signOutBtn.addEventListener("click", () => void busy(signOutBtn, () => request("account.signOut"), say));
-  $("acct-open-settings").addEventListener("click", () => void openSettings());
-  $("acct-billing").addEventListener("click", () => deps.onBilling());
-  $("acct-login").addEventListener("click", () => deps.onSignIn());
 
   return {
     render(s) {
       renderStatus(s);
-      renderAccount(s);
+      menu.render(s.account);
     },
     unreachable(message) {
       statusEl.dataset.tone = "bad";

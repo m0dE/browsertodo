@@ -29,6 +29,21 @@ type NotificationListeners = { [N in NotificationName]?: Listeners<[HelperNotifi
 /** Why the link is down when Chrome gives no reason. */
 const DISCONNECTED = "Helper disconnected";
 
+/** Chrome could not find the native messaging host. */
+export const HELPER_NOT_INSTALLED = "Helper not installed";
+
+/** Chrome's native messaging errors, in plain words. */
+const CHROME_ERRORS: [RegExp, string][] = [
+  [/native messaging host not found/i, HELPER_NOT_INSTALLED],
+  [/access to the specified native messaging host is forbidden/i, "Helper installed for another extension ID"],
+  [/native host has exited/i, "Helper exited"],
+  [/error when communicating with the native messaging host/i, "Helper crashed"],
+];
+
+export function helperErrorText(chromeMessage: string): string {
+  return CHROME_ERRORS.find(([re]) => re.test(chromeMessage))?.[1] ?? chromeMessage;
+}
+
 /**
  * The native messaging connection to the local helper. One RpcPeer per port;
  * connect() opens a new port when the previous one is gone.
@@ -140,7 +155,7 @@ export class HelperLink {
     try {
       port = chrome.runtime.connectNative(hostName);
     } catch (err) {
-      this.lastErrorText = `Cannot start helper: ${errorMessage(err)}`;
+      this.lastErrorText = helperErrorText(errorMessage(err));
       throw new Error(this.lastErrorText);
     }
     const peer: HelperPeer = new RpcPeer<HelperMethods, BrowserMethods>((msg) => port.postMessage(msg), "e");
@@ -152,7 +167,8 @@ export class HelperLink {
       void peer.receive(m as RpcMessage);
     });
     port.onDisconnect.addListener(() => {
-      const reason = chrome.runtime.lastError?.message ?? DISCONNECTED;
+      const message = chrome.runtime.lastError?.message;
+      const reason = message ? helperErrorText(message) : DISCONNECTED;
       if (this.port === port) this.teardown(reason);
       else peer.close(reason);
     });

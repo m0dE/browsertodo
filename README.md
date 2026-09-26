@@ -51,7 +51,7 @@ It runs entirely on your machine. A cloud task queue is optional.
 | Option | You need | Notes |
 |---|---|---|
 | **Claude API** | An Anthropic API key | Runs inside the extension. Nothing else to install. |
-| **Local Claude Code** | Claude Code installed and signed in, plus the helper below (Windows) | Uses your Claude subscription. Runs headless, with only browsertodo's browser tools. |
+| **Local Claude Code** | Claude Code installed and signed in, plus the helper below | Uses your Claude subscription. Runs headless, with only browsertodo's browser tools. |
 | **Auto** (default) | Either of the above | Uses local Claude Code when the helper works, otherwise the API key. |
 
 The model setting (default Sonnet 5) applies to both brains.
@@ -67,7 +67,7 @@ each).
 ## Setup
 
 Requirements: Google Chrome, Node.js 22+ and pnpm 10 to build. The helper
-for local Claude Code needs Windows 10 or 11.
+for local Claude Code runs on Windows, macOS and Linux.
 
 1. **Build it.**
 
@@ -89,6 +89,9 @@ for local Claude Code needs Windows 10 or 11.
 
    Then click "Connect" under the helper status. The first connection runs a
    short Claude Code self-test. `--uninstall` removes the registration.
+   Signing in to Claude Code alone is not enough: Chrome reaches Claude Code
+   only through the registered helper. On macOS and Linux, run the installer
+   from a terminal where `claude` works: the helper keeps that PATH.
 
 4. **Optional:** add a Jev key in settings.
 

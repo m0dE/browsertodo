@@ -1,17 +1,22 @@
 /**
- * Registers the helper as a Chrome native messaging host (Windows).
+ * Registers the helper as a Chrome native messaging host.
  *
  *   node dist/install.js --extension-id <id> [--env KEY=VALUE ...]
  *   node dist/install.js --uninstall
  *
- * Writes %LOCALAPPDATA%\browsertodo\host\com.browsertodo.helper.json and
- * browsertodo-host.cmd, then points HKCU\Software\Google\Chrome\... and
+ * Windows: writes %LOCALAPPDATA%\browsertodo\host\com.browsertodo.helper.json
+ * and browsertodo-host.cmd, then points HKCU\Software\Google\Chrome\... and
  * HKCU\Software\Chromium\... NativeMessagingHosts\com.browsertodo.helper at
- * the manifest. This is a CLI, so printing to stdout is fine here.
+ * the manifest.
+ * macOS and Linux: writes the browsertodo-host.sh launcher to the host folder
+ * and com.browsertodo.helper.json to Chrome's and Chromium's per-user
+ * NativeMessagingHosts folders.
+ * This is a CLI, so printing to stdout is fine here.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { errorMessage, NATIVE_HOST_NAME } from "@browsertodo/shared";
 import { loadConfig, repoRoot } from "./config.js";
@@ -21,6 +26,7 @@ export const REGISTRY_KEYS = [
   `HKCU\\Software\\Chromium\\NativeMessagingHosts\\${NATIVE_HOST_NAME}`,
 ];
 export const LAUNCHER_NAME = "browsertodo-host.cmd";
+export const SH_LAUNCHER_NAME = "browsertodo-host.sh";
 export const MANIFEST_NAME = `${NATIVE_HOST_NAME}.json`;
 
 export function isExtensionId(id: string): boolean {
@@ -42,6 +48,32 @@ export function buildLauncher(opts: { nodePath: string; hostJsPath: string; env?
   for (const [k, v] of Object.entries(opts.env ?? {})) lines.push(`set "${k}=${v}"`);
   lines.push(`"${opts.nodePath}" "${opts.hostJsPath}" %*`);
   return lines.join("\r\n") + "\r\n";
+}
+
+/** A single-quoted sh word. */
+function shQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The sh launcher (macOS, Linux). Chrome started from the Dock or a desktop
+ * menu has a bare PATH, so the installer's PATH goes in too: the helper finds
+ * `claude` through it.
+ */
+export function buildShLauncher(opts: { nodePath: string; hostJsPath: string; env?: Record<string, string> }): string {
+  const lines = ["#!/bin/sh"];
+  for (const [k, v] of Object.entries(opts.env ?? {})) lines.push(`export ${k}=${shQuote(v)}`);
+  lines.push(`exec ${shQuote(opts.nodePath)} ${shQuote(opts.hostJsPath)} "$@"`);
+  return lines.join("\n") + "\n";
+}
+
+/** Chrome's and Chromium's per-user NativeMessagingHosts folders (macOS, Linux). */
+export function manifestDirs(platform: NodeJS.Platform, home: string): string[] {
+  if (platform === "darwin") {
+    const support = posix.join(home, "Library", "Application Support");
+    return [posix.join(support, "Google", "Chrome", "NativeMessagingHosts"), posix.join(support, "Chromium", "NativeMessagingHosts")];
+  }
+  return [posix.join(home, ".config", "google-chrome", "NativeMessagingHosts"), posix.join(home, ".config", "chromium", "NativeMessagingHosts")];
 }
 
 export interface InstallArgs {
@@ -88,38 +120,55 @@ function install(args: InstallArgs): void {
 
   const { hostDir } = loadConfig();
   mkdirSync(hostDir, { recursive: true });
-  const launcherPath = join(hostDir, LAUNCHER_NAME);
-  const manifestPath = join(hostDir, MANIFEST_NAME);
-  writeFileSync(launcherPath, buildLauncher({ nodePath: process.execPath, hostJsPath, env: args.env }));
-  writeFileSync(manifestPath, JSON.stringify(buildManifest({ extensionId, launcherPath }), null, 2));
-  for (const key of REGISTRY_KEYS) reg(["add", key, "/ve", "/t", "REG_SZ", "/d", manifestPath, "/f"]);
-
   console.log(`Registered ${NATIVE_HOST_NAME} for chrome-extension://${extensionId}/`);
-  console.log(`  manifest: ${manifestPath}`);
+  if (process.platform === "win32") {
+    const launcherPath = join(hostDir, LAUNCHER_NAME);
+    const manifestPath = join(hostDir, MANIFEST_NAME);
+    writeFileSync(launcherPath, buildLauncher({ nodePath: process.execPath, hostJsPath, env: args.env }));
+    writeFileSync(manifestPath, JSON.stringify(buildManifest({ extensionId, launcherPath }), null, 2));
+    for (const key of REGISTRY_KEYS) reg(["add", key, "/ve", "/t", "REG_SZ", "/d", manifestPath, "/f"]);
+    console.log(`  manifest: ${manifestPath}`);
+    console.log(`  launcher: ${launcherPath}`);
+    for (const key of REGISTRY_KEYS) console.log(`  registry: ${key}`);
+    return;
+  }
+  const launcherPath = join(hostDir, SH_LAUNCHER_NAME);
+  const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", ...args.env };
+  writeFileSync(launcherPath, buildShLauncher({ nodePath: process.execPath, hostJsPath, env }));
+  chmodSync(launcherPath, 0o755);
   console.log(`  launcher: ${launcherPath}`);
-  for (const key of REGISTRY_KEYS) console.log(`  registry: ${key}`);
+  const manifest = JSON.stringify(buildManifest({ extensionId, launcherPath }), null, 2);
+  for (const dir of manifestDirs(process.platform, homedir())) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, MANIFEST_NAME), manifest);
+    console.log(`  manifest: ${join(dir, MANIFEST_NAME)}`);
+  }
 }
 
 function uninstall(): void {
-  for (const key of REGISTRY_KEYS) {
-    try {
-      reg(["delete", key, "/f"]);
-      console.log(`Removed ${key}`);
-    } catch {
-      console.log(`Not present: ${key}`);
+  if (process.platform === "win32") {
+    for (const key of REGISTRY_KEYS) {
+      try {
+        reg(["delete", key, "/f"]);
+        console.log(`Removed ${key}`);
+      } catch {
+        console.log(`Not present: ${key}`);
+      }
+    }
+  } else {
+    for (const dir of manifestDirs(process.platform, homedir())) {
+      rmSync(join(dir, MANIFEST_NAME), { force: true });
+      console.log(`Removed ${join(dir, MANIFEST_NAME)}`);
     }
   }
   const { hostDir } = loadConfig();
   rmSync(join(hostDir, LAUNCHER_NAME), { force: true });
+  rmSync(join(hostDir, SH_LAUNCHER_NAME), { force: true });
   rmSync(join(hostDir, MANIFEST_NAME), { force: true });
   console.log(`Removed host files from ${hostDir}`);
 }
 
 function main(): void {
-  if (process.platform !== "win32") {
-    console.error("install.js only supports Windows (it writes to the Windows registry).");
-    process.exit(1);
-  }
   const args = parseArgs(process.argv.slice(2));
   if (args.uninstall) uninstall();
   else install(args);

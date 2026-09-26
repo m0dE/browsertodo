@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS, type BrainMode, type HelperInfo } from "@browsertodo/shared";
-import { needsHelper, NO_AI, resolveBrain } from "../src/engine/brain-resolver.js";
+import { needsHelper, resolveBrain } from "../src/engine/brain-resolver.js";
 
 const base: HelperInfo = { version: "2", jevAvailable: false, claudePath: "C:\\claude.exe", logDir: "L" };
 const ok: HelperInfo = { ...base, selfTest: { ok: true, ms: 900, at: "2026-09-24T00:00:00Z" } };
@@ -10,7 +10,7 @@ const notTested: HelperInfo = { ...base };
 const scripted: HelperInfo = { ...base, brain: "scripted", claudePath: null };
 
 function r(mode: BrainMode, helper: HelperInfo | null, key: boolean, extra: Partial<typeof DEFAULT_SETTINGS> = {}) {
-  return resolveBrain({ settings: { ...DEFAULT_SETTINGS, brain: mode, anthropicApiKey: key ? "sk" : "", ...extra }, helper, helperError: helper ? null : "host not found" });
+  return resolveBrain({ settings: { ...DEFAULT_SETTINGS, brain: mode, anthropicApiKey: key ? "sk" : "", ...extra }, helper, helperError: helper ? null : "Helper not installed" });
 }
 
 describe("resolveBrain", () => {
@@ -36,8 +36,11 @@ describe("resolveBrain", () => {
 
   it("explains why nothing is usable", () => {
     const s = r("auto", null, false);
-    expect(s.note).toMatch(new RegExp(`^${NO_AI}: .*Helper not connected: host not found`));
-    expect(s.helperError).toBe("host not found");
+    expect(s.note).toBe("No AI set up. Log in, add a Claude API key, or install the helper.");
+    expect(s.helperError).toBe("Helper not installed");
+    const exited = resolveBrain({ settings: { ...DEFAULT_SETTINGS, anthropicApiKey: "" }, helper: null, helperError: "Helper exited" });
+    expect(exited.note).toBe("No AI set up. Log in, add a Claude API key, or reconnect the helper.");
+    expect(r("auto", failed, false).note).toBe("No AI set up: Claude Code self-test failed: not logged in.");
     expect(r("claude-code", failed, true).note).toMatch(/self-test failed: not logged in/);
     expect(r("claude-code", noClaude, true).note).toMatch(/not found/);
     expect(r("claude-api", ok, false).note).toMatch(/No Claude API key/);
@@ -67,7 +70,7 @@ describe("resolveBrain with the browsertodo account", () => {
   const credit = { signedIn: true, hostedUsable: true };
   const noCredit = { signedIn: true, hostedUsable: false, outOfCredit: true };
   const ra = (mode: BrainMode, account: typeof credit | typeof signedOut | null, helper: HelperInfo | null, key: boolean) =>
-    resolveBrain({ settings: { ...DEFAULT_SETTINGS, brain: mode, anthropicApiKey: key ? "sk" : "" }, helper, helperError: helper ? null : "host not found", account });
+    resolveBrain({ settings: { ...DEFAULT_SETTINGS, brain: mode, anthropicApiKey: key ? "sk" : "" }, helper, helperError: helper ? null : "Helper not installed", account });
 
   it.each([
     // mode, account, helper, own key, expected
@@ -91,8 +94,8 @@ describe("resolveBrain with the browsertodo account", () => {
   it("explains what the hosted AI needs", () => {
     expect(ra("browsertodo", signedOut, ok, true).note).toBe("Sign in to use browsertodo AI");
     expect(ra("browsertodo", noCredit, ok, true).note).toMatch(/^Out of usage credit/);
-    expect(ra("auto", noCredit, null, false).note).toMatch(/^Out of usage credit: subscribe or top up.*or set a Claude API key/);
-    expect(ra("auto", signedOut, null, false).note).toMatch(/sign in for browsertodo AI/);
+    expect(ra("auto", noCredit, null, false).note).toBe("Out of credit. Top up, add a Claude API key, or install the helper.");
+    expect(ra("auto", signedOut, null, false).note).toBe("No AI set up. Log in, add a Claude API key, or install the helper.");
   });
 
   it("the hosted AI brings its own Jev (no key needed); off when Jev is switched off", () => {

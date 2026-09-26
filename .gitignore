@@ -10,3 +10,4 @@ playwright-report/
 apps/extension/test/ui/screenshots/
 apps/extension/config.json
 dist.building/
+/export/

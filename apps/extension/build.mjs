@@ -21,7 +21,7 @@ for (const size of [16, 48, 128]) {
 }
 
 // Build-time config: env BROWSERTODO_GOOGLE_CLIENT_ID, else config.json { "googleClientId": "..." }
-// (gitignored; see config.example.json). Empty = the Log In button explains that sign-in is not set up.
+// (gitignored; see config.example.json). Empty = Log In asks the account server (GET /v1/config) for it.
 function readConfig() {
   const file = join(root, "config.json");
   let fromFile = {};
@@ -35,7 +35,7 @@ function readConfig() {
   return { googleClientId: String(process.env.BROWSERTODO_GOOGLE_CLIENT_ID ?? fromFile.googleClientId ?? "").trim() };
 }
 const config = readConfig();
-if (!config.googleClientId) console.log("[build] no Google client ID: sign-in is disabled in this build (see apps/extension/README.md)");
+if (!config.googleClientId) console.log("[build] no Google client ID: sign-in will use the account server's (see apps/extension/README.md)");
 
 const common = {
   bundle: true,

@@ -184,7 +184,10 @@ export function settingsView(input: ViewInput): SettingsView {
   });
   const autoPick = auto.effective
     ? { text: `Right now this picks ${auto.effective === "claude-code" ? "Local Claude Code" : brainLabel(auto.effective)}.`, tone: "ok" as Tone }
-    : { text: "Right now nothing is set up: log in, add a Claude API key or connect the helper.", tone: "bad" as Tone };
+    : {
+        text: brain.helper ? "Nothing set up yet." : "Nothing set up yet. Signed in to Claude Code? Also install the helper: pick Local Claude Code.",
+        tone: "bad" as Tone,
+      };
 
   // The chosen brain as the runner resolves it (same function, the draft's choice).
   const chosen = resolveBrain({
@@ -195,9 +198,9 @@ export function settingsView(input: ViewInput): SettingsView {
   });
   let brainProblem: string | null = null;
   if (draft.brain === "browsertodo" && !signedIn) {
-    brainProblem = "browsertodo AI is selected but you are logged out, so no tasks run. Log in, or pick another brain.";
+    brainProblem = "Logged out. Log in or pick another brain.";
   } else if (draft.brain === "browsertodo" && !chosen.effective) {
-    brainProblem = `${OUT_OF_CREDIT}, so no tasks run on browsertodo AI. Top up, get a plan, or pick another brain.`;
+    brainProblem = `${OUT_OF_CREDIT}. Top up or pick another brain.`;
   }
   // Local Claude Code and the Claude API say what is missing in their own inline sections.
 

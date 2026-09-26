@@ -98,7 +98,7 @@ describe("browsertodo AI option", () => {
   });
   it("saved as the brain while signed out: says no tasks run (the runner does not fall back)", () => {
     const v = view({ brain: "browsertodo", account: SIGNED_OUT, helper: HELPER, settings: { anthropicApiKey: "sk" } });
-    expect(v.brainProblem).toMatch(/logged out, so no tasks run/);
+    expect(v.brainProblem).toMatch(/Logged out/);
     expect(v.showHostedSignIn).toBe(true);
   });
   it("chosen with no credit on the free plan: says so", () => {
@@ -140,7 +140,10 @@ describe("Auto says what it would pick now", () => {
     expect(view({ settings: { anthropicApiKey: "sk" } }).autoPick).toEqual({ text: "Right now this picks Claude API.", tone: "ok" });
   });
   it("nothing set up", () => {
-    expect(view({ helperError: "not found" }).autoPick.tone).toBe("bad");
+    expect(view({ helperError: "not found" }).autoPick).toEqual({
+      text: "Nothing set up yet. Signed in to Claude Code? Also install the helper: pick Local Claude Code.",
+      tone: "bad",
+    });
   });
   it("is the same whatever brain is saved", () => {
     expect(view({ brain: "claude-api", account: PLUS }).autoPick.text).toMatch(/browsertodo AI/);

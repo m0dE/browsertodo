@@ -163,7 +163,7 @@ export function scenario(kind) {
   if (kind === "opt-signedout") state.account = { signedIn: false, signInConfigured: true, apiBase: API, dashboardUrl: `${API}/` };
   if (kind === "idle" || kind === "free" || kind === "empty" || kind === "noshortcut") state.running = null;
   if (kind === "nobrain") {
-    state.brain = { effective: null, note: "No brain available: add a Claude API key, or install the helper for Claude Code.", helper: null, helperError: "Specified native messaging host not found.", hasApiKey: false, jevActive: false };
+    state.brain = { effective: null, note: "No AI set up. Log in, add a Claude API key, or install the helper.", helper: null, helperError: "Helper not installed", hasApiKey: false, jevActive: false };
     state.running = null;
     settings.anthropicApiKey = "";
   }

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { REGISTRY_KEYS, buildLauncher, buildManifest, isExtensionId, parseArgs, readExtensionIdFile } from "../src/install.js";
+import { REGISTRY_KEYS, buildLauncher, buildManifest, buildShLauncher, isExtensionId, manifestDirs, parseArgs, readExtensionIdFile } from "../src/install.js";
 
 const ID = "abcdefghijklmnopabcdefghijklmnop";
 
@@ -30,6 +30,20 @@ describe("install", () => {
     expect(buildLauncher({ nodePath: "node.exe", hostJsPath: "host.js", env: { BROWSERTODO_BRAIN: "scripted" } })).toBe(
       '@echo off\r\nset "BROWSERTODO_BRAIN=scripted"\r\n"node.exe" "host.js" %*\r\n',
     );
+  });
+
+  it("builds the sh launcher, quoting paths and env values", () => {
+    expect(buildShLauncher({ nodePath: "/opt/node/bin/node", hostJsPath: "/Users/me/repo/apps/helper/dist/host.js", env: { PATH: "/usr/bin:/bin", NOTE: "it's" } })).toBe(
+      "#!/bin/sh\nexport PATH='/usr/bin:/bin'\nexport NOTE='it'\\''s'\nexec '/opt/node/bin/node' '/Users/me/repo/apps/helper/dist/host.js' \"$@\"\n",
+    );
+  });
+
+  it("puts the manifest where Chrome and Chromium look on macOS and Linux", () => {
+    expect(manifestDirs("darwin", "/Users/me")).toEqual([
+      "/Users/me/Library/Application Support/Google/Chrome/NativeMessagingHosts",
+      "/Users/me/Library/Application Support/Chromium/NativeMessagingHosts",
+    ]);
+    expect(manifestDirs("linux", "/home/me")).toEqual(["/home/me/.config/google-chrome/NativeMessagingHosts", "/home/me/.config/chromium/NativeMessagingHosts"]);
   });
 
   it("registers under both Chrome and Chromium", () => {

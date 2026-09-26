@@ -1,5 +1,9 @@
 /** Pure helpers for the options page: building settings.save patches and status text. */
 import { SECRET_SETTING_KEYS, type ExtensionSettings, type HelperInfo } from "@browsertodo/shared";
+import { HELPER_NOT_INSTALLED } from "../helper-link.js";
+
+/** Why the helper is needed at all: people sign in to Claude Code and expect that to be enough. */
+export const HELPER_WHY = "Signing in to Claude Code is not enough: Chrome reaches it only through this helper.";
 
 /** A key field: masked, saved one by one with its own buttons (secret-field.ts). */
 export type SecretKey = (typeof SECRET_SETTING_KEYS)[number];
@@ -38,8 +42,8 @@ export function helperStatus(helper: HelperInfo | null, helperError?: string): H
   if (!helper) {
     return {
       tone: helperError ? "bad" : "muted",
-      headline: "Helper not connected",
-      details: helperError ? [helperError] : ["Needed only for local Claude Code."],
+      headline: helperError || "Helper not connected",
+      details: !helperError || helperError === HELPER_NOT_INSTALLED ? [HELPER_WHY] : [],
     };
   }
   // A scripted helper (tests) runs tasks without Claude Code, so it never has one.

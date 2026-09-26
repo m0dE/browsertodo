@@ -17,7 +17,7 @@ export const HELPER_VERSION: string = helperPackage.version;
 export const DEFAULT_CLAUDE_MODEL = "sonnet";
 
 export interface HelperConfig {
-  /** %LOCALAPPDATA%\browsertodo, or BROWSERTODO_HOME. */
+  /** BROWSERTODO_HOME, else %LOCALAPPDATA%\browsertodo (Windows), ~/Library/Application Support/browsertodo (macOS) or ~/.local/share/browsertodo. */
   baseDir: string;
   logDir: string;
   runsDir: string;
@@ -76,14 +76,21 @@ export function repoRoot(): string {
   return resolve(helperRoot(), "..", "..");
 }
 
+/** The folder that holds browsertodo's folder when BROWSERTODO_HOME is not set. */
+function appDataDir(env: Record<string, string | undefined>): string {
+  if (env.LOCALAPPDATA) return env.LOCALAPPDATA;
+  if (process.platform === "win32") return join(homedir(), "AppData", "Local");
+  if (process.platform === "darwin") return join(homedir(), "Library", "Application Support");
+  return env.XDG_DATA_HOME || join(homedir(), ".local", "share");
+}
+
 export function loadConfig(
   processEnv: Record<string, string | undefined> = process.env,
   opts: { dotenvDirs?: string[] } = {},
 ): HelperConfig {
   const root = helperRoot();
   const env = loadEnv(opts.dotenvDirs ?? [repoRoot(), root], processEnv);
-  const localAppData = env.LOCALAPPDATA || join(homedir(), "AppData", "Local");
-  const baseDir = env[ENV.home] || join(localAppData, "browsertodo");
+  const baseDir = env[ENV.home] || join(appDataDir(env), "browsertodo");
   const key = env[ENV.typesafeApiKey]?.trim();
   return {
     baseDir,

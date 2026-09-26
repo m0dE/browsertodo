@@ -49,6 +49,12 @@ export class AccountApi {
     return this.http.hasToken;
   }
 
+  /** GET /v1/config (public): the server's Google client ID ("" when sign-in is not set up there). */
+  async googleClientId(): Promise<string> {
+    const body = (await (await this.http.request("GET", "/v1/config", undefined, { auth: false })).json()) as { googleClientId?: unknown };
+    return typeof body?.googleClientId === "string" ? body.googleClientId.trim() : "";
+  }
+
   /** POST /v1/auth/google (public). */
   signIn(idToken: string): Promise<AuthResponse> {
     return this.http.json(AuthResponse, "POST", "/v1/auth/google", { idToken }, { auth: false });

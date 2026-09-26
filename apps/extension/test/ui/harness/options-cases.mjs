@@ -53,7 +53,7 @@ export const OPTION_CASES = [
     ["browsertodo AI disabled", async () => !(await p.isEnabled(radio("browsertodo")))],
     ["still shown as the saved choice", () => p.isChecked(radio("browsertodo"))],
     ["log in button", () => shown(p, "#hosted-signin")],
-    ["signed-out problem explained", async () => /logged out, so no tasks run/.test(await p.textContent("#brain-problem"))],
+    ["signed-out problem explained", async () => /Logged out/.test(await p.textContent("#brain-problem"))],
   ]],
   ["options-ai-signedout", "opt-signedout", "#ai", () => {}, (p) => [
     ["browsertodo AI disabled", async () => !(await p.isEnabled(radio("browsertodo")))],
@@ -65,8 +65,15 @@ export const OPTION_CASES = [
     ["no install steps when connected", async () => !(await shown(p, "#helper-install"))],
     ["API key hidden", async () => !(await shown(p, "[data-secret=anthropicApiKey]"))],
   ]],
+  ["options-ai-nothing", "nobrain", "#ai", (d) => {
+    d.state.settings.brain = "auto";
+    d.state.account = { signedIn: false, signInConfigured: true, apiBase: d.state.account.apiBase, dashboardUrl: d.state.account.dashboardUrl };
+  }, (p) => [
+    ["Auto points signed-in Claude Code users at the helper", async () => /install the helper/.test(await p.textContent("#auto-pick"))],
+  ]],
   ["options-ai-nohelper", "nobrain", "#ai", (d) => (d.state.settings.brain = "claude-code"), (p) => [
-    ["helper not connected", async () => /not connected/.test(await p.textContent("#helper-headline"))],
+    ["helper not installed", async () => /not installed/.test(await p.textContent("#helper-headline"))],
+    ["says signing in is not enough", async () => /not enough/.test(await p.textContent("#helper-details"))],
     ["install steps", () => shown(p, "#helper-install")],
     ["Connect button", async () => (await p.textContent("#helper-connect")) === "Connect"],
   ]],

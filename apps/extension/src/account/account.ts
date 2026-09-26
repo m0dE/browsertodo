@@ -71,7 +71,7 @@ export interface AccountLocalTasks {
 
 export interface AccountServiceDeps {
   loadSettings(): Promise<ExtensionSettings>;
-  /** Built-in Google OAuth client ID ("" = sign-in not set up). */
+  /** Built-in Google OAuth client ID ("" = ask the account server's GET /v1/config). */
   clientId: string;
   identity?: { redirectUri(): string; launch(url: string): Promise<string | undefined> };
   localTasks: AccountLocalTasks;
@@ -160,7 +160,8 @@ export class AccountService {
   async view(): Promise<AccountView> {
     const a = await this.load();
     const base = this.apiBase;
-    const view: AccountView = { signedIn: false, signInConfigured: !!this.deps.clientId, apiBase: base, dashboardUrl: dashboardUrl(base) };
+    // Without a built-in client ID the account server names one at sign-in (and says so when it has none).
+    const view: AccountView = { signedIn: false, signInConfigured: !!this.deps.clientId || !!base, apiBase: base, dashboardUrl: dashboardUrl(base) };
     const s = this.session();
     if (!s) return view;
     view.signedIn = true;
@@ -211,12 +212,13 @@ export class AccountService {
 
   async signIn(): Promise<void> {
     const settings = await this.deps.loadSettings();
-    if (!this.deps.clientId) throw new SignInError(SIGN_IN_NOT_SET_UP);
+    if (!this.deps.clientId && !settings.accountApiBase) throw new SignInError(SIGN_IN_NOT_SET_UP);
     if (!settings.accountApiBase) throw new SignInError("Set the account server URL first (Settings > Advanced)");
     const identity = this.deps.identity;
     if (!identity) throw new SignInError("Sign-in is not available in this browser");
-    const idToken = await googleIdToken({ clientId: this.deps.clientId, redirectUri: identity.redirectUri(), launch: (url) => identity.launch(url) });
     const api = new AccountApi(this.apiOpts(settings.accountApiBase));
+    const clientId = this.deps.clientId || (await this.serverClientId(api));
+    const idToken = await googleIdToken({ clientId, redirectUri: identity.redirectUri(), launch: (url) => identity.launch(url) });
     let auth;
     try {
       auth = await api.signIn(idToken);
@@ -230,6 +232,18 @@ export class AccountService {
       session: { token: auth.token, user: auth.user, expiresAt: auth.expiresAt, apiBase: settings.accountApiBase },
     });
     await this.refresh(true);
+  }
+
+  /** The account server's Google client ID, for builds without one built in. */
+  private async serverClientId(api: AccountApi): Promise<string> {
+    let id: string;
+    try {
+      id = await api.googleClientId();
+    } catch (err) {
+      throw new SignInError(`Could not reach the account server (${api.base}): ${errorMessage(err)}`);
+    }
+    if (!id) throw new SignInError(`Google sign-in is not set up on the account server (${api.base})`);
+    return id;
   }
 
   async signOut(): Promise<void> {

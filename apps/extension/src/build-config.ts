@@ -7,7 +7,7 @@ declare const __BROWSERTODO_GOOGLE_CLIENT_ID__: string | undefined;
 /**
  * Google OAuth client ID for "Log In" (a Web application client whose
  * redirect URI is https://<extension id>.chromiumapp.org/). Empty: sign-in
- * is not set up in this build; see apps/extension/README.md.
+ * uses the account server's (GET /v1/config); see apps/extension/README.md.
  */
 export const GOOGLE_CLIENT_ID: string =
   typeof __BROWSERTODO_GOOGLE_CLIENT_ID__ === "string" ? __BROWSERTODO_GOOGLE_CLIENT_ID__.trim() : "";

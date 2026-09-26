@@ -1,6 +1,6 @@
 /** Names of the environment variables the helper reads (from .env files or the environment) or sets for the processes it starts. */
 export const ENV = {
-  /** Base folder for logs, runs and helper.json. Default %LOCALAPPDATA%\browsertodo. */
+  /** Base folder for logs, runs and helper.json. Default: see HelperConfig.baseDir. */
   home: "BROWSERTODO_HOME",
   /** "scripted": the deterministic scripted brain instead of Claude Code (tests, e2e). */
   brain: "BROWSERTODO_BRAIN",

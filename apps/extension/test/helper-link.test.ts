@@ -39,7 +39,7 @@ describe("HelperLink", () => {
   it("rejects with Chrome's error when the host is missing", async () => {
     chrome.runtime.onConnectNative = (port) => queueMicrotask(() => port.hostDisconnect("Specified native messaging host not found."));
     const link = new HelperLink({ registerHandlers: () => {} });
-    await expect(link.connect()).rejects.toThrow("Specified native messaging host not found.");
+    await expect(link.connect()).rejects.toThrow("Helper not installed");
     expect(link.connected).toBe(false);
     expect(link.info).toBeNull();
   });
@@ -73,8 +73,8 @@ describe("HelperLink", () => {
     await link.connect();
     const pending = link.call("helper.runTask", {} as never);
     chrome.runtime.ports[0]!.hostDisconnect("Native host has exited.");
-    await expect(pending).rejects.toThrow(/Native host has exited/);
-    expect(onDisc).toHaveBeenCalledWith("Native host has exited.");
+    await expect(pending).rejects.toThrow("Helper exited");
+    expect(onDisc).toHaveBeenCalledWith("Helper exited");
     expect(link.connected).toBe(false);
     expect(link.info).toBeNull();
 
@@ -123,7 +123,7 @@ describe("HelperLink", () => {
     chrome.runtime.onConnectNative = (port) => queueMicrotask(() => port.hostDisconnect("Specified native messaging host not found."));
     const link = new HelperLink({ registerHandlers: () => {} });
     await link.connect().catch(() => {});
-    expect(link.lastError).toBe("Specified native messaging host not found.");
+    expect(link.lastError).toBe("Helper not installed");
   });
 
   it("call() fails fast when not connected", async () => {

@@ -12,7 +12,9 @@ BROWSERTODO_GOOGLE_CLIENT_ID=1234567890-abc.apps.googleusercontent.com pnpm --fi
 { "googleClientId": "1234567890-abc.apps.googleusercontent.com" }
 ```
 
-Without it, Log In says "Sign-in isn't set up yet". The client needs the
+Without it, Log In asks the account server for its client ID (`GET /v1/config`,
+the API's first `GOOGLE_CLIENT_ID`), and says so plainly when the server has
+none. Either way the client needs the
 redirect URI `https://<extension id>.chromiumapp.org/` (the ID is in
 `extension-id.txt`), and the account server must accept the same client ID
 (`GOOGLE_CLIENT_ID`, see `apps/api/README.md`).

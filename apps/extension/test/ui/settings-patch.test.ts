@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS, redactSettings, type ExtensionSettings } from "@browsertodo/shared";
-import { adjustedFields, buildSettingsPatch, helperStatus } from "../../src/options/settings-patch.js";
+import { adjustedFields, buildSettingsPatch, HELPER_WHY, helperStatus } from "../../src/options/settings-patch.js";
 
 const saved: ExtensionSettings = redactSettings({ ...DEFAULT_SETTINGS, anthropicApiKey: "sk-real", runnerKey: "" });
 
@@ -33,10 +33,9 @@ describe("helperStatus", () => {
   const info = { version: "0.2.0", jevAvailable: false, claudePath: "C:\\claude.exe", logDir: "x", ptyAvailable: true };
   it("not connected", () => {
     expect(helperStatus(null)).toMatchObject({ tone: "muted", headline: "Helper not connected" });
-    expect(helperStatus(null, "Specified native messaging host not found.")).toMatchObject({
-      tone: "bad",
-      details: ["Specified native messaging host not found."],
-    });
+    expect(helperStatus(null).details).toEqual([HELPER_WHY]);
+    expect(helperStatus(null, "Helper not installed")).toEqual({ tone: "bad", headline: "Helper not installed", details: [HELPER_WHY] });
+    expect(helperStatus(null, "Helper exited")).toEqual({ tone: "bad", headline: "Helper exited", details: [] });
   });
   it("connected with a passing self-test", () => {
     const s = helperStatus({ ...info, selfTest: { ok: true, ms: 4200, at: "t" } });

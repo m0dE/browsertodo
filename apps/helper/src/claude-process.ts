@@ -42,8 +42,9 @@ export function resolveClaudePath(
       .map((l) => l.trim())
       .filter(Boolean);
     // With shell: false we need a real executable, not a .cmd/.ps1 shim.
-    const exe = process.platform === "win32" ? found.find((p) => p.toLowerCase().endsWith(".exe")) : found[0];
-    if (exe && exists(exe)) return exe;
+    const candidates = process.platform === "win32" ? found.filter((p) => p.toLowerCase().endsWith(".exe")) : found;
+    const exe = candidates.find((p) => exists(p));
+    if (exe) return exe;
   } catch {
     /* not on PATH */
   }

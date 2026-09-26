@@ -7,6 +7,7 @@
  * - auto: browsertodo when usable, else claude-code, else claude-api, else nothing.
  */
 import type { BrainKind, ExtensionSettings, HelperInfo } from "@browsertodo/shared";
+import { HELPER_NOT_INSTALLED } from "../helper-link.js";
 import type { BrainStatus } from "../ui-protocol.js";
 
 export interface BrainInputs {
@@ -22,7 +23,8 @@ export const HOSTED_LABEL = "browsertodo AI";
 export const HOSTED_SIGN_IN = `Sign in to use ${HOSTED_LABEL}`;
 export const HOSTED_NO_CREDIT = `Out of usage credit: subscribe or top up to use ${HOSTED_LABEL}`;
 /** No brain can run tasks (the status note says why, when there is one). */
-export const NO_AI = "No AI is set up to run tasks";
+export const NO_AI = "No AI set up";
+
 
 /** Why the hosted AI cannot be used, or null when it can. */
 function hostedProblem(account: BrainInputs["account"]): string | null {
@@ -33,12 +35,25 @@ function hostedProblem(account: BrainInputs["account"]): string | null {
 
 /** Why local Claude Code cannot be used, or null when it can. */
 function claudeCodeProblem(helper: HelperInfo | null, helperError?: string | null): string | null {
-  if (!helper) return `Helper not connected${helperError ? `: ${helperError}` : ""}`;
+  if (!helper) return helperError || "Helper not connected";
   if (helper.brain === "scripted") return null;
-  if (!helper.claudePath) return "Claude Code was not found on this computer";
-  if (!helper.selfTest) return "Claude Code self-test has not run yet";
+  if (!helper.claudePath) return "Claude Code not found";
+  if (!helper.selfTest) return "Claude Code self-test not run yet";
   if (!helper.selfTest.ok) return `Claude Code self-test failed${helper.selfTest.error ? `: ${helper.selfTest.error}` : ""}`;
   return null;
+}
+
+/**
+ * The note when no brain works: what to do next. With the helper connected
+ * the local Claude Code problem is the one to fix; without it, the choices.
+ */
+function nothingUsable(inputs: BrainInputs, ccProblem: string): string {
+  const head = inputs.account?.signedIn ? "Out of credit" : NO_AI;
+  if (inputs.helper) return `${head}: ${ccProblem}.`;
+  const first = inputs.account?.signedIn ? "Top up" : "Log in";
+  const helperErr = inputs.helperError;
+  const helperStep = !helperErr || helperErr === HELPER_NOT_INSTALLED ? "install the helper" : "reconnect the helper";
+  return `${head}. ${first}, add a Claude API key, or ${helperStep}.`;
 }
 
 function jevActiveFor(brain: BrainKind | null, inputs: BrainInputs): boolean {
@@ -79,7 +94,7 @@ export function resolveBrain(inputs: BrainInputs): BrainStatus {
       break;
     case "claude-api":
       if (hasApiKey) effective = "claude-api";
-      else note = "No Claude API key set. Add one in Settings.";
+      else note = "No Claude API key set";
       break;
     default:
       if (!hosted) effective = "browsertodo";
@@ -87,11 +102,7 @@ export function resolveBrain(inputs: BrainInputs): BrainStatus {
       else if (hasApiKey) {
         effective = "claude-api";
         note = `Using the Claude API key (${ccProblem})`;
-      } else if (inputs.account?.signedIn) {
-        note = `${HOSTED_NO_CREDIT}, or set a Claude API key, or install the helper and Claude Code (${ccProblem})`;
-      } else {
-        note = `${NO_AI}: sign in for ${HOSTED_LABEL}, set a Claude API key, or install the helper and Claude Code (${ccProblem})`;
-      }
+      } else note = nothingUsable(inputs, ccProblem);
   }
   const status: BrainStatus = {
     effective,

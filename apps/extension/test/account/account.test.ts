@@ -115,11 +115,38 @@ describe("AccountService sign-in", () => {
     await expect(setup({ identity: google({ aud: "other.apps.googleusercontent.com" }) }).account.signIn()).rejects.toThrow(/another app/);
   });
 
-  it("without a built-in client ID, says sign-in is not set up (and never opens Google)", async () => {
+  it("without a built-in client ID, signs in with the account server's (GET /v1/config)", async () => {
     const t = setup({ clientId: "" });
-    await expect(t.account.signIn()).rejects.toThrow(SIGN_IN_NOT_SET_UP);
+    t.api.on("GET /v1/config", { body: { googleClientId: ` ${CLIENT} `, stripeConfigured: true, dashboard: true } });
+    expect(await t.account.view()).toMatchObject({ signedIn: false, signInConfigured: true });
+    await t.account.signIn();
+    const config = t.api.calls.find((c) => c.path === "/v1/config")!;
+    expect(config.headers.authorization).toBeUndefined();
+    expect(new URL(t.identity.launch.mock.calls[0]![0]).searchParams.get("client_id")).toBe(CLIENT);
+    expect((await t.account.view()).signedIn).toBe(true);
+  });
+
+  it("with a built-in client ID, does not ask the server for one", async () => {
+    const t = setup();
+    await t.account.signIn();
+    expect(t.api.calls.some((c) => c.path === "/v1/config")).toBe(false);
+  });
+
+  it("without a client ID anywhere, says sign-in is not set up on that server (and never opens Google)", async () => {
+    const t = setup({ clientId: "" });
+    t.api.on("GET /v1/config", { body: { googleClientId: "", stripeConfigured: false, dashboard: true } });
+    await expect(t.account.signIn()).rejects.toThrow("Google sign-in is not set up on the account server (https://api.test)");
     expect(t.identity.launch).not.toHaveBeenCalled();
+    t.setSettings({ accountApiBase: "" });
+    await expect(t.account.signIn()).rejects.toThrow(SIGN_IN_NOT_SET_UP);
     expect(await t.account.view()).toMatchObject({ signedIn: false, signInConfigured: false });
+  });
+
+  it("an unreachable account server is named when it has to supply the client ID", async () => {
+    const t = setup({ clientId: "" });
+    t.api.on("GET /v1/config", { status: 500, body: { error: "boom" } });
+    await expect(t.account.signIn()).rejects.toThrow(/Could not reach the account server \(https:\/\/api\.test\)/);
+    expect(t.identity.launch).not.toHaveBeenCalled();
   });
 
   it("503 from the server (no GOOGLE_CLIENT_ID there) is shown plainly", async () => {

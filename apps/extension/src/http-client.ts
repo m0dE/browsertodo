@@ -120,8 +120,12 @@ export class HttpClient {
       /* not JSON */
     }
     const status = res.statusText || `HTTP ${res.status}`;
-    // A JSON body without words (e.g. only a machine code) says no more than the status.
-    const said = serverMessage(body) ?? (body ? status : text.slice(0, MAX_ERROR_TEXT) || status);
+    // A JSON body without words (e.g. only a machine code) says no more than the status. A web page
+    // (e.g. a proxy's or Cloudflare's error page) is never shown as text: it says the server isn't answering as the API.
+    const isPage = /html/i.test(res.headers.get("content-type") ?? "") || /^\s*</.test(text);
+    const said =
+      serverMessage(body) ??
+      (body ? status : isPage ? `The server answered with a web page instead of the API (HTTP ${res.status}). Check the server address in Settings.` : text.slice(0, MAX_ERROR_TEXT) || status);
     const label = this.opts.label;
     return new ApiRequestError(res.status, label ? `${label} ${res.status}: ${said}` : said, body);
   }

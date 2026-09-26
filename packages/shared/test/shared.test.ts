@@ -74,6 +74,11 @@ describe("settings", () => {
     expect(s.intervalMinutes).toBe(5);
     expect(s.jevThreshold).toBe(DEFAULT_SETTINGS.jevThreshold);
   });
+  it("moves a saved earlier default account server to the current one, and keeps a self-hosted one", () => {
+    expect(parseSettings({ accountApiBase: "https://browsertodo-api.jaeyun.workers.dev/" }).accountApiBase).toBe("https://app.browsertodo.com");
+    expect(parseSettings({ accountApiBase: "https://api.example.org" }).accountApiBase).toBe("https://api.example.org");
+    expect(parseSettings({}).accountApiBase).toBe("https://app.browsertodo.com");
+  });
   it("fixes an inverted delay range", () => {
     const s = parseSettings({ delayMinSec: 100, delayMaxSec: 10 });
     expect(s.delayMaxSec).toBe(100);

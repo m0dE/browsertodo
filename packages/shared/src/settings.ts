@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { DEFAULT_MODEL } from "./models.js";
 
+/** The browsertodo account server. */
+export const ACCOUNT_API_BASE = "https://app.browsertodo.com";
+/** Earlier defaults of accountApiBase; a saved one is moved to ACCOUNT_API_BASE. (The old address still answers.) */
+export const PREVIOUS_ACCOUNT_API_BASES: readonly string[] = ["https://browsertodo-api.jaeyun.workers.dev"];
+
 export const BrainMode = z.enum(["auto", "claude-code", "claude-api", "browsertodo"]);
 export type BrainMode = z.infer<typeof BrainMode>;
 
@@ -20,7 +25,7 @@ export const ExtensionSettings = z.object({
    * The browsertodo account server (Google sign-in, the account's TODO list,
    * billing and the hosted AI). Self-hosters point it at their own API.
    */
-  accountApiBase: z.string().default("https://app.browsertodo.com"),
+  accountApiBase: z.string().default(ACCOUNT_API_BASE),
   /** Cloud task queue with a runner key (self-hosters). Off by default; local tasks always work. */
   cloudEnabled: z.boolean().default(false),
   apiBase: z.string().default(""),
@@ -64,6 +69,8 @@ export function parseSettings(raw: unknown): ExtensionSettings {
   if (s.delayMaxSec < s.delayMinSec) s.delayMaxSec = s.delayMinSec;
   s.apiBase = s.apiBase.replace(/\/+$/, "");
   s.accountApiBase = s.accountApiBase.trim().replace(/\/+$/, "");
+  // Installs saved with an earlier default follow the default to its new address.
+  if (PREVIOUS_ACCOUNT_API_BASES.includes(s.accountApiBase)) s.accountApiBase = ACCOUNT_API_BASE;
   return s;
 }
 

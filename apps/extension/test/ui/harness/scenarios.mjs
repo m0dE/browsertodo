@@ -170,7 +170,7 @@ export function scenario(kind) {
   if (kind === "opt-signedout") state.account = { signedIn: false, signInConfigured: true, apiBase: API, dashboardUrl: `${API}/`, billingUrl: `${API}/billing` };
   if (kind === "idle" || kind === "free" || kind === "empty" || kind === "noshortcut") state.running = null;
   if (kind === "nobrain") {
-    state.brain = { effective: null, note: "No AI set up. Log in, add a Claude API key, or install the helper.", helper: null, helperError: "Helper not installed", hasApiKey: false, jevActive: false };
+    state.brain = { effective: null, note: "No AI set up. Install the helper, add a Claude API key, or log in.", helper: null, helperError: "Helper not installed", hasApiKey: false, jevActive: false };
     state.running = null;
     settings.anthropicApiKey = "";
   }
@@ -388,7 +388,7 @@ export function scenario(kind) {
     };
     const oev = (minutes, e) => ({ ...e, ts: iso(minutes), sessionId: "s-out" });
     eventsBySession["s-out"] = [
-      oev(-3, { type: "status", text: "browsertodo AI (claude-sonnet-5) with Jev" }),
+      oev(-3, { type: "status", text: "BrowserTODO AI (claude-sonnet-5) with Jev" }),
       oev(-3, { type: "assistant_text", text: "Opening the tracker." }),
       oev(-3, { type: "tool_call", id: "1", name: "navigate", args: { url: "https://tracker.example.com/issues" } }),
       oev(-3, { type: "tool_result", id: "1", name: "navigate", text: "Opened https://tracker.example.com/issues" }),
@@ -398,6 +398,44 @@ export function scenario(kind) {
     sessions.unshift(out);
     state.tabChats = { "1": "s-out" };
     tasks[0] = { ...tasks[0], status: "paused", pauseReason: "Out of usage credit", attempts: 1 };
+  }
+  if (kind.startsWith("err-")) {
+    // A failed turn in the chat of tab 1: each shows its error once, in plain words, with the button that fixes it.
+    const failures = {
+      // The server's own AI key was refused (502 hosted_ai_unavailable): the error event, then the end with the same reason.
+      "err-hosted": { brain: "browsertodo", model: "claude-opus-5-5", error: "BrowserTODO AI is unavailable right now", outcome: "failed", reason: "BrowserTODO AI is unavailable right now" },
+      // Local Claude Code's helper went away mid-turn: no error event, only the end's reason.
+      "err-helper": { brain: "claude-code", outcome: "retry", reason: "helper disconnected: Native host has exited." },
+      "err-ratelimit": {
+        brain: "claude-api", error: "Claude API rate limit (HTTP 429: rate_limit_error: Number of request tokens has exceeded your per-minute rate limit)",
+        outcome: "retry", reason: "Claude API rate limit (HTTP 429: rate_limit_error: Number of request tokens has exceeded your per-minute rate limit); gave up after 4 attempts",
+      },
+      // An error the panel does not know: a generic line, Retry, and the text behind Details.
+      "err-unknown": {
+        brain: "claude-api", error: "Claude API error (HTTP 400: invalid_request_error: prompt is too long: 250312 tokens > 200000 maximum)",
+        outcome: "failed", reason: "Claude API error (HTTP 400: invalid_request_error: prompt is too long: 250312 tokens > 200000 maximum)",
+      },
+    };
+    const f = failures[kind];
+    const s = {
+      sessionId: "s-err", source: "adhoc", title: "Summarize the three newest issues on the tracker", brain: f.brain, jev: true,
+      ...(f.model ? { model: f.model } : {}), startedAt: iso(-3), endedAt: iso(-2), outcome: f.outcome, reason: f.reason,
+    };
+    const eev = (minutes, e) => ({ ...e, ts: iso(minutes), sessionId: "s-err" });
+    eventsBySession["s-err"] = [
+      eev(-3, { type: "assistant_text", text: "Opening the tracker." }),
+      eev(-3, { type: "tool_call", id: "1", name: "navigate", args: { url: "https://tracker.example.com/issues" } }),
+      eev(-3, { type: "tool_result", id: "1", name: "navigate", text: "Opened https://tracker.example.com/issues" }),
+      ...(f.error ? [eev(-2, { type: "error", text: f.error })] : []),
+      eev(-2, { type: "task_end", outcome: f.outcome, reason: f.reason }),
+    ];
+    sessions.unshift(s);
+    state.running = null;
+    state.tabChats = { "1": "s-err" };
+    if (f.brain === "browsertodo") {
+      state.brain = { effective: "browsertodo", helper, hasApiKey: false, jevActive: true };
+      settings.anthropicApiKey = "";
+    }
   }
   if (kind === "details") {
     // The running task has long instructions with links, files and an account; a one-off chat has a multi-line message.

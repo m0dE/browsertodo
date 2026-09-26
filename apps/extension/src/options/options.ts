@@ -277,7 +277,7 @@ function applyState(s: UiState): void {
 const accountSection = initAccountSection({ onState: (s) => renderState(s) });
 const hostedSignIn = $<HTMLButtonElement>("hosted-signin");
 hostedSignIn.addEventListener("click", () => accountSection.signIn(hostedSignIn, $("hosted-signin-msg")));
-// Get a plan / Top up under browsertodo AI: the dashboard's Billing page.
+// Get a plan / Top up under BrowserTODO AI: the dashboard's Billing page.
 $("hosted-action").addEventListener("click", () => accountSection.openBilling());
 
 // ------------------------------------------------------------ tests and helper

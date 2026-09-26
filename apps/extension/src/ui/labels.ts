@@ -5,7 +5,7 @@ export const BRAIN_LABELS: Readonly<Record<BrainKind, string>> = {
   "claude-code": "Claude Code",
   "claude-api": "Claude API",
   scripted: "Scripted",
-  browsertodo: "browsertodo AI",
+  browsertodo: "BrowserTODO AI",
 };
 
 export function brainLabel(kind: BrainKind, jev = false): string {

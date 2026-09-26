@@ -26,7 +26,7 @@
             <div id="acct-out" class="acct-block">
               <h2 class="group-title">Account</h2>
               <div class="box pad">
-                <p class="hint">Log in with Google to use browsertodo AI without setting up Claude or Jev. With a paid plan, your TODO list is kept in your account and runs on schedule.</p>
+                <p class="hint">Log in with Google to use BrowserTODO AI without setting up Claude or Jev. With a paid plan, your TODO list is kept in your account and runs on schedule.</p>
                 <div class="row">
                   <button id="acct-signin" type="button" class="primary">Log in with Google</button>
                   <span id="acct-signin-msg" class="msg"></span>
@@ -132,11 +132,11 @@
               <div class="opt" data-brain="browsertodo">
                 <label class="opt-head">
                   <input type="radio" name="brain" value="browsertodo" aria-describedby="hosted-aside" />
-                  <span class="opt-text"><b>browsertodo AI</b><small class="opt-detail"></small></span>
+                  <span class="opt-text"><b>BrowserTODO AI</b><small class="opt-detail"></small></span>
                 </label>
                 <div id="hosted-aside" class="opt-aside">
                   <div id="hosted-out" class="row" hidden>
-                    <button id="hosted-signin" type="button" class="small primary">Log in to use browsertodo AI</button>
+                    <button id="hosted-signin" type="button" class="small primary">Log in to use BrowserTODO AI</button>
                     <span id="hosted-signin-msg" class="msg"></span>
                   </div>
                   <div id="hosted-in" class="row" hidden>
@@ -305,9 +305,25 @@
             <h2 class="group-title">Site logins</h2>
             <p class="group-hint">Usernames and passwords the agent may use to sign in to other sites, encrypted with a passphrase you enter once per browser session. Never used for X: sign in to X yourself.</p>
             <div class="box pad vault-body">
-              <div id="vault-locked" class="row">
-                <input id="vault-pass" type="password" placeholder="Passphrase" aria-label="Vault passphrase" autocomplete="off" />
-                <button id="vault-unlock" type="button" class="small">Unlock</button>
+              <div id="vault-locked" class="vault-locked">
+                <div class="row">
+                  <input id="vault-pass" type="password" placeholder="Passphrase" aria-label="Vault passphrase" autocomplete="off" />
+                  <button id="vault-unlock" type="button" class="small">Unlock</button>
+                </div>
+                <p id="vault-create-note" class="hint" hidden>If you forget this passphrase, your saved logins can't be recovered; you'd erase them and add them again.</p>
+                <p id="vault-forgot-row" class="vault-forgot" hidden>
+                  <span id="vault-forgot-lead"></span>
+                  <button id="vault-forgot" type="button" class="link" aria-expanded="false" aria-controls="vault-forgot-box">Forgot passphrase?</button>
+                </p>
+                <div id="vault-forgot-box" class="vault-forgot-box" hidden>
+                  <p>Your passphrase can't be recovered: your logins are encrypted on this computer, and BrowserTODO never sees them. The only way forward is to erase the saved logins and start over with a new passphrase.</p>
+                  <div class="row">
+                    <button id="vault-erase" type="button" class="small danger">Erase saved logins</button>
+                    <button id="vault-erase-cancel" type="button" class="small ghost">Cancel</button>
+                  </div>
+                  <!-- Below the buttons: asking must not move Erase, which the second click confirms. -->
+                  <p id="vault-erase-question" class="vault-erase-question" role="status"></p>
+                </div>
               </div>
               <div id="vault-open" hidden>
                 <ul id="vault-sites" class="vault-sites"></ul>
@@ -335,7 +351,7 @@
             <p class="group-hint">Only if you run your own server.</p>
             <div class="box">
               <div class="srow">
-                <label class="srow-label" for="f-accountApiBase"><b>Account server</b><small>Sign-in, your account's TODO list, billing and browsertodo AI. Changing it signs you out of the current server.</small></label>
+                <label class="srow-label" for="f-accountApiBase"><b>Account server</b><small>Sign-in, your account's TODO list, billing and BrowserTODO AI. Changing it signs you out of the current server.</small></label>
                 <div class="srow-control"><input id="f-accountApiBase" type="url" spellcheck="false" placeholder="https://browsertodo-api.example.com" aria-describedby="err-accountApiBase" /><small id="err-accountApiBase" class="field-error"></small></div>
               </div>
               <div class="srow">

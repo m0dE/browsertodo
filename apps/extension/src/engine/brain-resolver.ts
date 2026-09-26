@@ -1,10 +1,13 @@
 /**
  * Which brain runs tasks right now:
- * - browsertodo: the hosted "browsertodo AI"; signed in with usage credit left
+ * - browsertodo: the hosted "BrowserTODO AI"; signed in with usage credit left
  *   or an active paid plan.
  * - claude-code: helper connected, Claude Code found, self-test passed.
  * - claude-api: an Anthropic API key is set.
- * - auto: browsertodo when usable, else claude-code, else claude-api, else nothing.
+ * - auto: the user's own Claude first (claude-code, else claude-api), else
+ *   browsertodo, else nothing.
+ * This is the one place the order lives: the runner and the settings page's
+ * "Right now this picks ..." both ask it.
  */
 import type { BrainKind, ExtensionSettings, HelperInfo } from "@browsertodo/shared";
 import { HELPER_NOT_INSTALLED } from "../helper-link.js";
@@ -19,11 +22,13 @@ export interface BrainInputs {
 }
 
 /** What the hosted brain is called. */
-export const HOSTED_LABEL = "browsertodo AI";
+export const HOSTED_LABEL = "BrowserTODO AI";
 export const HOSTED_SIGN_IN = `Sign in to use ${HOSTED_LABEL}`;
 export const HOSTED_NO_CREDIT = `Out of usage credit: subscribe or top up to use ${HOSTED_LABEL}`;
 /** No brain can run tasks (the status note says why, when there is one). */
 export const NO_AI = "No AI set up";
+/** Auto would move a conversation from the user's own Claude Code to the paid hosted AI: it refuses instead. */
+export const CLAUDE_CODE_GONE = `Local Claude Code is not available, and Auto does not move this chat to ${HOSTED_LABEL} on its own`;
 
 
 /** Why the hosted AI cannot be used, or null when it can. */
@@ -50,10 +55,10 @@ function claudeCodeProblem(helper: HelperInfo | null, helperError?: string | nul
 function nothingUsable(inputs: BrainInputs, ccProblem: string): string {
   const head = inputs.account?.signedIn ? "Out of credit" : NO_AI;
   if (inputs.helper) return `${head}: ${ccProblem}.`;
-  const first = inputs.account?.signedIn ? "Top up" : "Log in";
   const helperErr = inputs.helperError;
-  const helperStep = !helperErr || helperErr === HELPER_NOT_INSTALLED ? "install the helper" : "reconnect the helper";
-  return `${head}. ${first}, add a Claude API key, or ${helperStep}.`;
+  const helperStep = !helperErr || helperErr === HELPER_NOT_INSTALLED ? "Install the helper" : "Reconnect the helper";
+  const last = inputs.account?.signedIn ? "top up" : "log in";
+  return `${head}. ${helperStep}, add a Claude API key, or ${last}.`;
 }
 
 function jevActiveFor(brain: BrainKind | null, inputs: BrainInputs): boolean {
@@ -68,12 +73,20 @@ function jevActiveFor(brain: BrainKind | null, inputs: BrainInputs): boolean {
 
 /**
  * Whether a run with these settings may use Claude Code, so the helper
- * should be connected first: not when an API brain is chosen, nor when auto
- * picks the hosted AI.
+ * should be connected first: when it is chosen, and in Auto (it comes first).
  */
-export function needsHelper(settings: Pick<ExtensionSettings, "brain">, account: BrainInputs["account"]): boolean {
-  if (settings.brain === "claude-api" || settings.brain === "browsertodo") return false;
-  return !(settings.brain === "auto" && account?.hostedUsable);
+export function needsHelper(settings: Pick<ExtensionSettings, "brain">): boolean {
+  return settings.brain === "claude-code" || settings.brain === "auto";
+}
+
+/**
+ * Why the next turn of a conversation must not run on `next`, or null when it
+ * may: Auto never moves a chat from the user's own Claude Code to the paid
+ * hosted AI by itself (e.g. after the helper disconnected), since that costs
+ * the user money. A chosen brain, or a new chat, resolves as usual.
+ */
+export function autoSwitchRefusal(mode: ExtensionSettings["brain"], from: BrainKind, next: BrainKind): string | null {
+  return mode === "auto" && from === "claude-code" && next === "browsertodo" ? CLAUDE_CODE_GONE : null;
 }
 
 export function resolveBrain(inputs: BrainInputs): BrainStatus {
@@ -97,12 +110,13 @@ export function resolveBrain(inputs: BrainInputs): BrainStatus {
       else note = "No Claude API key set";
       break;
     default:
-      if (!hosted) effective = "browsertodo";
-      else if (!ccProblem) effective = "claude-code";
-      else if (hasApiKey) {
-        effective = "claude-api";
-        note = `Using the Claude API key (${ccProblem})`;
-      } else note = nothingUsable(inputs, ccProblem);
+      // The user's own Claude first, then the hosted AI.
+      if (!ccProblem) effective = "claude-code";
+      else if (hasApiKey) effective = "claude-api";
+      else if (!hosted) effective = "browsertodo";
+      else note = nothingUsable(inputs, ccProblem);
+      // The helper is there but Claude Code does not work: say why another brain runs.
+      if (effective && effective !== "claude-code" && helper) note = `Using ${effective === "claude-api" ? "the Claude API key" : HOSTED_LABEL} (${ccProblem})`;
   }
   const status: BrainStatus = {
     effective,

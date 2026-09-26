@@ -3,8 +3,8 @@
  * https://docs.anthropic.com/en/api/messages, tool use and prompt caching.
  */
 import { z } from "zod";
-import { ANTHROPIC_API_VERSION, ANTHROPIC_MESSAGES_URL, errorMessage, toolArgsSchema, toolDescription, type ToolName, type ToolResult } from "@browsertodo/shared";
-import { errorDetail, outOfCreditError } from "./api-errors.js";
+import { ANTHROPIC_API_VERSION, ANTHROPIC_MESSAGES_URL, errorMessage, HOSTED_AI_UNAVAILABLE, toolArgsSchema, toolDescription, type ToolName, type ToolResult } from "@browsertodo/shared";
+import { errorDetail, isHostedAiUnavailable, outOfCreditError } from "./api-errors.js";
 import { MessageAccumulator, StreamError, readSse } from "./sse.js";
 
 export const MAX_TOKENS = 4096;
@@ -196,6 +196,8 @@ export async function postMessages(
     if (credit.topupUrl) r.topupUrl = credit.topupUrl;
     return r;
   }
+  // The hosted AI's own credentials were refused: retrying will not help, and there is nothing technical to show.
+  if (isHostedAiUnavailable(text)) return { kind: "error", reason: HOSTED_AI_UNAVAILABLE };
   const detail = errorDetail(text);
   const status = `(HTTP ${s}${detail ? `: ${detail}` : ""})`;
   const rejected = transport.auth === "bearer" ? `${label} rejected the sign-in` : `${label} key rejected`;

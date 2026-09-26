@@ -1,20 +1,11 @@
 /** DOM for one conversation log entry (Chat and the Activity log) (see event-format.ts for the pure view models). */
-import { chipHint, OUT_OF_CREDIT, TASK_END_TOOLS, type SessionInfo } from "@browsertodo/shared";
+import { chipHint, TASK_END_TOOLS, type SessionInfo } from "@browsertodo/shared";
 import { h } from "../ui/dom.js";
+import { renderErrorHelp } from "./error-view.js";
 import type { EventView } from "./event-format.js";
 import { brainLabel } from "../ui/labels.js";
 import { sessionHeadline, sessionMeta } from "./format.js";
 import { MarkdownView } from "./markdown.js";
-
-let topup: (() => void) | null = null;
-
-/** What "Top up" on an "Out of usage credit" end card does (opens the dashboard's Billing page); null: no Top up. */
-export function setTopup(open: (() => void) | null): void {
-  topup = open;
-}
-
-/** The hosted AI refused the run for lack of credit (a paused run's reason starts with OUT_OF_CREDIT). */
-const isOutOfCredit = (text: string | undefined) => !!text && text.startsWith(OUT_OF_CREDIT);
 
 /** onContinue: the run ended without finishing and can be continued (task_end cards). */
 export function renderEvent(v: EventView, onContinue?: () => void): HTMLElement {
@@ -57,6 +48,8 @@ export function renderEvent(v: EventView, onContinue?: () => void): HTMLElement 
       return h(
         "div.ev-end",
         null,
+        // A failure no card of the turn showed yet: its card (a failure is shown once).
+        v.error ? renderErrorHelp(v.error) : null,
         // A long text is an answer: it reads as a message, and the outcome line under it stays short.
         v.long ? renderText(v.text) : null,
         h(
@@ -69,19 +62,26 @@ export function renderEvent(v: EventView, onContinue?: () => void): HTMLElement 
         v.picks
           ? h("div.ev-picks", { title: "Who chose the element for each click and typing step: Jev (the fast picker), or Claude when Jev was unsure" }, v.picks)
           : null,
-        isOutOfCredit(v.text) && topup
-          ? h("button.link.ev-topup", { type: "button", title: "Buy usage credit on the dashboard, then continue", onclick: topup }, "Top up")
-          : null,
         onContinue
           ? h(
               "div.ev-actions",
               null,
-              h("button.primary.small.ev-continue", { type: "button", title: "Go on from where it stopped (anything typed in the box below is sent along)", onclick: () => onContinue() }, "Continue"),
+              h(
+                "button.small.ev-continue",
+                {
+                  type: "button",
+                  // The error card's own fix, when there is one, is the main button.
+                  class: v.fixable ? null : "primary",
+                  title: `${v.retry ? "Try again" : "Go on"} from where it stopped (anything typed in the box below is sent along)`,
+                  onclick: () => onContinue(),
+                },
+                v.retry ? "Retry" : "Continue",
+              ),
             )
           : null,
       );
     case "error":
-      return h("div.ev-error", null, v.text);
+      return renderErrorHelp(v.help);
   }
 }
 
@@ -170,7 +170,7 @@ export function renderScreenHelp(text: string): HTMLElement {
   eye.setAttribute("height", "13");
   eye.setAttribute("aria-hidden", "true");
   eye.innerHTML = '<path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8Z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2" fill="currentColor"/>';
-  return h("div.ev-user.screen", { title: "You sent an empty message: browsertodo looks at the page and works out what is needed" }, eye, h("span", null, text));
+  return h("div.ev-user.screen", { title: "You sent an empty message: BrowserTODO looks at the page and works out what is needed" }, eye, h("span", null, text));
 }
 
 /** Continue belongs to the conversation's last turn only, and only when that turn ended the thread. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS, type BrainMode, type HelperInfo } from "@browsertodo/shared";
-import { needsHelper, resolveBrain } from "../src/engine/brain-resolver.js";
+import { autoSwitchRefusal, CLAUDE_CODE_GONE, needsHelper, resolveBrain } from "../src/engine/brain-resolver.js";
 
 const base: HelperInfo = { version: "2", jevAvailable: false, claudePath: "C:\\claude.exe", logDir: "L" };
 const ok: HelperInfo = { ...base, selfTest: { ok: true, ms: 900, at: "2026-09-24T00:00:00Z" } };
@@ -36,10 +36,10 @@ describe("resolveBrain", () => {
 
   it("explains why nothing is usable", () => {
     const s = r("auto", null, false);
-    expect(s.note).toBe("No AI set up. Log in, add a Claude API key, or install the helper.");
+    expect(s.note).toBe("No AI set up. Install the helper, add a Claude API key, or log in.");
     expect(s.helperError).toBe("Helper not installed");
     const exited = resolveBrain({ settings: { ...DEFAULT_SETTINGS, anthropicApiKey: "" }, helper: null, helperError: "Helper exited" });
-    expect(exited.note).toBe("No AI set up. Log in, add a Claude API key, or reconnect the helper.");
+    expect(exited.note).toBe("No AI set up. Reconnect the helper, add a Claude API key, or log in.");
     expect(r("auto", failed, false).note).toBe("No AI set up: Claude Code self-test failed: not logged in.");
     expect(r("claude-code", failed, true).note).toMatch(/self-test failed: not logged in/);
     expect(r("claude-code", noClaude, true).note).toMatch(/not found/);
@@ -73,9 +73,13 @@ describe("resolveBrain with the browsertodo account", () => {
     resolveBrain({ settings: { ...DEFAULT_SETTINGS, brain: mode, anthropicApiKey: key ? "sk" : "" }, helper, helperError: helper ? null : "Helper not installed", account });
 
   it.each([
-    // mode, account, helper, own key, expected
-    ["auto", credit, ok, true, "browsertodo"],
+    // mode, account, helper, own key, expected: Auto takes the user's own Claude first.
+    ["auto", credit, ok, true, "claude-code"],
+    ["auto", credit, ok, false, "claude-code"],
+    ["auto", credit, null, true, "claude-api"],
+    ["auto", credit, failed, true, "claude-api"],
     ["auto", credit, null, false, "browsertodo"],
+    ["auto", credit, notTested, false, "browsertodo"],
     ["auto", noCredit, ok, true, "claude-code"],
     ["auto", noCredit, null, true, "claude-api"],
     ["auto", noCredit, null, false, OUT],
@@ -92,10 +96,13 @@ describe("resolveBrain with the browsertodo account", () => {
   });
 
   it("explains what the hosted AI needs", () => {
-    expect(ra("browsertodo", signedOut, ok, true).note).toBe("Sign in to use browsertodo AI");
+    expect(ra("browsertodo", signedOut, ok, true).note).toBe("Sign in to use BrowserTODO AI");
     expect(ra("browsertodo", noCredit, ok, true).note).toMatch(/^Out of usage credit/);
-    expect(ra("auto", noCredit, null, false).note).toBe("Out of credit. Top up, add a Claude API key, or install the helper.");
-    expect(ra("auto", signedOut, null, false).note).toBe("No AI set up. Log in, add a Claude API key, or install the helper.");
+    expect(ra("auto", noCredit, null, false).note).toBe("Out of credit. Install the helper, add a Claude API key, or top up.");
+    expect(ra("auto", signedOut, null, false).note).toBe("No AI set up. Install the helper, add a Claude API key, or log in.");
+    // The helper is there but Claude Code does not work: the note says why the hosted AI runs.
+    expect(ra("auto", credit, failed, false).note).toBe("Using BrowserTODO AI (Claude Code self-test failed: not logged in)");
+    expect(ra("auto", credit, null, false).note).toBeUndefined();
   });
 
   it("the hosted AI brings its own Jev (no key needed); off when Jev is switched off", () => {
@@ -105,13 +112,21 @@ describe("resolveBrain with the browsertodo account", () => {
 });
 
 describe("needsHelper", () => {
-  it("only when Claude Code may run: not for an API brain, nor when auto picks the hosted AI", () => {
-    const usable = { signedIn: true, hostedUsable: true };
-    expect(needsHelper({ brain: "claude-code" }, usable)).toBe(true);
-    expect(needsHelper({ brain: "claude-api" }, null)).toBe(false);
-    expect(needsHelper({ brain: "browsertodo" }, null)).toBe(false);
-    expect(needsHelper({ brain: "auto" }, usable)).toBe(false);
-    expect(needsHelper({ brain: "auto" }, { signedIn: true, hostedUsable: false })).toBe(true);
-    expect(needsHelper({ brain: "auto" }, null)).toBe(true);
+  it("whenever Claude Code may run: chosen, or Auto (it comes first); not for the API brains", () => {
+    expect(needsHelper({ brain: "claude-code" })).toBe(true);
+    expect(needsHelper({ brain: "auto" })).toBe(true);
+    expect(needsHelper({ brain: "claude-api" })).toBe(false);
+    expect(needsHelper({ brain: "browsertodo" })).toBe(false);
+  });
+});
+
+describe("autoSwitchRefusal", () => {
+  it("Auto never moves a Claude Code chat to the paid hosted AI by itself", () => {
+    expect(autoSwitchRefusal("auto", "claude-code", "browsertodo")).toBe(CLAUDE_CODE_GONE);
+    expect(autoSwitchRefusal("auto", "claude-code", "claude-api")).toBeNull();
+    expect(autoSwitchRefusal("auto", "claude-code", "claude-code")).toBeNull();
+    expect(autoSwitchRefusal("auto", "browsertodo", "claude-code")).toBeNull();
+    // A brain the user chose is theirs to pay for.
+    expect(autoSwitchRefusal("browsertodo", "claude-code", "browsertodo")).toBeNull();
   });
 });

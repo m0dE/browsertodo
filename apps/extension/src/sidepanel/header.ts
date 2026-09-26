@@ -9,21 +9,13 @@ import { uiRequest, type UiState } from "../ui-protocol.js";
 import { showAvatar } from "../ui/avatar.js";
 import { $, busy } from "../ui/dom.js";
 import { clip } from "../text.js";
+import type { ErrorFixKind } from "./error-help.js";
+import { runErrorFix } from "./error-view.js";
 import { clockLabel, statusLine } from "./format.js";
 import { openSettings } from "./open-settings.js";
 
 /** A running task's title in the status line is clipped to this many characters. */
 const RUNNING_TITLE_MAX = 60;
-
-type StatusAction = NonNullable<ReturnType<typeof statusLine>["action"]> | "pause";
-
-const ACTION_LABELS: Record<StatusAction, string> = { settings: "Set up", resume: "Resume", topup: "Top up", pause: "Pause" };
-const ACTION_TITLES: Record<StatusAction, string> = {
-  settings: "Open the settings",
-  resume: "Run scheduled tasks again",
-  topup: "Buy usage credit (opens the dashboard's Billing page)",
-  pause: "Pause scheduled runs",
-};
 
 export interface HeaderDeps {
   onState(state: UiState): void;
@@ -54,6 +46,7 @@ export function initHeader(deps: HeaderDeps): Header {
     const line = statusLine(s);
     statusEl.dataset.tone = line.tone;
     statusText.textContent = line.text;
+    statusText.title = line.title ?? line.text;
     const meta = $("status-meta");
     const running = s.runningSessions;
     if (line.tone === "ok") {
@@ -70,11 +63,11 @@ export function initHeader(deps: HeaderDeps): Header {
       meta.textContent = "";
     }
     // Pausing lives in the account menu; the status line only offers actions that fix something.
-    const action: StatusAction = line.action ?? "pause";
-    statusAction.hidden = action === "pause";
-    statusAction.textContent = ACTION_LABELS[action];
-    statusAction.dataset.action = action;
-    statusAction.title = ACTION_TITLES[action];
+    const action = line.action;
+    statusAction.hidden = !action;
+    statusAction.textContent = action === "resume" ? "Resume" : (action?.label ?? "");
+    statusAction.dataset.action = action === "resume" ? "resume" : (action?.kind ?? "");
+    statusAction.title = action === "resume" ? "Run scheduled tasks again" : (action?.title ?? "");
     const paused = action === "resume";
     pauseItem.textContent = paused ? "Resume scheduled runs" : "Pause scheduled runs";
     pauseItem.dataset.paused = paused ? "1" : "";
@@ -104,10 +97,10 @@ export function initHeader(deps: HeaderDeps): Header {
   }
 
   statusAction.addEventListener("click", () => {
-    const action = statusAction.dataset.action as StatusAction;
-    if (action === "settings") return void openSettings("ai");
-    if (action === "topup") return deps.onBilling();
-    void busy(statusAction, () => request(action === "resume" ? "schedule.resume" : "schedule.pause"), say);
+    const action = statusAction.dataset.action;
+    if (action === "resume") return void busy(statusAction, () => request("schedule.resume"), say);
+    // A fix: the same action as the chat's error cards (settings as the fallback).
+    if (action && !runErrorFix(action as ErrorFixKind)) void openSettings("ai");
   });
 
   // Any item closes the menu (a failure then shows in the status line).

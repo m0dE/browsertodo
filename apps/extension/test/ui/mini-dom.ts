@@ -78,8 +78,16 @@ export class MiniFragment extends Parent {}
 
 export class MiniElement extends Parent {
   readonly attributes = new Map<string, string>();
+  private readonly listeners = new Map<string, ((e: unknown) => void)[]>();
   constructor(readonly tagName: string) {
     super();
+  }
+  addEventListener(type: string, fn: (e: unknown) => void): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
+  }
+  /** Runs the element's click listeners (there is no event propagation). */
+  click(): void {
+    for (const fn of this.listeners.get("click") ?? []) fn({ type: "click", target: this });
   }
   setAttribute(k: string, v: string): void {
     this.attributes.set(k.toLowerCase(), String(v));

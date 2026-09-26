@@ -99,7 +99,7 @@ export interface BrainOption {
   label: string;
   /** One line under the label. */
   detail: string;
-  /** false: shown but cannot be picked (browsertodo AI while signed out). */
+  /** false: shown but cannot be picked (BrowserTODO AI while signed out). */
   enabled: boolean;
 }
 
@@ -108,9 +108,9 @@ export interface SettingsView {
   options: BrainOption[];
   /** Under Auto: which brain it would pick right now. */
   autoPick: { text: string; tone: Tone };
-  /** Under browsertodo AI when signed in: plan, credit, what to buy. */
+  /** Under BrowserTODO AI when signed in: plan, credit, what to buy. */
   hosted: HostedAccount | null;
-  /** Signed out: the "Log in to use browsertodo AI" action under browsertodo AI. */
+  /** Signed out: the "Log in to use BrowserTODO AI" action under BrowserTODO AI. */
   showHostedSignIn: boolean;
   /** The chosen brain cannot run right now: why, and what happens instead. */
   brainProblem: string | null;
@@ -163,9 +163,9 @@ function modelChoice(draft: Draft): ModelChoice {
   const selected = known ? id : CUSTOM_MODEL;
   let hint = "Used by every brain. You can also switch it from the side panel.";
   if (draft.brain === "browsertodo") {
-    hint = known || !id ? "browsertodo AI runs this model." : `browsertodo AI does not offer this model, so it runs ${modelLabel(DEFAULT_MODEL)}.`;
+    hint = known || !id ? "BrowserTODO AI runs this model." : `BrowserTODO AI does not offer this model, so it runs ${modelLabel(DEFAULT_MODEL)}.`;
   } else if (draft.brain === "auto" && !known && id) {
-    hint = `If Auto picks browsertodo AI, it runs ${modelLabel(DEFAULT_MODEL)} instead: it does not offer this model.`;
+    hint = `If Auto picks BrowserTODO AI, it runs ${modelLabel(DEFAULT_MODEL)} instead: it does not offer this model.`;
   }
   return { selected, custom: selected === CUSTOM_MODEL, hint };
 }
@@ -206,11 +206,11 @@ export function settingsView(input: ViewInput): SettingsView {
   // Local Claude Code and the Claude API say what is missing in their own inline sections.
 
   const options: BrainOption[] = [
-    { value: "auto", label: "Auto", detail: "Picks the best brain that works right now.", enabled: true },
+    { value: "auto", label: "Auto", detail: "Uses your own Claude first, then BrowserTODO AI.", enabled: true },
     {
       value: "browsertodo",
-      label: "browsertodo AI",
-      detail: signedIn ? "Hosted by browsertodo, paid from your usage credit. Nothing to set up." : "Hosted by browsertodo. Needs an account.",
+      label: "BrowserTODO AI",
+      detail: signedIn ? "Hosted by BrowserTODO, paid from your usage credit. Nothing to set up." : "Hosted by BrowserTODO. Needs an account.",
       enabled: signedIn,
     },
     { value: "claude-code", label: "Local Claude Code", detail: "Your Claude subscription, through the helper app.", enabled: true },
@@ -220,7 +220,7 @@ export function settingsView(input: ViewInput): SettingsView {
   // Jev: the hosted AI brings its own; else a key here, else the helper's own key.
   let jevNote: string | null = null;
   const hostedRuns = brain.effective === "browsertodo";
-  if (hostedRuns) jevNote = "browsertodo AI includes Jev, so it needs no key.";
+  if (hostedRuns) jevNote = "BrowserTODO AI includes Jev, so it needs no key.";
   else if (!settings.jevApiKey && brain.helper?.jevAvailable) {
     jevNote = "With local Claude Code the helper uses its own Jev key (TYPESAFE_API_KEY in its .env file). A key entered here takes priority and also works with the Claude API.";
   }
@@ -244,7 +244,7 @@ export function settingsView(input: ViewInput): SettingsView {
   };
 }
 
-/** Models the select offers: the side panel's list (browsertodo AI runs every one of them). */
+/** Models the select offers: the side panel's list (BrowserTODO AI runs every one of them). */
 export function modelOptions(): { id: string; label: string }[] {
   return CLAUDE_MODELS.map((m) => ({ id: m.id, label: m.label }));
 }

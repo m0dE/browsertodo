@@ -13,6 +13,7 @@ import { UiHub } from "../src/engine/ui-hub.js";
 import { UiRouter, type RouterRunner, type UiRouterDeps } from "../src/engine/ui-router.js";
 import { TabChats } from "../src/tab-chats.js";
 import { applySettingsPatch } from "../src/settings-store.js";
+import { WrongPassphraseError } from "../src/vault.js";
 import { UI_PORT_NAME, type UiPush, type UiRequest, type UiResponse } from "../src/ui-protocol.js";
 
 const INFO: HelperInfo = { version: "2", jevAvailable: false, claudePath: "C:\\claude.exe", logDir: "L", selfTest: { ok: true, ms: 1, at: "x" } };
@@ -52,7 +53,14 @@ function setup() {
   };
   const localStore = new LocalStore({ db });
   const sessions = new SessionStore(db);
-  const vault = { unlock: vi.fn(async () => {}), lock: vi.fn(async () => {}), list: vi.fn(async () => ({ locked: true, sites: [] })), set: vi.fn(async () => {}), delete: vi.fn(async () => {}) };
+  const vault = {
+    unlock: vi.fn(async (_passphrase: string) => {}),
+    lock: vi.fn(async () => {}),
+    list: vi.fn(async () => ({ exists: false, locked: true, sites: [] as string[] })),
+    set: vi.fn(async () => {}),
+    delete: vi.fn(async () => {}),
+    reset: vi.fn(async () => {}),
+  };
   const deps: UiRouterDeps = {
     loadSettings: async () => settings,
     saveSettingsPatch: async (patch) => (settings = applySettingsPatch(settings, patch)),
@@ -221,8 +229,19 @@ describe("UiRouter", () => {
     expect(await t.req({ type: "helper.getLog", lines: 50 })).toEqual({ text: "" });
     t.helper.info = INFO;
     expect(await t.req({ type: "helper.getLog", lines: 50 })).toEqual({ text: "log lines" });
-    expect(await t.req({ type: "vault.list" })).toEqual({ locked: true, sites: [] });
+    expect(await t.req({ type: "vault.list" })).toEqual({ exists: false, locked: true, sites: [] });
     expect(await t.req({ type: "vault.set", site: "a.com", username: "u", password: "p" })).toEqual({ ok: true });
+    expect(await t.req({ type: "vault.reset" })).toEqual({ ok: true });
+    expect(t.vault.reset).toHaveBeenCalledOnce();
+  });
+
+  it("vault.unlock: a wrong passphrase is an answer (ok: false), other failures are errors", async () => {
+    const t = setup();
+    expect(await t.req({ type: "vault.unlock", passphrase: "right" })).toEqual({ ok: true });
+    t.vault.unlock.mockRejectedValueOnce(new WrongPassphraseError());
+    expect(await t.req({ type: "vault.unlock", passphrase: "wrong" })).toEqual({ ok: false });
+    t.vault.unlock.mockRejectedValueOnce(new Error("Passphrase is empty"));
+    expect(await t.router.handle({ type: "vault.unlock", passphrase: "" })).toEqual({ ok: false, error: "Passphrase is empty" });
   });
 
   it("unknown requests are errors", async () => {

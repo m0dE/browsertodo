@@ -1,7 +1,7 @@
 /**
  * The Claude API agent loop in the service worker, behind the Brain
  * interface. The same loop serves two brains, told apart by their backend:
- * the user's Anthropic API key (claude-api) and the hosted browsertodo AI
+ * the user's Anthropic API key (claude-api) and the hosted BrowserTODO AI
  * (browsertodo, see hosted-brain.ts).
  */
 import type { AgentSession, ApiAgentOptions, BrowserCaller, JevLike } from "@browsertodo/core";

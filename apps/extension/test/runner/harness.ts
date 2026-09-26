@@ -51,7 +51,7 @@ export class FakeBrain implements Brain {
   continueScript: ContinueScript = () => ({ outcome: "done", summary: "continued" });
   /** Result used when a hanging run is aborted. */
   onAbort: (reason: string, outcome: string) => TaskRunResult = (reason) => ({ outcome: "failed", reason: `aborted: ${reason}` });
-  constructor(readonly kind: "claude-code" | "claude-api" = "claude-api") {}
+  constructor(readonly kind: "claude-code" | "claude-api" | "browsertodo" = "claude-api") {}
 
   start(opts: BrainStartOptions): BrainRun {
     this.starts.push(opts);

@@ -165,7 +165,9 @@ queue work while your computer is off. Any server that implements
 **Site logins** stores usernames and passwords for other sites, encrypted
 with a passphrase you enter once per browser session. The agent asks for the
 login of the site it is signing in to, and the username and password go to
-Claude. It is never used for X.
+Claude. It is never used for X. The passphrase can't be recovered: if you
+forget it, **Forgot passphrase?** erases the saved logins so you can start
+over with a new one.
 
 Every run is kept in the side panel's Activity Log, for both brains. With the
 helper, each Claude Code run also has a full log in

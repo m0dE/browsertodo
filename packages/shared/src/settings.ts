@@ -23,9 +23,10 @@ export type BrainMode = z.infer<typeof BrainMode>;
 /** Extension settings stored in chrome.storage.local under "settings". */
 export const ExtensionSettings = z.object({
   /**
-   * Which agent runs tasks. auto: browsertodo AI when signed in with usage
-   * credit or an active paid plan, else local Claude Code when the helper is
-   * connected and Claude Code was found, otherwise the Claude API key.
+   * Which agent runs tasks. auto: the user's own Claude first (local Claude
+   * Code when the helper is connected and its self-test passed, else the
+   * Claude API key), else BrowserTODO AI when signed in with usage credit or
+   * an active paid plan (apps/extension/src/engine/brain-resolver.ts).
    */
   brain: BrainMode.default("auto"),
   anthropicApiKey: z.string().default(""),

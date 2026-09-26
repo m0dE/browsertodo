@@ -967,7 +967,7 @@ export const PANEL_CASES = [
       }
     },
   },
-  // Signed in: the account's list, the offer to move this browser's tasks, the avatar menu, browsertodo AI in the chip.
+  // Signed in: the account's list, the offer to move this browser's tasks, the avatar menu, BrowserTODO AI in the chip.
   {
     names: ["panel-todo-account", "panel-account-menu", "panel-model-menu-hosted"],
     async run({ ctx, size, scheme, label, fail, want, only, openPanel, shoot, checkLayout, reportErrors }) {
@@ -986,7 +986,7 @@ export const PANEL_CASES = [
       );
       if (rows.some((r) => r.items.includes("Run again"))) fail(`account task menus ${JSON.stringify(rows)}`);
       if (rows.some((r) => r.items.includes("Continue") && !/needs you|paused/i.test(r.status))) fail(`Continue on a non-paused account task ${JSON.stringify(rows)}`);
-      if ((await p.locator("#status-text").textContent()) !== "browsertodo AI + Jev") fail(`status "${await p.locator("#status-text").textContent()}"`);
+      if ((await p.locator("#status-text").textContent()) !== "BrowserTODO AI + Jev") fail(`status "${await p.locator("#status-text").textContent()}"`);
       await checkLayout(p, `account todo ${label}`);
       await shoot(p, "panel-todo-account", size, scheme);
       await p.click("#migrate-go");
@@ -1016,7 +1016,7 @@ export const PANEL_CASES = [
           models: [...document.querySelectorAll(".mm-item[role=menuitemradio]")].length,
           jev: document.querySelector(".mm-jev").disabled,
         }));
-        if (menu.head !== "browsertodo AI model" || menu.credit !== "$14.21 usage credit left" || menu.models !== 4 || menu.jev) fail(`hosted model menu ${JSON.stringify(menu)}`);
+        if (menu.head !== "BrowserTODO AI model" || menu.credit !== "$14.21 usage credit left" || menu.models !== 4 || menu.jev) fail(`hosted model menu ${JSON.stringify(menu)}`);
         await checkLayout(q, `model-menu-hosted ${label}`);
         await shoot(q, "panel-model-menu-hosted", size, scheme);
         reportErrors(q, `model-menu-hosted ${label}`);
@@ -1098,11 +1098,14 @@ export const PANEL_CASES = [
     async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "hosted-out", "#chat-log .ev-end");
       const st = await p.evaluate(() => ({ text: document.getElementById("status-text").textContent, action: document.getElementById("status-action").textContent, chip: document.getElementById("now-model-label").textContent }));
-      if (st.text !== "Out of usage credit" || st.action !== "Top up" || st.chip !== "Out of usage credit") fail(`out of credit status ${JSON.stringify(st)}`);
-      if ((await p.locator("#chat-log .ev-topup").textContent()) !== "Top up") fail("no Top up in the paused run's card");
+      if (st.text !== "You're out of usage credit" || st.action !== "Top up" || st.chip !== "Out of usage credit") fail(`out of credit status ${JSON.stringify(st)}`);
+      if ((await p.locator("#chat-log [data-fix=topup]").textContent()) !== "Top up") fail("no Top up in the paused run's error card");
+      // Shown once: the end card keeps its outcome and Continue, not a second copy of the reason.
+      const once = await p.evaluate(() => ({ cards: document.querySelectorAll("#chat-log .ev-error").length, summary: document.querySelector("#chat-log .ev-end .ev-summary")?.textContent ?? null }));
+      if (once.cards !== 1 || once.summary !== null) fail(`out of credit shown more than once ${JSON.stringify(once)}`);
       await checkLayout(p, `out-of-credit ${label}`);
       await shoot(p, "panel-out-of-credit", size, scheme);
-      await p.click("#chat-log .ev-topup");
+      await p.click("#chat-log [data-fix=topup]");
       await p.click("#status-action");
       // Plan & billing in the account menu.
       await p.click("#acct-btn");
@@ -1114,6 +1117,82 @@ export const PANEL_CASES = [
       const billing = "https://app.browsertodo.com/billing";
       if (JSON.stringify(opened.created) !== JSON.stringify([billing, billing, billing, billing]) || opened.opened.length) fail(`Top up / Plan & billing opened ${JSON.stringify(opened)}`);
       reportErrors(p, `out-of-credit ${label}`);
+      await p.close();
+    },
+  },
+  // Failed turns: one error card each (plain line, a second line, the fix, Details), never repeated by the end card.
+  {
+    names: ["panel-error-hosted", "panel-error-helper", "panel-error-ratelimit", "panel-error-unknown"],
+    async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, checkLayout, reportErrors }) {
+      const expected = {
+        "err-hosted": { msg: "BrowserTODO AI is unavailable right now.", fixes: ["Use your own Claude"], retry: "Retry" },
+        "err-helper": { msg: "Local Claude Code isn't connected.", fixes: ["Set up Claude Code", "Use BrowserTODO AI"], retry: "Retry" },
+        "err-ratelimit": { msg: "Too many requests right now.", fixes: [], retry: "Retry" },
+        "err-unknown": { msg: "Something went wrong.", fixes: [], retry: "Retry" },
+      };
+      for (const [kind, want1] of Object.entries(expected)) {
+        const name = `panel-error-${kind.slice(4)}`;
+        if (!want(name, size, scheme)) continue;
+        const p = await openPanel(ctx, kind, "#chat-log .ev-end");
+        const got = await p.evaluate(() => {
+          const log = document.getElementById("chat-log");
+          const cards = [...log.querySelectorAll(".ev-error")];
+          return {
+            cards: cards.length,
+            msg: cards[0]?.querySelector(".err-msg")?.textContent,
+            fixes: [...log.querySelectorAll(".err-fix")].map((b) => b.textContent),
+            retry: log.querySelector(".ev-continue")?.textContent,
+            summary: log.querySelector(".ev-end .ev-summary")?.textContent ?? null,
+            text: log.textContent,
+          };
+        });
+        if (got.cards !== 1) fail(`${kind}: ${got.cards} error cards`);
+        if (got.msg !== want1.msg) fail(`${kind}: message "${got.msg}"`);
+        if (got.fixes.join(" | ") !== want1.fixes.join(" | ")) fail(`${kind}: fixes ${got.fixes.join(" | ")}`);
+        if (got.retry !== want1.retry) fail(`${kind}: continue button "${got.retry}"`);
+        if (got.summary !== null) fail(`${kind}: the end card repeats the error: "${got.summary}"`);
+        if (/HTTP \d|invalid_request_error|rate_limit_error/.test(got.text.replace(/Details[\s\S]*$/, ""))) fail(`${kind}: technical text outside Details`);
+        if (kind === "err-unknown") {
+          // Details opens on demand, with the technical text to copy.
+          await p.click("#chat-log .err-details > summary");
+          const tech = await p.textContent("#chat-log .err-tech pre");
+          if (!/prompt is too long/.test(tech)) fail(`${kind}: details "${tech}"`);
+        }
+        if (kind === "err-hosted") {
+          await p.click("#chat-log [data-fix=own-claude]");
+          const opened = await p.evaluate(() => window.__created.at(-1) ?? window.__opened.at(-1) ?? null);
+          if (!/options\.html#ai$/.test(String(opened))) fail(`${kind}: Use your own Claude opened ${opened}`);
+        }
+        await checkLayout(p, `${kind} ${label}`);
+        await shoot(p, name, size, scheme);
+        reportErrors(p, `${kind} ${label}`);
+        await p.close();
+      }
+    },
+  },
+  // The composer: Auto will not move a Claude Code chat to paid BrowserTODO AI; the refusal says so with both ways out.
+  {
+    names: ["panel-error-auto-switch"],
+    async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors }) {
+      const p = await openPanel(ctx, "err-helper", "#chat-log .ev-end");
+      await p.evaluate(() => (window.__refuse = { "run.message": "Local Claude Code is not available, and Auto does not move this chat to BrowserTODO AI on its own" }));
+      await p.fill("#now-text", "and reply to the first comment");
+      await p.click("#now-submit");
+      await p.waitForSelector("#now-msg .ev-error");
+      const got = await p.evaluate(() => ({
+        msg: document.querySelector("#now-msg .err-msg")?.textContent,
+        hint: document.querySelector("#now-msg .err-hint")?.textContent,
+        fixes: [...document.querySelectorAll("#now-msg .err-fix")].map((b) => b.textContent),
+        box: document.getElementById("now-text").value,
+      }));
+      if (got.msg !== "Local Claude Code isn't connected." || got.fixes.join(" | ") !== "Set up Claude Code | Use BrowserTODO AI") fail(`auto switch refusal ${JSON.stringify(got)}`);
+      if (got.box !== "and reply to the first comment") fail("the refused message did not go back into the box");
+      await checkLayout(p, `auto-switch ${label}`);
+      await shoot(p, "panel-error-auto-switch", size, scheme);
+      await p.click("#now-msg [data-fix=use-hosted]");
+      const saved = await p.evaluate(() => window.__requests.find((r) => r.type === "settings.save")?.settings);
+      if (saved?.brain !== "browsertodo") fail(`Use BrowserTODO AI saved ${JSON.stringify(saved)}`);
+      reportErrors(p, `auto-switch ${label}`);
       await p.close();
     },
   },

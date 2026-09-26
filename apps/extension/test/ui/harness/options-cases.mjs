@@ -29,6 +29,27 @@ const onFree = (data) => {
   data.state.account = { ...data.state.account, plan: { id: "free", status: "none", currentPeriodEnd: null, cancelAtPeriodEnd: false } };
 };
 
+// Site logins: three saved logins behind a passphrase ("correct horse" in the stub), and the way out when it is forgotten.
+const lockedVault = (d) => (d.vault = { exists: true, locked: true, sites: ["bank.example", "example.com", "news.ycombinator.com"] });
+const sent = (p, type) => p.evaluate((t) => window.__requests.filter((r) => r.type === t).length, type);
+/** Enters `passphrase` and waits until the answer is shown. */
+async function tryPassphrase(p, passphrase) {
+  const before = await sent(p, "vault.unlock");
+  await p.fill("#vault-pass", passphrase);
+  await p.click("#vault-unlock");
+  await p.waitForFunction((n) => window.__requests.filter((r) => r.type === "vault.unlock").length > n && !document.getElementById("vault-unlock").disabled, before);
+}
+const forgotProminent = (p) => p.evaluate(() => document.getElementById("vault-forgot-row").hasAttribute("data-prominent"));
+const eraseQuestion = (p) => p.textContent("#vault-erase-question");
+/** Forgot passphrase? then Erase saved logins (with `click`): the confirm step. */
+async function armErase(p, click = (sel) => p.click(sel)) {
+  await p.click("#vault-forgot");
+  await click("#vault-erase");
+  await p.waitForFunction(() => document.getElementById("vault-erase-question").textContent !== "");
+}
+const choosingPassphrase = async (p) =>
+  (await p.getAttribute("#vault-pass", "placeholder")) === "Choose a passphrase" && (await p.textContent("#vault-unlock")) === "Set passphrase" && (await shown(p, "#vault-create-note"));
+
 /** [name, scenario kind, hash, data edit, checks(page)] */
 export const OPTION_CASES = [
   ["options-ai-auto", "ok", "#ai", onFree, (p) => [
@@ -38,6 +59,12 @@ export const OPTION_CASES = [
     ["helper hidden under Auto", async () => !(await shown(p, "#helper-headline"))],
     ["hosted: plan inline with Get a plan", async () => /Free plan/.test(await p.textContent("#hosted-plan")) && (await shown(p, "#hosted-action"))],
     ["model select", async () => (await p.inputValue("#model-select")) === "claude-sonnet-5"],
+  ]],
+  // Auto takes the user's own Claude first: with the helper working it picks Local Claude Code even on a plan with credit.
+  ["options-ai-auto-plus", "ok", "#ai", onPlus, (p) => [
+    ["Auto checked", () => p.isChecked(radio("auto"))],
+    ["Auto describes its order", async () => /Uses your own Claude first, then BrowserTODO AI/.test(await p.textContent("#panel-ai"))],
+    ["Auto picks Local Claude Code over BrowserTODO AI", async () => /picks Local Claude Code/.test(await p.textContent("#auto-pick"))],
   ]],
   ["options-ai-hosted", "ok", "#ai", (d) => {
     onPlus(d);
@@ -51,7 +78,7 @@ export const OPTION_CASES = [
   ]],
   ["options-ai-hosted-signedout", "opt-signedout", "#ai", (d) => {
     d.state.settings.brain = "browsertodo";
-    d.state.brain = { ...d.state.brain, effective: null, note: "Sign in to use browsertodo AI" };
+    d.state.brain = { ...d.state.brain, effective: null, note: "Sign in to use BrowserTODO AI" };
   }, (p) => [
     ["browsertodo AI disabled", async () => !(await p.isEnabled(radio("browsertodo")))],
     ["still shown as the saved choice", () => p.isChecked(radio("browsertodo"))],
@@ -107,6 +134,60 @@ export const OPTION_CASES = [
   ]],
   ["options-logins", "ok", "#logins", () => {}, (p) => [
     ["saved sites", async () => (await p.locator("#vault-sites li").count()) === 2],
+    ["no passphrase field when unlocked", async () => !(await shown(p, "#vault-locked"))],
+  ]],
+  ["options-logins-create", "ok", "#logins", (d) => (d.vault = { exists: false, locked: true, sites: [] }), (p) => [
+    ["choose a passphrase", () => choosingPassphrase(p)],
+    ["says up front that a forgotten passphrase means erasing", async () => (await p.textContent("#vault-create-note")) === "If you forget this passphrase, your saved logins can't be recovered; you'd erase them and add them again."],
+    ["no Forgot passphrase? (nothing to forget yet)", async () => !(await shown(p, "#vault-forgot-row"))],
+  ]],
+  ["options-logins-locked", "ok", "#logins", lockedVault, (p) => [
+    ["unlock field", async () => (await p.getAttribute("#vault-pass", "placeholder")) === "Passphrase" && (await p.textContent("#vault-unlock")) === "Unlock"],
+    ["no create note", async () => !(await shown(p, "#vault-create-note"))],
+    ["quiet Forgot passphrase? link", async () => (await shown(p, "#vault-forgot")) && !(await forgotProminent(p)) && (await p.textContent("#vault-forgot")) === "Forgot passphrase?"],
+    ["its explanation closed", async () => !(await shown(p, "#vault-forgot-box")) && (await p.getAttribute("#vault-forgot", "aria-expanded")) === "false"],
+    ["logins hidden while locked", async () => !(await shown(p, "#vault-open"))],
+  ]],
+  ["options-logins-wrong", "ok", "#logins", lockedVault, (p) => [
+    ["two wrong tries: the link stays quiet", async () => (await tryPassphrase(p, "hunter2"), await tryPassphrase(p, "hunter3"), !(await forgotProminent(p)))],
+    ["Wrong passphrase", async () => (await p.textContent("#vault-msg")) === "Wrong passphrase"],
+    ["third wrong try in a row: Forgot passphrase? stands out", async () => (await tryPassphrase(p, "hunter4"), forgotProminent(p))],
+    ["says why", async () => (await p.textContent("#vault-forgot-lead")) === "Wrong passphrase 3 times in a row."],
+    ["no lockout: Unlock still enabled", () => p.isEnabled("#vault-unlock")],
+    ["nothing erased", async () => (await sent(p, "vault.reset")) === 0],
+  ]],
+  ["options-logins-forgot", "ok", "#logins", lockedVault, (p) => [
+    ["Forgot passphrase? opens the explanation", async () => (await p.click("#vault-forgot"), (await shown(p, "#vault-forgot-box")) && (await p.getAttribute("#vault-forgot", "aria-expanded")) === "true")],
+    ["explains why it can't be recovered", async () => (await p.textContent("#vault-forgot-box p")).startsWith("Your passphrase can't be recovered: your logins are encrypted on this computer, and BrowserTODO never sees them.")],
+    ["one way out: Erase saved logins, styled as danger", async () => (await p.textContent("#vault-erase")) === "Erase saved logins" && (await p.getAttribute("#vault-erase", "class")).includes("danger")],
+    ["no question yet", async () => (await eraseQuestion(p)) === ""],
+  ]],
+  ["options-logins-confirm", "ok", "#logins", lockedVault, (p) => [
+    // The second click confirms in the same place: asking must not move the button.
+    ["Erase stays in place when it asks", async () => {
+      await p.click("#vault-forgot");
+      const before = await p.locator("#vault-erase").boundingBox();
+      await p.click("#vault-erase");
+      const after = await p.locator("#vault-erase").boundingBox();
+      await p.click("#vault-erase-cancel");
+      return before.x === after.x && before.y === after.y;
+    }],
+    // A double-click on Erase saved logins asks, but its second click (on the same button) never erases.
+    ["a double-click only asks", async () => (await armErase(p, (sel) => p.dblclick(sel)), (await sent(p, "vault.reset")) === 0)],
+    ["and selects no text", async () => (await p.evaluate(() => getSelection().toString())) === ""],
+    ["the question names the count", async () => (await eraseQuestion(p)) === "Erase 3 saved logins? This can't be undone."],
+    ["the same button confirms", async () => (await p.textContent("#vault-erase")) === "Yes, erase 3 logins"],
+  ]],
+  ["options-logins-erased", "ok", "#logins", lockedVault, (p) => [
+    ["a second click erases", async () => {
+      await armErase(p);
+      await p.click("#vault-erase");
+      await p.waitForSelector("#vault-create-note:not([hidden])");
+      return (await sent(p, "vault.reset")) === 1;
+    }],
+    ["back to choosing a passphrase", () => choosingPassphrase(p)],
+    ["the forgot steps are gone", async () => !(await shown(p, "#vault-forgot-row")) && !(await shown(p, "#vault-forgot-box"))],
+    ["says what went and what next", async () => (await p.textContent("#vault-msg")) === "Erased 3 saved logins. Choose a new passphrase to start over."],
   ]],
   ["options-advanced", "ok", "#advanced", (d) => {
     d.state.settings.cloudEnabled = true;
@@ -313,6 +394,36 @@ export const OPTION_FLOWS = [
       await p.waitForSelector("#keys-locked:not([hidden])");
       check("last tab remembered: API keys", (await p.getAttribute("#tab-keys", "aria-selected")) === "true");
       await optChecks(p, "billing", checks);
+      await p.ctx.close();
+    },
+  },
+  // Site logins: wrong tries start over after a right one; Cancel closes the forgot steps; after the erase a new passphrase works.
+  {
+    name: "options-logins-recover",
+    size: { w: 1280 },
+    scheme: "light",
+    async run({ openOptions, optChecks }) {
+      const p = await openOptions({ w: 1280, h: 1000 }, "light", "ok", "#logins", lockedVault);
+      const checks = [];
+      const check = (what, ok) => checks.push([what, async () => ok]);
+      for (const guess of ["a", "b", "c"]) await tryPassphrase(p, guess);
+      check("3 wrong: prominent", await forgotProminent(p));
+      await tryPassphrase(p, "correct horse");
+      check("the right passphrase unlocks", (await shown(p, "#vault-open")) && (await p.textContent("#vault-msg")) === "Unlocked.");
+      await p.click("#vault-lock");
+      await p.waitForSelector("#vault-locked:not([hidden])");
+      check("wrong tries start over after an unlock", !(await forgotProminent(p)));
+      await p.click("#vault-forgot");
+      await p.click("#vault-erase-cancel");
+      check("Cancel closes and returns focus", !(await shown(p, "#vault-forgot-box")) && (await p.evaluate(() => document.activeElement.id)) === "vault-forgot");
+      await armErase(p);
+      await p.click("#vault-erase");
+      await p.waitForSelector("#vault-create-note:not([hidden])");
+      check("focus in the new passphrase field", (await p.evaluate(() => document.activeElement.id)) === "vault-pass");
+      await tryPassphrase(p, "a new start");
+      check("a new passphrase opens the empty vault", (await shown(p, "#vault-open")) && (await p.textContent("#vault-sites")) === "No saved logins yet.");
+      check("says so", (await p.textContent("#vault-msg")) === "Passphrase set. Add your first login.");
+      await optChecks(p, "logins-recover", checks);
       await p.ctx.close();
     },
   },

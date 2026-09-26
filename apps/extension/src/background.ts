@@ -115,7 +115,7 @@ let brainOverride: ((settings: ExtensionSettings) => Promise<ResolvedBrain>) | n
 async function resolveForRun(settings: ExtensionSettings): Promise<ResolvedBrain> {
   if (brainOverride) return brainOverride(settings);
   await account.load().catch(() => undefined);
-  if (needsHelper(settings, account.brainAccount()) && !helper.connected) await helper.connect().catch(() => undefined);
+  if (needsHelper(settings) && !helper.connected) await helper.connect().catch(() => undefined);
   const status = brainStatus(settings);
   const brain = status.effective && status.effective !== "scripted" ? brains[status.effective] : null;
   return { brain, status };
@@ -165,6 +165,11 @@ async function pageOf(tabId?: number): Promise<{ url: string; title: string } | 
 // The keyboard shortcut: open the side panel with the cursor in the chat input (see panel-command.ts).
 const panelCommands = new PanelCommands({
   open: (windowId) => chrome.sidePanel.open({ windowId }),
+  // Disabling the panel closes it in every window at once (close() animates and keeps the page); both calls go
+  // out before the open() that follows, in the same gesture.
+  closeAllInstantly: async () => {
+    await Promise.all([chrome.sidePanel.setOptions({ enabled: false }), chrome.sidePanel.setOptions({ enabled: true })]);
+  },
   log: logger(),
 });
 

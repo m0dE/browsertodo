@@ -3,7 +3,7 @@
  * one way for Messages requests and for Jev.
  */
 import { z } from "zod";
-import { OUT_OF_CREDIT, OutOfCreditError as OutOfCreditBody } from "@browsertodo/shared";
+import { HOSTED_AI_UNAVAILABLE_CODE, isApiErrorCode, OUT_OF_CREDIT, OutOfCreditError as OutOfCreditBody } from "@browsertodo/shared";
 
 /** A hosted-AI request was refused with 402: the account has no usage credit left. */
 export class OutOfCreditError extends Error {
@@ -35,6 +35,12 @@ export function outOfCreditError(body: string): OutOfCreditError {
   return new OutOfCreditError(message ? `${OUT_OF_CREDIT}: ${message}` : OUT_OF_CREDIT, topupUrl || undefined);
 }
 
+/** Whether an error answer is the hosted AI's HOSTED_AI_UNAVAILABLE_CODE (the server's own AI credentials were refused). */
+export function isHostedAiUnavailable(body: string): boolean {
+  const json = parseJsonBody(body);
+  return !!json && typeof json === "object" && (json as { error?: unknown }).error === HOSTED_AI_UNAVAILABLE_CODE;
+}
+
 /**
  * The browsertodo API answers { error: "code or text", message? }; Anthropic
  * answers { error: { type, message } }; some proxies just { message }.
@@ -54,7 +60,8 @@ export function errorDetail(body: string, maxChars = 300): string {
   const parsed = ErrorBody.safeParse(json);
   if (parsed.success) {
     const { error, message } = parsed.data;
-    if (typeof error === "string") return message ? `${error}: ${message}` : error;
+    // A machine code says nothing a user can read when the message is there.
+    if (typeof error === "string") return message ? (isApiErrorCode(error) ? message : `${error}: ${message}`) : error;
     if (error?.message) return `${error.type ? `${error.type}: ` : ""}${error.message}`;
     if (message) return message;
   }

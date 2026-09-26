@@ -1,7 +1,7 @@
 /** The browsertodo hosted AI: startApiAgent with a custom endpoint and bearer auth, 402 handling, and Jev through the proxy. */
 import { describe, expect, it, vi } from "vitest";
 import { startApiAgentWith } from "../src/api-agent.js";
-import { OUT_OF_CREDIT } from "@browsertodo/shared";
+import { HOSTED_AI_UNAVAILABLE, HOSTED_AI_UNAVAILABLE_CODE, OUT_OF_CREDIT } from "@browsertodo/shared";
 import { OutOfCreditError } from "../src/api-errors.js";
 import { createJev } from "../src/jev.js";
 import type { ApiAgentOptions } from "../src/types.js";
@@ -70,6 +70,14 @@ describe("hosted AI transport", () => {
     expect(r.reason).toMatch(/^browsertodo AI rejected the sign-in \(HTTP 401: invalid or expired session\)/);
   });
 
+  it("502 hosted_ai_unavailable (the server's own AI credentials refused) fails at once with the plain reason", async () => {
+    const body = { error: HOSTED_AI_UNAVAILABLE_CODE, message: "BrowserTODO AI is temporarily unavailable. Try again later, or use your own Claude in Settings." };
+    const { session, requests, events } = hosted([{ status: 502, body }], { label: "BrowserTODO AI" });
+    expect(await session.done).toEqual({ outcome: "failed", reason: HOSTED_AI_UNAVAILABLE });
+    expect(requests).toHaveLength(1); // retrying cannot help
+    expect(events.filter((e) => e.type === "error")).toEqual([{ type: "error", text: HOSTED_AI_UNAVAILABLE }]);
+  });
+
   it("server errors from the proxy are retried as transient with the proxy's label", async () => {
     const { session, requests } = hosted([{ status: 503, body: { error: "upstream" } }]);
     const r = await session.done;
@@ -108,6 +116,12 @@ describe("createJev through the browsertodo proxy", () => {
     expect(err).toBeInstanceOf(OutOfCreditError);
     expect((err as OutOfCreditError).message).toBe("Out of usage credit: No usage credit left");
     expect((err as OutOfCreditError).topupUrl).toBe("https://dash.test/billing");
+  });
+
+  it("a machine code with a message reads as the message", async () => {
+    const s = fakeMessagesServer([{ status: 502, body: { error: HOSTED_AI_UNAVAILABLE_CODE, message: "BrowserTODO AI is temporarily unavailable." } }]);
+    const jev = createJev("t", { fetch: s.fetchImpl, endpoint: "https://api.test/v1/ai/jev" });
+    await expect(jev.decide({ goal: "g", snapshot })).rejects.toThrow("Jev HTTP 502: BrowserTODO AI is temporarily unavailable.");
   });
 
   it("other errors name the status", async () => {

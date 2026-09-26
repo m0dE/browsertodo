@@ -14,6 +14,7 @@ import {
   taskChip,
   taskNextTime,
 } from "@browsertodo/shared";
+import { FIXES } from "../../src/sidepanel/error-help.js";
 import { accountLabel, bytesToBase64, clockLabel, firstLine, modelChip, sessionMeta, statusLine, todoGate } from "../../src/sidepanel/format.js";
 import { modelLabel } from "../../src/ui/labels.js";
 
@@ -37,16 +38,21 @@ describe("statusLine", () => {
     expect(statusLine(state())).toEqual({ tone: "ok", text: "Claude Code" });
     expect(statusLine(state({}, { effective: "claude-api", jevActive: true })).text).toBe("Claude API + Jev");
   });
-  it("warns with a settings link when nothing is usable", () => {
-    const s = statusLine(state({}, { effective: null, note: "No API key and no helper" }));
-    expect(s).toEqual({ tone: "bad", text: "No API key and no helper", action: "settings" });
+  it("says what is wrong in plain words, with the fix of the chat's error cards", () => {
+    const note = "No AI set up. Install the helper, add a Claude API key, or log in.";
+    expect(statusLine(state({}, { effective: null, note }))).toEqual({ tone: "bad", text: "No AI is set up yet", title: note, action: FIXES.setUpAi });
+    expect(statusLine(state({}, { effective: null, note: "Helper not installed" }))).toMatchObject({ text: "The Claude Code helper isn't installed", action: FIXES.claudeCode });
+    expect(statusLine(state({}, { effective: null, note: "No Claude API key set" }))).toMatchObject({ text: "No Claude API key is set", action: FIXES.apiKey });
+    expect(statusLine(state({}, { effective: null, note: "Sign in to use BrowserTODO AI" }))).toMatchObject({ text: "You're not logged in", action: FIXES.login });
+    // A reason it does not know: still a way to fix it.
+    expect(statusLine(state({}, { effective: null, note: "Something odd" }))).toMatchObject({ text: "Something went wrong", title: "Something odd", action: FIXES.setUpAi });
   });
   it("offers resume when paused", () => {
     const s = statusLine(state({ paused: true, pausedReason: "3 failures in a row" }));
     expect(s).toEqual({ tone: "warn", text: "Runs paused: 3 failures in a row", action: "resume" });
   });
   it("prefers the no-brain warning over paused", () => {
-    expect(statusLine(state({ paused: true }, { effective: null })).action).toBe("settings");
+    expect(statusLine(state({ paused: true }, { effective: null })).action).toEqual(FIXES.setUpAi);
   });
 });
 
@@ -182,15 +188,15 @@ describe("hosted AI in the status line and the model chip", () => {
     ...over,
   });
 
-  it("names browsertodo AI as the brain", () => {
-    expect(statusLine(state({ account: account() }, { effective: "browsertodo", jevActive: true }))).toEqual({ tone: "ok", text: "browsertodo AI + Jev" });
+  it("names BrowserTODO AI as the brain", () => {
+    expect(statusLine(state({ account: account() }, { effective: "browsertodo", jevActive: true }))).toEqual({ tone: "ok", text: "BrowserTODO AI + Jev" });
   });
 
   it("out of credit: the status line says so with a Top up action", () => {
     const out = account({ outOfCredit: true, credit: { subscriptionCents: 0, topupCents: 0, totalCents: 0, periodGrantCents: 0, periodEnd: null } });
-    expect(statusLine(state({ account: out }, { effective: "browsertodo" }))).toEqual({ tone: "warn", text: "Out of usage credit", action: "topup" });
+    expect(statusLine(state({ account: out }, { effective: "browsertodo" }))).toEqual({ tone: "warn", text: "You're out of usage credit", title: "Out of usage credit", action: FIXES.topup });
     // Auto fell back to nothing usable: still the credit message.
-    expect(statusLine(state({ account: out }, { effective: null, note: "x" })).action).toBe("topup");
+    expect(statusLine(state({ account: out }, { effective: null, note: "x" })).action).toEqual(FIXES.topup);
     // Another brain runs: credit is not the problem.
     expect(statusLine(state({ account: out }, { effective: "claude-code" })).text).toBe("Claude Code");
   });

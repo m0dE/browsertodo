@@ -15,6 +15,8 @@ import { todoAllowed } from "../account/types.js";
 import { API_IDLE_MS } from "../engine/api-brain.js";
 import { BRAIN_LABELS, brainLabel, modelLabel } from "../ui/labels.js";
 import type { AccountView, UiState } from "../ui-protocol.js";
+import { NO_AI } from "../engine/brain-resolver.js";
+import { errorHelp, FIXES, type ErrorFix } from "./error-help.js";
 
 
 /** "Claude Code · claude-sonnet-5 · Jev on": the agent behind a conversation. */
@@ -38,8 +40,10 @@ export function conversationNote(s: { brain: BrainKind; endedAt?: string }, open
 export interface StatusLine {
   tone: Tone;
   text: string;
-  /** What the banner's button does, when it has one. topup: open the account's top-up page. */
-  action?: "settings" | "resume" | "topup";
+  /** The reason as the brains put it, when `text` is its plain-words version (the tooltip). */
+  title?: string;
+  /** The banner's button, when it has one: the fix of what is wrong (error-help.ts), or resuming paused runs. */
+  action?: ErrorFix | "resume";
 }
 
 /**
@@ -52,18 +56,18 @@ export function outOfCredit(state: Pick<UiState, "brain" | "settings" | "account
   return state.brain.effective === "browsertodo" || state.settings.brain === "browsertodo" || !state.brain.effective;
 }
 
+/** A problem in the status line: the plain words of error-help.ts (without the full stop) and its main fix. */
+function problemLine(tone: Tone, reason: string): StatusLine {
+  const help = errorHelp(reason);
+  const line: StatusLine = { tone, text: help.message.replace(/\.$/, ""), action: help.fixes[0] ?? FIXES.setUpAi };
+  if (reason !== help.message) line.title = reason;
+  return line;
+}
+
 /** The slim line at the top of the side panel. */
 export function statusLine(state: UiState): StatusLine {
-  if (outOfCredit(state)) {
-    return { tone: "warn", text: OUT_OF_CREDIT, action: "topup" };
-  }
-  if (!state.brain.effective) {
-    return {
-      tone: "bad",
-      text: state.brain.note || "Nothing can run tasks yet. Add a Claude API key or install the helper.",
-      action: "settings",
-    };
-  }
+  if (outOfCredit(state)) return problemLine("warn", OUT_OF_CREDIT);
+  if (!state.brain.effective) return problemLine("bad", state.brain.note || NO_AI);
   if (state.paused) {
     return { tone: "warn", text: `Runs paused${state.pausedReason ? `: ${state.pausedReason}` : ""}`, action: "resume" };
   }
@@ -176,7 +180,7 @@ export function accountLabel(account: string | null | undefined): string {
 export interface ModelChipInfo {
   /** "Sonnet 5 · Jev" or "Sonnet 5"; "Out of usage credit" when the hosted AI has none. */
   label: string;
-  /** The hosted browsertodo AI runs (or would run) the next task: only its models are offered. */
+  /** The hosted BrowserTODO AI runs (or would run) the next task: only its models are offered. */
   hosted: boolean;
   /** Hosted: the account's credit ("$4.21 left"), when known. */
   credit?: string;

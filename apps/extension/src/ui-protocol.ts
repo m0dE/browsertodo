@@ -199,6 +199,8 @@ export type UiRequest =
   | { type: "vault.lock" }
   | { type: "vault.set"; site: string; username: string; password: string }
   | { type: "vault.delete"; site: string }
+  /** Erase every saved login and the passphrase (the only way out of a forgotten passphrase). */
+  | { type: "vault.reset" }
   /** Voice input: one clip of the live dictation to text, with the signed-in account (see voice/transcribe.ts). */
   | ({ type: "voice.transcribe" } & VoiceClipRequest);
 
@@ -253,11 +255,14 @@ export interface UiResults {
   "account.keys.revoke": { ok: boolean };
   "sessions.list": { sessions: SessionInfo[] };
   "sessions.events": { session: SessionInfo; events: StampedAgentEvent[] };
-  "vault.list": { locked: boolean; sites: string[] };
+  /** exists: a passphrase has been set; false: the next unlock chooses one. Site names are listed even while locked. */
+  "vault.list": { exists: boolean; locked: boolean; sites: string[] };
+  /** ok: false is a wrong passphrase (other failures are errors). */
   "vault.unlock": { ok: boolean };
   "vault.lock": { ok: boolean };
   "vault.set": { ok: boolean };
   "vault.delete": { ok: boolean };
+  "vault.reset": { ok: boolean };
   /** Failures come back as data (plan, credit, ...), not as a failed request. */
   "voice.transcribe": VoiceTranscribeResult;
 }
@@ -268,8 +273,11 @@ export type UiPush =
   | { type: "event"; event: StampedAgentEvent }
   | { type: "session"; session: SessionInfo }
   | { type: "tasks.changed" }
-  /** The keyboard shortcut: show the Chat tab and put the cursor in the input (see panel-command.ts). */
-  | { type: "panel.focus" }
+  /**
+   * The keyboard shortcut: show the Chat tab and put the cursor in the input (see panel-command.ts);
+   * `draft`: the text the box had before the shortcut recreated the panel.
+   */
+  | { type: "panel.focus"; draft?: string }
   /** The keyboard shortcut, pressed while the cursor is in the input: start or stop voice input. */
   | { type: "panel.voice" };
 

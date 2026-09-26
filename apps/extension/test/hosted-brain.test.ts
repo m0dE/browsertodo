@@ -1,4 +1,4 @@
-/** The hosted browsertodo AI brain: request shape (endpoint, auth, session header), hosted models, Jev, 402. */
+/** The hosted BrowserTODO AI brain: request shape (endpoint, auth, session header), hosted models, Jev, 402. */
 import { describe, expect, it, vi } from "vitest";
 import * as core from "@browsertodo/core";
 import { DEFAULT_SETTINGS, SESSION_HEADER, type AgentEvent, type ExtensionSettings } from "@browsertodo/shared";
@@ -31,7 +31,7 @@ function brain(replies: FakeReply[], session: { token: string; apiBase: string }
   return { b, s, onOutOfCredit, afterTurn };
 }
 
-describe("browsertodo AI brain", () => {
+describe("BrowserTODO AI brain", () => {
   it("is the 'browsertodo' brain and calls ${apiBase}/v1/ai/messages with the session token and the run's session id", async () => {
     const t = brain([complete]);
     expect(t.b.kind).toBe("browsertodo");
@@ -46,7 +46,7 @@ describe("browsertodo AI brain", () => {
     expect(req.headers["x-api-key"]).toBeUndefined();
     expect(req.headers["anthropic-dangerous-direct-browser-access"]).toBeUndefined();
     expect(req.body.model).toBe("claude-sonnet-5");
-    expect(events[0]).toEqual({ type: "status", text: "browsertodo AI (claude-sonnet-5)" });
+    expect(events[0]).toEqual({ type: "status", text: "BrowserTODO AI (claude-sonnet-5)" });
     await new Promise((r) => setTimeout(r, 0));
     expect(t.afterTurn).toHaveBeenCalled();
   });
@@ -70,7 +70,7 @@ describe("browsertodo AI brain", () => {
     b.start(startOpts({ jevApiKey: "" }));
     expect(createJev).toHaveBeenCalledWith("bt_s_tok", { endpoint: "https://api.test/v1/ai/jev", headers: { [SESSION_HEADER]: "sess-42" } });
     const agentOpts = (startApiAgent.mock.calls[0] as unknown as [core.ApiAgentOptions])[0];
-    expect(agentOpts).toMatchObject({ apiKey: "bt_s_tok", baseUrl: "https://api.test/v1/ai", auth: "bearer", headers: { [SESSION_HEADER]: "sess-42" }, label: "browsertodo AI" });
+    expect(agentOpts).toMatchObject({ apiKey: "bt_s_tok", baseUrl: "https://api.test/v1/ai", auth: "bearer", headers: { [SESSION_HEADER]: "sess-42" }, label: "BrowserTODO AI" });
     expect(agentOpts.jev).not.toBeNull();
   });
 
@@ -99,7 +99,7 @@ describe("browsertodo AI brain", () => {
   it("signed out: the run fails before any request", async () => {
     const t = brain([complete], null);
     const r = await t.b.start(startOpts()).done;
-    expect(r).toEqual({ outcome: "failed", reason: "Could not start the browsertodo AI agent: Not signed in: sign in to use browsertodo AI" });
+    expect(r).toEqual({ outcome: "failed", reason: "Could not start the BrowserTODO AI agent: Not signed in: sign in to use BrowserTODO AI" });
     expect(t.s.requests).toHaveLength(0);
   });
 });

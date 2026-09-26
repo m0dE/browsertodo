@@ -8,6 +8,7 @@ export function installChromeStub(data) {
   // scenarios name only the latest (`running`) unless they set more.
   const withRunning = (s) => (s.runningSessions ? s : { ...s, runningSessions: s.running ? [s.running] : [] });
   data.state = withRunning(data.state);
+  data.vault ??= { exists: true, locked: false, sites: ["example.com", "news.ycombinator.com"] };
   const pushListeners = [];
   const results = {
     "state.get": () => data.state,
@@ -93,11 +94,30 @@ export function installChromeStub(data) {
         : req.sessionId === "s-live"
         ? { session: data.sessions[0], events: data.events }
         : { session: data.sessions.find((s) => s.sessionId === req.sessionId), events: data.pastEvents },
-    "vault.list": () => ({ locked: false, sites: ["example.com", "news.ycombinator.com"] }),
-    "vault.unlock": () => ({ ok: true }),
-    "vault.lock": () => ({ ok: true }),
-    "vault.set": () => ({ ok: true }),
-    "vault.delete": () => ({ ok: true }),
+    // Site logins: data.vault is the vault's state (unlocked with two logins unless a case sets it);
+    // "correct horse" is the passphrase that opens an existing vault.
+    "vault.list": () => data.vault,
+    "vault.unlock": (req) => {
+      if (data.vault.exists && req.passphrase !== "correct horse") return { ok: false };
+      data.vault = { ...data.vault, exists: true, locked: false };
+      return { ok: true };
+    },
+    "vault.lock": () => {
+      data.vault = { ...data.vault, locked: true };
+      return { ok: true };
+    },
+    "vault.set": (req) => {
+      data.vault = { ...data.vault, sites: [...new Set([...data.vault.sites, req.site])].sort() };
+      return { ok: true };
+    },
+    "vault.delete": (req) => {
+      data.vault = { ...data.vault, sites: data.vault.sites.filter((s) => s !== req.site) };
+      return { ok: true };
+    },
+    "vault.reset": () => {
+      data.vault = { exists: false, locked: true, sites: [] };
+      return { ok: true };
+    },
     // Voice input: each clip says a little more of the sentence. __voiceHold keeps the next answer
     // back until __voiceRelease() (to show "Finishing…").
     "voice.transcribe": () => {
@@ -137,6 +157,9 @@ export function installChromeStub(data) {
       id: "abcdefghijklmnopabcdefghijklmnop",
       sendMessage: async (req) => {
         window.__requests.push(req);
+        // __refuse[type] = "text": that request fails with this error (as the background would answer).
+        const refusal = window.__refuse?.[req.type];
+        if (refusal) return { ok: false, error: refusal };
         const fn = results[req.type];
         return fn ? { ok: true, data: await fn(req) } : { ok: false, error: `unknown request ${req.type}` };
       },

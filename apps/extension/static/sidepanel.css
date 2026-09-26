@@ -352,10 +352,25 @@ button.title-btn:hover { color: var(--accent); }
 .log .ev-actions { display: flex; gap: 6px; margin-top: 2px; }
 /* Continue waits until nothing runs. */
 .log.busy .ev-actions { display: none; }
-.log .ev-error {
-  color: color-mix(in srgb, var(--bad) 80%, var(--text)); font-size: var(--text-sm); line-height: 1.45; overflow-wrap: anywhere;
-  padding: 5px 9px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bad-soft) 60%, transparent);
+/* A failure (chat, composer): one plain line, maybe a second, the fix buttons, and Details (error-view.ts). */
+.ev-error {
+  display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  font-size: var(--text-sm); line-height: 1.45; overflow-wrap: anywhere; color: var(--text);
+  padding: 7px 10px; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bad-soft) 70%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--bad) 70%, transparent);
 }
+.ev-error .err-msg { font-weight: 600; color: color-mix(in srgb, var(--bad) 75%, var(--text)); }
+.ev-error .err-hint { color: var(--muted); }
+.ev-error .err-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.ev-error .err-details { margin-top: 2px; font-size: var(--text-xs); color: var(--muted); }
+.ev-error .err-details > summary { cursor: pointer; width: max-content; }
+.ev-error .err-tech { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; margin-top: 3px; }
+.ev-error .err-tech pre {
+  margin: 0; max-width: 100%; max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: var(--text-xs); user-select: text; color: var(--muted);
+}
+.composer > .msg .ev-error { margin: 2px 0 4px; }
 .log .empty { margin: auto; max-width: 240px; }
 .log .chat-empty { margin: auto 0; border: 0; }
 
@@ -479,7 +494,6 @@ button.title-btn:hover { color: var(--accent); }
 .mm-credit { color: var(--muted); font-size: var(--text-sm); padding: 4px 8px 2px; }
 .mm-credit[data-tone="warn"] { color: var(--warn); font-weight: 500; }
 .now-bar .now-model[data-tone="warn"] { color: var(--warn); }
-.log .ev-end .ev-topup { align-self: flex-start; font-weight: 600; }
 
 /* "Open in TODO": the task it went to, briefly. */
 .task.found { animation: found 1.6s ease-out; }

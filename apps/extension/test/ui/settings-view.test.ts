@@ -74,7 +74,7 @@ describe("tabs", () => {
   });
 });
 
-describe("browsertodo AI option", () => {
+describe("BrowserTODO AI option", () => {
   it("signed out: disabled, with a log-in action and no credit", () => {
     const v = view({ account: SIGNED_OUT });
     expect(option(v, "browsertodo").enabled).toBe(false);
@@ -137,11 +137,13 @@ describe("what each brain reveals", () => {
 });
 
 describe("Auto says what it would pick now", () => {
-  it("browsertodo AI when signed in with credit", () => {
-    expect(view({ account: PLUS, helper: HELPER }).autoPick.text).toBe("Right now this picks browsertodo AI.");
-  });
-  it("local Claude Code when the helper works", () => {
+  it("the user's own Claude first: local Claude Code when the helper works, even with credit", () => {
+    expect(view({ account: PLUS, helper: HELPER }).autoPick.text).toBe("Right now this picks Local Claude Code.");
     expect(view({ account: FREE_EMPTY, helper: HELPER }).autoPick.text).toBe("Right now this picks Local Claude Code.");
+  });
+  it("then the Claude API key, then BrowserTODO AI when signed in with credit", () => {
+    expect(view({ account: PLUS, settings: { anthropicApiKey: "sk" } }).autoPick.text).toBe("Right now this picks Claude API.");
+    expect(view({ account: PLUS }).autoPick.text).toBe("Right now this picks BrowserTODO AI.");
   });
   it("Claude API with a key and no helper", () => {
     expect(view({ settings: { anthropicApiKey: "sk" } }).autoPick).toEqual({ text: "Right now this picks Claude API.", tone: "ok" });
@@ -153,7 +155,7 @@ describe("Auto says what it would pick now", () => {
     });
   });
   it("is the same whatever brain is saved", () => {
-    expect(view({ brain: "claude-api", account: PLUS }).autoPick.text).toMatch(/browsertodo AI/);
+    expect(view({ brain: "claude-api", account: PLUS }).autoPick.text).toMatch(/BrowserTODO AI/);
   });
 });
 
@@ -162,7 +164,7 @@ describe("model, Jev and cloud", () => {
     expect(view({}).model).toMatchObject({ selected: "claude-sonnet-5", custom: false });
     expect(view({ draft: { anthropicModel: "claude-x-test" } }).model).toMatchObject({ selected: CUSTOM_MODEL, custom: true });
   });
-  it("tells that browsertodo AI runs Sonnet 5 for a model it does not offer", () => {
+  it("tells that BrowserTODO AI runs Sonnet 5 for a model it does not offer", () => {
     expect(view({ draft: { brain: "browsertodo", anthropicModel: "claude-x-test" } }).model.hint).toMatch(/runs Sonnet 5/);
     expect(view({ draft: { brain: "auto", anthropicModel: "claude-x-test" } }).model.hint).toMatch(/Sonnet 5/);
     expect(view({ draft: { brain: "claude-api", anthropicModel: "claude-x-test" } }).model.hint).not.toMatch(/Sonnet 5/);
@@ -174,7 +176,7 @@ describe("model, Jev and cloud", () => {
     expect(view({ draft: { jevEnabled: true } }).showJevFields).toBe(true);
     expect(view({ draft: { jevEnabled: false } }).showJevFields).toBe(false);
   });
-  it("Jev note: the helper's own key, or included with browsertodo AI; none when off", () => {
+  it("Jev note: the helper's own key, or included with BrowserTODO AI; none when off", () => {
     expect(view({ helper: HELPER }).jevNote).toMatch(/TYPESAFE_API_KEY/);
     expect(view({ helper: HELPER, settings: { jevApiKey: "j" } }).jevNote).toBeNull();
     expect(view({ account: PLUS, effective: "browsertodo" }).jevNote).toMatch(/includes Jev/);

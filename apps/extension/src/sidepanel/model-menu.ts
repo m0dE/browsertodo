@@ -1,7 +1,7 @@
 /**
  * The model chip in the composer ("Sonnet 5 · Jev") and its popover menu:
  * pick the model, switch Jev, or open the settings. With the hosted
- * browsertodo AI it offers the hosted models and shows the credit left. Choices are saved with
+ * BrowserTODO AI it offers the hosted models and shows the credit left. Choices are saved with
  * settings.save; the chip then follows the state the background returns.
  */
 import { CLAUDE_MODELS, errorMessage, isClaudeModel, OUT_OF_CREDIT, type ExtensionSettings } from "@browsertodo/shared";
@@ -53,9 +53,9 @@ export function initModelPicker(opts: {
   const renderChip = () => {
     if (!info) return;
     label.textContent = info.label;
-    const what = `${info.hosted ? "browsertodo AI · " : ""}${info.model}${info.jevActive ? " with Jev" : ""}`;
+    const what = `${info.hosted ? "BrowserTODO AI · " : ""}${info.model}${info.jevActive ? " with Jev" : ""}`;
     chip.title = info.outOfCredit
-      ? `${OUT_OF_CREDIT}: top up or subscribe to keep using browsertodo AI`
+      ? `${OUT_OF_CREDIT}: top up or subscribe to keep using BrowserTODO AI`
       : running
         ? `This task runs on ${what}. Changes apply to the next task.`
         : `Model for new tasks: ${what}${info.credit ? ` (${info.credit})` : ""}`;
@@ -78,7 +78,7 @@ export function initModelPicker(opts: {
     // The hosted AI runs only the models it prices; your own key or Claude Code can run any id.
     const models =
       info.hosted || isClaudeModel(current) || !current ? CLAUDE_MODELS : [...CLAUDE_MODELS, { id: current, label: modelLabel(current) }];
-    const rows: Node[] = [h("div.mm-head", { role: "presentation" }, info.hosted ? "browsertodo AI model" : "Model")];
+    const rows: Node[] = [h("div.mm-head", { role: "presentation" }, info.hosted ? "BrowserTODO AI model" : "Model")];
     for (const m of models) {
       const on = m.id === current;
       rows.push(

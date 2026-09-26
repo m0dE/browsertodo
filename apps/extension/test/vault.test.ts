@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { installChromeFake, type ChromeFake } from "./chrome-fake.js";
-import { Vault } from "../src/vault.js";
+import { Vault, WrongPassphraseError } from "../src/vault.js";
 
 let chrome: ChromeFake;
 let vault: Vault;
@@ -11,7 +11,7 @@ beforeEach(() => {
 
 describe("vault", () => {
   it("starts locked and empty", async () => {
-    expect(await vault.list()).toEqual({ locked: true, sites: [] });
+    expect(await vault.list()).toEqual({ exists: false, locked: true, sites: [] });
     // Nothing saved yet: "not found", never "locked" (nothing to unlock).
     expect(await vault.getCredential("example.com")).toEqual({ found: false });
   });
@@ -20,7 +20,7 @@ describe("vault", () => {
     await vault.unlock("correct horse");
     await vault.set("Example.com", "alice", "s3cret");
     expect(await vault.getCredential("example.com")).toEqual({ found: true, username: "alice", password: "s3cret" });
-    expect(await vault.list()).toEqual({ locked: false, sites: ["example.com"] });
+    expect(await vault.list()).toEqual({ exists: true, locked: false, sites: ["example.com"] });
 
     const raw = JSON.stringify(chrome.storage.local.data.vault);
     expect(raw).not.toContain("s3cret");
@@ -36,7 +36,8 @@ describe("vault", () => {
     await vault.unlock("right");
     await vault.set("example.com", "a", "b");
     await vault.lock();
-    await expect(vault.unlock("wrong")).rejects.toThrow(/wrong passphrase/i);
+    await expect(vault.unlock("wrong")).rejects.toThrow(WrongPassphraseError);
+    await expect(vault.unlock("wrong")).rejects.toThrow("Wrong passphrase");
     expect((await vault.list()).locked).toBe(true);
     // Logins saved and locked: this is the one case that reports "locked".
     expect(await vault.getCredential("example.com")).toEqual({ found: false, locked: true });
@@ -69,6 +70,36 @@ describe("vault", () => {
     await vault.delete("example.com");
     expect((await vault.list()).sites).toEqual([]);
     await vault.lock();
+    await expect(vault.set("x.org", "u", "p")).rejects.toThrow(/locked/i);
+  });
+
+  it("reset erases the saved logins and the session key; a new passphrase then works", async () => {
+    await vault.unlock("forgotten");
+    await vault.set("example.com", "alice", "s3cret");
+    await vault.set("news.example.org", "bob", "pw");
+    await vault.lock();
+    await expect(vault.unlock("guess")).rejects.toThrow(WrongPassphraseError);
+
+    await vault.reset();
+    expect(chrome.storage.local.data.vault).toBeUndefined();
+    expect(chrome.storage.session.data.vaultKey).toBeUndefined();
+    expect(await vault.list()).toEqual({ exists: false, locked: true, sites: [] });
+    // get_credential: nothing saved is "not found", not "locked".
+    expect(await vault.getCredential("example.com")).toEqual({ found: false });
+
+    await vault.unlock("brand new");
+    expect(await vault.list()).toEqual({ exists: true, locked: false, sites: [] });
+    await vault.set("example.com", "alice", "fresh");
+    expect(await vault.getCredential("example.com")).toEqual({ found: true, username: "alice", password: "fresh" });
+    await vault.lock();
+    await expect(vault.unlock("forgotten")).rejects.toThrow(WrongPassphraseError);
+  });
+
+  it("reset while unlocked also drops the session key", async () => {
+    await vault.unlock("pw");
+    await vault.set("example.com", "u", "p");
+    await vault.reset();
+    expect(chrome.storage.session.data.vaultKey).toBeUndefined();
     await expect(vault.set("x.org", "u", "p")).rejects.toThrow(/locked/i);
   });
 });

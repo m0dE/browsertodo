@@ -21,6 +21,14 @@ interface VaultData {
   entries: Record<string, Sealed>;
 }
 
+/** The passphrase does not open this vault. Nothing can recover it: the way out is reset(). */
+export class WrongPassphraseError extends Error {
+  constructor() {
+    super("Wrong passphrase");
+    this.name = "WrongPassphraseError";
+  }
+}
+
 export type CredentialResult = { found: false; locked?: boolean } | { found: true; username: string; password: string };
 
 export class Vault {
@@ -43,7 +51,7 @@ export class Vault {
     } else {
       key = await this.derive(passphrase, base64ToBytes(data.salt));
       const check = await open(key, data.verifier).catch(() => null);
-      if (check !== VERIFIER_TEXT) throw new Error("Wrong passphrase");
+      if (check !== VERIFIER_TEXT) throw new WrongPassphraseError();
     }
     const raw = new Uint8Array(await crypto.subtle.exportKey("raw", key));
     await chrome.storage.session.set({ [SESSION_KEY]: bytesToBase64(raw) });
@@ -53,10 +61,20 @@ export class Vault {
     await chrome.storage.session.remove(SESSION_KEY);
   }
 
-  async list(): Promise<{ locked: boolean; sites: string[] }> {
+  /**
+   * Erases every saved login and the passphrase with them (the forgotten-passphrase way out):
+   * the next unlock sets a new passphrase.
+   */
+  async reset(): Promise<void> {
+    await chrome.storage.local.remove(VAULT_KEY);
+    await chrome.storage.session.remove(SESSION_KEY);
+  }
+
+  /** exists: a passphrase has been set (unlock creates the vault); site names are stored in the clear. */
+  async list(): Promise<{ exists: boolean; locked: boolean; sites: string[] }> {
     const data = await this.read();
     const locked = (await this.sessionKey()) === null;
-    return { locked, sites: Object.keys(data?.entries ?? {}).sort() };
+    return { exists: data !== null, locked, sites: Object.keys(data?.entries ?? {}).sort() };
   }
 
   async set(site: string, username: string, password: string): Promise<void> {

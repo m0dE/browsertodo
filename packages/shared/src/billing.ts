@@ -161,6 +161,15 @@ export const OUT_OF_CREDIT_CODE = "out_of_credit";
 /** What the user reads when the hosted AI has no usage credit left (a paused run's reason starts with it). */
 export const OUT_OF_CREDIT = "Out of usage credit";
 
+/**
+ * The `error` code of a 502 from /v1/ai/*: the AI provider refused this
+ * server's own credentials or configuration (the details are in the server's
+ * log). Nothing the user sent is wrong; their own Claude still works.
+ */
+export const HOSTED_AI_UNAVAILABLE_CODE = "hosted_ai_unavailable";
+/** What the user reads when the hosted AI answered HOSTED_AI_UNAVAILABLE_CODE (a failed turn's reason is exactly this). */
+export const HOSTED_AI_UNAVAILABLE = "BrowserTODO AI is unavailable right now";
+
 /** 402 of /v1/ai/* when the user has no credit left. */
 export const OutOfCreditError = z.object({
   error: z.literal(OUT_OF_CREDIT_CODE),

@@ -10,10 +10,11 @@ import { initChat } from "./chat.js";
 import { initComposer } from "./composer.js";
 import { showDetails } from "./details-sheet.js";
 import { $, closeMenusOnOutsideClick } from "../ui/dom.js";
-import { setTopup } from "./event-render.js";
+import { setErrorFixes, type ErrorFixes } from "./error-view.js";
 import { conversationNote } from "./format.js";
 import { initHeader } from "./header.js";
 import { initHistory } from "./history.js";
+import { openSettings } from "./open-settings.js";
 import { connectBackground } from "./port.js";
 import { chatForTab, isBound, tabOfSession } from "./tab-chat.js";
 import { initPanelTabs, tabHasComposer, type TabName } from "./tabs.js";
@@ -161,15 +162,29 @@ const chat = initChat({
   onShortcuts: () => void openShortcutSettings(),
 });
 const history = initHistory({ onOpenInChat: (s) => void openHere(s) });
-const header = initHeader({
-  onState: (s) => applyState(s),
-  onBilling: billing,
-  // Log in from the menu: the TODO tab's sign-in, where its progress shows.
-  onSignIn: () => {
-    tabs.show("todo");
-    tasks.signIn();
-  },
-});
+/** Log in: the TODO tab's sign-in, where its progress shows. */
+function signIn(): void {
+  tabs.show("todo");
+  tasks.signIn();
+}
+
+const header = initHeader({ onState: (s) => applyState(s), onBilling: billing, onSignIn: signIn });
+
+/** What the fix buttons of error cards and the status line do (error-help.ts names them). Billing ones need an account. */
+function errorFixes(s: UiState): ErrorFixes {
+  const aiSettings = () => void openSettings("ai");
+  const useHosted = () =>
+    void uiRequest({ type: "settings.save", settings: { brain: "browsertodo" } }).then(applyState, (err: unknown) => composer.showError(err));
+  return {
+    "own-claude": aiSettings,
+    "claude-code": aiSettings,
+    "api-key": aiSettings,
+    "set-up-ai": aiSettings,
+    "new-tab": () => void chrome.tabs.create({}),
+    login: signIn,
+    ...(s.account?.signedIn ? { topup: billing, plans: billing, "use-hosted": useHosted } : {}),
+  };
+}
 closeMenusOnOutsideClick("details.menu");
 
 const tabs = initPanelTabs((name) => {
@@ -225,9 +240,9 @@ function updateComposer(): void {
 
 function applyState(s: UiState): void {
   state = s;
+  setErrorFixes(errorFixes(s));
   header.render(s);
   voice.setAllowed(!!s.account?.signedIn && voiceAllowed(s.account.plan));
-  setTopup(s.account?.signedIn ? billing : null);
   chat.setRunning(s.runningSessions);
   composer.setRunning(s.runningSessions);
   composer.setState(s);
@@ -257,8 +272,9 @@ function onPush(msg: UiPush): void {
       void tasks.refresh();
       break;
     case "panel.focus":
-      // The keyboard shortcut: Chat, with the cursor in the box.
+      // The keyboard shortcut: Chat, with the cursor in the box (a panel it recreated gets the text its box had).
       tabs.show("chat");
+      if (msg.draft && !composer.draft()) composer.setDraft(msg.draft);
       window.focus();
       composer.focus();
       break;
@@ -276,7 +292,15 @@ function hello(): void {
   if (windowId === null) return;
   port.send({ type: "panel.hello", windowId });
   port.send({ type: "panel.input", focused: document.hasFocus() && document.activeElement === $("now-text") });
+  reportDocumentFocus();
 }
+
+/** Whether this page has the keyboard focus, for the shortcut (see panel-command.ts), with the text in the box. */
+function reportDocumentFocus(): void {
+  port.send({ type: "panel.document", focused: document.hasFocus(), draft: composer.draft() });
+}
+window.addEventListener("focus", reportDocumentFocus);
+window.addEventListener("blur", reportDocumentFocus);
 
 /** The keyboard shortcut as Chrome assigned it (null: none is set), for the new chat. */
 async function loadShortcut(): Promise<void> {

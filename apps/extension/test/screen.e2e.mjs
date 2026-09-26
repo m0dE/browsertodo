@@ -14,7 +14,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DIST, launchExtension, openPanelWithTabs, openSidePanel, registerHelperTemporarily, routerUi, sessionWhen } from "../../../test/e2e/lib/extension.mjs";
+import { DIST, launchExtension, openPanelWithTabs, openSidePanel, registerHelperTemporarily, routerUi, sessionWhen, shortcutPresser } from "../../../test/e2e/lib/extension.mjs";
 import { installFakeBrain } from "../../../test/e2e/lib/fake-brain.mjs";
 import { createSuite, sleep, waitFor } from "../../../test/e2e/lib/suite.mjs";
 import { selfSignedCert } from "../../../test/fixtures/tls.mjs";
@@ -124,29 +124,40 @@ try {
     return err;
   });
 
-  await step("with a gesture the real side panel opens and says hello; the shortcut focuses it, and from its box toggles voice", async () => {
+  await step("with a gesture the real side panel opens; with the focus in the page the shortcut puts it in the panel's box, and from there toggles voice", async () => {
     // A trusted click in an extension page is a user gesture, like the key press.
     await openSidePanel(sw, panel, windowId);
     await waitFor(() => bt((w) => globalThis.__browsertodo.panelCommands.isOpen(w), windowId), "the panel's hello");
-    const pc = (fn) => bt((a) => globalThis.__browsertodo.panelCommands[a.fn](...a.args), fn);
-    const press = () => pc({ fn: "onCommand", args: ["open-chat", { windowId }] });
-    // The handler as the key press calls it: the panel is open, so it takes the focus (Chat, cursor in the box).
-    const first = await press();
-    assert.equal(first, "focused");
-    // The panel reports when its box really has the keyboard focus; then the shortcut toggles voice input there.
-    const gotFocus = await waitFor(() => pc({ fn: "inputFocused", args: [windowId] }), "the panel to report its box focused", { timeout: 5000 }).then(
-      () => true,
-      () => false,
+    // The real side panel (not the panel page in a tab, which also shows in getViews).
+    const sidePanel = () =>
+      panel.evaluate(() => {
+        const v = chrome.extension.getViews().find((x) => x !== window && x.location.pathname === "/sidepanel.html");
+        return v ? { hasFocus: v.document.hasFocus(), active: v.document.activeElement?.id } : null;
+      });
+    // Playwright makes every page it drives look focused, so the panel page in its (background) tab would tell
+    // the background it has the focus: from here it has the real focus state, like the side panel.
+    await (await context.newCDPSession(panel)).send("Emulation.setFocusEmulationEnabled", { enabled: false });
+    // The user is in the sign-up page.
+    await signup.bringToFront();
+    await signup.click("body");
+    await waitFor(async () => (await sidePanel())?.hasFocus === false, "the page to have the focus");
+    // The key press: the handler in a real user gesture of the service worker.
+    const press = await shortcutPresser(ext);
+    const first = await press(site.url("/signup"));
+    assert.equal(first, "reopened");
+    const inBox = await waitFor(
+      async () => {
+        const p = await sidePanel();
+        return p?.hasFocus && p.active === "now-text" && (await bt((w) => globalThis.__browsertodo.panelCommands.inputFocused(w), windowId)) ? p : null;
+      },
+      "the real keyboard focus in the side panel's box",
+      { timeout: 5000 },
     );
-    let detail = gotFocus ? "the panel's box got the keyboard focus" : "the panel's box did not get the keyboard focus (Chrome kept it on the page)";
-    if (gotFocus) {
-      assert.equal(await press(), "voice");
-      assert.equal(await bt(async () => (await chrome.runtime.getContexts({ contextTypes: ["SIDE_PANEL"] })).length), 1, "the panel stays open");
-      detail += "; the second press toggled voice in it (signed out: it points at the locked mic)";
-    }
+    assert.equal(await press(site.url("/signup")), "voice");
+    assert.equal(await bt(async () => (await chrome.runtime.getContexts({ contextTypes: ["SIDE_PANEL"] })).length), 1, "the panel stays open");
     await signup.bringToFront();
     await bt((t) => chrome.tabs.update(t, { active: true }), signupTab);
-    return detail;
+    return `${first}: ${JSON.stringify(inBox)}; the second press toggled voice in it (signed out: it points at the locked mic)`;
   });
 
   await step("an empty Enter in Chat starts 'look at this page' in this tab, which the agent looks at in the background", async () => {

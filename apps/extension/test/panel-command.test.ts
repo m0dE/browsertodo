@@ -10,11 +10,23 @@ function panelPort(): FakePort {
 }
 
 function setup(opts: { openFails?: boolean } = {}) {
-  const open = vi.fn(async (_w: number) => {
+  const calls: string[] = [];
+  const open = vi.fn(async (w: number) => {
+    calls.push(`open ${w}`);
     if (opts.openFails) throw new Error("`sidePanel.open()` may only be called in response to a user gesture.");
   });
-  const pc = new PanelCommands({ open });
-  return { pc, open };
+  const closeAllInstantly = vi.fn(async () => void calls.push("closeAll"));
+  const pc = new PanelCommands({ open, closeAllInstantly });
+  return { pc, open, closeAllInstantly, calls };
+}
+
+/** A panel of window `windowId` that said hello; `focused`: its page has the keyboard focus. */
+function openPanel(pc: PanelCommands, windowId: number, focused = true, draft = ""): FakePort {
+  const port = panelPort();
+  pc.attach(port);
+  port.deliver({ type: "panel.hello", windowId });
+  port.deliver({ type: "panel.document", focused, draft });
+  return port;
 }
 
 describe("PanelCommands", () => {
@@ -52,18 +64,58 @@ describe("PanelCommands", () => {
     expect(other.posted).toEqual([]);
   });
 
-  it("the panel is open: Chat and the input get the focus (only that window's panel)", () => {
-    const { pc, open } = setup();
-    const here = panelPort();
-    const other = panelPort();
-    pc.attach(here);
-    pc.attach(other);
-    here.deliver({ type: "panel.hello", windowId: 3 });
-    other.deliver({ type: "panel.hello", windowId: 4 });
+  it("the panel is open and has the keyboard focus (e.g. on the Activity Log): Chat and the input get it (only that window's panel)", () => {
+    const { pc, open, closeAllInstantly } = setup();
+    const here = openPanel(pc, 3, true);
+    const other = openPanel(pc, 4, true);
     expect(pc.onCommand(OPEN_CHAT_COMMAND, { windowId: 3 })).toBe("focused");
     expect(here.posted).toEqual([{ type: "panel.focus" }]);
     expect(other.posted).toEqual([]);
     expect(open).toHaveBeenCalledWith(3);
+    expect(closeAllInstantly).not.toHaveBeenCalled();
+  });
+
+  it("the panel is open but the keyboard focus is in the page: every panel is recreated in the gesture (Chrome focuses only a new one)", () => {
+    const { pc, calls } = setup();
+    const here = openPanel(pc, 3, false, "half a message");
+    const other = openPanel(pc, 4, false, "draft in 4");
+    const inTab = openPanel(pc, 3, false); // the panel page as a tab of the same window (e2e): not a second window to reopen
+    expect(pc.onCommand(OPEN_CHAT_COMMAND, { windowId: 3 })).toBe("reopened");
+    // Synchronously, in this order: closing every panel at once, then this window's, then the others' back.
+    expect(calls).toEqual(["closeAll", "open 3", "open 4"]);
+    expect([here.posted, other.posted, inTab.posted]).toEqual([[], [], []]);
+    // The old pages go; the new ones say hello and get the focus with the text they had in the box.
+    here.hostDisconnect();
+    other.hostDisconnect();
+    const here2 = openPanel(pc, 3, true);
+    const other2 = openPanel(pc, 4, false);
+    expect(here2.posted).toEqual([{ type: "panel.focus", draft: "half a message" }]);
+    expect(other2.posted).toEqual([{ type: "panel.focus", draft: "draft in 4" }]);
+    // Once: a later panel of the window keeps its own state.
+    expect(openPanel(pc, 3).posted).toEqual([]);
+  });
+
+  it("recreating: a panel whose open() fails is not told to focus later; an empty box has no draft to restore", async () => {
+    const failing = setup({ openFails: true });
+    openPanel(failing.pc, 5, false);
+    expect(failing.pc.onCommand(OPEN_CHAT_COMMAND, { windowId: 5 })).toBe("reopened");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(openPanel(failing.pc, 5).posted).toEqual([]);
+
+    const { pc } = setup();
+    openPanel(pc, 3, false, "");
+    pc.onCommand(OPEN_CHAT_COMMAND, { windowId: 3 });
+    expect(openPanel(pc, 3).posted).toEqual([{ type: "panel.focus" }]);
+  });
+
+  it("the draft to restore is the one of the panel's last focus change", () => {
+    const { pc } = setup();
+    const port = openPanel(pc, 3, true, "old");
+    port.deliver({ type: "panel.document", focused: false, draft: "newer" });
+    pc.onCommand(OPEN_CHAT_COMMAND, { windowId: 3 });
+    port.hostDisconnect();
+    expect(openPanel(pc, 3).posted).toEqual([{ type: "panel.focus", draft: "newer" }]);
   });
 
   it("pressed while the panel's input has the focus: toggles voice in that panel", () => {
@@ -79,8 +131,9 @@ describe("PanelCommands", () => {
     expect(port.posted).toEqual([{ type: "panel.voice" }]);
     expect(other.posted).toEqual([]);
     expect(open).not.toHaveBeenCalled();
-    // Focus left the input: the shortcut focuses it again.
+    // Focus left the input for another part of the panel: the shortcut focuses the input again.
     port.deliver({ type: "panel.input", focused: false });
+    port.deliver({ type: "panel.document", focused: true, draft: "" });
     expect(pc.onCommand(OPEN_CHAT_COMMAND, { windowId: 3 })).toBe("focused");
   });
 

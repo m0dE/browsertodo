@@ -69,11 +69,11 @@ describe("describeEvent", () => {
     expect(turnPicks(events, 1)).toEqual({ jev: 1, claude: 0 });
     expect(turnPicks(events, 5)).toEqual({ jev: 9, claude: 2 });
     expect(turnPicks(events, 7)).toBeUndefined();
-    expect(describeEvent(events[5]!, turnPicks(events, 5))).toMatchObject({
+    expect(describeEvent(events[5]!, { picks: turnPicks(events, 5) })).toMatchObject({
       kind: "end",
       picks: "Jev chose 9 of 11 element picks (clicks and typing); Claude chose 2",
     });
-    expect(describeEvent(events[7]!, undefined)).not.toHaveProperty("picks");
+    expect(describeEvent(events[7]!, {})).not.toHaveProperty("picks");
     expect(describeEvent(events[3]!)).toEqual({ kind: "status", text: events[3]!.type === "status" ? events[3]!.text : "", picks: true });
   });
   it("other kinds", () => {
@@ -85,7 +85,10 @@ describe("describeEvent", () => {
       args: "a.b/c",
     });
     expect(describeEvent({ type: "user_message", text: "stop" }).kind).toBe("user");
-    expect(describeEvent({ type: "error", text: "boom" })).toEqual({ kind: "error", text: "boom" });
+    expect(describeEvent({ type: "error", text: "boom" })).toEqual({
+      kind: "error",
+      help: { message: "Something went wrong.", fixes: [], retry: true, known: false, details: "boom" },
+    });
   });
 });
 

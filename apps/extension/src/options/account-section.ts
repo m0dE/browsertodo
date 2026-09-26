@@ -42,7 +42,7 @@ export function initAccountSection(opts: { onState(state: UiState): void }): Acc
   // Back from the dashboard: the plan and credit may have changed.
   refreshOnReturn(() => void refresh(true));
 
-  // Sign in / out (also from the AI tab's "Log in to use browsertodo AI" and the API keys tab).
+  // Sign in / out (also from the AI tab's "Log in to use BrowserTODO AI" and the API keys tab).
   const signInWith = (button: HTMLButtonElement, note: HTMLElement): void => signIn(button, note, account, opts.onState);
   const signInBtn = $<HTMLButtonElement>("acct-signin");
   signInBtn.addEventListener("click", () => signInWith(signInBtn, $("acct-signin-msg")));
@@ -81,7 +81,7 @@ export function initAccountSection(opts: { onState(state: UiState): void }): Acc
       (sum.billing === "not-set-up"
         ? BILLING_NOT_SET_UP_NOTE
         : sum.outOfCredit
-          ? "Tasks on browsertodo AI are paused until you top up or subscribe."
+          ? "Tasks on BrowserTODO AI are paused until you top up or subscribe."
           : "");
     note.hidden = !noteText;
     note.textContent = noteText;

@@ -14,6 +14,7 @@ import type { AdhocInput } from "./run/jobs.js";
 import type { Runner } from "./runner.js";
 import type { SessionStore } from "./sessions.js";
 import type { TestResult } from "./settings-tests.js";
+import { WrongPassphraseError, type Vault } from "../vault.js";
 
 /** The runner as the router uses it. */
 export type RouterRunner = Pick<
@@ -21,13 +22,7 @@ export type RouterRunner = Pick<
   "running" | "runningSessions" | "state" | "runDue" | "runAdhoc" | "continueSession" | "message" | "newChat" | "stop" | "say" | "pauseSchedule" | "resumeSchedule"
 >;
 
-export interface RouterVault {
-  unlock(passphrase: string): Promise<void>;
-  lock(): Promise<void>;
-  list(): Promise<{ locked: boolean; sites: string[] }>;
-  set(site: string, username: string, password: string): Promise<void>;
-  delete(site: string): Promise<void>;
-}
+export type RouterVault = Pick<Vault, "unlock" | "lock" | "list" | "set" | "delete" | "reset">;
 
 /** The account side the router uses, and voice input (one WAV clip to text). */
 export type RouterAccount = Pick<
@@ -268,8 +263,13 @@ export class UiRouter {
         if (!d.helper.info) return { text: "" };
         return d.helper.call("helper.getLog", { lines: Math.max(1, Math.min(MAX_LOG_LINES, Math.trunc(msg.lines) || DEFAULT_LOG_LINES)) }, { timeoutMs: HELPER_CALL_TIMEOUT_MS });
       case "vault.unlock":
-        await d.vault.unlock(msg.passphrase);
-        return { ok: true };
+        try {
+          await d.vault.unlock(msg.passphrase);
+        } catch (err) {
+          if (err instanceof WrongPassphraseError) return { ok: false } satisfies UiResults["vault.unlock"];
+          throw err;
+        }
+        return { ok: true } satisfies UiResults["vault.unlock"];
       case "vault.lock":
         await d.vault.lock();
         return { ok: true };
@@ -281,6 +281,9 @@ export class UiRouter {
       case "vault.delete":
         await d.vault.delete(msg.site);
         return { ok: true };
+      case "vault.reset":
+        await d.vault.reset();
+        return { ok: true } satisfies UiResults["vault.reset"];
       case "voice.transcribe":
         return transcribeForPanel(d.account, {
           wav: String(msg.wav ?? ""),

@@ -415,7 +415,9 @@ describe("verifyXPost missing-post page", () => {
 describe("error text the user reads", () => {
   it("errorDetail: either API's error body, a bare message, else plain text; never an HTML page or unknown JSON", () => {
     expect(errorDetail(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }))).toBe("overloaded_error: Overloaded");
-    expect(errorDetail(JSON.stringify({ error: "plan_required", message: "Upgrade to Plus" }))).toBe("plan_required: Upgrade to Plus");
+    // A machine code with a message: the message says it (the code is not for people).
+    expect(errorDetail(JSON.stringify({ error: "plan_required", message: "Upgrade to Plus" }))).toBe("Upgrade to Plus");
+    expect(errorDetail(JSON.stringify({ error: "invalid input", message: "name is required" }))).toBe("invalid input: name is required");
     expect(errorDetail(JSON.stringify({ message: "Internal error" }))).toBe("Internal error");
     expect(errorDetail("<html><head><title>502 Bad Gateway</title></head><body>cloudflare</body></html>")).toBe("");
     expect(errorDetail(JSON.stringify({ unexpected: { shape: true } }))).toBe("");

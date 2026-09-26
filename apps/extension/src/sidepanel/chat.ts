@@ -12,7 +12,9 @@ import { isContinuableOutcome } from "../continue.js";
 import { uiRequest } from "../ui-protocol.js";
 import { chatActions, type BarAction } from "./chat-actions.js";
 import { $, busy, h } from "../ui/dom.js";
-import { describeEvent, isNearBottom, isScreenHelp, turnPicks } from "./event-format.js";
+import { errorHelp } from "./error-help.js";
+import { renderErrorHelp } from "./error-view.js";
+import { describeEvent, isNearBottom, isScreenHelp, turnError, turnPicks } from "./event-format.js";
 import { placeEvent, pruneContinue, renderEvent, renderScreenHelp, renderSessionHead, renderSessionTitle, renderText } from "./event-render.js";
 import { LiveTexts } from "./live-text.js";
 import { MarkdownView } from "./markdown.js";
@@ -105,8 +107,8 @@ export function initChat(opts: ChatOptions = {}): ChatView {
   function renderOne(e: StampedAgentEvent, i: number): void {
     const s = e.type === "task_end" && current?.sessionId === e.sessionId ? current : null;
     const canContinue = !!opts.onContinue && e.type === "task_end" && isContinuableOutcome(e.outcome) && s?.source !== "cloud";
-    const picks = e.type === "task_end" ? turnPicks(events, i) : undefined;
-    const view = describeEvent(e, picks);
+    const turn = e.type === "task_end" ? { picks: turnPicks(events, i), error: turnError(events, i) } : {};
+    const view = describeEvent(e, turn);
     placeEvent(log, renderEvent(view, canContinue ? () => opts.onContinue?.(e.sessionId) : undefined), view);
   }
 
@@ -234,7 +236,8 @@ export function initChat(opts: ChatOptions = {}): ChatView {
       // Live pushes still arrive; the backfill is best effort.
       if (shownId === sessionId && !current) {
         backfilling = false;
-        log.replaceChildren(h("p.ev-error", null, `This chat could not be loaded: ${errorMessage(err)}`));
+        const help = errorHelp(errorMessage(err));
+        log.replaceChildren(renderErrorHelp({ ...help, message: "This chat couldn't be loaded.", details: errorMessage(err) }));
         return;
       }
     } finally {

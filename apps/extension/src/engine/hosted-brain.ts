@@ -1,5 +1,5 @@
 /**
- * The hosted "browsertodo AI" brain: the same agent loop as the Claude API
+ * The hosted "BrowserTODO AI" brain: the same agent loop as the Claude API
  * brain, sent to the account server instead of Anthropic. Messages go to
  * `${apiBase}/v1/ai/messages` and Jev to `${apiBase}/v1/ai/jev`, with the
  * session token as a bearer and X-Browsertodo-Session naming the run, so the

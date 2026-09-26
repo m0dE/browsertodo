@@ -108,7 +108,14 @@ try {
     const cred = await sw.evaluate(() => globalThis.__browsertodo.vault.getCredential("login.example.com"));
     assert.deepEqual(cred, { found: true, username: "alice", password: "pw1" });
     await send({ type: "vault.lock" });
-    return "parent-domain match ok, lock ok";
+    // A forgotten passphrase: a wrong one is an answer, and erasing is the way out.
+    assert.deepEqual(await send({ type: "vault.unlock", passphrase: "forgotten" }), { ok: false });
+    assert.deepEqual(await send({ type: "vault.reset" }), { ok: true });
+    assert.deepEqual(await send({ type: "vault.list" }), { exists: false, locked: true, sites: [] });
+    assert.deepEqual(await sw.evaluate(() => globalThis.__browsertodo.vault.getCredential("login.example.com")), { found: false });
+    assert.deepEqual(await send({ type: "vault.unlock", passphrase: "a new passphrase" }), { ok: true });
+    await send({ type: "vault.lock" });
+    return "parent-domain match ok, lock ok, wrong passphrase and reset ok";
   });
 
   let materializedPath = null;

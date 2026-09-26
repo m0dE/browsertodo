@@ -11,9 +11,11 @@
  * nothing. After a turn, Chat offers the agent's follow-up suggestion faded
  * in the box (see suggestion.ts): Tab takes it, it is never sent by itself.
  */
-import type { SessionInfo } from "@browsertodo/shared";
+import { errorMessage, type SessionInfo } from "@browsertodo/shared";
 import { uiRequest, type UiRequest, type UiState } from "../ui-protocol.js";
-import { $, busy, flash, showError } from "../ui/dom.js";
+import { $, busy, flash } from "../ui/dom.js";
+import { errorHelp } from "./error-help.js";
+import { renderErrorHelp } from "./error-view.js";
 import { filePicker, filesToUploads } from "./files.js";
 import { initModelPicker } from "./model-menu.js";
 import { FollowUpSuggestion, suggestionDescription, type SuggestionOffer } from "./suggestion.js";
@@ -118,6 +120,14 @@ export function initComposer(opts: {
   const submit = $<HTMLButtonElement>("now-submit");
   const stop = $<HTMLButtonElement>("now-stop");
   const msg = $("now-msg");
+  /** A request that failed: a known problem as its error card (plain words and the fix), anything else as its text. */
+  const problem = (message: string): void => {
+    const help = errorHelp(message);
+    if (!help.known) return flash(msg, message, "bad");
+    flash(msg, "", "bad");
+    msg.replaceChildren(renderErrorHelp(help));
+  };
+  const showError = (err: unknown) => problem(errorMessage(err));
   const fileInput = $<HTMLInputElement>("now-files");
   const filesList = $("now-files-list");
   const ghost = $("now-ghost");
@@ -247,7 +257,7 @@ export function initComposer(opts: {
         flash(msg, "");
         opts.onStarted(sessionId);
       },
-      msg,
+      problem,
     );
   });
 
@@ -265,7 +275,7 @@ export function initComposer(opts: {
         flash(msg, "");
         opts.onStarted(sessionId);
       },
-      msg,
+      problem,
     );
   }
 
@@ -353,18 +363,18 @@ export function initComposer(opts: {
         flash(msg, "");
         opts.onStarted(sessionId);
       } catch (err) {
-        showError(msg, err);
+        showError(err);
       }
     },
     leave(sessionId) {
       text.focus();
-      void uiRequest({ type: "run.newChat", sessionId, ...tab() }).catch((err: unknown) => showError(msg, err));
+      void uiRequest({ type: "run.newChat", sessionId, ...tab() }).catch(showError);
     },
     setState(state) {
       model.setState(state);
     },
     showError(err) {
-      showError(msg, err);
+      showError(err);
     },
   };
 

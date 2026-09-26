@@ -8,10 +8,21 @@
  *
  * Chrome counts a command as a user gesture, which sidePanel.open() needs,
  * but only while the listener runs: open() is called before anything is
- * awaited. The side panels report their window and whether their input has
- * the focus over the UI port (PanelMessage), so the decision needs no await
+ * awaited. The side panels report their window and where the keyboard focus
+ * is over the UI port (PanelMessage), so the decision needs no await
  * either. A panel that the shortcut opened is told to focus when it says
  * hello (its ready handshake), not after some delay.
+ *
+ * Chrome moves the keyboard focus into a side panel only when it creates
+ * the panel's page. open() on an open panel, close() then open() (Chrome
+ * keeps the page through the close animation, and the gesture ends with the
+ * listener), a new path, or the page's own window.focus() all leave the
+ * focus in the web page, so typed keys would go there. So when the focus is
+ * outside the panel, the shortcut closes the panels at once and opens them
+ * again, all within the gesture. Chrome can only do that for every window
+ * at once (see closeAllInstantly), so every window's panel is reopened; each
+ * new page is told to focus and gets back the text its box had (the chat
+ * itself comes from the background).
  *
  * Extension shortcuts work while a Chrome window has the focus. They are
  * not system-wide: Chrome allows "global" only for Ctrl+Shift+[0-9], and a
@@ -23,7 +34,10 @@ import { OPEN_CHAT_COMMAND } from "./shortcut.js";
 /** Panel -> background on the UI port. */
 export type PanelMessage =
   | { type: "panel.hello"; windowId: number }
-  | { type: "panel.input"; focused: boolean };
+  /** The cursor is in the chat input and the panel's page has the keyboard focus. */
+  | { type: "panel.input"; focused: boolean }
+  /** The panel's page got or lost the keyboard focus; `draft`: the text in its box then (a recreated panel gets it back). */
+  | { type: "panel.document"; focused: boolean; draft: string };
 
 /** A UI port as this uses it (chrome.runtime.Port). */
 export interface PanelPort {
@@ -35,35 +49,51 @@ export interface PanelPort {
 export interface PanelCommandDeps {
   /** chrome.sidePanel.open({ windowId }). Called synchronously in the command listener. */
   open(windowId: number): Promise<void>;
+  /**
+   * Closes every window's side panel at once, without the close animation,
+   * so that the next open() creates the panel's page anew. Called
+   * synchronously in the command listener, right before open().
+   */
+  closeAllInstantly(): Promise<void>;
   log?(message: string): void;
 }
 
-export type CommandOutcome = "opened" | "focused" | "voice" | "ignored";
+export type CommandOutcome = "opened" | "reopened" | "focused" | "voice" | "ignored";
 
 interface PanelInfo {
   windowId: number | null;
   inputFocused: boolean;
+  /** The panel's page has the keyboard focus. */
+  focused: boolean;
+  /** The text in the box when the page last got or lost the focus. */
+  draft: string;
 }
 
 export class PanelCommands {
   private readonly panels = new Map<PanelPort, PanelInfo>();
-  /** Windows whose panel the shortcut is opening: focus it when it says hello. */
-  private readonly opening = new Set<number>();
+  /** Windows whose panel the shortcut is opening -> the text to put back in its box: focus it when it says hello. */
+  private readonly opening = new Map<number, string>();
 
   constructor(private readonly deps: PanelCommandDeps) {}
 
   /** A side panel's UI port (after UiHub.attach accepted it). */
   attach(port: PanelPort): void {
-    const info: PanelInfo = { windowId: null, inputFocused: false };
+    const info: PanelInfo = { windowId: null, inputFocused: false, focused: false, draft: "" };
     this.panels.set(port, info);
     port.onDisconnect.addListener(() => this.panels.delete(port));
     port.onMessage.addListener((raw) => {
       const msg = raw as Partial<PanelMessage> | null;
       if (msg?.type === "panel.hello" && typeof msg.windowId === "number") {
         info.windowId = msg.windowId;
-        if (this.opening.delete(msg.windowId)) this.post(port, { type: "panel.focus" });
+        const draft = this.opening.get(msg.windowId);
+        if (draft === undefined) return;
+        this.opening.delete(msg.windowId);
+        this.post(port, draft ? { type: "panel.focus", draft } : { type: "panel.focus" });
       } else if (msg?.type === "panel.input" && typeof msg.focused === "boolean") {
         info.inputFocused = msg.focused;
+      } else if (msg?.type === "panel.document" && typeof msg.focused === "boolean") {
+        info.focused = msg.focused;
+        info.draft = typeof msg.draft === "string" ? msg.draft : "";
       }
     });
   }
@@ -92,19 +122,41 @@ export class PanelCommands {
       for (const [port] of typing) this.post(port, { type: "panel.voice" });
       return "voice";
     }
-    if (panels.length) {
-      // Already open: open() is a no-op, the panel just takes the focus.
+    if (!panels.length) {
+      this.openFocused(windowId, "");
+      return "opened";
+    }
+    if (panels.some(([, p]) => p.focused)) {
+      // The focus is in the panel already: open() is a no-op, the panel moves it to the input.
       this.deps.open(windowId).catch((err: unknown) => this.log(`opening the side panel failed: ${String(err)}`));
       for (const [port] of panels) this.post(port, { type: "panel.focus" });
       return "focused";
     }
-    this.opening.add(windowId);
+    // The focus is in the web page: only a newly created panel gets it (see the top of this file).
+    const drafts = this.draftsByWindow();
+    this.deps.closeAllInstantly().catch((err: unknown) => this.log(`closing the side panels failed: ${String(err)}`));
+    this.openFocused(windowId, drafts.get(windowId) ?? "");
+    for (const [other, draft] of drafts) if (other !== windowId) this.openFocused(other, draft);
+    return "reopened";
+  }
+
+  /** Opens the window's panel; when it says hello it takes the focus, with `draft` back in its box. */
+  private openFocused(windowId: number, draft: string): void {
+    this.opening.set(windowId, draft);
     this.deps.open(windowId).catch((err: unknown) => {
       // Nothing opens, so no hello will consume it.
       this.opening.delete(windowId);
       this.log(`opening the side panel failed: ${String(err)}`);
     });
-    return "opened";
+  }
+
+  /** Each window with a panel -> the text in its box (a non-empty one, when the window has several panel pages). */
+  private draftsByWindow(): Map<number, string> {
+    const drafts = new Map<number, string>();
+    for (const { windowId, draft } of this.panels.values()) {
+      if (windowId !== null && !drafts.get(windowId)) drafts.set(windowId, draft);
+    }
+    return drafts;
   }
 
   private panelsOf(windowId: number): [PanelPort, PanelInfo][] {

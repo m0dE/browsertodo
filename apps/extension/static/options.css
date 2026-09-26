@@ -185,6 +185,16 @@ input[aria-invalid="true"] { border-color: var(--bad); }
 .vault-sites li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--border); }
 .vault-sites li.empty { color: var(--muted); border-bottom: 0; }
 #vault-locked input[type="password"] { flex: 1; min-width: 0; }
+.vault-locked { display: flex; flex-direction: column; gap: 10px; }
+.vault-locked > p { margin: 0; }
+.vault-forgot { font-size: var(--text-sm); }
+.vault-forgot button.link { font-size: inherit; color: var(--muted); font-weight: 400; }
+.vault-forgot[data-prominent] { padding: 8px 12px; border-radius: var(--radius); background: var(--warn-soft); color: var(--warn); font-size: var(--text-md); }
+.vault-forgot[data-prominent] button.link { color: var(--accent); font-weight: 600; }
+.vault-forgot-box { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: var(--radius); border: 1px solid color-mix(in srgb, var(--bad) 35%, var(--border)); background: var(--bad-soft); font-size: var(--text-md); }
+.vault-forgot-box p { margin: 0; }
+.vault-erase-question { font-weight: 600; color: var(--bad); }
+.vault-erase-question:empty { display: none; }
 
 @media (max-width: 480px) {
   .tab { padding: 10px 8px; }

@@ -21,7 +21,7 @@ import type { SlotPool } from "../agent-slots.js";
 import { callSafely } from "../listeners.js";
 import type { TabChatsLike } from "../tab-chats.js";
 import type { BrainStatus, MessageMode } from "../ui-protocol.js";
-import { NO_AI } from "./brain-resolver.js";
+import { autoSwitchRefusal, NO_AI } from "./brain-resolver.js";
 import type { Brain, CoreApi } from "./brains.js";
 import type { StorageLike } from "./kv.js";
 import type { LocalStore } from "./local-store.js";
@@ -361,6 +361,8 @@ export class Runner {
       settings = await this.deps.loadSettings();
       const { brain, status } = await this.deps.resolveBrain(settings);
       if (!brain) throw new Error(status.note ?? NO_AI);
+      const refusal = job.source === "turn" ? autoSwitchRefusal(settings.brain, job.from.brain, brain.kind) : null;
+      if (refusal) throw new Error(refusal);
       run = { brain, status };
     } catch (err) {
       slots.unassign(slotIndex);

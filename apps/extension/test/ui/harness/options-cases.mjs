@@ -4,6 +4,7 @@
 import { join } from "node:path";
 import { eventually, shown } from "./checks.mjs";
 import { scenario } from "./scenarios.mjs";
+import { installVoiceFakes } from "./chrome-stub.mjs";
 
 // Options page: tabs, the brain choices and what each reveals, Jev, tasks, logins, advanced.
 // It opens in a browser tab, so a wide and a narrow viewport.
@@ -173,17 +174,32 @@ export const OPTION_CASES = [
     ["Jev key hidden", async () => !(await shown(p, "[data-secret=jevApiKey]"))],
     ["test hidden", async () => !(await shown(p, "#test-jev"))],
   ]],
-  // Voice: the two engines with the server's cost a minute, the Standard voice and speed, Test.
+  // Voice: the two engines with the server's cost a minute; with Realtime selected, OpenAI's voices, its speed range
+  // and what a test costs.
   ["options-voice", "opt-paid", "#voice", () => {}, (p) => [
     ["on the AI tab", async () => (await p.getAttribute("#tab-ai", "aria-selected")) === "true"],
     ["Realtime checked by default", () => p.isChecked("input[name=voiceEngine][value=realtime]")],
     ["names", async () => (await p.locator(".opt[data-voice] .voice-name").allTextContents()).join(" | ") === "Realtime (OpenAI) | Standard"],
     ["costs from the server", () =>
       eventually(async () => (await p.locator(".opt[data-voice] .voice-cost").allTextContents()).join(" | ") === "about 5¢ of usage credit a minute | about 0.067¢ of usage credit a minute")],
-    ["cost assumption as tooltip", async () => /speaks for 18 seconds/.test(await p.getAttribute(".opt[data-voice=realtime] .voice-cost", "title"))],
+    ["cost assumption and model as tooltip", async () => /speaks for 18 seconds.*Model: gpt-realtime-2\.1\.$/.test(await p.getAttribute(".opt[data-voice=realtime] .voice-cost", "title"))],
+    ["Standard names no vendor", async () => (await p.textContent(".opt[data-voice=standard] .voice-detail")) === "Your words become text on our server; short summaries are read aloud by your browser."],
     ["no plan note on Plus", async () => !(await shown(p, "#voice-note"))],
-    ["voices listed", async () => (await p.locator("#speech-voice option").count()) >= 1],
-    ["speed", async () => (await p.inputValue("#speech-rate")) === "1"],
+    ["Realtime voice title", async () => (await p.textContent("#speech-voice-title")) === "Realtime voice"],
+    ["OpenAI's voices", async () => (await p.locator("#speech-voice option").allTextContents()).join(", ") === "Marin (recommended), Cedar (recommended), Alloy, Ash, Ballad, Coral, Echo, Sage, Shimmer, Verse"],
+    ["Marin selected", async () => (await p.inputValue("#speech-voice")) === "marin"],
+    ["Realtime speed range", async () => JSON.stringify(await p.evaluate(() => { const r = document.getElementById("speech-rate"); return [r.type, r.min, r.max, r.step, r.value]; })) === JSON.stringify(["range", "0.25", "1.5", "0.05", "1"])],
+    ["speed shown", async () => (await p.textContent("#speech-rate-value")) === "1.0×" && (await p.textContent("#speech-rate-hint")) === "0.25× to 1.5×; 1.0× is normal."],
+    ["test cost", () => eventually(async () => (await p.textContent("#speech-test-hint")) === "Says a sample line with this voice and speed (uses about 1¢ of usage credit).")],
+  ]],
+  // Voice with Standard selected: the browser's voices and speed range.
+  ["options-voice-standard", "opt-paid", "#voice", (d) => (d.state.settings = { ...d.state.settings, voiceEngine: "standard", speechRate: 1.4 }), (p) => [
+    ["Standard checked", () => p.isChecked("input[name=voiceEngine][value=standard]")],
+    ["Standard voice title", async () => (await p.textContent("#speech-voice-title")) === "Standard voice"],
+    ["browser voices", async () => (await p.locator("#speech-voice option").first().textContent()) === "Browser default" && !(await p.locator("#speech-voice option", { hasText: "Marin" }).count())],
+    ["Standard speed range", async () => JSON.stringify(await p.evaluate(() => { const r = document.getElementById("speech-rate"); return [r.min, r.max, r.step, r.value]; })) === JSON.stringify(["0.5", "2", "0.1", "1.4"])],
+    ["speed shown", async () => (await p.textContent("#speech-rate-value")) === "1.4×" && (await p.textContent("#speech-rate-hint")) === "0.5× to 2.0×; 1.0× is normal."],
+    ["local test", async () => (await p.textContent("#speech-test-hint")) === "Says a sample line with this voice and speed, on this computer."],
   ]],
   ["options-tasks", "ok", "#tasks", () => {}, (p) => [
     // Both shortcuts, as Chrome assigned them, each with Change.
@@ -317,18 +333,66 @@ export const OPTION_FLOWS = [
       const saved = () => p.evaluate(() => window.__requests.filter((r) => r.type === "settings.save").map((r) => r.settings));
       const checks = [];
       const check = (what, ok) => checks.push([what, async () => ok]);
+      const setSpeed = (v) => p.evaluate((x) => {
+        const r = document.getElementById("speech-rate");
+        r.value = x;
+        r.dispatchEvent(new Event("input"));
+        r.dispatchEvent(new Event("change"));
+      }, v);
+      // Realtime: a voice and a speed save to Realtime's own settings.
+      await p.selectOption("#speech-voice", "cedar");
+      check("Realtime voice saved", await eventually(async () => (await saved()).some((s) => s.realtimeVoice === "cedar")));
+      await setSpeed("1.2");
+      check("Realtime speed saved", await eventually(async () => (await saved()).some((s) => s.realtimeSpeed === 1.2)));
+      check("speed shown", (await p.textContent("#speech-rate-value")) === "1.2×");
       await p.click("input[name=voiceEngine][value=standard]");
       check("Standard saved", await eventually(async () => (await saved()).some((s) => s.voiceEngine === "standard")));
       check("Standard checked after the save", await p.isChecked("input[name=voiceEngine][value=standard]"));
-      await p.fill("#speech-rate", "1.4");
-      await p.dispatchEvent("#speech-rate", "change");
+      check("the picker follows the engine", await eventually(async () => (await p.textContent("#speech-voice-title")) === "Standard voice" && (await p.getAttribute("#speech-rate", "max")) === "2"));
+      await setSpeed("1.4");
       check("speed saved", await eventually(async () => (await saved()).some((s) => s.speechRate === 1.4)));
       await p.selectOption("#speech-voice", { index: 0 });
+      check("Standard voice saved", await eventually(async () => (await saved()).some((s) => s.speechVoice === "")));
+      check("Realtime voice kept", !(await saved()).some((s) => "realtimeVoice" in s && s.realtimeVoice !== "cedar"));
       await p.evaluate(() => localStorage.setItem("browsertodo.options.tab", "speed"));
       await p.goto(p.url().replace(/#.*$/, ""));
       await p.waitForSelector("#helper-headline:not(:empty)", { state: "attached" });
       check("a remembered Speed tab opens AI", (await p.getAttribute("#tab-ai", "aria-selected")) === "true");
       await optChecks(p, "voice choice", checks);
+      await p.ctx.close();
+    },
+  },
+  // Test voice with Realtime: a short relay session in the chosen voice and speed says the sample, then closes; when
+  // the server cannot run Realtime, it says so.
+  {
+    name: "options-voice-test-realtime",
+    size: { w: 1280 },
+    scheme: "light",
+    async run({ openOptions, optChecks }) {
+      const edit = (d) => (d.state.settings = { ...d.state.settings, realtimeVoice: "cedar", realtimeSpeed: 1.2 });
+      const p = await openOptions({ w: 1280, h: 1000 }, "light", "opt-paid", "#voice", edit, [installVoiceFakes]);
+      const checks = [];
+      const check = (what, ok) => checks.push([what, async () => ok]);
+      await p.click("#speech-test");
+      check("connecting shown", await eventually(async () => (await p.textContent("#speech-test-msg")) === "Connecting…"));
+      await p.waitForFunction(() => window.__rt?.sent.some((e) => e.type === "response.create"));
+      const sent = await p.evaluate(() => window.__rt.sent);
+      check("the voice and speed from Settings", JSON.stringify(sent[0].session.audio.output) === JSON.stringify({ format: { type: "audio/pcm", rate: 24000 }, voice: "cedar", speed: 1.2 }));
+      check("asks for the sample line", /^Say exactly: "Opening Gmail\./.test(sent.find((e) => e.type === "conversation.item.create")?.item.content[0].text ?? ""));
+      check("button busy while it runs", await p.isDisabled("#speech-test"));
+      await p.evaluate(() => {
+        const pcm = btoa(String.fromCharCode(...new Uint8Array(24_000 * 2 * 0.3)));
+        window.__rt.emit({ type: "response.created", response: { id: "r1" } });
+        window.__rt.emit({ type: "response.output_audio.delta", item_id: "a1", response_id: "r1", delta: pcm });
+        window.__rt.emit({ type: "response.done", response: { id: "r1", status: "completed", output: [] } });
+      });
+      check("closes once it was said", await eventually(() => p.evaluate(() => window.__rt.closedWith === 1000), 5000));
+      check("done: no message, button back", await eventually(async () => (await p.textContent("#speech-test-msg")) === "" && !(await p.isDisabled("#speech-test"))));
+      // The server cannot run Realtime: said in a few words.
+      await p.evaluate(() => (window.__rtMode = "unavailable"));
+      await p.click("#speech-test");
+      check("unavailable said", await eventually(async () => (await p.textContent("#speech-test-msg")) === "Realtime voice is unavailable right now.", 5000));
+      await optChecks(p, "voice test realtime", checks);
       await p.ctx.close();
     },
   },

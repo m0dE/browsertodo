@@ -231,10 +231,10 @@ export const PANEL_CASES = [
       await t.click("#tab-btn-todo");
       await t.click("#now-text");
       await t.keyboard.press("Enter");
-      await t.waitForFunction(() => document.getElementById("now-msg").textContent);
+      await t.waitForFunction(() => document.querySelector("#now-notice:not([hidden]) .notice-text")?.textContent);
       const todo = await t.evaluate(() => ({
         sent: window.__requests.some((r) => r.type === "run.adhoc" || r.type === "run.message"),
-        msg: document.getElementById("now-msg").textContent,
+        msg: document.querySelector("#now-notice:not([hidden]) .notice-text")?.textContent,
         placeholder: document.getElementById("now-text").placeholder,
         opacity: getComputedStyle(document.getElementById("now-submit")).opacity,
       }));
@@ -1281,18 +1281,18 @@ export const PANEL_CASES = [
       await p.evaluate(() => (window.__refuse = { "run.message": "Local Claude Code is not available, and Auto does not move this chat to BrowserTODO AI on its own" }));
       await p.fill("#now-text", "and reply to the first comment");
       await p.click("#now-submit");
-      await p.waitForSelector("#now-msg .ev-error");
+      await p.waitForSelector("#now-notice .ev-error");
       const got = await p.evaluate(() => ({
-        msg: document.querySelector("#now-msg .err-msg")?.textContent,
-        hint: document.querySelector("#now-msg .err-hint")?.textContent,
-        fixes: [...document.querySelectorAll("#now-msg .err-fix")].map((b) => b.textContent),
+        msg: document.querySelector("#now-notice .err-msg")?.textContent,
+        hint: document.querySelector("#now-notice .err-hint")?.textContent,
+        fixes: [...document.querySelectorAll("#now-notice .err-fix")].map((b) => b.textContent),
         box: document.getElementById("now-text").value,
       }));
       if (got.msg !== "Local Claude Code isn't connected." || got.fixes.join(" | ") !== "Set up Claude Code | Use BrowserTODO AI") fail(`auto switch refusal ${JSON.stringify(got)}`);
       if (got.box !== "and reply to the first comment") fail("the refused message did not go back into the box");
       await checkLayout(p, `auto-switch ${label}`);
       await shoot(p, "panel-error-auto-switch", size, scheme);
-      await p.click("#now-msg [data-fix=use-hosted]");
+      await p.click("#now-notice [data-fix=use-hosted]");
       const saved = await p.evaluate(() => window.__requests.find((r) => r.type === "settings.save")?.settings);
       if (saved?.brain !== "browsertodo") fail(`Use BrowserTODO AI saved ${JSON.stringify(saved)}`);
       reportErrors(p, `auto-switch ${label}`);
@@ -1416,8 +1416,8 @@ export const PANEL_CASES = [
   // Voice input: the mic left of Send (locked on Free), listening with the orb and live text, finishing,
   // Enter sends, Esc cancels, and the microphone permission asked in a tab.
   {
-    names: ["panel-voice-locked", "panel-voice-idle", "panel-voice-listening", "panel-voice-transcribing", "panel-voice-permission"],
-    async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors, base }) {
+    names: ["panel-voice-locked", "panel-voice-idle", "panel-voice-listening", "panel-voice-transcribing", "panel-voice-permission", "panel-voice-stopped"],
+    async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, checkLayout, reportErrors, base }) {
       // The microphone is allowed (a grant for the origin replaces earlier ones, e.g. the clipboard's above).
       await ctx.grantPermissions(["microphone"], { origin: base });
       const mic = "#now-actions .voice-mic";
@@ -1425,7 +1425,7 @@ export const PANEL_CASES = [
       /** Waits for the mic's state; on timeout says what the panel shows instead. */
       const waitVoice = (p, state) =>
         p.waitForFunction((st) => document.querySelector(".voice-mic").dataset.state === st, state).catch(async (err) => {
-          const seen = await p.evaluate(() => ({ state: document.querySelector(".voice-mic").dataset.state, tip: document.querySelector(".voice-tip").textContent }));
+          const seen = await p.evaluate(() => ({ state: document.querySelector(".voice-mic").dataset.state, tip: document.querySelector("#now-notice").textContent }));
           throw new Error(`waiting for voice "${state}": ${JSON.stringify(seen)} (${err.message.split("\n")[0]})`);
         });
       const orbCheck = (p) =>
@@ -1450,16 +1450,16 @@ export const PANEL_CASES = [
         if ((await voiceState(p)) !== "locked") fail(`free plan mic ${await voiceState(p)}`);
         if ((await p.getAttribute(mic, "title")) !== "Voice needs the Plus or Pro plan") fail(`locked tooltip "${await p.getAttribute(mic, "title")}"`);
         await p.click(mic);
-        await p.waitForSelector(".voice-tip:not([hidden])");
-        const tipText = await p.textContent(".voice-tip");
+        await p.waitForSelector("#now-notice:not([hidden])");
+        const tipText = await p.textContent("#now-notice");
         if (!/Voice needs the Plus or Pro plan/.test(tipText) || !/Choose a plan/.test(tipText)) fail(`locked tip "${tipText}"`);
         await checkLayout(p, `voice-locked ${label}`);
         await shoot(p, "panel-voice-locked", size, scheme);
-        await p.click(".voice-tip button.link");
+        await p.click("#now-notice .notice-action");
         await p.waitForFunction(() => window.__created.includes("https://app.browsertodo.com/billing"));
         // The voice shortcut while locked points at the mic and says why, with Choose a plan.
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
-        const locked = await p.evaluate(() => ({ nudge: document.querySelector(".voice-mic").classList.contains("nudge"), tip: document.querySelector(".voice-tip:not([hidden])")?.textContent ?? "" }));
+        const locked = await p.evaluate(() => ({ nudge: document.querySelector(".voice-mic").classList.contains("nudge"), tip: document.querySelector("#now-notice:not([hidden])")?.textContent ?? "" }));
         if (!locked.nudge || !/Voice needs/.test(locked.tip) || !/Choose a plan/.test(locked.tip)) fail(`locked voice shortcut ${JSON.stringify(locked)}`);
         reportErrors(p, `voice-locked ${label}`);
         await p.close();
@@ -1516,8 +1516,8 @@ export const PANEL_CASES = [
         await p.waitForFunction(() => document.getElementById("now-text").value.length > 0, null, { timeout: 15_000 });
         await p.keyboard.press("Enter");
         await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.adhoc"));
-        const sent = await p.evaluate(() => window.__requests.find((r) => r.type === "run.adhoc").instructions);
-        if (!/^Open Gmail/.test(sent)) fail(`Enter sent "${sent}"`);
+        const dictated = await p.evaluate(() => window.__requests.find((r) => r.type === "run.adhoc"));
+        if (!/^Open Gmail/.test(dictated.instructions) || dictated.voice !== true) fail(`Enter sent ${JSON.stringify(dictated)}`);
         if ((await p.inputValue("#now-text")) !== "") fail("the box was not cleared after sending");
         await waitVoice(p, "idle");
         if ((await p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.listening").at(-1)?.listening)) !== false) fail("stopping not reported to the background");
@@ -1549,13 +1549,49 @@ export const PANEL_CASES = [
         await p.waitForSelector(".chat-empty", { state: "attached" });
         p.errors = errors;
         await p.click(mic);
-        await p.waitForSelector(".voice-tip:not([hidden])");
+        await p.waitForSelector("#now-notice:not([hidden])");
         if (!(await p.evaluate(() => window.__created.some((u) => u.endsWith("/mic-permission.html"))))) fail("the permission page did not open");
-        if (!/Allow the microphone/.test(await p.textContent(".voice-tip"))) fail(`permission tip "${await p.textContent(".voice-tip")}"`);
+        if (!/Allow the microphone/.test(await p.textContent("#now-notice"))) fail(`permission tip "${await p.textContent("#now-notice")}"`);
         if ((await voiceState(p)) !== "idle") fail(`mic after asking: ${await voiceState(p)}`);
         await checkLayout(p, `voice-permission ${label}`);
         await shoot(p, "panel-voice-permission", size, scheme);
         reportErrors(p, `voice-permission ${label}`);
+        await p.close();
+      }
+
+      // Listening stops by itself after a long quiet (a silent microphone here): the notice sits above the box with
+      // the text, never over it, and says so in a few words.
+      if (want("panel-voice-stopped", size, scheme)) {
+        const p = await openPanel(ctx, "account", ".chat-empty", {
+          init: [
+            () => {
+              navigator.mediaDevices.getUserMedia = async () => {
+                const ac = new AudioContext();
+                const quiet = ac.createConstantSource();
+                quiet.offset.value = 0;
+                const out = ac.createMediaStreamDestination();
+                quiet.connect(out);
+                quiet.start();
+                return out.stream;
+              };
+            },
+          ],
+        });
+        const typed = "Reply to Sarah that I will be there at seven, and ask whether I should bring dessert";
+        await p.fill("#now-text", typed);
+        await p.click(mic);
+        await waitVoice(p, "listening");
+        await p.waitForSelector("#now-notice:not([hidden])", { timeout: 20_000 });
+        const got = await p.evaluate(() => ({ note: document.querySelector("#now-notice .notice-text")?.textContent, level: document.getElementById("now-notice").dataset.level, box: document.getElementById("now-text").value }));
+        if (got.note !== "Stopped listening. Your text is in the box." || got.level !== "info" || got.box !== typed) fail(`voice stopped ${JSON.stringify(got)}`);
+        await waitVoice(p, "idle");
+        await checkLayout(p, `voice-stopped ${label}`);
+        await shoot(p, "panel-voice-stopped", size, scheme);
+        // Typing takes the note away.
+        await p.click("#now-text");
+        await p.keyboard.type("!");
+        if (await p.evaluate(() => !document.getElementById("now-notice").hidden)) fail("voice stopped: typing did not take the note away");
+        reportErrors(p, `voice-stopped ${label}`);
         await p.close();
       }
     },
@@ -1572,18 +1608,19 @@ export const PANEL_CASES = [
       "panel-handsfree-cost",
       "panel-handsfree-narrator",
       "panel-handsfree-fallback",
+      "panel-handsfree-elsewhere",
     ],
     async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors, base, want }) {
       await ctx.grantPermissions(["microphone"], { origin: base });
-      const phase = (p) => p.evaluate(() => (document.querySelector(".hf-bar:not([hidden])") ? document.querySelector(".hf-bar").dataset.phase : "off"));
+      const phase = (p) => p.evaluate(() => (document.querySelector(".hf-pill:not([hidden])") ? document.querySelector(".hf-pill").dataset.phase : "off"));
       /** Waits for the hands-free phase; on timeout says what the panel shows instead. */
       const waitPhase = (p, wanted, timeout = 20_000) =>
-        p.waitForFunction((w) => document.querySelector(".hf-bar:not([hidden])")?.dataset.phase === w, wanted, { timeout }).catch(async (err) => {
+        p.waitForFunction((w) => document.querySelector(".hf-pill:not([hidden])")?.dataset.phase === w, wanted, { timeout }).catch(async (err) => {
           const seen = await p.evaluate(() => ({
-            phase: document.querySelector(".hf-bar")?.dataset.phase,
-            hidden: document.querySelector(".hf-bar")?.hidden,
+            phase: document.querySelector(".hf-pill")?.dataset.phase,
+            hidden: document.querySelector(".hf-pill")?.hidden,
             pill: document.querySelector(".hf-label")?.textContent,
-            tip: document.querySelector(".voice-tip:not([hidden])")?.textContent,
+            tip: document.querySelector("#now-notice:not([hidden])")?.textContent,
           }));
           throw new Error(`waiting for hands-free "${wanted}": ${JSON.stringify(seen)} (${err.message.split("\n")[0]})`);
         });
@@ -1628,24 +1665,38 @@ export const PANEL_CASES = [
         if ((await pillText(p)) !== "Sending… (say “cancel” or Esc)") fail(`sending pill "${await pillText(p)}"`);
         if (!/^Open Gmail/.test(await p.inputValue("#now-text"))) fail(`sending: box "${await p.inputValue("#now-text")}"`);
         await shoot(p, "panel-handsfree-sending", size, scheme);
-        await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.adhoc"), null, { timeout: 5000 });
-        const sent = await p.evaluate(() => window.__requests.find((r) => r.type === "run.adhoc").instructions);
-        if (!/^Open Gmail/.test(sent)) fail(`hands-free sent "${sent}"`);
+        // It goes to the chat of the tab the session started in (none yet: a new one there), marked as spoken.
+        await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.message"), null, { timeout: 5000 });
+        const req = await p.evaluate(() => window.__requests.find((r) => r.type === "run.message"));
+        if (!/^Open Gmail/.test(req.text) || req.voice !== true || req.tabId !== 1 || req.sessionId !== undefined) fail(`hands-free sent ${JSON.stringify(req)}`);
+        const sent = req.text;
+        await p.waitForSelector("#chat-log .ev-first.voice .ev-voice", { state: "attached" });
 
-        // The task runs: its short plan is said (with a caption), then the pill stays while it works.
+        // The task runs: its short plan is said (playing in the chat), then the pill stays while it works.
         await pushRunning(p, newSession(sent));
         await p.evaluate(() =>
           window.__push({ type: "event", event: { type: "assistant_text", text: "I'll open Gmail and read your newest email. Starting now.", ts: new Date().toISOString(), sessionId: "s-new" } }),
         );
         await waitPhase(p, "speaking");
         if ((await spokenLast(p)) !== "I'll open Gmail and read your newest email.") fail(`said "${await spokenLast(p)}"`);
-        if ((await p.textContent(".hf-caption")) !== "I'll open Gmail and read your newest email.") fail(`caption "${await p.textContent(".hf-caption")}"`);
+        const playing = await p.evaluate(() => [...document.querySelectorAll("#chat-log .ev-spoken.playing .ev-spoken-text")].map((e) => e.textContent));
+        if (playing.join(" | ") !== "I'll open Gmail and read your newest email.") fail(`playing in the chat: ${JSON.stringify(playing)}`);
+        if (await p.evaluate(() => document.querySelector(".hf-caption, .voice-tip"))) fail("a floating caption or tip is still drawn");
+        if ((await pillText(p)) !== "Hands-free · speaking") fail(`speaking pill "${await pillText(p)}"`);
         if (!(await p.evaluate(() => document.querySelector(".voice-orb").hidden))) fail("the orb still covers the chat after sending");
         await checkLayout(p, `handsfree-speaking ${label}`);
         await shoot(p, "panel-handsfree-speaking", size, scheme);
         await p.evaluate(() => window.__ttsRelease());
         await waitPhase(p, "working");
         if ((await pillText(p)) !== "Hands-free · listening while it works") fail(`working pill "${await pillText(p)}"`);
+        // Said: the line is kept in its chat (compact: the agent's text above starts with it), no longer playing.
+        await p.waitForFunction(() => document.querySelector("#chat-log .ev-spoken:not(.live)"));
+        const kept = await p.evaluate(() => ({
+          asked: window.__requests.filter((r) => r.type === "voice.spoken").map((r) => [r.sessionId, r.text]),
+          shown: [...document.querySelectorAll("#chat-log .ev-spoken")].map((e) => [e.className, e.textContent]),
+        }));
+        if (JSON.stringify(kept.asked) !== JSON.stringify([["s-new", "I'll open Gmail and read your newest email."]]) || kept.shown.length !== 1 || !/echo/.test(kept.shown[0][0]) || /playing|live/.test(kept.shown[0][0]))
+          fail(`kept spoken line ${JSON.stringify(kept)}`);
         await p.evaluate(() => {
           const ev = (e) => window.__push({ type: "event", event: { ...e, ts: new Date().toISOString(), sessionId: "s-new" } });
           ev({ type: "tool_call", id: "1", name: "navigate", args: { url: "https://mail.google.com/mail/u/0/#inbox" } });
@@ -1668,11 +1719,16 @@ export const PANEL_CASES = [
           window.__push({ type: "event", event: { type: "task_end", outcome: "done", summary: "Read the newest email", spoken: "Sarah says dinner moved to eight.", ts: at, sessionId: "s-new" } });
         });
         await p.waitForFunction(() => window.__spoken.at(-1) === "Sarah says dinner moved to eight.");
+        // The result is kept as a full spoken line; the milestone, which repeats a tool row, is not kept.
+        await p.waitForFunction(() => [...document.querySelectorAll("#chat-log .ev-spoken:not(.live) .ev-spoken-text")].some((e) => e.textContent === "Sarah says dinner moved to eight."));
+        const lines = await p.evaluate(() => [...document.querySelectorAll("#chat-log .ev-spoken")].map((e) => [e.classList.contains("echo"), e.textContent]));
+        if (JSON.stringify(lines) !== JSON.stringify([[true, "I'll open Gmail and read your newest email."], [false, "Sarah says dinner moved to eight."]])) fail(`spoken lines in the chat ${JSON.stringify(lines)}`);
+        if (await p.evaluate(() => window.__requests.some((r) => r.type === "voice.spoken" && /^Opening/.test(r.text)))) fail("a milestone was kept in the chat");
         if (await p.evaluate(() => window.__spoken.some((l) => /\*\*/.test(l)))) fail("a Markdown answer was read out");
 
         // The shortcut again ends it: the pill goes, the background hears the mic is off.
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
-        await p.waitForFunction(() => document.querySelector(".hf-bar").hidden);
+        await p.waitForFunction(() => document.querySelector(".hf-pill").hidden);
         if ((await p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.listening").at(-1)?.listening)) !== false) fail("hands-free end not reported to the background");
         if ((await p.getAttribute("#now-actions .voice-mic", "data-state")) !== "idle") fail("the mic still shows hands-free");
         reportErrors(p, `handsfree ${label}`);
@@ -1684,22 +1740,17 @@ export const PANEL_CASES = [
         const p = await openPanel(ctx, "account", ".chat-empty", { edit: (d) => (d.state.settings.realtimeCostNoticed = false), init: [installVoiceFakes] });
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
-        await p.waitForSelector(".voice-tip:not([hidden])");
-        const tip = await p.textContent(".voice-tip:not([hidden])");
-        if (!/Realtime voice uses about 5¢ of usage credit a minute \(Standard: 0\.067¢ of usage credit a minute\)\./.test(tip) || !/Use Standard/.test(tip)) fail(`cost notice "${tip}"`);
+        await p.waitForSelector("#now-notice:not([hidden])");
+        const tip = await p.textContent("#now-notice:not([hidden])");
+        if (!/^Realtime voice uses about 5¢ of usage credit a minute\. Standard costs much less\.Use Standard×$/.test(tip)) fail(`cost notice "${tip}"`);
         if (!(await p.evaluate(() => window.__requests.some((r) => r.type === "settings.save" && r.settings.realtimeCostNoticed === true)))) fail("the cost notice is not remembered");
         const rt = await p.evaluate(() => ({ protocols: window.__rt.protocols, sent: window.__rt.sent.map((e) => e.type), first: window.__rt.sent[0] }));
         if (JSON.stringify(rt.protocols) !== JSON.stringify(["browsertodo", "bt.tok"])) fail(`subprotocols ${JSON.stringify(rt.protocols)}`);
         if (rt.first?.type !== "session.update" || rt.first.session.model !== undefined) fail(`first event ${JSON.stringify(rt.first)?.slice(0, 120)}; sent ${rt.sent.slice(0, 5)}`);
-        const covered = await p.evaluate(() => {
-          const pill = document.querySelector(".hf-pill").getBoundingClientRect();
-          const note = document.querySelector(".hf-note").getBoundingClientRect();
-          return note.bottom > pill.top + 1;
-        });
-        if (covered) fail("the cost notice covers the pill");
+        if (!(await p.evaluate(() => !document.querySelector(".hf-pill").hidden))) fail("the cost notice took the pill's place");
         await checkLayout(p, `handsfree-cost ${label}`);
         await shoot(p, "panel-handsfree-cost", size, scheme);
-        await p.click(".voice-tip:not([hidden]) .voice-tip-close");
+        await p.click("#now-notice:not([hidden]) .notice-close");
 
         // The narrator says hello: its words under the orb while its audio plays.
         await p.evaluate(() => {
@@ -1718,9 +1769,10 @@ export const PANEL_CASES = [
           window.__rt.emit({ type: "response.created", response: { id: "r2" } });
           window.__rt.emit({ type: "response.function_call_arguments.done", call_id: "c1", name: "send_to_agent", arguments: JSON.stringify({ text: "Open Gmail and read my newest email" }) });
         });
-        await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.adhoc"), null, { timeout: 5000 });
-        const sent = await p.evaluate(() => window.__requests.find((r) => r.type === "run.adhoc").instructions);
-        if (sent !== "Open Gmail and read my newest email") fail(`send_to_agent sent "${sent}"`);
+        await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.message"), null, { timeout: 5000 });
+        const req = await p.evaluate(() => window.__requests.find((r) => r.type === "run.message"));
+        if (req.text !== "Open Gmail and read my newest email" || req.voice !== true || req.tabId !== 1) fail(`send_to_agent sent ${JSON.stringify(req)}`);
+        const sent = req.text;
         const output = await p.evaluate(() => window.__rt.sent.find((e) => e.item?.type === "function_call_output")?.item.output);
         if (!/^Sent to the agent/.test(output ?? "")) fail(`tool output "${output}"`);
 
@@ -1736,22 +1788,126 @@ export const PANEL_CASES = [
         await p.close();
       }
 
+      // The session belongs to the tab it started in: on another tab the pill says where it listens (Go to tab),
+      // what is said there still goes to its own tab's chat; the shortcut there moves it; closing its tab ends it.
+      if (want("panel-handsfree-elsewhere", size, scheme)) {
+        const p = await openPanel(ctx, "voice-chat", "#chat-log .ev-end", { edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
+        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await waitPhase(p, "listening");
+        // A tab its chat lives in is the session's own: the plain pill there. Here the chat moved to the tab its
+        // task works in (as a run started from an extension page does), and the agent brought that tab to the front.
+        const home = await p.evaluate(() => window.__data.state);
+        await p.evaluate(() => {
+          const st = window.__data.state;
+          window.__push({ type: "state", state: { ...st, tabChats: { 3: "s-voice" }, runningTabs: { "s-voice": [3] } } });
+          window.__activateTab(3);
+        });
+        await p.waitForTimeout(100);
+        if (await p.evaluate(() => document.querySelector(".hf-pill").classList.contains("elsewhere"))) fail("the tab the chat moved to counts as another tab");
+        await p.evaluate((st) => window.__push({ type: "state", state: st }), home);
+        await p.evaluate(() => window.__activateTab(2));
+        await p.waitForFunction(() => document.querySelector(".hf-pill.elsewhere .hf-label")?.textContent.startsWith("Hands-free · listening in Inbox (1)"));
+        const away = await p.evaluate(() => ({
+          label: document.querySelector(".hf-label").textContent,
+          go: !document.querySelector(".hf-go").hidden,
+          use: !document.querySelector(".hf-use").hidden,
+          orb: !document.querySelector(".voice-orb").hidden,
+          chat: document.querySelector("#chat-log .chat-empty") !== null,
+        }));
+        if (away.label !== "Hands-free · listening in Inbox (1) - ada.lovelace@ex…" || !away.go || !away.use || away.orb || !away.chat) fail(`pill on another tab ${JSON.stringify(away)}`);
+        await checkLayout(p, `handsfree-elsewhere ${label}`);
+        await shoot(p, "panel-handsfree-elsewhere", size, scheme);
+        // Said while tab 2 is shown: it goes to tab 1's chat, and tab 2's box stays as it was.
+        await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.message"), null, { timeout: 30_000 });
+        const req = await p.evaluate(() => window.__requests.find((r) => r.type === "run.message"));
+        // To the chat by its id (it stays in the tab it lives in).
+        if (req.sessionId !== "s-voice" || req.tabId !== undefined || req.voice !== true || !/^Open Gmail/.test(req.text)) fail(`said on another tab, sent ${JSON.stringify(req)}`);
+        if ((await p.inputValue("#now-text")) !== "") fail(`the other tab's box got "${await p.inputValue("#now-text")}"`);
+        // Go to tab shows the session's tab (and its chat), where the pill is the plain one again.
+        await p.click(".hf-go");
+        await p.waitForFunction(() => !document.querySelector(".hf-pill").classList.contains("elsewhere"));
+        if (!(await p.evaluate(() => window.__requests.some((r) => r.type === "tab.focus" && r.tabId === 1)))) fail("Go to tab did not ask for tab 1");
+        // Use this tab (on another tab) moves the session there, and says so.
+        await p.evaluate(() => window.__activateTab(2));
+        await p.waitForSelector(".hf-pill.elsewhere");
+        await p.click(".hf-use");
+        await p.waitForFunction(() => !document.querySelector(".hf-pill").hidden && !document.querySelector(".hf-pill").classList.contains("elsewhere"));
+        if ((await p.textContent("#now-notice .notice-text")) !== "Hands-free moved to this tab.") fail(`moved note "${await p.textContent("#now-notice")}"`);
+        await checkLayout(p, `handsfree-moved ${label}`);
+        // Closing another tab changes nothing; closing its tab ends it, with a note.
+        await p.evaluate(() => window.__closeTab(1));
+        if (await p.evaluate(() => document.querySelector(".hf-pill").hidden)) fail("closing another tab ended hands-free");
+        await p.evaluate(() => window.__closeTab(2));
+        await p.waitForFunction(() => document.querySelector(".hf-pill").hidden);
+        if ((await p.textContent("#now-notice .notice-text")) !== "Hands-free stopped: its tab was closed.") fail(`tab closed note "${await p.textContent("#now-notice")}"`);
+        // The voice key on another tab than the session's ends it (it never moves it).
+        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await waitPhase(p, "listening");
+        await p.evaluate(() => window.__activateTab(4));
+        await p.waitForSelector(".hf-pill.elsewhere");
+        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await p.waitForFunction(() => document.querySelector(".hf-pill").hidden);
+        if (await p.evaluate(() => document.querySelector("#now-notice .notice-text")?.textContent === "Hands-free moved to this tab.")) fail("the voice key on another tab moved hands-free");
+        if ((await p.getAttribute("#now-actions .voice-mic", "data-state")) !== "idle") fail("the voice key on another tab did not end hands-free");
+        if ((await p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.listening").at(-1)?.listening)) !== false) fail("the end is not reported to the background");
+        reportErrors(p, `handsfree-elsewhere ${label}`);
+        await p.close();
+      }
+
       // Realtime unavailable on the server: one line, and Standard takes over.
       if (want("panel-handsfree-fallback", size, scheme)) {
         const p = await openPanel(ctx, "account", ".chat-empty", { init: [installVoiceFakes, () => (window.__rtMode = "unavailable")] });
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
-        await p.waitForSelector(".voice-tip:not([hidden])");
-        const tip = await p.textContent(".voice-tip:not([hidden])");
-        if (!/Realtime voice isn't available right now, so this uses Standard voice\./.test(tip)) fail(`fallback note "${tip}"`);
-        // Standard is listening: the utterance goes through Whisper (voice.transcribe).
-        await p.waitForFunction(() => window.__requests.some((r) => r.type === "voice.transcribe"), null, { timeout: 15_000 });
-        if ((await phase(p)) === "off") fail("hands-free ended instead of falling back");
+        await p.waitForSelector("#now-notice:not([hidden])");
+        const note = await p.evaluate(() => ({ text: document.querySelector("#now-notice .notice-text")?.textContent, level: document.getElementById("now-notice").dataset.level }));
+        if (note.text !== "Realtime voice is unavailable. Using Standard." || note.level !== "fallback") fail(`fallback note ${JSON.stringify(note)}`);
+        // The note and the pill share the row above the box.
         await checkLayout(p, `handsfree-fallback ${label}`);
         await shoot(p, "panel-handsfree-fallback", size, scheme);
+        // Standard is listening: the utterance goes through the server's transcription (voice.transcribe).
+        await p.waitForFunction(() => window.__requests.some((r) => r.type === "voice.transcribe"), null, { timeout: 15_000 });
+        if ((await phase(p)) === "off") fail("hands-free ended instead of falling back");
+        // A fallback note hides by itself after a few seconds.
+        await p.waitForFunction(() => document.getElementById("now-notice").hidden, null, { timeout: 12_000 }).catch(() => fail("the fallback note did not hide by itself"));
         reportErrors(p, `handsfree-fallback ${label}`);
         await p.close();
       }
+    },
+  },
+  // Voice in the chat: messages the user spoke carry a mic; what was said aloud is part of the thread, quieter than the
+  // answer (the one that repeats the text above it compact), and stays when the chat is opened again.
+  {
+    names: ["panel-voice-chat"],
+    async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors }) {
+      const p = await openPanel(ctx, "voice-chat", "#chat-log .ev-end");
+      const got = await p.evaluate(() => ({
+        first: document.querySelector("#chat-log .ev-first")?.classList.contains("voice") && !!document.querySelector("#chat-log .ev-first .ev-voice"),
+        users: [...document.querySelectorAll("#chat-log .ev-user:not(.ev-first)")].map((e) => [e.classList.contains("voice"), e.textContent]),
+        spoken: [...document.querySelectorAll("#chat-log .ev-spoken")].map((e) => [e.classList.contains("echo"), e.textContent]),
+        order: [...document.querySelectorAll("#chat-log > *")].map((e) => e.className.split(" ")[0]).join(" "),
+      }));
+      if (!got.first) fail("voice chat: the first message has no mic");
+      if (JSON.stringify(got.users) !== JSON.stringify([[true, "Tell her yes and archive it"], [false, "sign it Ada"]])) fail(`voice chat: user messages ${JSON.stringify(got.users)}`);
+      const want = [
+        [true, "I'll open Gmail and read your newest email."],
+        [false, "Sarah says Friday's dinner moved to eight. She wants a yes by Thursday."],
+        [false, "Done: I said yes and archived it. Anything else?"],
+      ];
+      if (JSON.stringify(got.spoken) !== JSON.stringify(want)) fail(`voice chat: spoken lines ${JSON.stringify(got.spoken)}`);
+      if (!/^ev-opening ev-head ev-text ev-spoken ev-steps ev-text ev-end ev-spoken ev-user ev-user ev-steps ev-end ev-spoken$/.test(got.order)) fail(`voice chat: order ${got.order}`);
+      // Quieter than the answer: smaller type than the agent's text, and the compact one on one line.
+      const style = await p.evaluate(() => {
+        const px = (el) => parseFloat(getComputedStyle(el).fontSize);
+        const echo = document.querySelector("#chat-log .ev-spoken.echo");
+        return { spoken: px(document.querySelector("#chat-log .ev-spoken:not(.echo)")), text: px(document.querySelector("#chat-log .ev-text")), echoH: echo.getBoundingClientRect().height, echoLine: parseFloat(getComputedStyle(echo).lineHeight) };
+      });
+      if (!(style.spoken < style.text) || style.echoH > style.echoLine + 8) fail(`voice chat: styles ${JSON.stringify(style)}`);
+      await checkLayout(p, `voice-chat ${label}`);
+      await p.evaluate(() => (document.getElementById("chat-log").scrollTop = 0));
+      await shoot(p, "panel-voice-chat", size, scheme);
+      reportErrors(p, `voice-chat ${label}`);
+      await p.close();
     },
   },
   // The microphone permission page (opened in a tab): asking, allowed, blocked.

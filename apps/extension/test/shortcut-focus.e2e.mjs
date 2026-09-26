@@ -62,7 +62,7 @@ try {
           draft: d.getElementById("now-text").value,
           chat: d.getElementById("chat-log").textContent,
           voice: d.querySelector(".voice-mic")?.dataset.state ?? null,
-          tip: d.querySelector(".voice-tip:not([hidden])")?.textContent ?? null,
+          tip: d.querySelector("#now-notice:not([hidden])")?.textContent ?? null,
           mark: v.__mark ?? null,
         };
       }

@@ -47,14 +47,20 @@ export type AgentEvent =
       executed: boolean;
       ms: number;
     }
-  /** A message the human typed into the running session. */
-  | { type: "user_message"; text: string }
+  /** A message the human sent in the conversation (voice: it was spoken, hands-free or dictated). */
+  | { type: "user_message"; text: string; voice?: true }
   /**
    * suggestion: the agent's proposed next request (TaskRunResult.suggestion);
    * spoken: the outcome as one or two sentences hands-free voice reads aloud (TaskRunResult.spoken).
    */
   | { type: "task_end"; outcome: TaskOutcome; summary?: string; url?: string; reason?: string; suggestion?: string; spoken?: string }
-  | { type: "error"; text: string };
+  | { type: "error"; text: string }
+  /**
+   * A line hands-free voice said aloud in this conversation (the plan, a
+   * question, the result, the Realtime narrator's reply), kept in the thread.
+   * Written by the side panel, never by a brain.
+   */
+  | { type: "spoken"; text: string };
 
 /** Element picks of act steps (clicks and typing) in a turn: by Jev, or by Claude naming an index. */
 export interface ElementPicks {
@@ -102,6 +108,8 @@ export interface SessionInfo {
   /** Adhoc runs: the full instructions and account, so the run can be continued later. */
   instructions?: string;
   account?: string;
+  /** The first message was spoken (hands-free or dictated), not typed. */
+  voice?: true;
   /** Set when this run continues an earlier stopped one ("Continue"). */
   continuedFrom?: string;
   /** Turns in this conversation so far (absent: 1). */

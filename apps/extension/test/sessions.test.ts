@@ -58,6 +58,24 @@ describe("SessionStore", () => {
     expect(await next.reopen("nope")).toBeNull();
   });
 
+  it("note adds a spoken line to a conversation that ended (also after a restart), after its stored events", async () => {
+    const db = new MemoryKvDb();
+    const store = new SessionStore(db, { now: () => new Date("2026-09-24T10:00:00Z") });
+    await store.create(info("a", "2026-09-24T10:00:00Z"));
+    store.append("a", { type: "user_message", text: "Read my mail", voice: true });
+    store.append("a", { type: "task_end", outcome: "done", summary: "s" });
+    await store.update("a", { outcome: "done", endedAt: "2026-09-24T10:01:00Z" });
+    // The line is said after the turn ended: it must not overwrite the first event.
+    expect(await store.note("a", { type: "spoken", text: "Sarah says dinner moved to eight." })).toMatchObject({ type: "spoken", sessionId: "a" });
+    const restarted = new SessionStore(db);
+    const pushed: string[] = [];
+    restarted.subscribe({ onEvent: (e) => pushed.push(e.type) });
+    await restarted.note("a", { type: "spoken", text: "Anything else?" });
+    expect((await restarted.eventsOf("a")).map((e) => e.type)).toEqual(["user_message", "task_end", "spoken", "spoken"]);
+    expect(pushed).toEqual(["spoken"]);
+    expect(await restarted.note("nope", { type: "spoken", text: "x" })).toBeNull();
+  });
+
   it("keeps the last MAX_EVENTS_PER_SESSION events", async () => {
     const store = new SessionStore(new MemoryKvDb());
     await store.create(info("a", "2026-09-24T10:00:00Z"));

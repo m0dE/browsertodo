@@ -22,7 +22,7 @@ describe("chooseEngine", () => {
   it("falls back to Standard when the server cannot run Realtime", () => {
     const r = chooseEngine({ preferred: "realtime", engines: list(engine("realtime", 30, false), engine("standard", 0.2)), creditCents: 1000 });
     expect(r.engine).toBe("standard");
-    expect(r.note).toBe("Realtime voice isn't available right now, so this uses Standard voice.");
+    expect(r.note).toBe("Realtime voice is unavailable. Using Standard.");
     expect(chooseEngine({ preferred: "realtime", engines: list(engine("standard", 0.2)), creditCents: 1000 }).engine).toBe("standard");
     // The server's default says so too.
     expect(chooseEngine({ preferred: "realtime", engines: { ...ENGINES, default: "standard" }, creditCents: 1000 }).engine).toBe("standard");
@@ -30,7 +30,7 @@ describe("chooseEngine", () => {
 
   it(`falls back to Standard when the credit left pays for less than ${LOW_CREDIT_MINUTES} minutes of Realtime`, () => {
     const low = chooseEngine({ preferred: "realtime", engines: ENGINES, creditCents: 30 * LOW_CREDIT_MINUTES - 1 });
-    expect(low).toEqual({ engine: "standard", note: "Your usage credit is low, so this uses Standard voice (it costs much less)." });
+    expect(low).toEqual({ engine: "standard", note: "Usage credit is low. Using Standard voice (it costs much less)." });
     expect(chooseEngine({ preferred: "realtime", engines: ENGINES, creditCents: 30 * LOW_CREDIT_MINUTES }).engine).toBe("realtime");
   });
 

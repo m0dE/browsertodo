@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { VoiceEngine } from "@browsertodo/shared";
-import { voiceView } from "../../src/options/voice-view.js";
+import { sampleFailureText, speedText, voicePatch, voicePicker, voiceView } from "../../src/options/voice-view.js";
+import { DEFAULT_SETTINGS } from "@browsertodo/shared";
 import type { AccountView } from "../../src/ui-protocol.js";
 
 const engines: VoiceEngine[] = [
@@ -20,7 +21,10 @@ describe("voiceView: the voice engine choice in Settings", () => {
     ]);
     expect(v.options[0]!.cost).toBe("about 5¢ of usage credit a minute");
     expect(v.options[1]!.cost).toBe("about 0.05¢ of usage credit a minute");
-    expect(v.options[0]!.title).toBe("Per minute of conversation: you talk for 1 minute and it speaks for 18 seconds.");
+    expect(v.options[0]!.title).toBe("Per minute of conversation: you talk for 1 minute and it speaks for 18 seconds. Model: gpt-realtime-2.1.");
+    // Standard names no vendor: the server's model is in the tooltip.
+    expect(v.options[1]!.detail).toBe("Your words become text on our server; short summaries are read aloud by your browser.");
+    expect(v.options[1]!.title).toMatch(/Model: whisper\.$/);
     expect(v.note).toBeNull();
   });
 
@@ -37,5 +41,54 @@ describe("voiceView: the voice engine choice in Settings", () => {
   it("without a plan that includes voice, says which plans do", () => {
     expect(voiceView({ engines, selected: "realtime", account: FREE }).note).toBe("Voice needs the Plus or Pro plan");
     expect(voiceView({ engines, selected: "realtime", account: { ...base, signedIn: false } }).note).toBe("Voice needs the Plus or Pro plan");
+  });
+});
+
+describe("voicePicker: the voice and speed follow the engine selected", () => {
+  const browserVoices = [{ name: "Google US English", lang: "en-US" }];
+  const settings = { ...DEFAULT_SETTINGS };
+
+  it("Realtime: OpenAI's voices (recommended first), its own speed range, and what a test costs", () => {
+    const p = voicePicker({ settings: { ...settings, voiceEngine: "realtime", realtimeVoice: "cedar", realtimeSpeed: 1.2 }, browserVoices, engines });
+    expect(p.title).toBe("Realtime voice");
+    expect(p.options.map((o) => o.label)).toEqual(["Marin (recommended)", "Cedar (recommended)", "Alloy", "Ash", "Ballad", "Coral", "Echo", "Sage", "Shimmer", "Verse"]);
+    expect(p.options.map((o) => o.value)).toContain("verse");
+    expect(p.value).toBe("cedar");
+    expect(p.speed).toMatchObject({ min: 0.25, max: 1.5, step: 0.05, value: 1.2, hint: "0.25× to 1.5×; 1.0× is normal." });
+    expect(p.testHint).toBe("Says a sample line with this voice and speed (uses about 1¢ of usage credit).");
+    // Prices not known: no cost claimed.
+    expect(voicePicker({ settings: { ...settings, voiceEngine: "realtime" }, browserVoices, engines: null }).testHint).toBe("Says a sample line with this voice and speed.");
+  });
+
+  it("Standard: the browser's voices (a voice from another computer kept), the browser's speed range", () => {
+    const p = voicePicker({ settings: { ...settings, voiceEngine: "standard", speechVoice: "Samantha", speechRate: 1.4 }, browserVoices, engines });
+    expect(p.title).toBe("Standard voice");
+    expect(p.options).toEqual([
+      { value: "", label: "Browser default" },
+      { value: "Google US English", label: "Google US English (en-US)" },
+      { value: "Samantha", label: "Samantha (not on this computer)" },
+    ]);
+    expect(p.speed).toMatchObject({ min: 0.5, max: 2, step: 0.1, value: 1.4, hint: "0.5× to 2.0×; 1.0× is normal." });
+    expect(p.testHint).toBe("Says a sample line with this voice and speed, on this computer.");
+  });
+
+  it("a change saves to the selected engine's own settings, kept in its range", () => {
+    expect(voicePatch("realtime", { voice: "cedar" })).toEqual({ realtimeVoice: "cedar" });
+    expect(voicePatch("realtime", { voice: "nova" })).toEqual({});
+    expect(voicePatch("realtime", { speed: 1.9 })).toEqual({ realtimeSpeed: 1.5 });
+    expect(voicePatch("realtime", { speed: 0.78 })).toEqual({ realtimeSpeed: 0.8 });
+    expect(voicePatch("standard", { voice: "Google US English" })).toEqual({ speechVoice: "Google US English" });
+    expect(voicePatch("standard", { speed: 1.44 })).toEqual({ speechRate: 1.4 });
+    expect(voicePatch("standard", { speed: 0.1 })).toEqual({ speechRate: 0.5 });
+  });
+
+  it("speeds read as multiples", () => {
+    expect([0.25, 1, 1.2, 1.5, 2].map(speedText)).toEqual(["0.25×", "1.0×", "1.2×", "1.5×", "2.0×"]);
+  });
+
+  it("a Realtime test that cannot run says why in a few words", () => {
+    expect(sampleFailureText({ kind: "unavailable", fallback: true, message: "Realtime voice is unavailable. Using Standard." })).toBe("Realtime voice is unavailable right now.");
+    expect(sampleFailureText({ kind: "busy", fallback: true })).toBe("Realtime voice is open in another window. Try again once it ends.");
+    expect(sampleFailureText({ kind: "credit", fallback: false, message: "Out of usage credit: top up to keep using voice." })).toBe("Out of usage credit: top up to keep using voice.");
   });
 });

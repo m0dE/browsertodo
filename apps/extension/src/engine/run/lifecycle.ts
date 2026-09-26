@@ -95,6 +95,7 @@ export class Lifecycle {
           // Kept so the conversation can go on in a fresh session with its full instructions.
           info.instructions = task.instructions.slice(0, MAX_INSTRUCTIONS_CHARS);
           if (task.account) info.account = task.account;
+          if (job.input.voice) info.voice = true;
         }
         const active = activate(info, isXTask(task), job.source === "local" ? job.task.id : null);
         await this.deps.sessions.create(info);
@@ -138,7 +139,7 @@ export class Lifecycle {
         // Sent from a tab: the conversation goes on there (bound before the turn looks up its tab).
         if (job.tabId !== undefined) await this.deps.turns.bindChat(job.tabId, sessionId);
         // The user's message opens the turn in the thread.
-        this.deps.turns.emit(active, { type: "user_message", text });
+        this.deps.turns.emit(active, { type: "user_message", text, ...(job.voice ? { voice: true as const } : {}) });
         return active;
       },
       drive: (active, cleanups) => runNextTurn(this.deps.turns, this.deps.localStore, active, job, brain, events, settings, cleanups),

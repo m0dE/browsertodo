@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DEFAULT_MODEL } from "./models.js";
-import { VoiceEngineId } from "./voice.js";
+import { DEFAULT_REALTIME_VOICE, REALTIME_SPEED, RealtimeVoiceId, STANDARD_SPEED, VoiceEngineId } from "./voice.js";
 
 /** The browsertodo account server. */
 export const ACCOUNT_API_BASE = "https://app.browsertodo.com";
@@ -66,14 +66,18 @@ export const ExtensionSettings = z.object({
   pauseRetryMinutes: z.number().int().min(1).max(24 * 60).default(15),
   /**
    * Hands-free voice (the voice shortcut): realtime = OpenAI Realtime through
-   * the account server (a spoken narrator); standard = speech-to-text (Whisper)
+   * the account server (a spoken narrator); standard = speech-to-text on the server
    * with the browser's own speech. Falls back to standard when realtime cannot run.
    */
   voiceEngine: VoiceEngineId.default("realtime"),
   /** The Standard engine's voice: a speechSynthesis voice name; "" = the browser's default. */
   speechVoice: z.string().default(""),
-  /** The Standard engine's speaking speed (1 = normal). */
-  speechRate: z.number().min(0.5).max(2).default(1),
+  /** The Standard engine's speaking speed (1 = normal; STANDARD_SPEED). */
+  speechRate: z.number().min(STANDARD_SPEED.min).max(STANDARD_SPEED.max).default(STANDARD_SPEED.default),
+  /** The Realtime narrator's voice (one of OpenAI's built-in voices). */
+  realtimeVoice: RealtimeVoiceId.default(DEFAULT_REALTIME_VOICE),
+  /** The Realtime narrator's speaking speed (1 = normal; REALTIME_SPEED). */
+  realtimeSpeed: z.number().min(REALTIME_SPEED.min).max(REALTIME_SPEED.max).default(REALTIME_SPEED.default),
   /** The one-time notice of what Realtime voice costs was shown. */
   realtimeCostNoticed: z.boolean().default(false),
 });

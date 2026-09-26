@@ -1,6 +1,7 @@
 /** Pure view models for agent events in Chat and the Activity log. */
 import { picksText, SCREEN_HELP_TEXT, type AgentEvent, type Chip, type ElementPicks, type SessionInfo, type TaskSource } from "@browsertodo/shared";
 import { clip, isLongSummary, toolArgsSummary } from "../text.js";
+import { speakable } from "../voice/spoken-line.js";
 import { errorHelp, type ErrorHelp } from "./error-help.js";
 import { clockLabel, outcomeChip } from "./format.js";
 
@@ -12,8 +13,10 @@ export type EventView =
   | { kind: "tool"; id: string; name: string; args: string }
   | { kind: "result"; id: string; name: string; preview: string; full: string; isError: boolean; thumbnail?: string }
   | { kind: "jev"; label: string; ms: number; executed: boolean; title: string }
-  /** screen: an empty message, "look at the page and do what is needed" (shown quieter, with an eye). */
-  | { kind: "user"; text: string; screen?: true }
+  /** screen: an empty message, "look at the page and do what is needed" (shown quieter, with an eye). voice: it was spoken. */
+  | { kind: "user"; text: string; screen?: true; voice?: true }
+  /** A line hands-free voice said aloud. echo: it repeats the start of the text written above it (shown compact). */
+  | { kind: "spoken"; text: string; echo?: true }
   /**
    * picks: who picked the turn's elements ("Jev chose 9 of 11 element picks ...").
    * long: the text is an answer (several lines or long), shown as a message above the outcome line.
@@ -57,11 +60,37 @@ export function turnError(events: readonly AgentEvent[], endIndex: number): stri
   return err?.type === "error" ? err.text : undefined;
 }
 
-/** What a task_end's view needs from the rest of its turn (see turnPicks and turnError). */
+/** What a task_end's view needs from the rest of its turn (see turnPicks and turnError), and a spoken line's (spokenEchoes). */
 export interface TurnContext {
   picks?: ElementPicks | undefined;
   /** An error the turn already showed as its own card. */
   error?: string | undefined;
+  /** A spoken line repeats what is written above it. */
+  echo?: boolean;
+}
+
+/** Text compared for sameness: letters and digits only, lower case. */
+const comparable = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+
+/** The same words, whatever the case, spacing and punctuation. */
+export const sameWords = (a: string, b: string): boolean => comparable(a) === comparable(b);
+
+/**
+ * Whether the spoken line `events[index]` says what the turn already shows in
+ * writing: the first sentence of the agent's text or of the turn's summary
+ * (the plan read out, a summary that is the answer's first line).
+ */
+export function spokenEchoes(events: readonly AgentEvent[], index: number): boolean {
+  const ev = events[index];
+  if (ev?.type !== "spoken") return false;
+  const said = comparable(ev.text);
+  for (let i = index - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type === "user_message") return false;
+    const written = e.type === "assistant_text" ? e.text : e.type === "task_end" ? (e.summary ?? "") : "";
+    if (written && comparable(speakable(written, Infinity)) === said) return true;
+  }
+  return false;
 }
 
 /**
@@ -128,7 +157,10 @@ export function describeEvent(ev: AgentEvent, turn: TurnContext = {}): EventView
       };
     }
     case "user_message":
-      return isScreenHelp(ev.text) ? { kind: "user", text: ev.text, screen: true } : { kind: "user", text: ev.text };
+      if (isScreenHelp(ev.text)) return { kind: "user", text: ev.text, screen: true };
+      return ev.voice ? { kind: "user", text: ev.text, voice: true } : { kind: "user", text: ev.text };
+    case "spoken":
+      return turn.echo ? { kind: "spoken", text: ev.text, echo: true } : { kind: "spoken", text: ev.text };
     case "task_end":
       return describeEnd(ev, turn);
     case "error":
@@ -144,6 +176,8 @@ export interface OpeningView {
   screen?: true;
   /** Not typed in Chat: where the instructions came from. */
   origin?: string;
+  /** Spoken, not typed (hands-free or dictated). */
+  voice?: true;
   /** How many files the first turn came with (their names are not saved with the run). */
   files?: number;
   /** When the conversation started: "14:30", "yesterday 23:00". */
@@ -162,6 +196,7 @@ export function openingTurn(s: SessionInfo, events: readonly AgentEvent[], now =
   const at = s.firstStartedAt ?? s.startedAt;
   const v: OpeningView = { text, when: clockLabel(at, now).replace(/^today /, ""), at };
   if (s.source === "adhoc" && isScreenHelp(text)) v.screen = true;
+  else if (s.voice) v.voice = true;
   const origin = ORIGIN_OF[s.source];
   if (origin) v.origin = origin;
   const firstEnd = events.findIndex((e) => e.type === "task_end");

@@ -21,6 +21,7 @@ import type { MicPermission } from "../voice/mic-access.js";
 import { VoiceError } from "../voice/transcribe.js";
 import type { ComposerView } from "./composer.js";
 import { FIXES } from "./error-help.js";
+import type { NoticeLevel } from "./notice-queue.js";
 import { h, restartAnimation } from "../ui/dom.js";
 
 /** What the mic button shows ("handsfree": a hands-free session is on). */
@@ -44,33 +45,36 @@ export function micButtonTitle(state: VoiceUiState, shortcut: string | null): st
 
 /** The note after listening stopped by itself (the text stays in the box, unsent). */
 export function stopNote(reason: StopReason): string | null {
-  if (reason === "silence") return `Stopped listening after ${VOICE_TUNING.longSilenceMs / 1000} seconds of quiet. Your text is in the box.`;
-  if (reason === "cap") return `Stopped at the ${VOICE_LIMITS.maxClipMs / 1000} second limit. Your text is in the box.`;
+  if (reason === "silence") return "Stopped listening. Your text is in the box.";
+  if (reason === "cap") return `Stopped at the ${VOICE_LIMITS.maxClipMs / 1000}-second limit. Your text is in the box.`;
   return null;
 }
 
-/** A message under the mic button, with an optional action. */
+/** Voice's notices (above the box, notices.ts) go under this key: a new one replaces the last. */
+export const VOICE_NOTICE = "voice";
+
+/** A voice notice: one short line, with an optional action. */
 export interface VoiceTip {
   text: string;
-  tone: "info" | "bad";
+  level: NoticeLevel;
   action?: { label: string; run: () => void };
 }
 
 /** The tip for a failure: plan and credit come with the dashboard's Billing page, which fixes them. */
 export function errorTip(err: unknown, openBilling: () => void): VoiceTip {
   if (err instanceof VoiceError) {
-    if (err.kind === "plan") return { text: err.message, tone: "bad", action: { label: FIXES.plans.label, run: openBilling } };
-    if (err.kind === "credit") return { text: err.message, tone: "bad", action: { label: "Top up", run: openBilling } };
-    return { text: err.message, tone: "bad" };
+    if (err.kind === "plan") return { text: err.message, level: "error", action: { label: FIXES.plans.label, run: openBilling } };
+    if (err.kind === "credit") return { text: err.message, level: "error", action: { label: "Top up", run: openBilling } };
+    return { text: err.message, level: "error" };
   }
-  return { text: `Voice stopped: ${errorMessage(err)}`, tone: "bad" };
+  return { text: `Voice stopped: ${errorMessage(err)}`, level: "error" };
 }
 
 /** getUserMedia refused: the permission was taken back (or never given) for this panel. */
 const isMicRefused = (err: unknown) => (err as { name?: string } | null)?.name === "NotAllowedError";
 
 export interface VoiceInputDeps {
-  composer: Pick<ComposerView, "actionSlot" | "draft" | "setDraft" | "setDictating" | "send" | "focus" | "interceptKeys">;
+  composer: Pick<ComposerView, "actionSlot" | "draft" | "setDraft" | "setDictating" | "send" | "focus" | "interceptKeys" | "notices">;
   transcribe: TranscribeClip;
   createSource(): AudioSource;
   mic: {
@@ -100,8 +104,8 @@ export interface HandsFreeLook {
 /** What voice input needs of the hands-free session (hands-free.ts). */
 export interface HandsFreeControl {
   readonly active: boolean;
-  start(): void;
-  stop(reason: "shortcut" | "button"): void;
+  /** The voice shortcut or the mic: starts a session, or ends the one that is on (wherever it listens). */
+  toggle(reason: "shortcut" | "button"): void;
 }
 
 export interface VoiceInput {
@@ -121,10 +125,8 @@ export interface VoiceInput {
   showHandsFree(look: HandsFreeLook | null): void;
   /** The microphone level (the hands-free session's), 0..1. */
   setLevel(level: number): void;
-  /** Shows (or clears) the message under the mic button. */
+  /** Shows (or clears) voice's notice above the box. */
   showTip(tip: VoiceTip | null): void;
-  /** Tips show in `slot` instead (the hands-free bar), or under the mic again with null. */
-  setTipSlot(slot: HTMLElement | null): void;
   /** True when the microphone may be used; otherwise asks for it (the permission page) and says so. */
   ensureMic(): Promise<boolean>;
 }
@@ -150,8 +152,7 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
 
   const button = h("button.now-tool.voice-mic", { type: "button", "data-state": ui });
   button.innerHTML = MIC_ICON;
-  const tip = h("div.voice-tip", { role: "status", "aria-live": "polite", hidden: true });
-  composer.actionSlot.append(button, tip);
+  composer.actionSlot.append(button);
 
   const caption = h("p.voice-caption", null, LISTENING_CAPTION);
   // A veil over the panel (the input stays above it) with the orb and its caption in the middle.
@@ -197,33 +198,17 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
   /** Not listening: ready, or locked without a plan that includes voice. */
   const settle = () => render(allowed ? "idle" : "locked");
 
-  /** Where tips show: under the mic, or the hands-free bar's slot while a session is on (so they never cover its pill). */
-  let tipEl: HTMLElement = tip;
-  let shownTip: VoiceTip | null = null;
-
   function showTip(t: VoiceTip | null): void {
-    shownTip = t;
-    tipEl.replaceChildren();
-    tipEl.hidden = !t;
-    if (!t) return;
-    tipEl.dataset.tone = t.tone;
-    tipEl.append(h("span", null, t.text));
-    if (t.action) {
-      const run = t.action.run;
-      tipEl.append(h("button.link", { type: "button", onclick: () => (showTip(null), run()) }, t.action.label));
-    }
-    tipEl.append(h("button.voice-tip-close", { type: "button", "aria-label": "Dismiss", onclick: () => showTip(null) }, "×"));
+    if (t) composer.notices.show({ key: VOICE_NOTICE, ...t });
+    else composer.notices.clear(VOICE_NOTICE);
   }
+  /** Voice's info notice is shown (typing takes it away: it was about the text in the box). */
+  const infoTipShown = () => {
+    const n = composer.notices.current();
+    return n?.key === VOICE_NOTICE && n.level === "info";
+  };
 
-  /** Moves tips (and the one shown) into `slot`, or back under the mic with null. */
-  function setTipSlot(slot: HTMLElement | null): void {
-    const current = shownTip;
-    showTip(null);
-    tipEl = slot ?? tip;
-    showTip(current);
-  }
-
-  const lockedTip = (): VoiceTip => ({ text: LOCKED_TEXT, tone: "info", action: { label: FIXES.plans.label, run: () => deps.openBilling() } });
+  const lockedTip = (): VoiceTip => ({ text: LOCKED_TEXT, level: "info", action: { label: FIXES.plans.label, run: () => deps.openBilling() } });
 
   /** Draws attention to the button (the shortcut was pressed while voice is locked). */
   function nudge(): void {
@@ -272,9 +257,9 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
       return;
     }
     composer.setDraft(current.update(composer.draft(), result.text));
-    if (result.reason === "send") return composer.send();
+    if (result.reason === "send") return composer.send({ voice: true });
     const note = stopNote(result.reason);
-    if (note) showTip({ text: note, tone: "info" });
+    if (note) showTip({ text: note, level: "info" });
   }
 
   function finish(): void {
@@ -287,13 +272,13 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
   async function askForMic(): Promise<void> {
     settle();
     await deps.mic.openPermissionPage();
-    showTip({ text: "Allow the microphone in the tab that opened, then press the mic again.", tone: "info" });
+    showTip({ text: "Allow the microphone in the new tab, then press the mic again.", level: "info" });
     unwatchMic?.();
     unwatchMic = await deps.mic.watch((state) => {
       if (state !== "granted") return;
       unwatchMic?.();
       unwatchMic = null;
-      showTip({ text: "Microphone allowed. Press the mic to talk.", tone: "info" });
+      showTip({ text: "Microphone allowed. Press the mic to talk.", level: "info" });
     });
   }
 
@@ -307,7 +292,7 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
     if (ui === "locked") {
       showTip(lockedTip());
       nudge();
-    } else if (handsFree?.active) handsFree.stop("button");
+    } else if (handsFree?.active) handsFree.toggle("button");
     else if (ui === "idle") void start();
     else if (ui === "listening" || ui === "opening") stop("toggle");
   }
@@ -318,8 +303,7 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
     if (ui === "listening" || ui === "opening") return stop("send");
     if (ui === "transcribing") return;
     if (!handsFree) return toggle();
-    if (handsFree.active) handsFree.stop("shortcut");
-    else handsFree.start();
+    handsFree.toggle("shortcut");
   }
 
   // Pointer: a press starts or stops; holding past pushToTalkMs and letting go stops (push-to-talk).
@@ -351,7 +335,7 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
       return false;
     }
     if (!dictation) {
-      if (shownTip?.tone === "info" && e.key.length === 1) showTip(null);
+      if (e.key.length === 1 && infoTipShown()) showTip(null);
       return false;
     }
     if (e.key === "Escape") {
@@ -396,7 +380,6 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
     },
     setLevel,
     showTip,
-    setTipSlot,
     async ensureMic() {
       if ((await deps.mic.permission()) === "granted") return true;
       await askForMic();

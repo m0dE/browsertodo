@@ -107,7 +107,7 @@ export function scenario(kind) {
     apiBase: "", runnerKey: "", maxConsecutiveFailures: 3, retryAfterMinutes: 10, intervalMinutes: 15,
     delayMinSec: 60, delayMaxSec: 180, maxToolCalls: 60, maxTaskMinutes: 10, maxParallelTasks: 2, jevEnabled: true, jevThreshold: 0.8,
     paused: false, pauseRetryMinutes: 15, accountApiBase: "https://app.browsertodo.com",
-    voiceEngine: "realtime", speechVoice: "", speechRate: 1, realtimeCostNoticed: true,
+    voiceEngine: "realtime", speechVoice: "", speechRate: 1, realtimeVoice: "marin", realtimeSpeed: 1, realtimeCostNoticed: true,
   };
   const state = {
     settings,
@@ -351,6 +351,43 @@ export function scenario(kind) {
       state.runningSessions = [live];
       state.runningTabs = { "s-ans": [1] };
     }
+  }
+  if (kind === "voice-chat") {
+    // A hands-free conversation: spoken messages (the mic mark), the plan and the result said aloud (spoken lines,
+    // the plan compact since the text above says it), a typed follow-up, and the narrator's reply. Made-up content.
+    const vc = {
+      sessionId: "s-voice", source: "adhoc", title: "Read my newest email", instructions: "Read my newest email", voice: true,
+      brain: "browsertodo", jev: true, model: "claude-sonnet-5", startedAt: iso(-2), endedAt: iso(-1), firstStartedAt: iso(-6),
+      outcome: "done", turns: 2, summary: "Archived Sarah's email",
+    };
+    const vev = (minutes, e) => ({ ...e, ts: iso(minutes), sessionId: "s-voice" });
+    eventsBySession["s-voice"] = [
+      vev(-6, { type: "assistant_text", text: "I'll open Gmail and read your newest email." }),
+      vev(-6, { type: "spoken", text: "I'll open Gmail and read your newest email." }),
+      vev(-6, { type: "tool_call", id: "1", name: "navigate", args: { url: "https://mail.google.com/mail/u/0/#inbox" } }),
+      vev(-6, { type: "tool_result", id: "1", name: "navigate", text: "Opened https://mail.google.com/mail/u/0/#inbox (title: Inbox (1))" }),
+      vev(-5, { type: "tool_call", id: "2", name: "read_page", args: {} }),
+      vev(-5, { type: "tool_result", id: "2", name: "read_page", text: "1 unread conversation" }),
+      vev(-5, { type: "assistant_text", text: "Your newest email is from **Sarah**: dinner on Friday moved from 7 to 8 pm, same place. She asks you to confirm by Thursday." }),
+      vev(-5, { type: "task_end", outcome: "done", summary: "Read Sarah's email", spoken: "Sarah says Friday's dinner moved to eight. She wants a yes by Thursday." }),
+      vev(-5, { type: "spoken", text: "Sarah says Friday's dinner moved to eight. She wants a yes by Thursday." }),
+      vev(-3, { type: "user_message", text: "Tell her yes and archive it", voice: true }),
+      vev(-3, { type: "user_message", text: "sign it Ada" }),
+      vev(-2, { type: "tool_call", id: "3", name: "act", args: { steps: [{ goal: "click Reply" }, { goal: "type the reply", text: "Yes, see you at 8! Ada" }, { goal: "click Send" }] } }),
+      vev(-2, { type: "tool_result", id: "3", name: "act", text: "step 1 ok\nstep 2 ok\nstep 3 ok" }),
+      vev(-2, { type: "tool_call", id: "4", name: "act", args: { steps: [{ goal: "click Archive" }] } }),
+      vev(-2, { type: "tool_result", id: "4", name: "act", text: "step 1 ok" }),
+      vev(-1, { type: "task_end", outcome: "done", summary: "Replied yes and archived Sarah's email", spoken: "Done: I said yes and archived it." }),
+      vev(-1, { type: "spoken", text: "Done: I said yes and archived it. Anything else?" }),
+    ];
+    state.running = null;
+    state.runningTabs = {};
+    state.tabChats = { "1": "s-voice" };
+    state.brain = { effective: "browsertodo", helper, hasApiKey: false, jevActive: true };
+    state.account = { ...state.account, plan: PLUS, credit: money(421, 1000, 2000) };
+    state.openConversations = ["s-voice"];
+    sessions.unshift(vc);
+    sessions.splice(1, 1);
   }
   if (kind === "stopped") {
     // The user pressed Stop after the agent typed the post: the run ends paused "stopped by user".

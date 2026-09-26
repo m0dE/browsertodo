@@ -17,6 +17,16 @@ export function installChromeStub(data) {
   data.state = withRunning(data.state);
   data.vault ??= { exists: true, locked: false, sites: ["example.com", "news.ycombinator.com"] };
   const pushListeners = [];
+  /** A new one-off chat "s-new" (the runner keeps the full message; the title is it on one line, clipped), bound to its tab. */
+  const newChat = (instructions, req) => {
+    const line = instructions.replace(/\s+/g, " ").trim();
+    const title = line.length > 80 ? `${line.slice(0, 79)}…` : line;
+    const s = { sessionId: "s-new", source: "adhoc", title, instructions, brain: "claude-api", jev: true, model: "claude-sonnet-5", startedAt: new Date().toISOString(), ...(req.voice ? { voice: true } : {}) };
+    data.sessions = [s, ...data.sessions.filter((x) => x.sessionId !== "s-new")];
+    data.eventsBySession = { ...(data.eventsBySession ?? {}), "s-new": [] };
+    if (req.tabId !== undefined) data.state = { ...data.state, tabChats: { ...data.state.tabChats, [req.tabId]: "s-new" } };
+    return { sessionId: "s-new" };
+  };
   const results = {
     "state.get": () => data.state,
     "settings.save": (req) => {
@@ -29,20 +39,12 @@ export function installChromeStub(data) {
     "settings.testJev": () => ({ ok: false, detail: "No Jev key set." }),
     "settings.testCloud": () => ({ ok: true, detail: "Server reachable, runner key accepted." }),
     "helper.connect": () => data.state,
-    "run.adhoc": (req) => {
-      // Like the runner: the full message is kept, the title is it on one line, clipped.
-      const instructions = req.screen ? "Figure out what to do based on the current screen" : req.instructions;
-      const line = instructions.replace(/\s+/g, " ").trim();
-      const title = line.length > 80 ? `${line.slice(0, 79)}…` : line;
-      const s = { sessionId: "s-new", source: "adhoc", title, instructions, brain: "claude-api", jev: true, model: "claude-sonnet-5", startedAt: new Date().toISOString() };
-      data.sessions = [s, ...data.sessions.filter((x) => x.sessionId !== "s-new")];
-      data.eventsBySession = { ...(data.eventsBySession ?? {}), "s-new": [] };
-      return { sessionId: "s-new" };
-    },
+    "run.adhoc": (req) => newChat(req.screen ? "Figure out what to do based on the current screen" : req.instructions, req),
+    // A message to no conversation starts one (in its tab), like run.adhoc.
+    "run.message": (req) => (req.sessionId ? { sessionId: req.sessionId, mode: "turn" } : { ...newChat(req.text, req), mode: "new" }),
     "run.due": () => ({ started: false, detail: "Nothing is due right now." }),
     "run.stop": () => ({ ok: true }),
     "run.continue": (req) => ({ sessionId: req.sessionId }),
-    "run.message": (req) => ({ sessionId: req.sessionId ?? "s-new", mode: req.sessionId ? "turn" : "new" }),
     "run.newChat": (req) => {
       if (req.tabId !== undefined && data.state.tabChats?.[req.tabId] === req.sessionId) {
         const rest = { ...data.state.tabChats };
@@ -134,6 +136,11 @@ export function installChromeStub(data) {
     // (the page's WebSocket to it is installVoiceFakes' fake).
     "voice.engines": () => data.voiceEngines ?? VOICE_ENGINES,
     "voice.realtime": () => data.realtimeTicket ?? { url: "ws://127.0.0.1:9/v1/ai/realtime?session=s-new", token: "tok" },
+    // A said line is kept in its chat: the background pushes it back as a "spoken" event.
+    "voice.spoken": (req) => {
+      setTimeout(() => window.__push({ type: "event", event: { type: "spoken", text: req.text, ts: new Date().toISOString(), sessionId: req.sessionId } }), 0);
+      return { ok: true };
+    },
     "voice.transcribe": () => {
       const words = "Open Gmail and reply to Sarah that I will be there at seven.".split(" ");
       window.__voiceClips = (window.__voiceClips ?? 0) + 1;
@@ -158,13 +165,17 @@ export function installChromeStub(data) {
     }
     pushListeners.forEach((l) => l(msg));
   };
-  // One window (1) with tabs; tab 1 is active. __activateTab(n) is the user switching tabs.
+  // One window (1) with tabs; tab 1 is active. __activateTab(n) is the user switching tabs, __closeTab(n) closing one.
   const tabListeners = [];
+  const closeListeners = [];
   let activeTabId = 1;
   window.__activateTab = (tabId) => {
     activeTabId = tabId;
     tabListeners.forEach((l) => l({ tabId, windowId: 1 }));
   };
+  window.__closeTab = (tabId) => closeListeners.forEach((l) => l(tabId, { windowId: 1, isWindowClosing: false }));
+  /** Tab titles (data.tabTitles overrides). */
+  const tabTitle = (id) => data.tabTitles?.[id] ?? { 1: "Inbox (1) - ada.lovelace@example.com - Gmail", 2: "Hacker News" }[id] ?? `Tab ${id}`;
   const noEvent = { addListener: () => {} };
   window.chrome = {
     runtime: {
@@ -197,11 +208,13 @@ export function installChromeStub(data) {
         return { id: 99, windowId: 1 };
       },
       // A query for a URL finds no tab (so pages such as the microphone page open in a new one).
-      query: async (q) => (q?.url ? [] : [{ id: activeTabId, windowId: 1, active: true }]),
+      query: async (q) => (q?.url ? [] : [{ id: activeTabId, windowId: 1, active: true, title: tabTitle(activeTabId) }]),
+      get: async (id) => ({ id, windowId: 1, active: id === activeTabId, title: tabTitle(id) }),
       update: async () => ({}),
       getCurrent: async () => ({ id: 99, windowId: 1 }),
       remove: async () => {},
       onActivated: { addListener: (l) => tabListeners.push(l) },
+      onRemoved: { addListener: (l) => closeListeners.push(l) },
       onAttached: noEvent,
       onDetached: noEvent,
     },

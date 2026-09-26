@@ -88,7 +88,12 @@ export class UiRouter {
     const account = d.account ? await d.account.view().catch(() => undefined) : undefined;
     const settings = await d.loadSettings();
     const rs = await d.runner.state();
+    const next = await d.nextRunAt().catch(() => undefined);
+    // What changes from moment to moment (the runs, which chat is in which tab) is read last, together, and the state
+    // is stamped then: a panel keeps the newest state whichever order states reach it in (pushes and answers).
+    const rev = (this.lastRev = Math.max(Date.now(), this.lastRev + 1));
     const state: UiState = {
+      rev,
       settings: redactSettings(settings),
       brain: d.brainStatus(settings),
       running: d.runner.running,
@@ -102,10 +107,12 @@ export class UiRouter {
     if (settings.paused && rs.pausedReason) state.pausedReason = rs.pausedReason;
     if (rs.lastRunAt) state.lastRunAt = rs.lastRunAt;
     if (rs.lastError) state.lastError = rs.lastError;
-    const next = await d.nextRunAt().catch(() => undefined);
     if (next) state.nextRunAt = next;
     return state;
   }
+
+  /** The last state's stamp (UiState.rev): a newer state always has a higher one, also after a restart (it is the clock). */
+  private lastRev = 0;
 
   private account(): RouterAccount {
     if (!this.deps.account) throw new Error("Accounts are not available");
@@ -154,6 +161,7 @@ export class UiRouter {
         const tab = optTab(msg.tabId);
         if (tab !== undefined) input.tabId = tab;
         if (msg.screen === true) input.screen = true;
+        if (msg.voice === true) input.voice = true;
         return d.runner.runAdhoc(input) satisfies Promise<UiResults["run.adhoc"]>;
       }
       case "run.continue": {
@@ -168,8 +176,9 @@ export class UiRouter {
         const sessionId = optId(msg.sessionId);
         const tab = optTab(msg.tabId);
         const screen = msg.screen === true;
+        const voice = msg.voice === true;
         // Sent from a tab: the runner binds the conversation to it once the message is taken.
-        return d.runner.message(sessionId, text, { ...(tab === undefined ? {} : { tabId: tab }), ...(screen ? { screen } : {}) }) satisfies Promise<UiResults["run.message"]>;
+        return d.runner.message(sessionId, text, { ...(tab === undefined ? {} : { tabId: tab }), ...(screen ? { screen } : {}), ...(voice ? { voice } : {}) }) satisfies Promise<UiResults["run.message"]>;
       }
       case "run.newChat": {
         const tab = optTab(msg.tabId);
@@ -297,6 +306,12 @@ export class UiRouter {
         return voiceEnginesForPanel(realtimeAccount(d.account)) satisfies Promise<UiResults["voice.engines"]>;
       case "voice.realtime":
         return realtimeTicketForPanel(realtimeAccount(d.account), optId(msg.sessionId)) satisfies Promise<UiResults["voice.realtime"]>;
+      case "voice.spoken": {
+        const text = typeof msg.text === "string" ? msg.text.trim() : "";
+        const sessionId = optId(msg.sessionId);
+        if (!sessionId || !text) throw new Error("sessionId and text are required");
+        return { ok: !!(await d.sessions.note(sessionId, { type: "spoken", text })) } satisfies UiResults["voice.spoken"];
+      }
       default:
         throw new Error(`Unknown request type: ${String((msg as { type?: unknown }).type)}`);
     }

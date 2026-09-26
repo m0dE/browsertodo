@@ -5,7 +5,7 @@
  * the panel (send_to_agent, stop_task, end_voice). Turn-taking and barge-in
  * are OpenAI's server VAD; local playback stops the moment the user speaks.
  */
-import type { AgentEvent } from "@browsertodo/shared";
+import type { AgentEvent, RealtimeVoiceId } from "@browsertodo/shared";
 import type { AudioSource } from "./dictation.js";
 import type { EngineEvents, HandsFreeEngine } from "./engine.js";
 import { PcmPlayer } from "./pcm-player.js";
@@ -26,6 +26,8 @@ export interface RealtimeEngineDeps {
   /** The microphone at REALTIME_SAMPLE_RATE. */
   createSource(): AudioSource;
   events: EngineEvents;
+  /** The narrator's voice and speaking speed (Settings). */
+  voice?: { voice: RealtimeVoiceId; speed: number };
   log?(message: string): void;
   openSocket?: OpenSocket;
   player?: Pick<PcmPlayer, "play" | "stop" | "close" | "playing">;
@@ -65,6 +67,7 @@ export class RealtimeEngine implements HandsFreeEngine {
       this.client = new RealtimeClient({
         url: ticket.url,
         token: ticket.token,
+        ...(this.deps.voice ? { voice: this.deps.voice.voice, speed: this.deps.voice.speed } : {}),
         ...(this.deps.openSocket ? { open: this.deps.openSocket } : {}),
         handlers: {
           onReady: () => {

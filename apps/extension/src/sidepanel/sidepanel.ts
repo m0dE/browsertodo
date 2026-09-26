@@ -5,7 +5,7 @@
  * browser tab active in the panel's window (see tab-chat.ts).
  */
 import { errorMessage, type SessionInfo } from "@browsertodo/shared";
-import { uiRequest, type UiPush, type UiState } from "../ui-protocol.js";
+import { isStale, uiRequest, type UiPush, type UiState } from "../ui-protocol.js";
 import { initChat } from "./chat.js";
 import { initComposer } from "./composer.js";
 import { showDetails } from "./details-sheet.js";
@@ -29,7 +29,7 @@ import { Speaker } from "../voice/speaker.js";
 import { StandardEngine } from "../voice/standard-engine.js";
 import { panelTranscriber, VoiceError } from "../voice/transcribe.js";
 import { initHandsFree } from "./hands-free.js";
-import { initVoiceInput, isListening } from "./voice-input.js";
+import { initVoiceInput, isListening, VOICE_NOTICE } from "./voice-input.js";
 
 /** Relative times (the status line's next check, task times) are redrawn this often. */
 const CLOCK_TICK_MS = 60_000;
@@ -144,13 +144,45 @@ const voice = initVoiceInput({
     reportListening();
   },
 });
-/** The chat hands-free voice follows: the one Chat shows, or the one just started from this tab. */
-const followedChat = () => focused?.sessionId ?? pending?.sessionId ?? null;
-// Hands-free voice (the voice shortcut): Realtime or Standard, see hands-free.ts.
+/** The chat of a browser tab (null: it has none yet); an unknown tab's is the one Chat shows. */
+const chatOfTab = (tab: number | null): string | null =>
+  tab === null ? (focused?.sessionId ?? pending?.sessionId ?? null) : chatForTab(tab, state ?? {}, { pending, left });
+
+/**
+ * Hands-free voice sends what was said to its chat, whichever tab is shown: the chat by its id (it stays in the tab
+ * it lives in), or a new chat in the session's tab.
+ */
+async function sendSpoken(text: string, target: { tabId: number | null; sessionId: string | null }): Promise<string> {
+  const { tabId: tab, sessionId } = target;
+  const where = sessionId ? { sessionId } : tab === null ? {} : { tabId: tab };
+  const r = await uiRequest({ type: "run.message", ...where, text, voice: true });
+  if (sessionId) return r.sessionId;
+  if (tab === null || tab === activeTab) startedHere(r.sessionId);
+  else {
+    // Started from a tab not shown: it is that tab's chat once the state says so.
+    pending = { tab, sessionId: r.sessionId };
+    left.delete(tab);
+  }
+  return r.sessionId;
+}
+
+// Hands-free voice (the voice shortcut): Realtime or Standard, bound to the tab it started in; see hands-free.ts.
 const handsFree = initHandsFree({
   voice,
   composer,
-  followed: followedChat,
+  notify: ({ key, ...tip }) => composer.notices.show({ key: key ?? VOICE_NOTICE, ...tip }),
+  activeTab: () => activeTab,
+  chatOf: chatOfTab,
+  tabsOf: (sessionId) => {
+    const home = state ? tabOfSession(sessionId, state) : null;
+    return [...(home === null ? [] : [home]), ...(state?.runningTabs?.[sessionId] ?? [])];
+  },
+  send: sendSpoken,
+  tabTitle: async (tabId) => (await chrome.tabs.get(tabId)).title ?? null,
+  goToTab: (tabId) => void uiRequest({ type: "tab.focus", tabId }).catch((err: unknown) => composer.showError(err)),
+  onSpeaking: (line) => chat.setSpeaking(line),
+  keepSpoken: (sessionId, text) =>
+    void uiRequest({ type: "voice.spoken", sessionId, text }).catch((err: unknown) => console.warn(`[browsertodo] keeping a spoken line failed: ${errorMessage(err)}`)),
   settings: () => state?.settings ?? null,
   account: () => state?.account,
   engines: async () => {
@@ -162,13 +194,14 @@ const handsFree = initHandsFree({
     id === "realtime"
       ? new RealtimeEngine({
           ticket: async () => {
-            const sessionId = followedChat();
+            const sessionId = handsFree.chat();
             const r = await uiRequest({ type: "voice.realtime", ...(sessionId ? { sessionId } : {}) });
             if ("error" in r) throw new VoiceError(r.error);
             return r;
           },
           createSource: () => new MicSource(undefined, REALTIME_SAMPLE_RATE),
           events,
+          ...(state ? { voice: { voice: state.settings.realtimeVoice, speed: state.settings.realtimeSpeed } } : {}),
           log: (m) => console.info(`[browsertodo] ${m}`),
         })
       : new StandardEngine({
@@ -177,10 +210,9 @@ const handsFree = initHandsFree({
           speaker: new Speaker(() => ({ voice: state?.settings.speechVoice ?? "", rate: state?.settings.speechRate ?? 1 })),
           events,
         }),
-  stopTask: async () => {
-    const t = composer.target();
-    if (!t || composer.mode() !== "running") return "No task is running.";
-    await uiRequest({ type: "run.stop", sessionId: t.sessionId });
+  stopTask: async (sessionId) => {
+    if (!sessionId || !state?.runningSessions.some((s) => s.sessionId === sessionId)) return "No task is running.";
+    await uiRequest({ type: "run.stop", sessionId });
     return "Stopped the task.";
   },
   openBilling: billing,
@@ -189,7 +221,7 @@ const handsFree = initHandsFree({
     listening.handsFree = on;
     reportListening();
   },
-  host: $("composer"),
+  host: $("now-notices"),
   log: (m) => console.info(`[browsertodo] ${m}`),
 });
 const chat = initChat({
@@ -198,7 +230,7 @@ const chat = initChat({
   onFocus: (s) => {
     focused = s;
     composer.setConversation(s);
-    handsFree.setWorking(composer.mode() === "running");
+    handsFree.refresh();
   },
   // New chat: this tab has no conversation any more (the session stays in the Activity log).
   onLeave: (s) => {
@@ -260,6 +292,7 @@ async function trackTabs(): Promise<void> {
     if (id === activeTab) return;
     activeTab = id;
     resolveChat();
+    handsFree.refresh();
   };
   const refresh = async () => {
     try {
@@ -279,6 +312,7 @@ async function trackTabs(): Promise<void> {
     if (windowId === null || info.windowId === windowId) setActive(info.tabId);
   });
   // A tab moved between windows, or the window regained focus: look again.
+  chrome.tabs.onRemoved.addListener((tabId) => handsFree.tabClosed(tabId));
   chrome.tabs.onAttached.addListener(() => void refresh());
   chrome.tabs.onDetached.addListener(() => void refresh());
   chrome.windows.onFocusChanged.addListener(() => void refresh());
@@ -291,6 +325,8 @@ function updateComposer(): void {
 }
 
 function applyState(s: UiState): void {
+  // An older state that arrived late (a slow answer after a newer push) would undo what the newer one says.
+  if (isStale(s, state)) return;
   state = s;
   setErrorFixes(errorFixes(s));
   header.render(s);
@@ -301,7 +337,7 @@ function applyState(s: UiState): void {
   }
   chat.setRunning(s.runningSessions);
   composer.setRunning(s.runningSessions);
-  handsFree.setWorking(composer.mode() === "running");
+  handsFree.setRunning(s.runningSessions.map((r) => r.sessionId));
   composer.setState(s);
   tasks.setState(s);
   // A left running session that ended no longer needs hiding.

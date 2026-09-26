@@ -244,16 +244,17 @@
             </div>
             <p id="voice-note" class="note" data-tone="warn" role="status" hidden></p>
             <div class="box" id="speech-box">
+              <!-- The voice and speed follow the engine selected above (voice-view.ts voicePicker). -->
               <div class="srow">
-                <label class="srow-label" for="speech-voice"><b>Standard voice</b><small>What Standard voice (and a fallback from Realtime) sounds like: your browser's voices.</small></label>
+                <label class="srow-label" for="speech-voice"><b id="speech-voice-title">Voice</b><small id="speech-voice-hint"></small></label>
                 <div class="srow-control"><select id="speech-voice"></select></div>
               </div>
               <div class="srow">
-                <label class="srow-label" for="speech-rate"><b>Speaking speed</b><small>0.5 to 2; 1 is normal.</small></label>
-                <div class="srow-control"><input id="speech-rate" type="number" min="0.5" max="2" step="0.1" /></div>
+                <label class="srow-label" for="speech-rate"><b>Speaking speed</b><small id="speech-rate-hint"></small></label>
+                <div class="srow-control"><div class="row speed-row"><input id="speech-rate" type="range" /><output id="speech-rate-value" for="speech-rate"></output></div></div>
               </div>
               <div class="srow">
-                <div class="srow-label"><b>Hear it</b><small>Says a sample line with this voice and speed.</small></div>
+                <div class="srow-label"><b>Hear it</b><small id="speech-test-hint">Says a sample line with this voice and speed.</small></div>
                 <div class="srow-control"><div class="row"><button id="speech-test" type="button" class="small">Test voice</button><span id="speech-test-msg" class="msg" role="status"></span></div></div>
               </div>
             </div>

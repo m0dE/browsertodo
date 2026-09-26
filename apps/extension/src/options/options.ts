@@ -6,7 +6,7 @@
  */
 import { OPEN_CHAT_COMMAND, openShortcutSettings, readShortcut, VOICE_COMMAND, type ShortcutCommand } from "../shortcut.js";
 import { errorMessage, type BrainMode, type ExtensionSettings } from "@browsertodo/shared";
-import { uiRequest, type UiState } from "../ui-protocol.js";
+import { isStale, uiRequest, type UiState } from "../ui-protocol.js";
 import { createAccountMenu } from "../ui/account-menu.js";
 import { $, busy, closeMenusOnOutsideClick, find, flash, h } from "../ui/dom.js";
 import { initAccountSection } from "./account-section.js";
@@ -262,7 +262,12 @@ function renderState(s: UiState): void {
 }
 
 /** A new state from the background: new saved settings, keys re-rendered. */
+/** The newest state applied (an older one that arrives late is ignored; see UiState.rev). */
+let latest: UiState | null = null;
+
 function applyState(s: UiState): void {
+  if (isStale(s, latest)) return;
+  latest = s;
   saved = s.settings;
   renderSecrets();
   renderState(s);

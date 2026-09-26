@@ -206,3 +206,42 @@ export type VoiceEngine = z.infer<typeof VoiceEngine>;
 /** 200 of VOICE_ENGINES_PATH. `default`: the engine to use unless the user picked one. */
 export const VoiceEnginesResponse = z.object({ engines: z.array(VoiceEngine), default: VoiceEngineId });
 export type VoiceEnginesResponse = z.infer<typeof VoiceEnginesResponse>;
+
+// ---- Voices and speaking speed of the two hands-free engines -----------------------------------
+
+/**
+ * OpenAI's built-in Realtime voices (`session.audio.output.voice`), as the API reference lists them
+ * for gpt-realtime-2.1 (checked 2026-09-26); OpenAI recommends Marin and Cedar. The relay accepts
+ * only these (a custom voice id would be this server's organization's). The voice cannot change
+ * after the narrator first spoke in a session: it is set when the session starts.
+ */
+export const REALTIME_VOICES = ["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"] as const;
+export const RealtimeVoiceId = z.enum(REALTIME_VOICES);
+export type RealtimeVoiceId = z.infer<typeof RealtimeVoiceId>;
+/** The narrator's voice unless the user picks another. */
+export const DEFAULT_REALTIME_VOICE: RealtimeVoiceId = "marin";
+/** OpenAI's recommended voices (shown first, marked). */
+export const RECOMMENDED_REALTIME_VOICES: ReadonlySet<RealtimeVoiceId> = new Set(["marin", "cedar"]);
+
+/** A voice's name as users read it ("marin" -> "Marin"). */
+export const realtimeVoiceName = (id: RealtimeVoiceId): string => id.charAt(0).toUpperCase() + id.slice(1);
+
+/** A speaking speed range: a multiple of normal speed, `step` for the slider. */
+export interface SpeedRange {
+  min: number;
+  max: number;
+  step: number;
+  default: number;
+}
+
+/** `session.audio.output.speed` (API reference, 2026-09-26): 0.25 to 1.5, 1 normal; it changes between turns only. */
+export const REALTIME_SPEED: SpeedRange = { min: 0.25, max: 1.5, step: 0.05, default: 1 };
+/** The browser's speechSynthesis rate as the Standard engine uses it. */
+export const STANDARD_SPEED: SpeedRange = { min: 0.5, max: 2, step: 0.1, default: 1 };
+
+/** `speed` kept inside `range` and on its steps. */
+export function clampSpeed(speed: number, range: SpeedRange): number {
+  if (!Number.isFinite(speed)) return range.default;
+  const stepped = Math.round((speed - range.min) / range.step) * range.step + range.min;
+  return Math.round(Math.min(range.max, Math.max(range.min, stepped)) * 100) / 100;
+}

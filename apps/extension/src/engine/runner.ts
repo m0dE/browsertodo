@@ -209,26 +209,27 @@ export class Runner {
   async message(
     sessionId: string | null | undefined,
     text: string,
-    opts: { tabId?: number; screen?: boolean } = {},
+    opts: { tabId?: number; screen?: boolean; voice?: boolean } = {},
   ): Promise<{ sessionId: string; mode: MessageMode }> {
     const screen = !!opts.screen && !text.trim();
     const t = screen ? SCREEN_HELP_TEXT : text.trim();
     if (!t) throw new Error("The message is empty");
     const tab = opts.tabId === undefined ? {} : { tabId: opts.tabId };
+    const voice = !screen && !!opts.voice;
     if (!sessionId) {
-      const input: AdhocInput = { instructions: t, ...tab, ...(screen ? { screen } : {}) };
+      const input: AdhocInput = { instructions: t, ...tab, ...(screen ? { screen } : {}), ...(voice ? { voice } : {}) };
       return { ...(await this.runAdhoc(input)), mode: "new" };
     }
     if (this.live.has(sessionId)) {
       if (screen) throw new Error("The agent is working on this page already; type a message, or Stop it first");
-      if (!(await this.say(t, sessionId))) throw new Error("The agent did not take the message");
+      if (!(await this.say(t, sessionId, { voice }))) throw new Error("The agent did not take the message");
       if (opts.tabId !== undefined) await this.turns.bindChat(opts.tabId, sessionId);
       return { sessionId, mode: "inject" };
     }
     if (this.startingTurns.has(sessionId)) throw new Error("That conversation is already starting its next turn");
     this.startingTurns.add(sessionId);
     try {
-      await this.startOne(sessionId, () => turnJob(this.deps, sessionId, t, { screen, ...tab }));
+      await this.startOne(sessionId, () => turnJob(this.deps, sessionId, t, { screen, voice, ...tab }));
     } finally {
       this.startingTurns.delete(sessionId);
     }
@@ -283,13 +284,13 @@ export class Runner {
     return true;
   }
 
-  /** Types into a running session (default: the one started last). */
-  async say(text: string, sessionId?: string): Promise<boolean> {
+  /** Types into a running session (default: the one started last). voice: the text was spoken. */
+  async say(text: string, sessionId?: string, opts: { voice?: boolean } = {}): Promise<boolean> {
     const a = sessionId ? this.live.get(sessionId) : this.live.last();
     const t = text.trim();
     if (!a?.run || !t) return false;
     a.said.push(t);
-    this.turns.emit(a, { type: "user_message", text: t });
+    this.turns.emit(a, { type: "user_message", text: t, ...(opts.voice ? { voice: true as const } : {}) });
     return a.run.sendUserMessage(t);
   }
 

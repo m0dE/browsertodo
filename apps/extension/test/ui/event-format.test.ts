@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SCREEN_HELP_TEXT, type AgentEvent, type SessionInfo } from "@browsertodo/shared";
-import { describeEvent, isBrainStartLine, isNearBottom, openingTurn, turnPicks } from "../../src/sidepanel/event-format.js";
+import { describeEvent, isBrainStartLine, isNearBottom, openingTurn, sameWords, spokenEchoes, turnPicks } from "../../src/sidepanel/event-format.js";
 import { shortUrl, toolArgsSummary } from "../../src/text.js";
 
 describe("toolArgsSummary", () => {
@@ -165,5 +165,48 @@ describe("isBrainStartLine: the brain's own start line, which the chat's brain c
     ]) {
       expect(isBrainStartLine(t), t).toBe(false);
     }
+  });
+});
+
+describe("voice in the chat: spoken messages and lines said aloud", () => {
+  it("a message the user spoke is marked; a typed one is not", () => {
+    expect(describeEvent({ type: "user_message", text: "Read my mail", voice: true })).toEqual({ kind: "user", text: "Read my mail", voice: true });
+    expect(describeEvent({ type: "user_message", text: "Read my mail" })).toEqual({ kind: "user", text: "Read my mail" });
+  });
+
+  it("the first message of a conversation started by voice is marked", () => {
+    const s: SessionInfo = { sessionId: "s", source: "adhoc", title: "Read my mail", instructions: "Read my mail", brain: "claude-api", jev: false, startedAt: "2026-09-24T10:00:00Z", voice: true };
+    expect(openingTurn(s, []).voice).toBe(true);
+    expect(openingTurn({ ...s, voice: undefined } as SessionInfo, []).voice).toBeUndefined();
+  });
+
+  it("a line said aloud is its own kind of message", () => {
+    expect(describeEvent({ type: "spoken", text: "Sarah says dinner moved to eight." })).toEqual({ kind: "spoken", text: "Sarah says dinner moved to eight." });
+    expect(describeEvent({ type: "spoken", text: "I'll open Gmail." }, { echo: true })).toEqual({ kind: "spoken", text: "I'll open Gmail.", echo: true });
+  });
+
+  it("a spoken line that is the first sentence of the text above it (the plan, the summary) echoes it", () => {
+    const events: AgentEvent[] = [
+      { type: "user_message", text: "Read my newest email", voice: true },
+      { type: "assistant_text", text: "I'll open **Gmail** and read your newest email. Starting now." },
+      { type: "spoken", text: "I'll open Gmail and read your newest email." },
+      { type: "tool_call", id: "1", name: "navigate", args: { url: "https://mail.google.com" } },
+      { type: "task_end", outcome: "done", summary: "You have 1 new email from Sarah: dinner moved to 8. Nothing else is new." },
+      { type: "spoken", text: "You have 1 new email from Sarah: dinner moved to 8." },
+      { type: "spoken", text: "Sarah says dinner moved to eight." },
+    ];
+    expect(spokenEchoes(events, 2)).toBe(true);
+    expect(spokenEchoes(events, 5)).toBe(true);
+    // The agent's own spoken words are not written anywhere: a full spoken bubble.
+    expect(spokenEchoes(events, 6)).toBe(false);
+    // Not a spoken line, or the text is of an earlier turn.
+    expect(spokenEchoes(events, 1)).toBe(false);
+    const nextTurn: AgentEvent[] = [...events, { type: "user_message", text: "thanks" }, { type: "spoken", text: "I'll open Gmail and read your newest email." }];
+    expect(spokenEchoes(nextTurn, nextTurn.length - 1)).toBe(false);
+  });
+
+  it("sameWords ignores case, spacing and punctuation", () => {
+    expect(sameWords("Hi! What should I do?", "hi what should i do")).toBe(true);
+    expect(sameWords("Hi", "Hi there")).toBe(false);
   });
 });

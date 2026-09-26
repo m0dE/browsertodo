@@ -30,6 +30,7 @@ function clipEvent(e: AgentEvent): AgentEvent {
       return e.summary && e.summary.length > MAX_ASSISTANT_TEXT ? { ...e, summary: clipEventText(e.summary, MAX_ASSISTANT_TEXT) } : e;
     case "status":
     case "user_message":
+    case "spoken":
     case "error":
       return { ...e, text: clipEventText(e.text) };
     case "tool_result": {
@@ -125,13 +126,26 @@ export class SessionStore {
       const { endedAt: _e, outcome: _o, summary: _s, url: _u, reason: _r, suggestion: _g, ...rest } = cur;
       const next: SessionInfo = { ...rest, ...patch, sessionId };
       await this.sessions.put(sessionId, next);
-      const last = (await this.events.keys(`${sessionId}:`)).at(-1);
-      const n = last ? Number(last.slice(sessionId.length + 1)) + 1 : 0;
-      this.seq.set(sessionId, Math.max(n, this.seq.get(sessionId) ?? 0));
+      this.seq.set(sessionId, Math.max(await this.storedSeq(sessionId), this.seq.get(sessionId) ?? 0));
       return next;
     });
     if (s) this.emitSession(s);
     return s;
+  }
+
+  /**
+   * Adds an event to a stored conversation from outside its turns (hands-free
+   * voice's spoken lines): while it runs, or after it ended (also after the
+   * service worker restarted). Null when there is no such session.
+   */
+  async note(sessionId: string, event: AgentEvent): Promise<StampedAgentEvent | null> {
+    const known = this.seq.has(sessionId) || (await this.enqueue(async () => {
+      if (this.seq.has(sessionId)) return true;
+      if (!(await this.sessions.get(sessionId))) return false;
+      this.seq.set(sessionId, await this.storedSeq(sessionId));
+      return true;
+    }));
+    return known ? this.append(sessionId, event) : null;
   }
 
   async get(sessionId: string): Promise<SessionInfo | null> {
@@ -155,6 +169,12 @@ export class SessionStore {
   /** Waits for queued writes (tests, shutdown). */
   async flush(): Promise<void> {
     await this.chain.catch(() => {});
+  }
+
+  /** The sequence number after the session's last stored event. */
+  private async storedSeq(sessionId: string): Promise<number> {
+    const last = (await this.events.keys(`${sessionId}:`)).at(-1);
+    return last ? Number(last.slice(sessionId.length + 1)) + 1 : 0;
   }
 
   private async prune(): Promise<void> {

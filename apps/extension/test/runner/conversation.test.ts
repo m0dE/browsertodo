@@ -102,6 +102,34 @@ describe("Runner: conversations", () => {
     expect(await h.sessions.list()).toHaveLength(1);
   });
 
+  it("spoken messages are marked in the thread: the first one on the session, the next ones on their user_message", async () => {
+    const h = harness();
+    h.brain.script = () => "hang";
+    const { sessionId } = await h.runner.message(undefined, "Read my newest email", { voice: true });
+    await vi.waitFor(() => expect(h.brain.starts).toHaveLength(1));
+    expect((await h.sessions.get(sessionId))?.voice).toBe(true);
+    // Said into the running turn, then typed.
+    await h.runner.message(sessionId, "and reply to it", { voice: true });
+    await h.runner.message(sessionId, "politely");
+    h.brain.ctls[0]!.resolve({ outcome: "done" });
+    await settle(h);
+    h.brain.continueScript = () => ({ outcome: "done" });
+    // The next turn, spoken.
+    await h.runner.message(sessionId, "thanks, now archive it", { voice: true });
+    await settle(h);
+    const users = (await h.sessions.eventsOf(sessionId)).filter((e) => e.type === "user_message");
+    expect(users.map((e) => [(e as { text: string }).text, (e as { voice?: true }).voice ?? false])).toEqual([
+      ["and reply to it", true],
+      ["politely", false],
+      ["thanks, now archive it", true],
+    ]);
+    // A typed conversation is not marked.
+    h.brain.script = () => ({ outcome: "done" });
+    const typed = await h.runner.message(undefined, "Post gm");
+    await settle(h);
+    expect((await h.sessions.get(typed.sessionId))?.voice).toBeUndefined();
+  });
+
   it("the turn's follow-up suggestion is kept with the session (a reopened panel offers it) until the next message", async () => {
     const h = harness();
     const suggestion = "Reply to Jordan and say I'll sign by Thursday";

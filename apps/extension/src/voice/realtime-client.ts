@@ -32,15 +32,18 @@ import {
   REALTIME_QUERY,
   REALTIME_TOKEN_PROTOCOL_PREFIX,
   RealtimeErrorEvent,
+  clampSpeed,
+  DEFAULT_REALTIME_VOICE,
+  REALTIME_SPEED,
   type RealtimeErrorCode,
+  type RealtimeVoiceId,
 } from "@browsertodo/shared";
 import { bytesToBase64 } from "../base64.js";
 import { REALTIME_NOT_AVAILABLE_NOTE } from "./engine-choice.js";
 
 /** PCM16 mono at this rate, both ways ("audio/pcm" is 24 kHz). */
 export const REALTIME_SAMPLE_RATE = 24_000;
-/** The narrator's voice (one of OpenAI's built-in voices). */
-export const REALTIME_VOICE = "marin";
+
 /** Quiet after speech that ends the user's turn (server VAD). */
 const TURN_SILENCE_MS = 700;
 
@@ -119,7 +122,7 @@ const FAILURES: Record<RealtimeFailureKind, RealtimeFailure> = {
   plan: { kind: "plan", message: PLAN_REQUIRED_MESSAGES.voice, fallback: false },
   idle: { kind: "idle", message: `Hands-free stopped after ${minutes(REALTIME_LIMITS.idleMs)} minutes without activity.`, fallback: false },
   limit: { kind: "limit", message: `Hands-free stopped: a Realtime session lasts up to ${minutes(REALTIME_LIMITS.maxSessionMs)} minutes.`, fallback: false },
-  busy: { kind: "busy", message: "Realtime voice is open in another window, so this uses Standard voice.", fallback: true },
+  busy: { kind: "busy", message: "Realtime voice is open in another window. Using Standard.", fallback: true },
   unavailable: { kind: "unavailable", message: REALTIME_NOT_AVAILABLE_NOTE, fallback: true },
   upstream: { kind: "upstream", message: REALTIME_NOT_AVAILABLE_NOTE, fallback: true },
   protocol: { kind: "protocol", message: REALTIME_NOT_AVAILABLE_NOTE, fallback: true },
@@ -178,8 +181,10 @@ export interface RealtimeHandlers {
   onReady?(): void;
   /** A chunk of the narrator's speech: base64 PCM16 at REALTIME_SAMPLE_RATE, of item `itemId`. */
   onAudio?(base64: string, itemId: string): void;
-  /** What the narrator is saying so far (for the caption). */
+  /** What the narrator is saying so far. */
   onNarratorText?(text: string): void;
+  /** A reply is complete (all its audio arrived). */
+  onReplyDone?(): void;
   /** The user started talking (server VAD): the narrator stops; local playback must too. */
   onUserSpeech?(): void;
   /** A narrator tool call; the answer goes back to the narrator (a throw is answered as an error). */
@@ -194,6 +199,9 @@ export interface RealtimeClientOptions {
   token: string;
   handlers: RealtimeHandlers;
   instructions?: string;
+  /** The narrator's voice and speaking speed (Settings; the voice is fixed once it spoke). */
+  voice?: RealtimeVoiceId;
+  speed?: number;
   open?: OpenSocket;
 }
 
@@ -268,7 +276,7 @@ export class RealtimeClient {
           format,
           turn_detection: { type: "server_vad", silence_duration_ms: TURN_SILENCE_MS, create_response: true, interrupt_response: true },
         },
-        output: { format, voice: REALTIME_VOICE },
+        output: { format, voice: this.opts.voice ?? DEFAULT_REALTIME_VOICE, speed: clampSpeed(this.opts.speed ?? REALTIME_SPEED.default, REALTIME_SPEED) },
       },
     };
   }
@@ -313,6 +321,7 @@ export class RealtimeClient {
         break;
       case "response.done":
         this.responding = false;
+        h.onReplyDone?.();
         if (this.wantReply) this.requestReply();
         break;
       case "response.output_audio.delta":

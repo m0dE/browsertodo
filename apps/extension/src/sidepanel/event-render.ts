@@ -42,7 +42,10 @@ export function renderEvent(v: EventView, onContinue?: () => void): HTMLElement 
         h("span.ms", null, `${v.ms} ms`),
       );
     case "user":
-      return v.screen ? renderScreenHelp(v.text) : h("div.ev-user", null, v.text);
+      if (v.screen) return renderScreenHelp(v.text);
+      return v.voice ? h("div.ev-user.voice", { title: "Sent by voice" }, voiceMark(), h("span.ev-user-text", null, v.text)) : h("div.ev-user", null, v.text);
+    case "spoken":
+      return renderSpoken(v);
     case "end":
       return h(
         "div.ev-end",
@@ -82,6 +85,25 @@ export function renderEvent(v: EventView, onContinue?: () => void): HTMLElement 
     case "error":
       return renderErrorHelp(v.help);
   }
+}
+
+/**
+ * A line hands-free voice said aloud: quieter than the agent's answer, with a speaker and an accent bar; the
+ * wave moves while it plays (the chat adds .playing). One that repeats the text above it is compact.
+ */
+export function renderSpoken(v: Extract<EventView, { kind: "spoken" }>): HTMLElement {
+  return h(
+    "div.ev-spoken",
+    { class: v.echo ? "echo" : null, title: "Said aloud by hands-free voice" },
+    svgIcon(13, SPEAKER_ICON),
+    h("span.ev-spoken-text", null, v.text),
+    h("span.ev-spoken-wave", { "aria-hidden": "true" }, h("i"), h("i"), h("i"), h("i")),
+  );
+}
+
+/** The mic in a message the user spoke (read out as "Voice"). */
+function voiceMark(): HTMLElement {
+  return h("span.ev-voice", { "aria-label": "Voice:" }, svgIcon(12, MIC_ICON));
 }
 
 /** Claude's text as Markdown. `id`: the streamed block it is (the chat updates it in place). */
@@ -163,8 +185,9 @@ export function renderOpening(v: OpeningView, onDetails: (trigger: HTMLElement) 
     ? renderScreenHelp(v.text)
     : h(
         "div.ev-user",
-        null,
+        { class: v.voice ? "voice" : null },
         v.origin ? h("span.ev-origin", null, v.origin) : null,
+        v.voice ? voiceMark() : null,
         h("span.ev-user-text", null, v.text),
         v.files ? h("span.ev-files", { title: "Files sent with this message" }, svgIcon(12, CLIP_ICON), plural(v.files, "file")) : null,
       );
@@ -188,6 +211,10 @@ export function renderOpening(v: OpeningView, onDetails: (trigger: HTMLElement) 
 
 const CLIP_ICON =
   '<path d="M13.5 7.5 8 13a3.5 3.5 0 0 1-5-5l5.8-5.8a2.3 2.3 0 0 1 3.3 3.3L6.3 11.3a1.2 1.2 0 0 1-1.7-1.7L10 4.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
+const MIC_ICON =
+  '<rect x="5.75" y="1.75" width="4.5" height="8" rx="2.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3.25 7.75a4.75 4.75 0 0 0 9.5 0M8 12.5v1.75" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>';
+const SPEAKER_ICON =
+  '<path d="M2.5 6h2.2L8 3.2v9.6L4.7 10H2.5z" fill="currentColor"/><path d="M10.5 5.5a3.5 3.5 0 0 1 0 5M12.4 3.6a6.2 6.2 0 0 1 0 8.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>';
 const EYE_ICON =
   '<path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8Z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2" fill="currentColor"/>';
 

@@ -2,7 +2,8 @@
  * Chat tab: the conversation of the browser tab that is active in the
  * panel's window, live (every turn of it in one thread: the user's messages
  * as bubbles, starting with the prompt or task that opened it, the agent's
- * text, tool calls, results and Jev decisions), its
+ * text, tool calls, results and Jev decisions, and what hands-free voice said
+ * aloud, shown playing while it is said), its
  * action bar (New chat | Show tab) and, while conversations of
  * other tabs run, one chip each to switch to their tab. Which conversation
  * that is comes from sidepanel.ts (see tab-chat.ts); past runs live in the
@@ -15,8 +16,8 @@ import { chatActions, type BarAction } from "./chat-actions.js";
 import { $, busy, h } from "../ui/dom.js";
 import { errorHelp } from "./error-help.js";
 import { renderErrorHelp } from "./error-view.js";
-import { describeEvent, isBrainStartLine, isNearBottom, openingTurn, turnError, turnPicks } from "./event-format.js";
-import { placeEvent, pruneContinue, renderEvent, renderOpening, renderSessionHead, renderText } from "./event-render.js";
+import { describeEvent, isBrainStartLine, isNearBottom, openingTurn, sameWords, spokenEchoes, turnError, turnPicks, type TurnContext } from "./event-format.js";
+import { placeEvent, pruneContinue, renderEvent, renderOpening, renderSessionHead, renderSpoken, renderText } from "./event-render.js";
 import { LiveTexts } from "./live-text.js";
 import { MarkdownView } from "./markdown.js";
 import { renderSwitcher } from "./session-switcher.js";
@@ -33,6 +34,11 @@ export interface ChatView {
   shown(): SessionInfo | null;
   /** The keyboard shortcuts (open the chat; talk), as the user reads them (null: none is set), for the new chat. */
   setShortcuts(shortcuts: Shortcuts): void;
+  /**
+   * Hands-free voice is saying a line in a chat (null: the line is over). It shows playing at the end of that
+   * chat until its kept copy (a "spoken" event) takes its place.
+   */
+  setSpeaking(line: { sessionId: string; text: string } | null): void;
 }
 
 export interface ChatOptions {
@@ -104,9 +110,51 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     if (e.type === "status" && isBrainStartLine(e.text)) return;
     const s = e.type === "task_end" && current?.sessionId === e.sessionId ? current : null;
     const canContinue = !!opts.onContinue && e.type === "task_end" && isContinuableOutcome(e.outcome) && s?.source !== "cloud";
-    const turn = e.type === "task_end" ? { picks: turnPicks(events, i), error: turnError(events, i) } : {};
+    const turn: TurnContext = e.type === "task_end" ? { picks: turnPicks(events, i), error: turnError(events, i) } : e.type === "spoken" ? { echo: spokenEchoes(events, i) } : {};
     const view = describeEvent(e, turn);
-    placeEvent(log, renderEvent(view, canContinue ? () => opts.onContinue?.(e.sessionId) : undefined), view);
+    const el = renderEvent(view, canContinue ? () => opts.onContinue?.(e.sessionId) : undefined);
+    if (e.type === "spoken") placeKept(el, e.text);
+    else placeEvent(log, el, view);
+  }
+
+  /** The line hands-free voice is saying now (in any chat). */
+  let speaking: { sessionId: string; text: string } | null = null;
+  /** Live copies of lines said in the chat shown, oldest first: the one playing, and said ones waiting for their kept copy. */
+  let lives: HTMLElement[] = [];
+
+  /** A kept line takes its live copy's place; one said before the live ones goes before them. */
+  function placeKept(el: HTMLElement, text: string): void {
+    lives = lives.filter((l) => l.isConnected);
+    const i = lives.findIndex((l) => sameWords(l.dataset.text ?? "", text));
+    if (i >= 0) {
+      lives[i]!.replaceWith(el);
+      lives.splice(i, 1);
+    } else if (lives[0]) lives[0].before(el);
+    else log.append(el);
+  }
+
+  /** Shows the line being said at the end of its chat, playing (the Realtime narrator's words grow in place). */
+  function showSpeaking(): void {
+    lives = lives.filter((l) => l.isConnected);
+    const last = lives.at(-1);
+    const line = speaking && current?.sessionId === speaking.sessionId && !backfilling ? speaking : null;
+    if (!line) {
+      last?.classList.remove("playing");
+      return;
+    }
+    const follow = isNearBottom(log);
+    const el = renderSpoken({ kind: "spoken", text: line.text });
+    el.classList.add("live", "playing");
+    el.dataset.text = line.text;
+    log.querySelector(":scope > p.empty")?.remove();
+    if (last?.classList.contains("playing")) {
+      last.replaceWith(el);
+      lives[lives.length - 1] = el;
+    } else {
+      log.append(el);
+      lives.push(el);
+    }
+    if (follow) log.scrollTop = log.scrollHeight;
   }
 
   /** Repaints the shown conversation's live texts, once per frame; a new one starts at the end of the log. */
@@ -169,9 +217,11 @@ export function initChat(opts: ChatOptions = {}): ChatView {
       log.replaceChildren(h("p.empty", null, "Loading…"));
       return;
     }
+    lives = [];
     log.replaceChildren(renderOpeningOf(current), renderSessionHead(current));
     events.forEach(renderOne);
     liveEls.clear();
+    showSpeaking();
     if (!events.length && !live.of(current.sessionId).some(([, t]) => t.trim())) log.append(h("p.empty", null, "Waiting for the agent…"));
     pruneContinue(log);
     paintLive();
@@ -365,6 +415,10 @@ export function initChat(opts: ChatOptions = {}): ChatView {
       if (shortcuts?.open === next.open && shortcuts.voice === next.voice) return;
       shortcuts = next;
       if (!shownId) renderLog();
+    },
+    setSpeaking(line) {
+      speaking = line;
+      showSpeaking();
     },
   };
 }

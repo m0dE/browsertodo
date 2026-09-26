@@ -82,6 +82,11 @@ export interface AccountView {
 }
 
 export interface UiState {
+  /**
+   * When the background read this state (increasing, a clock in ms): a UI keeps the state with the highest rev,
+   * since pushes and request answers can reach it out of order. Absent in states made up by tests.
+   */
+  rev?: number;
   /** Secrets redacted to "set" / "" (see redactSettings). */
   settings: ExtensionSettings;
   brain: BrainStatus;
@@ -130,6 +135,8 @@ export type UiRequest =
       tabId?: number;
       /** An empty message in Chat: look at the tab's page and do what is needed (instructions may be empty). */
       screen?: boolean;
+      /** The instructions were spoken (hands-free or dictated): the chat marks the message. */
+      voice?: boolean;
     }
   /** Run everything that is due now (local, then cloud if enabled). */
   | { type: "run.due" }
@@ -147,9 +154,9 @@ export type UiRequest =
    * screen with an empty text: "look at the page and do what is needed"
    * (a new conversation, or the next turn: "look at the page now and continue").
    * tabId: the browser tab the message was sent from; the conversation
-   * belongs to it (and a new one acts there).
+   * belongs to it (and a new one acts there). voice: the text was spoken.
    */
-  | { type: "run.message"; sessionId?: string; text: string; tabId?: number; screen?: boolean }
+  | { type: "run.message"; sessionId?: string; text: string; tabId?: number; screen?: boolean; voice?: boolean }
   /**
    * The conversation is over: close its kept-open agent session (a running
    * turn keeps running). tabId: that tab has no conversation any more.
@@ -207,7 +214,9 @@ export type UiRequest =
   /** Hands-free voice: the engines and what a minute of each costs (the account server's list). */
   | { type: "voice.engines" }
   /** Realtime voice: where to connect and the token to offer (sessionId: the chat, recorded with the usage). */
-  | { type: "voice.realtime"; sessionId?: string };
+  | { type: "voice.realtime"; sessionId?: string }
+  /** Hands-free voice said a line in this conversation: kept in its thread (a "spoken" event). */
+  | { type: "voice.spoken"; sessionId: string; text: string };
 
 export type UiResponse<T = unknown> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -272,6 +281,7 @@ export interface UiResults {
   "voice.transcribe": VoiceTranscribeResult;
   "voice.engines": VoiceEnginesResult;
   "voice.realtime": RealtimeTicketResult;
+  "voice.spoken": { ok: boolean };
 }
 
 /** Pushed by the background on the UI port. */
@@ -294,4 +304,9 @@ export async function uiRequest<R extends UiRequest>(req: R): Promise<UiResults[
   if (!res) throw new Error("No response from the extension background");
   if (!res.ok) throw new Error(res.error);
   return res.data;
+}
+
+/** `next` is older than the state the UI has (see UiState.rev). */
+export function isStale(next: Pick<UiState, "rev">, current: Pick<UiState, "rev"> | null): boolean {
+  return next.rev !== undefined && current?.rev !== undefined && next.rev < current.rev;
 }

@@ -85,7 +85,7 @@ async function cdpPage(devtoolsPort, urlSuffix) {
 /**
  * Runs in the side panel before its scripts (hands-free step): the background's answers that need the account
  * server are faked, nothing else. Its states say signed in on Plus with the Standard voice engine; voice.transcribe
- * answers HEARD; run.adhoc is recorded (window.__adhoc) and answers "s-hf"; window.__pushToPanel(msg) delivers a
+ * answers HEARD; a spoken run.message (what hands-free sends) is recorded (window.__adhoc) and answers "s-hf"; window.__pushToPanel(msg) delivers a
  * message as the background's UI port would; speechSynthesis records each line (window.__spoken) and ends it.
  */
 const HEARD = "Open the example page";
@@ -105,9 +105,9 @@ const HANDS_FREE_STUBS = `(() => {
   window.__adhoc = [];
   chrome.runtime.sendMessage = async (msg, ...rest) => {
     if (msg?.type === "voice.transcribe") return { ok: true, data: { text: ${JSON.stringify(HEARD)} } };
-    if (msg?.type === "run.adhoc") {
-      window.__adhoc.push(msg.instructions);
-      return { ok: true, data: { sessionId: "s-hf" } };
+    if (msg?.type === "run.message" && msg.voice) {
+      window.__adhoc.push(msg.text);
+      return { ok: true, data: { sessionId: "s-hf", mode: "new" } };
     }
     const res = await send(msg, ...rest);
     return res?.ok ? { ...res, data: plus(res.data) } : res;
@@ -130,10 +130,10 @@ const HANDS_FREE_STUBS = `(() => {
     speak(u) { window.__spoken.push(u.text); setTimeout(() => u.onend?.(), 300); },
     cancel() {}, getVoices: () => [], addEventListener() {}, removeEventListener() {},
   } });
-  // Every phase the hands-free bar shows, in order.
+  // Every phase the hands-free pill shows, in order.
   window.__phases = [];
   new MutationObserver(() => {
-    const bar = document.querySelector(".hf-bar");
+    const bar = document.querySelector(".hf-pill");
     const p = bar && !bar.hidden ? bar.dataset.phase : "off";
     if (window.__phases.at(-1) !== p) window.__phases.push(p);
   }).observe(document, { subtree: true, attributes: true, childList: true, attributeFilter: ["data-phase", "hidden"] });

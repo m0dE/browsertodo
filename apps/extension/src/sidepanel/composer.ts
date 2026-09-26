@@ -13,11 +13,12 @@
  */
 import { errorMessage, type SessionInfo } from "@browsertodo/shared";
 import { uiRequest, type UiRequest, type UiState } from "../ui-protocol.js";
-import { $, busy, flash } from "../ui/dom.js";
+import { $, busy } from "../ui/dom.js";
 import { errorHelp } from "./error-help.js";
 import { renderErrorHelp } from "./error-view.js";
 import { filePicker, filesToUploads } from "./files.js";
 import { initModelPicker } from "./model-menu.js";
+import { initNotices, type Notices } from "./notices.js";
 import { FollowUpSuggestion, suggestionDescription, type SuggestionOffer } from "./suggestion.js";
 import type { TabName } from "./tabs.js";
 
@@ -76,8 +77,8 @@ export interface ComposerView {
   setDraft(value: string): void;
   /** Voice input is writing into the box: the follow-up suggestion stays hidden meanwhile. */
   setDictating(on: boolean): void;
-  /** Sends what is in the box, exactly as Enter does (an empty box in Chat looks at the page). */
-  send(): void;
+  /** Sends what is in the box, exactly as Enter does (an empty box in Chat looks at the page). voice: the text was spoken. */
+  send(opts?: { voice?: boolean }): void;
   /**
    * Sees the box's key presses before the composer does (voice input takes
    * Enter and Esc while it listens). Return true when handled.
@@ -89,9 +90,14 @@ export interface ComposerView {
   continueNow(sessionId: string): Promise<void>;
   /** New chat left this conversation: the tab has no chat any more, its kept-open agent session is closed (a running turn keeps running). */
   leave(sessionId: string): void;
-  /** Says under the box why something the panel did for this chat failed. */
+  /** Says above the box why something the panel did for this chat failed. */
   showError(err: unknown): void;
+  /** The notice line above the box (voice tips, hints, errors): one at a time, never over the box. */
+  readonly notices: Notices;
 }
+
+/** The composer's own notices (progress, hints, failures of what it sent) go under this key: each replaces the last. */
+const NOTICE_KEY = "composer";
 
 const NEW_PLACEHOLDER = "Do this now, e.g. “Post ‘good morning’ on X”";
 const CHAT_PLACEHOLDER = "Message browsertodo…";
@@ -115,14 +121,16 @@ export function initComposer(opts: {
   const attach = $("now-attach");
   const submit = $<HTMLButtonElement>("now-submit");
   const stop = $<HTMLButtonElement>("now-stop");
-  const msg = $("now-msg");
+  const notices = initNotices($("now-notice"));
   /** A request that failed: a known problem as its error card (plain words and the fix), anything else as its text. */
   const problem = (message: string): void => {
     const help = errorHelp(message);
-    if (!help.known) return flash(msg, message, "bad");
-    flash(msg, "", "bad");
-    msg.replaceChildren(renderErrorHelp(help));
+    notices.show(help.known ? { key: NOTICE_KEY, level: "error", body: renderErrorHelp(help) } : { key: NOTICE_KEY, level: "error", text: message });
   };
+  /** A request is out ("Sending…"): shown until it is answered. */
+  const progress = (text: string) => notices.show({ key: NOTICE_KEY, level: "info", text, sticky: true });
+  const hint = (text: string) => notices.show({ key: NOTICE_KEY, level: "info", text });
+  const settled = () => notices.clear(NOTICE_KEY);
   const showError = (err: unknown) => problem(errorMessage(err));
   const fileInput = $<HTMLInputElement>("now-files");
   const filesList = $("now-files-list");
@@ -134,7 +142,7 @@ export function initComposer(opts: {
   /** The box's placeholder for the mode; the suggestion takes its place while it shows. */
   let placeholder = text.placeholder;
   const files = filePicker(fileInput, filesList, () => queueMicrotask(() => render()));
-  const model = initModelPicker({ onState: opts.onState, onError: (t) => flash(msg, t, "bad"), onTopup: () => opts.onTopup?.() });
+  const model = initModelPicker({ onState: opts.onState, onError: (text) => notices.show({ key: "model", level: "error", text }), onTopup: () => opts.onTopup?.() });
   // The attach control is a label around a hidden input; make it keyboard-operable.
   attach.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
@@ -186,6 +194,8 @@ export function initComposer(opts: {
     }
   });
   let keyInterceptor: ((e: KeyboardEvent) => boolean) | null = null;
+  /** The next send is of spoken text (send({ voice: true })). */
+  let spoken = false;
   // Enter sends, Shift+Enter adds a line (like chat apps). Tab takes a shown suggestion, Esc dismisses it.
   text.addEventListener("keydown", (e) => {
     if (keyInterceptor?.(e)) {
@@ -221,6 +231,8 @@ export function initComposer(opts: {
 
   form.addEventListener("submit", (e) => {
     e.preventDefault();
+    const voice = spoken ? { voice: true } : {};
+    spoken = false;
     const value = text.value.trim();
     if (!value) return sendEmpty();
     const m = mode();
@@ -231,26 +243,26 @@ export function initComposer(opts: {
       async () => {
         if (m !== "new" && t) {
           clearInput();
-          if (m === "conversation") flash(msg, "Sending…");
+          if (m === "conversation") progress("Sending…");
           try {
-            await uiRequest({ type: "run.message", sessionId: t.sessionId, text: value, ...tab() });
+            await uiRequest({ type: "run.message", sessionId: t.sessionId, text: value, ...voice, ...tab() });
           } catch (err) {
             // Not sent: the text goes back into the box.
             text.value = value;
             fit();
             throw err;
           }
-          flash(msg, "");
+          settled();
           if (m === "conversation") opts.onStarted(t.sessionId);
           return;
         }
-        flash(msg, "Starting…");
+        progress("Starting…");
         const media = await filesToUploads(files.files());
         // No account field here: the agent picks up accounts named in the text ("post this from @beta").
-        const { sessionId } = await uiRequest({ type: "run.adhoc", instructions: value, ...(media.length ? { media } : {}), ...tab() });
+        const { sessionId } = await uiRequest({ type: "run.adhoc", instructions: value, ...(media.length ? { media } : {}), ...voice, ...tab() });
         clearInput();
         files.clear();
-        flash(msg, "");
+        settled();
         opts.onStarted(sessionId);
       },
       problem,
@@ -261,14 +273,14 @@ export function initComposer(opts: {
   function sendEmpty(): void {
     const t = target();
     const next = emptySend({ panelTab, mode: mode(), sessionId: t?.sessionId ?? null, hasFiles: files.files().length > 0, tabId: opts.tabId?.() ?? null });
-    if ("hint" in next) return void flash(msg, next.hint);
+    if ("hint" in next) return hint(next.hint);
     dismissSuggestion();
     void busy(
       submit,
       async () => {
-        flash(msg, "Looking at the page…");
+        progress("Looking at the page…");
         const { sessionId } = await uiRequest(next.request);
-        flash(msg, "");
+        settled();
         opts.onStarted(sessionId);
       },
       problem,
@@ -279,7 +291,7 @@ export function initComposer(opts: {
   stop.addEventListener("click", () => {
     // Stops this conversation's turn; other tasks keep running.
     const t = target();
-    void busy(stop, () => uiRequest({ type: "run.stop", ...(t ? { sessionId: t.sessionId } : {}) }), msg);
+    void busy(stop, () => uiRequest({ type: "run.stop", ...(t ? { sessionId: t.sessionId } : {}) }), problem);
   });
 
   function render(): void {
@@ -324,7 +336,8 @@ export function initComposer(opts: {
       suggestion.setDictating(on);
       fit();
     },
-    send() {
+    send(o) {
+      spoken = !!o?.voice;
       form.requestSubmit();
     },
     interceptKeys(handler) {
@@ -341,11 +354,11 @@ export function initComposer(opts: {
     async continueNow(sessionId) {
       const note = text.value.trim();
       dismissSuggestion();
-      flash(msg, "Continuing…");
+      progress("Continuing…");
       try {
         await uiRequest({ type: "run.continue", sessionId, ...(note ? { text: note } : {}), ...tab() });
         if (note) clearInput();
-        flash(msg, "");
+        settled();
         opts.onStarted(sessionId);
       } catch (err) {
         showError(err);
@@ -361,6 +374,7 @@ export function initComposer(opts: {
     showError(err) {
       showError(err);
     },
+    notices,
   };
 
   render();

@@ -14,7 +14,7 @@ import { UiRouter, type RouterRunner, type UiRouterDeps } from "../src/engine/ui
 import { TabChats } from "../src/tab-chats.js";
 import { applySettingsPatch } from "../src/settings-store.js";
 import { WrongPassphraseError } from "../src/vault.js";
-import { UI_PORT_NAME, type UiPush, type UiRequest, type UiResponse } from "../src/ui-protocol.js";
+import { isStale, UI_PORT_NAME, type UiPush, type UiRequest, type UiResponse, type UiState } from "../src/ui-protocol.js";
 
 const INFO: HelperInfo = { version: "2", jevAvailable: false, claudePath: "C:\\claude.exe", logDir: "L", selfTest: { ok: true, ms: 1, at: "x" } };
 
@@ -271,6 +271,42 @@ describe("UiHub", () => {
     p.hostDisconnect();
     expect(hub.size).toBe(0);
   });
+
+  it("stamps every state with an increasing rev, so a UI keeps the newest whatever order states arrive in", async () => {
+    const t = setup();
+    const a = await t.req<UiState>({ type: "state.get" });
+    const b = await t.req<UiState>({ type: "state.get" });
+    expect(a.rev).toBeGreaterThan(0);
+    expect(b.rev!).toBeGreaterThan(a.rev!);
+    expect(isStale(a, b)).toBe(true);
+    expect(isStale(b, a)).toBe(false);
+    expect(isStale(a, null)).toBe(false);
+    // States without a rev (made up by tests and older backgrounds) are always taken.
+    expect(isStale({}, b)).toBe(false);
+    expect(isStale(a, {})).toBe(false);
+  });
+
+  it("never lets an older state overwrite a newer one when reading it takes longer", async () => {
+    // The first read is slow, the second (after a change) fast: the fast one's state must be the last pushed.
+    const reads: Array<(s: never) => void> = [];
+    let n = 0;
+    const getState = vi.fn(() => new Promise<never>((resolve) => reads.push(resolve)));
+    const hub = new UiHub(getState, { stateDelayMs: 1 });
+    const p = port();
+    hub.attach(p);
+    reads.shift()!({ v: n++ } as never); // the attach's state
+    await vi.waitFor(() => expect(pushes(p)).toHaveLength(1));
+    hub.pushState();
+    await vi.waitFor(() => expect(reads).toHaveLength(1));
+    hub.pushState();
+    await vi.waitFor(() => expect(reads).toHaveLength(2));
+    const [older, newer] = reads;
+    newer!({ v: "new" } as never);
+    await vi.waitFor(() => expect(pushes(p)).toHaveLength(2));
+    older!({ v: "old" } as never);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(pushes(p).map((m) => (m as unknown as { state: { v: unknown } }).state.v)).toEqual([0, "new"]);
+  });
 });
 
 describe("UiRouter: account", () => {
@@ -438,6 +474,31 @@ describe("UiRouter: a chat per browser tab", () => {
     expect(t.runner.runAdhoc.mock.calls.at(-1)![0]).toMatchObject({ instructions: "", screen: true, tabId: 7 });
     await t.req({ type: "run.message", sessionId: "S1", text: "", screen: true, tabId: 5 });
     expect(t.runner.message).toHaveBeenLastCalledWith("S1", "", { tabId: 5, screen: true });
+  });
+
+  it("a spoken message (voice) reaches the runner marked as spoken", async () => {
+    const t = await withTabs();
+    await t.req({ type: "run.adhoc", instructions: "read my mail", voice: true, tabId: 7 });
+    expect(t.runner.runAdhoc.mock.calls.at(-1)![0]).toMatchObject({ instructions: "read my mail", voice: true, tabId: 7 });
+    await t.req({ type: "run.message", sessionId: "S1", text: "and reply", voice: true, tabId: 5 });
+    expect(t.runner.message).toHaveBeenLastCalledWith("S1", "and reply", { tabId: 5, voice: true });
+    // Anything but true is not spoken.
+    await t.req({ type: "run.message", sessionId: "S1", text: "typed", voice: "yes" });
+    expect(t.runner.message).toHaveBeenLastCalledWith("S1", "typed", {});
+  });
+
+  it("voice.spoken keeps a said line in its conversation (also after it ended); an unknown one is not ok", async () => {
+    const t = setup();
+    await t.sessions.create({ sessionId: "s1", source: "adhoc", title: "t", brain: "claude-api", jev: false, startedAt: "2026-09-24T10:00:00Z" });
+    t.sessions.append("s1", { type: "task_end", outcome: "done", summary: "Read it" });
+    await t.sessions.update("s1", { outcome: "done", endedAt: "2026-09-24T10:01:00Z" });
+    expect(await t.req({ type: "voice.spoken", sessionId: "s1", text: "  Sarah says dinner moved to eight. " })).toEqual({ ok: true });
+    expect((await t.sessions.eventsOf("s1")).map((e) => [e.type, "text" in e ? e.text : ""])).toEqual([
+      ["task_end", ""],
+      ["spoken", "Sarah says dinner moved to eight."],
+    ]);
+    expect(await t.req({ type: "voice.spoken", sessionId: "nope", text: "x" })).toEqual({ ok: false });
+    expect(await t.router.handle({ type: "voice.spoken", sessionId: "s1", text: " " })).toEqual({ ok: false, error: "sessionId and text are required" });
   });
 
   it("a message or Continue to a conversation passes the tab it was sent from to the runner (which binds it once taken)", async () => {

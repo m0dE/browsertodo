@@ -118,6 +118,24 @@ export function createChecks({ browser, base, only, shots }) {
         const r = el.getBoundingClientRect();
         if (r.width && (r.top < bar.top - 0.5 || r.bottom > bar.bottom + 0.5)) out.push(`${el.id || el.className} wraps out of the control row`);
       }
+      // Notices (and the hands-free pill) sit in the layout directly above the box: never floating, never over the
+      // text box or any of its controls, never over each other.
+      const form = document.getElementById("now-form");
+      const f = form.getBoundingClientRect();
+      const hit = (a, b) => a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5;
+      const name = (el) => el.id || el.className;
+      const notes = [...document.querySelectorAll("#now-notices > *")].filter((el) => !el.hidden && el.getBoundingClientRect().height);
+      const controls = [document.getElementById("now-text"), ...form.querySelectorAll("button, label, [role=button]")].filter((el) => el.getBoundingClientRect().width);
+      for (const [i, n] of notes.entries()) {
+        const r = n.getBoundingClientRect();
+        const pos = getComputedStyle(n).position;
+        if (pos === "absolute" || pos === "fixed") out.push(`${name(n)} floats (position: ${pos})`);
+        if (r.bottom > f.top + 0.5) out.push(`${name(n)} reaches into the input box (${Math.round(r.bottom)} > ${Math.round(f.top)})`);
+        if (r.left < c.left - 0.5 || r.right > c.right + 0.5) out.push(`${name(n)} clipped horizontally`);
+        for (const el of controls) if (hit(r, el.getBoundingClientRect())) out.push(`${name(n)} covers ${name(el)}`);
+        for (const other of notes.slice(i + 1)) if (hit(r, other.getBoundingClientRect())) out.push(`${name(n)} overlaps ${name(other)}`);
+      }
+      if (document.querySelectorAll("#now-notice:not([hidden])").length > 1) out.push("more than one notice shown");
       const menu = document.getElementById("model-menu");
       if (!menu.hidden) {
         const m = menu.getBoundingClientRect();
@@ -129,8 +147,8 @@ export function createChecks({ browser, base, only, shots }) {
     problem(`layout (${label}):`, problems);
   }
 
-  /** Opens options.html (with a hash) on a scenario; `edit` changes the canned data first. */
-  async function openOptions(size, scheme, kind, hash = "", edit = () => {}) {
+  /** Opens options.html (with a hash) on a scenario; `edit` changes the canned data first, `init` are more init scripts. */
+  async function openOptions(size, scheme, kind, hash = "", edit = () => {}, init = []) {
     // Reduced motion: reveals open and close at once (options.css honours it), so checks need no settling time.
     const ctx = await browser.newContext({ viewport: { width: size.w, height: size.h }, colorScheme: scheme, reducedMotion: "reduce" });
     const page = await ctx.newPage();
@@ -139,6 +157,7 @@ export function createChecks({ browser, base, only, shots }) {
     page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
     const data = scenario(kind);
     edit(data);
+    for (const script of init) await page.addInitScript(script);
     await page.addInitScript(installChromeStub, data);
     await page.goto(`${base}/options.html${hash}`);
     await page.waitForSelector("#helper-headline:not(:empty)", { state: "attached" });

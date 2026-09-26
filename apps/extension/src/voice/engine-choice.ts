@@ -18,8 +18,8 @@ export interface EngineChoice {
   note: string | null;
 }
 
-export const REALTIME_NOT_AVAILABLE_NOTE = "Realtime voice isn't available right now, so this uses Standard voice.";
-export const LOW_CREDIT_NOTE = "Your usage credit is low, so this uses Standard voice (it costs much less).";
+export const REALTIME_NOT_AVAILABLE_NOTE = "Realtime voice is unavailable. Using Standard.";
+export const LOW_CREDIT_NOTE = "Usage credit is low. Using Standard voice (it costs much less).";
 
 export function chooseEngine(opts: {
   preferred: VoiceEngineId;

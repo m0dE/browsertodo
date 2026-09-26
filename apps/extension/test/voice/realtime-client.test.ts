@@ -91,6 +91,18 @@ describe("RealtimeClient: connecting", () => {
     expect(NARRATOR_TOOLS).toHaveLength(4);
   });
 
+  it("speaks in the default voice at normal speed, or the voice and speed from Settings (kept in OpenAI's range)", () => {
+    const { socket } = setup();
+    socket().open();
+    expect((socket().sent[0] as { session: Record<string, any> }).session.audio.output).toMatchObject({ voice: "marin", speed: 1 });
+    for (const [speed, sent] of [[1.2, 1.2], [9, 1.5], [0.1, 0.25]] as const) {
+      let s!: FakeSocket;
+      new RealtimeClient({ url: "wss://x/v1/ai/realtime", token: "t", voice: "cedar", speed, open: (u, p) => (s = new FakeSocket(u, p)), handlers: {} }).connect();
+      s.open();
+      expect((s.sent[0] as { session: Record<string, any> }).session.audio.output).toMatchObject({ voice: "cedar", speed: sent });
+    }
+  });
+
   it("is ready on OpenAI's first event (session.created), once, and streams microphone PCM16 as base64 input_audio_buffer.append", () => {
     const onReady = vi.fn();
     const { client, socket } = setup({ onReady });
@@ -258,9 +270,9 @@ describe("realtimeFailure: close codes and server errors -> what the panel says 
     for (const code of [REALTIME_CLOSE.concurrent, REALTIME_CLOSE.unavailable, REALTIME_CLOSE.upstream, REALTIME_CLOSE.tooBig]) {
       const f = realtimeFailure({ closeCode: code, opened: true });
       expect(f.fallback, `close ${code}`).toBe(true);
-      expect(f.message).toMatch(/Standard voice/);
+      expect(f.message).toMatch(/Using Standard\.$/);
     }
-    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.concurrent, opened: true }).message).toBe("Realtime voice is open in another window, so this uses Standard voice.");
+    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.concurrent, opened: true }).message).toBe("Realtime voice is open in another window. Using Standard.");
   });
 
   it("idle and the session limit end quietly with a note, without switching engines", () => {

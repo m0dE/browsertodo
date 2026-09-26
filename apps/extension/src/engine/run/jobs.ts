@@ -31,6 +31,8 @@ export interface AdhocInput {
    * request is SCREEN_HELP_TEXT (instructions are not used).
    */
   screen?: boolean;
+  /** The instructions were spoken (the session's first message is marked). */
+  voice?: boolean;
 }
 
 export type LocalJob = { source: "local"; task: StoredLocalTask };
@@ -45,6 +47,8 @@ export interface TurnJob {
   text: string;
   /** An empty message in Chat: look at the page now and continue. */
   screen?: boolean;
+  /** The message was spoken (its user_message is marked). */
+  voice?: boolean;
   /** The browser tab the message was sent from: the conversation now belongs to it. */
   tabId?: number;
   /** The conversation's local task, when this turn continues its unfinished work (recorded on the task). */
@@ -108,7 +112,7 @@ export async function turnJob(
   stores: { sessions: SessionStore; localStore: LocalStore },
   sessionId: string,
   text: string,
-  opts: { screen?: boolean; tabId?: number } = {},
+  opts: { screen?: boolean; voice?: boolean; tabId?: number } = {},
 ): Promise<TurnJob> {
   const from = await stores.sessions.get(sessionId);
   if (!from) throw new Error(`No session ${sessionId}`);
@@ -124,6 +128,7 @@ export async function turnJob(
   }
   const job: TurnJob = { source: "turn", from, text, task, first };
   if (opts.screen) job.screen = true;
+  if (opts.voice) job.voice = true;
   if (opts.tabId !== undefined) job.tabId = opts.tabId;
   return job;
 }

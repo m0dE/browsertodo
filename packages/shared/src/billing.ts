@@ -59,7 +59,7 @@ export const PlanFeature = z.enum(["todo", "voice", "apiKeys"]);
 export type PlanFeature = z.infer<typeof PlanFeature>;
 
 /** How a feature reads in plan descriptions: `name` inside a sentence, `has` / `lacks` as a plan card's line. */
-const FeatureText = z.object({ name: z.string(), has: z.string(), lacks: z.string() });
+const FeatureText = z.object({ name: z.string(), has: z.string() });
 export const PLAN_FEATURE_TEXT: Readonly<Record<PlanFeature, z.infer<typeof FeatureText>>> = z
   .object({ todo: FeatureText, voice: FeatureText, apiKeys: FeatureText })
   .parse(catalog.features);
@@ -69,15 +69,10 @@ function listOf(items: string[], last: "and" | "or"): string {
   return items.length < 2 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} ${last} ${items.at(-1)}`;
 }
 
-/** A plan's features in one line: "Includes TODO list, voice input and API keys", "No TODO list, voice input or API keys". */
+/** A plan's included features in one line, e.g. "Includes TODO list, voice input and API access"; "" when it includes none. */
 export function planIncludesText(plan: Pick<PlanCatalogEntry, PlanFeature>): string {
-  const names = (has: boolean) => PlanFeature.options.filter((f) => plan[f] === has).map((f) => PLAN_FEATURE_TEXT[f].name);
-  const included = names(true);
-  const missing = names(false);
-  const parts = [];
-  if (included.length) parts.push(`Includes ${listOf(included, "and")}`);
-  if (missing.length) parts.push(`${included.length ? "no" : "No"} ${listOf(missing, "or")}`);
-  return parts.join("; ");
+  const included = PlanFeature.options.filter((f) => plan[f]).map((f) => PLAN_FEATURE_TEXT[f].name);
+  return included.length ? `Includes ${listOf(included, "and")}` : "";
 }
 
 /** The 503 answer of a feature this server has not been configured for (its key or binding is missing). */
@@ -127,14 +122,14 @@ export function planAllows(plan: { id: string; status: string } | null | undefin
 export const API_KEY_LIMITS = { requestsPerMinute: 60, taskCreationsPerDay: 10_000 } as const;
 
 /** Top-up amounts that can be bought, in cents. */
-export const TOPUP_AMOUNTS_CENTS = [1000, 2500, 5000] as const;
+/** The one-time top-up amounts, from the catalog. */
+export const TOPUP_AMOUNTS_CENTS: readonly number[] = z.array(z.number().int().positive()).min(1).parse(catalog.topupAmountsCents);
 export const MARKUP_PERCENT = 30;
 
 /** GET /v1/billing/plans (public). */
 export const BillingPlansResponse = z.object({
   plans: z.array(PlanCatalogEntry),
   topups: z.array(z.number().int()),
-  markupPercent: z.number(),
 });
 export type BillingPlansResponse = z.infer<typeof BillingPlansResponse>;
 

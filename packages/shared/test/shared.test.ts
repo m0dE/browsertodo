@@ -277,8 +277,8 @@ describe("the locked TODO list", () => {
 describe("plan descriptions", () => {
   it("say what a plan includes, generated from the catalog flags", async () => {
     const { PLAN_CATALOG, planIncludesText } = await import("../src/index.js");
-    expect(planIncludesText(PLAN_CATALOG.free)).toBe("No TODO list, voice input or API access");
+    expect(planIncludesText(PLAN_CATALOG.free)).toBe("");
     expect(planIncludesText(PLAN_CATALOG.plus)).toBe("Includes TODO list, voice input and API access");
-    expect(planIncludesText({ todo: true, voice: false, apiKeys: false })).toBe("Includes TODO list; no voice input or API access");
+    expect(planIncludesText({ todo: true, voice: false, apiKeys: false })).toBe("Includes TODO list");
   });
 });

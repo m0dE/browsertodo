@@ -14,7 +14,7 @@ describe("options: account summary", () => {
     });
     expect(s).toMatchObject({ planName: "Free", planStatus: "", credit: "$0.00", creditDetail: "$0.00 top-up", paid: false, keysAllowed: false, billing: "not-set-up" });
     // What Free lacks, from the plan catalog: the TODO list first.
-    expect(s.planIncludes).toBe("No TODO list, voice input or API access");
+    expect(s.planIncludes).toBe("");
   });
 
   it("paid plan: renewal date, subscription credit with its expiry plus top-up, keys allowed", () => {
@@ -46,7 +46,7 @@ describe("options: account summary", () => {
 
   it("plan choices, dates and the return URL", () => {
     expect(planChoices()).toEqual([
-      { id: "starter", label: "Starter", detail: "$9.99/mo · $5.00 usage credit", includes: "Includes TODO list and API access; no voice input" },
+      { id: "starter", label: "Starter", detail: "$9.99/mo · $5.00 usage credit", includes: "Includes TODO list and API access" },
       { id: "plus", label: "Plus", detail: "$29.99/mo · $20.00 usage credit", includes: "Includes TODO list, voice input and API access" },
       { id: "pro", label: "Pro", detail: "$199.99/mo · $199.99 usage credit", includes: "Includes TODO list, voice input and API access" },
     ]);

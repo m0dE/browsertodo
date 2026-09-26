@@ -6,11 +6,12 @@
     "plus": { "id": "plus", "name": "Plus", "priceCents": 2999, "creditCents": 2000, "apiKeys": true, "voice": true, "todo": true },
     "pro": { "id": "pro", "name": "Pro", "priceCents": 19999, "creditCents": 19999, "apiKeys": true, "voice": true, "todo": true }
   },
+  "topupAmountsCents": [1000, 2500, 5000],
   "features": {
-    "$comment": "How each plan feature reads: name inside a sentence, has / lacks as a plan card line. Order = the order plan descriptions list them.",
-    "todo": { "name": "TODO list", "has": "Cloud TODO list with scheduled runs", "lacks": "No cloud TODO list" },
-    "voice": { "name": "voice input", "has": "Voice input in the side panel", "lacks": "No voice input" },
-    "apiKeys": { "name": "API access", "has": "API access to add TODO tasks", "lacks": "No API access" }
+    "$comment": "How each plan feature reads: name inside a sentence, has as a plan card line. Order = the order plan descriptions list them.",
+    "todo": { "name": "TODO list", "has": "Cloud TODO list with scheduled runs" },
+    "voice": { "name": "voice input", "has": "Voice input in the side panel" },
+    "apiKeys": { "name": "API access", "has": "API access to add TODO tasks" }
   },
   "stripe": {
     "$comment": "apiVersion: the Stripe-Version the server calls with and its webhook endpoint is pinned to. webhookEvents: the events apps/api/src/webhooks.ts handles.",

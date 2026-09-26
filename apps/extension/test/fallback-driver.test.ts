@@ -6,7 +6,17 @@ import { Cdp } from "../src/cdp.js";
 import { Driver } from "../src/driver.js";
 import { BACKGROUND_SHOT_SKIPPED, PAGE_MARKS, SCREENSHOT_JPEG_QUALITY } from "../src/driver-common.js";
 import { FALLBACK_NOTE } from "../src/fallback-driver.js";
-import { caretToEndInPage, clickInPage, insertTextInPage, pressKeyInPage, viewportInPage } from "../src/page-input.js";
+import {
+  checkStateInPage,
+  clickInPage,
+  insertTextInPage,
+  prepareTypingInPage,
+  pressKeyInPage,
+  selectOptionInPage,
+  setCheckedInPage,
+  typeTargetInPage,
+  viewportInPage,
+} from "../src/page-input.js";
 import { isDebuggerBlocked } from "../src/restricted.js";
 import { scrollProbeInPage } from "../src/scroll-probe.js";
 import { snapshotPage } from "../src/page-snapshot.js";
@@ -71,7 +81,7 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
     const first = await driver.readPage();
     expect(first).toEqual({ ...snap, note: FALLBACK_NOTE });
     expect(driver.inFallback).toBe(true);
-    expect(chrome.scripting.calls[0]).toMatchObject({ tabId, func: snapshotPage, args: [PAGE_MARKS, 8000, 300] });
+    expect(chrome.scripting.calls[0]).toMatchObject({ tabId, func: snapshotPage, args: [PAGE_MARKS, 8000, 300, 30] });
     // Top frame only: no allFrames / other extensions' frames.
     expect(chrome.scripting.calls[0]!.frameIds).toBeUndefined();
 
@@ -83,10 +93,24 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
     expect(await driver.pressKey({ key: "Control+Enter" })).toEqual({ ok: true });
     expect(await driver.scroll({ direction: "down", amount: 2, index: 1 })).toEqual({ ok: true, moved: 1280, target: "page", position: 1280, size: 5400, view: 800 });
 
-    expect(injected()).toEqual([snapshotPage, clickInPage, clickInPage, caretToEndInPage, insertTextInPage, insertTextInPage, pressKeyInPage, viewportInPage, scrollProbeInPage]);
+    expect(injected()).toEqual([
+      snapshotPage,
+      checkStateInPage,
+      clickInPage,
+      typeTargetInPage,
+      clickInPage,
+      prepareTypingInPage,
+      insertTextInPage,
+      insertTextInPage,
+      pressKeyInPage,
+      viewportInPage,
+      scrollProbeInPage,
+    ]);
     const args = chrome.scripting.calls.map((c) => c.args);
     expect(args.slice(1)).toEqual([
       [PAGE_MARKS, 3],
+      [PAGE_MARKS, 3],
+      [PAGE_MARKS, 4],
       [PAGE_MARKS, 4],
       [PAGE_MARKS, 4],
       [PAGE_MARKS, 4, "Ada"],
@@ -106,7 +130,7 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
     chrome.debugger.blocked.add(tabId);
     cdp.handleDetach({ tabId }, "target_closed");
     expect(await driver.click({ index: 2 })).toEqual({ ok: true, note: FALLBACK_NOTE });
-    expect(injected()).toEqual([clickInPage]);
+    expect(injected()).toEqual([checkStateInPage, clickInPage]);
   });
 
   it("switches when a command fails even though the session is still attached", async () => {
@@ -197,7 +221,19 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
 
 describe("page functions", () => {
   it("are self-contained so chrome.scripting can serialize them", () => {
-    for (const fn of [clickInPage, caretToEndInPage, insertTextInPage, pressKeyInPage, viewportInPage, scrollProbeInPage, snapshotPage]) {
+    for (const fn of [
+      clickInPage,
+      typeTargetInPage,
+      prepareTypingInPage,
+      selectOptionInPage,
+      checkStateInPage,
+      setCheckedInPage,
+      insertTextInPage,
+      pressKeyInPage,
+      viewportInPage,
+      scrollProbeInPage,
+      snapshotPage,
+    ]) {
       const src = fn.toString();
       expect(src).not.toMatch(/__name|__vite|_interop|import\(|\bexports\b|require\(/);
       expect(() => new Function(`return (${src})`)).not.toThrow();

@@ -149,7 +149,7 @@ describe("startApiAgent", () => {
     expect(toolNames(r1!)).toContain("act");
     expect(toolNames(r1!)).not.toContain("click");
     expect(toolNames(r1!)).not.toContain("type");
-    expect(r1!.body.system[0].text).toMatch(/one act call \(up to 8\)/);
+    expect(r1!.body.system[0].text).toMatch(/one act call \(up to 12\)/);
     expect(toolNames(r2!)).not.toContain("click");
     // The second act was not confident: the model is told to retry with an index, still via act.
     expect(lastUser(r3!).content[0].content[0].text).toContain("not confident at step 1");

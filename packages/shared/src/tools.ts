@@ -7,6 +7,9 @@ import { MAX_TABS_PER_CALL } from "./browser.js";
  */
 export const MCP_SERVER_NAME = "browsertodo";
 
+/** Most steps in one act call: enough for a whole signup form (its fields, the terms box and submit). */
+export const MAX_ACT_STEPS = 12;
+
 /** act's arguments; the field descriptions differ with Jev on (see ToolArgsJev). */
 function actArgs(d: { goal: string; index: string; steps: string }) {
   return z.object({
@@ -14,12 +17,19 @@ function actArgs(d: { goal: string; index: string; steps: string }) {
       .array(
         z.object({
           goal: z.string().describe(d.goal),
-          text: z.string().optional().describe("Text to enter when this step types into a field"),
+          text: z
+            .string()
+            .optional()
+            .describe("Text for a step that fills a field: it replaces the field's current value (in a rich editor it is added at the end). For a dropdown (<select>), the option to choose: its label or value"),
+          checked: z
+            .boolean()
+            .optional()
+            .describe("For a checkbox, radio button or switch: true to check (select) it, false to uncheck it. The state is set, not toggled: nothing happens when it already is"),
           index: z.number().int().optional().describe(d.index),
         }),
       )
       .min(1)
-      .max(8)
+      .max(MAX_ACT_STEPS)
       .describe(d.steps),
   });
 }
@@ -108,7 +118,7 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   read_page:
     "Get the page URL, title, visible text and an indexed list of interactive elements. Give `tabs` to read several tabs in one call (each under its own header) without switching to them.",
   screenshot: "Capture the visible part of the current tab as an image.",
-  act: "Do up to 8 small steps in order, in one call. Each step names the element index from read_page: a step with text types it into that element, a step without text clicks it. Stops at the first step that fails and returns the page's element list, so you can send the rest again.",
+  act: `Do up to ${MAX_ACT_STEPS} small steps in order, in one call. Each step names the element index from read_page: a step with text fills that element (a dropdown gets the option named by text), a step with checked sets a checkbox or radio button, any other step clicks it. Stops at the first step that fails and returns the page's element list, so you can send the rest again.`,
   click: "Click an element by index from read_page.",
   type: "Focus an element by index and insert text into it.",
   paste: "Insert text at the current keyboard focus.",
@@ -137,7 +147,7 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
 const JEV_DESCRIPTIONS: Partial<Record<ToolName, string>> = {
   read_page:
     "Get the page URL, title, visible text and a compact list of the interactive elements (role and visible label, no index numbers). Describe the element you want in words in act; the fast picker finds it. Give `tabs` to read several tabs in one call (each under its own header) without switching to them.",
-  act: "Do up to 8 small steps in order, in one call. Describe each step's element in words: its visible label and role, and its position when several look alike (e.g. 'click the Reply button under the first post', 'type into the Post text box'); a fast model picks the element. Give text for steps that type. If the fast model is not confident about a step, act stops there and returns a short numbered candidate list for that step only: send that step again with the same goal and the index of the right candidate, then continue. Do not send an index otherwise.",
+  act: `Do up to ${MAX_ACT_STEPS} small steps in order, in one call. Describe each step's element in words: its visible label and role, and its position when several look alike (e.g. 'click the Reply button under the first post', 'type into the Post text box'); a fast model picks the element. Give text for steps that fill a field (a dropdown gets the option named by text), and checked for checkboxes and radio buttons. If the fast model is not confident about a step, act stops there and returns a short numbered candidate list for that step only: send that step again with the same goal and the index of the right candidate, then continue. Do not send an index otherwise.`,
 };
 
 /** The description of a tool, for the given Jev mode. */

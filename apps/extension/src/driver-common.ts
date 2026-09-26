@@ -74,3 +74,69 @@ export async function pollUntil(done: () => Promise<boolean>, sleep: Sleep, time
     await sleep(POLL_MS);
   }
 }
+
+/** An element's check state, as checkStateInPage reads it. */
+export interface CheckState {
+  checkable: boolean;
+  checked: boolean;
+  radio: boolean;
+}
+
+/** The page operations behind browser.click on one element, by the debugger or the fallback. */
+export interface ClickOps {
+  /** Its check state; null when the page gave no answer (it may be navigating). */
+  state(): Promise<CheckState | null>;
+  click(): Promise<void>;
+  /** Sets the check state without a real click (setCheckedInPage); returns the state afterwards. */
+  force(checked: boolean): Promise<boolean>;
+}
+
+/**
+ * browser.click for both drivers: a click, or with `checked` a checkbox,
+ * radio button or switch set to that state (clicked only when it is not so
+ * already, so a second call never unchecks it). For those, the result says
+ * the state afterwards, so the agent sees what its click did.
+ */
+export async function clickElement({ index, checked }: Params<"browser.click">, ops: ClickOps): Promise<Result<"browser.click">> {
+  const before = await ops.state();
+  if (checked !== undefined) {
+    if (!before?.checkable) throw new Error(`element ${index} is not a checkbox, radio button or switch; leave out checked to click it`);
+    if (before.checked === checked) return { ok: true, checked };
+    if (!checked && before.radio) throw new Error(`element ${index} is a radio button: it is unchecked by checking another option of its group`);
+  }
+  await ops.click();
+  if (!before?.checkable) return { ok: true };
+  let now = (await ops.state().catch(() => null))?.checked;
+  if (now === undefined) return { ok: true };
+  if (checked !== undefined && now !== checked) now = await ops.force(checked);
+  if (checked !== undefined && now !== checked) throw new Error(`element ${index} is still ${now ? "checked" : "unchecked"} after clicking it`);
+  return { ok: true, checked: now };
+}
+
+/** What typing into an element means (typeTargetInPage). */
+export type TypeTarget = "field" | "editor" | "select" | "other";
+
+/** The page operations behind browser.type on one element, by the debugger or the fallback. */
+export interface TypeOps {
+  target(): Promise<TypeTarget>;
+  /** Chooses the <select>'s option the text names; returns its label. */
+  select(): Promise<string>;
+  click(): Promise<void>;
+  /** Selects (or empties) the field, or puts the caret at the end of an editor (prepareTypingInPage). */
+  prepare(): Promise<void>;
+  insert(): Promise<void>;
+}
+
+/**
+ * browser.type for both drivers. A dropdown gets its option chosen, never
+ * clicked (a click opens its native popup) or typed into. Anything else is
+ * clicked for the focus, prepared so the text replaces a field's value, and
+ * the text is inserted only into what the click focused.
+ */
+export async function typeIntoElement(ops: TypeOps): Promise<Result<"browser.type">> {
+  if ((await ops.target()) === "select") return { ok: true, selected: await ops.select() };
+  await ops.click();
+  await ops.prepare();
+  await ops.insert();
+  return { ok: true };
+}

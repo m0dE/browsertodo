@@ -123,7 +123,7 @@ export class Driver {
 
   click(p: P<"browser.click">): Promise<WithNote<R<"browser.click">>> {
     return this.use(
-      (tabId) => this.viaCdp.click(tabId, p.index),
+      (tabId) => this.viaCdp.click(tabId, p),
       (tabId) => this.fallback.click(tabId, p),
     );
   }

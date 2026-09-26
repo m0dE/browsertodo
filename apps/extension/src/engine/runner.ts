@@ -35,7 +35,7 @@ import { turnJob, type AdhocInput, type AdhocJob, type RunnerApi, type TurnJob }
 import { Lifecycle, type RunBrain } from "./run/lifecycle.js";
 import { ResultRecorder } from "./run/record.js";
 import { KeepAlive, RunnerStateStore, type RunnerState } from "./run/state.js";
-import { TurnRunner } from "./run/turn.js";
+import { TurnRunner, type TabPage } from "./run/turn.js";
 
 export interface ResolvedBrain {
   brain: Brain | null;
@@ -56,8 +56,8 @@ export interface RunnerDeps {
   accountApi?(): Promise<RunnerApi | null>;
   localStore: LocalStore;
   sessions: SessionStore;
-  /** A browser tab's address and title (no tabId: the tab the user is looking at); see TurnDeps.pageOf. */
-  pageOf?(tabId?: number): Promise<{ url: string; title: string } | null>;
+  /** A browser tab's id, address and title (no tabId: the tab the user is looking at); see TurnDeps.pageOf. */
+  pageOf?(tabId?: number): Promise<TabPage | null>;
   media: { materialize(sessionId: string, sources: MediaSource[]): Promise<MaterializedMedia> };
   /** Resolves the brain for these settings; may (re)connect the helper. */
   resolveBrain(settings: ExtensionSettings): Promise<ResolvedBrain>;

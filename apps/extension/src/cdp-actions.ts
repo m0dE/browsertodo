@@ -6,6 +6,7 @@
 import { type Sleep, type PageSnapshot, type Screenshot } from "@browsertodo/shared";
 import type { Cdp } from "./cdp.js";
 import {
+  clickElement,
   indexSelector,
   notFound,
   PAGE_MARKS,
@@ -15,17 +16,22 @@ import {
   SCROLL_SETTLE_MS,
   scrollDelta,
   SETTLE_MS,
+  typeIntoElement,
+  type CheckState,
   type Params as P,
   type Result as R,
 } from "./driver-common.js";
 import type { keyEvents } from "./keys.js";
-import { caretToEndInPage } from "./page-input.js";
+import { checkStateInPage, prepareTypingInPage, selectOptionInPage, setCheckedInPage, typeTargetInPage } from "./page-input.js";
 import { snapshotExpression } from "./page-snapshot.js";
 import { isDebuggerBlocked } from "./restricted.js";
 import { sameProbe, scrollProbeExpression, scrollReport, type PageResult, type ScrollProbe } from "./scroll-probe.js";
 
 /** Extra readings after a wheel while the position still changes (smooth scrolling). */
 const SCROLL_SETTLE_POLLS = 6;
+
+/** A page function of page-input.ts: PAGE_MARKS, then its own arguments. */
+type PageFunction<T> = (marks: typeof PAGE_MARKS, ...args: never[]) => PageResult<T>;
 
 interface EvaluateResult<T> {
   result?: { value?: T };
@@ -62,23 +68,37 @@ export class CdpActions {
     return { base64: shot.data, mimeType: "image/jpeg" };
   }
 
-  async click(tabId: number, index: number): Promise<R<"browser.click">> {
+  click(tabId: number, p: P<"browser.click">): Promise<R<"browser.click">> {
+    const index = Math.trunc(p.index);
+    return clickElement(p, {
+      state: async () => {
+        const out = await this.pageResult<CheckState>(tabId, checkStateInPage, [index]);
+        if (out?.ok === false) throw new Error(out.error);
+        return out?.ok === true ? out.value : null;
+      },
+      click: () => this.mouseClick(tabId, index),
+      force: (checked) => this.inPage<boolean>(tabId, setCheckedInPage, [index, checked]),
+    });
+  }
+
+  /** A trusted mouse click at the element's center, scrolled into view first. */
+  private async mouseClick(tabId: number, index: number): Promise<void> {
     const { x, y } = await this.centerOf(tabId, index);
     await this.send(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" });
     await this.send(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
     await this.send(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 });
-    return { ok: true };
   }
 
-  async type(tabId: number, { index, text }: P<"browser.type">): Promise<R<"browser.type">> {
-    await this.click(tabId, index);
-    // Text is appended rather than inserted mid-way (best effort: the click already focused it).
-    await this.evaluate(tabId, `(${caretToEndInPage.toString()})(${JSON.stringify(PAGE_MARKS)}, ${Math.trunc(index)})`).catch((err: unknown) => {
-      if (isDebuggerBlocked(err)) throw err;
-      return undefined;
+  type(tabId: number, { index, text }: P<"browser.type">): Promise<R<"browser.type">> {
+    const i = Math.trunc(index);
+    return typeIntoElement({
+      target: () => this.inPage(tabId, typeTargetInPage, [i]),
+      select: () => this.inPage<string>(tabId, selectOptionInPage, [i, text]),
+      click: () => this.mouseClick(tabId, i),
+      prepare: () => this.inPage<true>(tabId, prepareTypingInPage, [i]).then(() => undefined),
+      // Trusted text input at the focus, like typing.
+      insert: () => this.send(tabId, "Input.insertText", { text }).then(() => undefined),
     });
-    await this.send(tabId, "Input.insertText", { text });
-    return { ok: true };
   }
 
   async paste(tabId: number, { text }: P<"browser.paste">): Promise<R<"browser.paste">> {
@@ -150,6 +170,23 @@ export class CdpActions {
     );
     if (!pos) throw notFound(index);
     return pos;
+  }
+
+  /**
+   * Runs a page function (page-input.ts) with PAGE_MARKS and `args`, and
+   * returns its value; its error is thrown. No answer (the page navigated
+   * meanwhile) is an error too.
+   */
+  private async inPage<T>(tabId: number, fn: PageFunction<T>, args: unknown[]): Promise<T> {
+    const out = await this.pageResult(tabId, fn, args);
+    if (!out) throw new Error("Page script failed (or the page was navigating); call read_page and try again");
+    if (!out.ok) throw new Error(out.error);
+    return out.value;
+  }
+
+  /** A page function's result as it is; undefined when the page gave none. */
+  private pageResult<T>(tabId: number, fn: PageFunction<T>, args: unknown[]): Promise<PageResult<T> | undefined> {
+    return this.evaluate<PageResult<T> | undefined>(tabId, `(${fn.toString()})(${[PAGE_MARKS, ...args].map((a) => JSON.stringify(a)).join(", ")})`);
   }
 
   private async evaluate<T>(tabId: number, expression: string): Promise<T> {

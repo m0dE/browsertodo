@@ -176,7 +176,9 @@ try {
     const events = await eventsOf(sessionId);
     if (!claude) {
       const run = await lastRun();
-      assert.deepEqual(run.task, { id: sessionId, instructions: SCREEN, account: null, screenHelp: true });
+      // Told which page it is (the tab the chat belongs to), where it works.
+      const userTab = { url: site.url("/signup"), title: await signup.title(), access: "here" };
+      assert.deepEqual(run.task, { id: sessionId, instructions: SCREEN, account: null, screenHelp: true, userTab });
       assert.equal(run.url, site.url("/signup"));
       assert.ok(run.shot > 100, `background screenshot ${JSON.stringify(run)}`);
       return `outcome ${s.outcome}; screenshot of the background tab ${run.shot} base64 chars; read ${run.url}`;
@@ -217,7 +219,7 @@ try {
     if (!claude) {
       const run = await lastRun();
       assert.equal(run.task.instructions, task);
-      assert.deepEqual(run.task.restrictedPage, { url: "chrome://version/", title: await restricted.title() });
+      assert.deepEqual(run.task.userTab, { url: "chrome://version/", title: await restricted.title(), access: "restricted" });
       assert.equal(s.outcome, "done");
       return `${s.outcome}; the agent worked in ${run.url} and was told about chrome://version`;
     }

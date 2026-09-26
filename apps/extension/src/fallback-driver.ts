@@ -1,7 +1,8 @@
-import { delay, MAX_SNAPSHOT_ELEMENTS, MAX_SNAPSHOT_TEXT, type PageSnapshot, type Screenshot, type Sleep } from "@browsertodo/shared";
+import { delay, MAX_SNAPSHOT_ELEMENTS, MAX_SNAPSHOT_OPTIONS, MAX_SNAPSHOT_TEXT, type PageSnapshot, type Screenshot, type Sleep } from "@browsertodo/shared";
 import { isTabLoaded } from "./chrome-tabs.js";
 import {
   BACKGROUND_SHOT_SKIPPED,
+  clickElement,
   PAGE_MARKS,
   POLL_MS,
   pollUntil,
@@ -9,11 +10,22 @@ import {
   SCROLL_SETTLE_MS,
   scrollDelta,
   SETTLE_MS,
+  typeIntoElement,
   type Params as P,
   type Result as R,
 } from "./driver-common.js";
 import { parseKeyCombo } from "./keys.js";
-import { caretToEndInPage, clickInPage, insertTextInPage, pressKeyInPage, viewportInPage } from "./page-input.js";
+import {
+  checkStateInPage,
+  clickInPage,
+  insertTextInPage,
+  prepareTypingInPage,
+  pressKeyInPage,
+  selectOptionInPage,
+  setCheckedInPage,
+  typeTargetInPage,
+  viewportInPage,
+} from "./page-input.js";
 import { snapshotPage } from "./page-snapshot.js";
 import { scrollProbeInPage, scrollReport, type PageResult, type ScrollProbe } from "./scroll-probe.js";
 
@@ -58,7 +70,7 @@ export class FallbackDriver {
   }
 
   async readPage(tabId: number): Promise<PageSnapshot> {
-    const [res] = await chrome.scripting.executeScript({ target: { tabId }, func: snapshotPage, args: [PAGE_MARKS, MAX_SNAPSHOT_TEXT, MAX_SNAPSHOT_ELEMENTS] });
+    const [res] = await chrome.scripting.executeScript({ target: { tabId }, func: snapshotPage, args: [PAGE_MARKS, MAX_SNAPSHOT_TEXT, MAX_SNAPSHOT_ELEMENTS, MAX_SNAPSHOT_OPTIONS] });
     const snap = res?.result as PageSnapshot | undefined;
     if (!snap) throw new Error("Page script failed: no page snapshot (the page may be navigating); try again");
     return snap;
@@ -73,16 +85,23 @@ export class FallbackDriver {
     return { base64: dataUrl.replace(/^data:[^,]*,/, ""), mimeType: "image/jpeg" };
   }
 
-  async click(tabId: number, { index }: P<"browser.click">): Promise<R<"browser.click">> {
-    await this.exec(tabId, clickInPage, [PAGE_MARKS, index]);
-    return { ok: true };
+  click(tabId: number, p: P<"browser.click">): Promise<R<"browser.click">> {
+    const { index } = p;
+    return clickElement(p, {
+      state: () => this.exec(tabId, checkStateInPage, [PAGE_MARKS, index]),
+      click: () => this.exec(tabId, clickInPage, [PAGE_MARKS, index]).then(() => undefined),
+      force: (checked) => this.exec(tabId, setCheckedInPage, [PAGE_MARKS, index, checked]),
+    });
   }
 
-  async type(tabId: number, { index, text }: P<"browser.type">): Promise<R<"browser.type">> {
-    await this.exec(tabId, clickInPage, [PAGE_MARKS, index]);
-    await this.exec(tabId, caretToEndInPage, [PAGE_MARKS, index]);
-    await this.exec(tabId, insertTextInPage, [PAGE_MARKS, index, text]);
-    return { ok: true };
+  type(tabId: number, { index, text }: P<"browser.type">): Promise<R<"browser.type">> {
+    return typeIntoElement({
+      target: () => this.exec(tabId, typeTargetInPage, [PAGE_MARKS, index]),
+      select: () => this.exec(tabId, selectOptionInPage, [PAGE_MARKS, index, text]),
+      click: () => this.exec(tabId, clickInPage, [PAGE_MARKS, index]).then(() => undefined),
+      prepare: () => this.exec(tabId, prepareTypingInPage, [PAGE_MARKS, index]).then(() => undefined),
+      insert: () => this.exec(tabId, insertTextInPage, [PAGE_MARKS, index, text]).then(() => undefined),
+    });
   }
 
   async paste(tabId: number, { text }: P<"browser.paste">): Promise<R<"browser.paste">> {

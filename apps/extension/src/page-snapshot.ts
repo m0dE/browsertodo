@@ -1,9 +1,9 @@
-import { MAX_SNAPSHOT_ELEMENTS, MAX_SNAPSHOT_TEXT, type PageSnapshot } from "@browsertodo/shared";
+import { MAX_SNAPSHOT_ELEMENTS, MAX_SNAPSHOT_OPTIONS, MAX_SNAPSHOT_TEXT, type PageSnapshot } from "@browsertodo/shared";
 import { PAGE_MARKS, type PageMarks } from "./driver-common.js";
 
 /** The Runtime.evaluate expression that runs snapshotPage in the page. */
 export function snapshotExpression(): string {
-  return `(${snapshotPage.toString()})(${JSON.stringify(PAGE_MARKS)}, ${MAX_SNAPSHOT_TEXT}, ${MAX_SNAPSHOT_ELEMENTS})`;
+  return `(${snapshotPage.toString()})(${JSON.stringify(PAGE_MARKS)}, ${MAX_SNAPSHOT_TEXT}, ${MAX_SNAPSHOT_ELEMENTS}, ${MAX_SNAPSHOT_OPTIONS})`;
 }
 
 /**
@@ -11,7 +11,7 @@ export function snapshotExpression(): string {
  * no imports, no references to module scope, plain ES2020, because it is
  * serialized with Function.prototype.toString.
  */
-export function snapshotPage(marks: PageMarks, maxText: number, maxElements: number): PageSnapshot {
+export function snapshotPage(marks: PageMarks, maxText: number, maxElements: number, maxOptions: number): PageSnapshot {
   var ATTR = marks.attr;
   var old = document.querySelectorAll("[" + ATTR + "]");
   for (var i = 0; i < old.length; i++) old[i]!.removeAttribute(ATTR);
@@ -76,6 +76,39 @@ export function snapshotPage(marks: PageMarks, maxText: number, maxElements: num
     return "generic";
   }
 
+  /** A label's text without the text of controls inside it (a <select> in its label would add every option). */
+  function labelText(label: HTMLLabelElement, control: Element): string {
+    if (!label.contains(control)) return label.textContent || "";
+    var copy = label.cloneNode(true) as HTMLElement;
+    var inner = copy.querySelectorAll("select, textarea, input, button");
+    for (var k = 0; k < inner.length; k++) inner[k]!.remove();
+    return copy.textContent || "";
+  }
+
+  /** The page's message for a field that fails validation, once it has a value or the form was submitted; else "". */
+  function invalidMessage(el: Element, hasValue: boolean): string {
+    if (el.getAttribute("aria-invalid") === "true") {
+      var ids = (el.getAttribute("aria-errormessage") || el.getAttribute("aria-describedby") || "").split(/\s+/);
+      var said = ids
+        .map(function (id) {
+          var ref = id ? document.getElementById(id) : null;
+          return ref ? ref.textContent || "" : "";
+        })
+        .join(" ");
+      return clean(said, 160) || "invalid";
+    }
+    var field = el as HTMLInputElement;
+    if (!field.validity || field.validity.valid || !field.willValidate) return "";
+    var shown = hasValue;
+    try {
+      // Set once the user (or a submit) touched it; Chrome 119+.
+      shown = shown || el.matches(":user-invalid");
+    } catch (e) {
+      /* older browsers: only fields with a value */
+    }
+    return shown ? clean(field.validationMessage, 160) || "invalid" : "";
+  }
+
   function nameOf(el: Element): string {
     var aria = el.getAttribute("aria-label");
     if (aria && aria.trim()) return clean(aria, 120);
@@ -91,7 +124,7 @@ export function snapshotPage(marks: PageMarks, maxText: number, maxElements: num
     }
     var labels = (el as HTMLInputElement).labels;
     if (labels && labels.length) {
-      var lt = clean(labels[0]!.textContent, 120);
+      var lt = clean(labelText(labels[0]!, el), 120);
       if (lt) return lt;
     }
     var attrs = ["alt", "title", "placeholder"];
@@ -144,10 +177,35 @@ export function snapshotPage(marks: PageMarks, maxText: number, maxElements: num
       var innerClean = clean(inner === undefined ? el.textContent : inner, 120);
       if (innerClean && innerClean !== info.name) info.text = innerClean;
     }
-    if (tag === "input" || tag === "textarea" || tag === "select") {
+    var checkable = inputType === "checkbox" || inputType === "radio";
+    if (tag === "select") {
+      var select = el as HTMLSelectElement;
+      var chosen = select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null;
+      // What the person sees chosen (the option's label), unless it is an empty placeholder.
+      if (chosen && chosen.value !== "") info.value = clean(chosen.label || chosen.text, 200);
+      var labels: string[] = [];
+      for (var o = 0; o < select.options.length && labels.length < maxOptions; o++) {
+        var opt = select.options[o]!;
+        var optLabel = clean(opt.label || opt.text, 60);
+        if (optLabel && opt.value !== "") labels.push(optLabel);
+      }
+      if (labels.length) info.options = labels;
+    } else if ((tag === "input" && !checkable) || tag === "textarea") {
       var value = (el as HTMLInputElement).value;
       if (value) info.value = inputType === "password" ? "********" : value.slice(0, 200);
+    } else if (checkable && (el as HTMLInputElement).value !== "on") {
+      // A checkbox's or radio's value says which option it is (value="11-50"), not what was entered.
+      info.value = (el as HTMLInputElement).value.slice(0, 200);
     }
+    var ariaRole = (el.getAttribute("role") || "").split(" ")[0];
+    if (checkable) info.checked = (el as HTMLInputElement).checked;
+    else if (/^(checkbox|radio|switch|menuitemcheckbox|menuitemradio)$/.test(ariaRole || "")) info.checked = el.getAttribute("aria-checked") === "true";
+    if (tag === "input" || tag === "textarea" || tag === "select") {
+      if ((el as HTMLInputElement).required || el.getAttribute("aria-required") === "true") info.required = true;
+      var invalid = invalidMessage(el, !checkable && !!(el as HTMLInputElement).value);
+      if (invalid) info.invalid = invalid;
+    } else if (el.getAttribute("aria-required") === "true") info.required = true;
+    if (tag !== "input" && tag !== "textarea" && tag !== "select" && el.getAttribute("aria-invalid") === "true") info.invalid = invalidMessage(el, true);
     var href = tag === "a" ? (el as HTMLAnchorElement).href : null;
     if (href) info.href = href.slice(0, 500);
     var testId = el.getAttribute("data-testid");

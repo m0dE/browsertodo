@@ -4,7 +4,7 @@
  * brain's events into the session, and the checks on the result (X post
  * verification, failure classification). Next turns: conversation.ts.
  */
-import { bareToolName, errorMessage, isXStatusUrl, type AgentEvent, type AgentTask, type ExtensionSettings, type RestrictedPage, type RunConfig, type SessionInfo, type TaskRunResult } from "@browsertodo/shared";
+import { bareToolName, errorMessage, isXStatusUrl, type AgentEvent, type AgentTask, type ExtensionSettings, type RunConfig, type SessionInfo, type TaskRunResult, type UserTab } from "@browsertodo/shared";
 import type { AgentSlot } from "../../agent-slots.js";
 import { SessionEndedError, type Brain, type BrainRun, type ContinuableBrain, type CoreApi } from "../brains.js";
 import type { LocalStore } from "../local-store.js";
@@ -84,6 +84,13 @@ export function runConfig(settings: ExtensionSettings, isRetry: boolean): RunCon
   return config;
 }
 
+/** A browser tab as chrome.tabs reports it. */
+export interface TabPage {
+  tabId: number;
+  url: string;
+  title: string;
+}
+
 export interface TurnDeps {
   sessions: SessionStore;
   /** Which browser tab each conversation belongs to (absent: conversations have no tab). */
@@ -92,10 +99,10 @@ export interface TurnDeps {
   media: { materialize(sessionId: string, sources: MediaSource[]): Promise<MaterializedMedia> };
   core: Pick<CoreApi, "verifyXPost" | "classifyFailure">;
   /**
-   * The address and title of a browser tab (no tabId: the tab the user is
+   * The id, address and title of a browser tab (no tabId: the tab the user is
    * looking at), from chrome.tabs, which works on every page. Absent: not known.
    */
-  pageOf?(tabId?: number): Promise<{ url: string; title: string } | null>;
+  pageOf?(tabId?: number): Promise<TabPage | null>;
   log(message: string): void;
 }
 
@@ -123,17 +130,21 @@ export class TurnRunner {
   ): Promise<TaskRunResult> {
     const adhoc = job.source === "adhoc";
     const origin = adhoc ? job.input.tabId : undefined;
-    // The user's tab may be a page Chrome keeps extensions out of: the run still starts, in a tab next to it.
-    const restricted = adhoc ? await this.restrictedPage(origin) : null;
+    // The tab the user sent it from (no origin: the one they are looking at). It may be a page Chrome keeps
+    // extensions out of: the run still starts, in a tab next to it.
+    const page = adhoc ? await this.pageOf(origin) : null;
+    const restricted = !!page && isRestrictedUrl(page.url);
+    let picked: number;
     if (origin === undefined) {
-      await active.slot.prepare({ mode: adhoc ? "current-tab" : "own-tab" });
+      picked = await active.slot.prepare({ mode: adhoc ? "current-tab" : "own-tab" });
       if (restricted) this.emit(active, { type: "status", text: RESTRICTED_STATUS });
     } else {
       // Not brought to the front: the user may have moved on to another tab already.
-      await this.follow(active, origin, await active.slot.prepare({ mode: "current-tab", tabId: origin }), restricted);
+      picked = await active.slot.prepare({ mode: "current-tab", tabId: origin });
+      await this.follow(active, origin, picked, restricted);
     }
-    // The agent is told about the page it cannot see (buildTaskPrompt).
-    const task: AgentTask = restricted ? { ...opened.task, restrictedPage: restricted } : opened.task;
+    // The agent is told which page the user is looking at (buildTaskPrompt); scheduled and TODO tasks have none.
+    const task: AgentTask = page ? { ...opened.task, userTab: userTabOf(page, picked) } : opened.task;
     const sources = await mediaSources(job, this.deps.localStore);
     if (sources.length) this.emit(active, { type: "status", text: `Preparing ${sources.length} file(s)` });
     const mediaPaths = await this.materialize(active, sources, cleanups);
@@ -148,13 +159,9 @@ export class TurnRunner {
     return this.deps.tabChats ? this.deps.tabChats.tabOf(sessionId).catch(() => null) : null;
   }
 
-  /**
-   * The user's tab (no tabId: the one they are looking at) when it is a page
-   * Chrome does not let extensions see or control, else null.
-   */
-  async restrictedPage(tabId?: number): Promise<RestrictedPage | null> {
-    const page = await this.deps.pageOf?.(tabId).catch(() => null);
-    return page && isRestrictedUrl(page.url) ? { url: page.url, title: page.title } : null;
+  /** A browser tab's id, address and title (no tabId: the one the user is looking at), or null when not known. */
+  async pageOf(tabId?: number): Promise<TabPage | null> {
+    return (await this.deps.pageOf?.(tabId).catch(() => null)) ?? null;
   }
 
   /**
@@ -162,7 +169,7 @@ export class TurnRunner {
    * shows a chrome:// page): it now belongs there. restricted: the reason was
    * a page Chrome keeps extensions out of (said in a quiet line).
    */
-  async follow(active: ActiveSession, origin: number, picked: number, restricted: RestrictedPage | null = null): Promise<void> {
+  async follow(active: ActiveSession, origin: number, picked: number, restricted = false): Promise<void> {
     if (picked === origin) return;
     if (restricted) this.emit(active, { type: "status", text: RESTRICTED_STATUS });
     if (!this.deps.tabChats) return;
@@ -266,6 +273,12 @@ export class TurnRunner {
     }
     this.emit(active, e);
   }
+}
+
+/** The user's tab as the agent is told about it, once the run's tab was picked (`picked`: where the run works). */
+export function userTabOf(page: TabPage, picked: number): UserTab {
+  const access = isRestrictedUrl(page.url) ? "restricted" : picked === page.tabId ? "here" : "elsewhere";
+  return { url: page.url, title: page.title, access };
 }
 
 function withSafetyTimer(run: BrainRun, settings: ExtensionSettings, cleanups: Cleanup[], throwEnded: boolean): Promise<TaskRunResult> {

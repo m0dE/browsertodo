@@ -34,6 +34,8 @@ export interface JevElement {
   testId?: string;
   href?: string;
   value?: string;
+  /** A dropdown's option labels (clipped), so "select United Kingdom" matches the dropdown that offers it. */
+  options?: string;
   disabled?: true;
   inViewport: boolean;
   /** Inside an open dialog (compose box, reply box, menu). */
@@ -108,6 +110,7 @@ export function buildJevState(goal: string, snapshot: PageSnapshot, max = JEV_MA
       if (e.testId) out.testId = e.testId;
       if (e.href) out.href = shortHref(e.href, snapshot.url);
       if (e.value) out.value = e.value.slice(0, 60);
+      if (e.options?.length) out.options = e.options.join(", ").slice(0, 200);
       if (e.disabled) out.disabled = true;
       if (e.inDialog) out.inDialog = true;
       const occ = occurrence.get(e.index);
@@ -128,6 +131,7 @@ export function describeJevElement(e: JevElement): string {
   if (e.testId) parts.push(`testid=${e.testId}`);
   if (e.href) parts.push(`links to ${e.href}`);
   if (e.value) parts.push(`value "${e.value}"`);
+  if (e.options) parts.push(`options: ${e.options}`);
   if (e.disabled) parts.push("disabled");
   if (e.inDialog) parts.push("in the open dialog");
   parts.push(e.inViewport ? "in view" : "offscreen");
@@ -135,8 +139,8 @@ export function describeJevElement(e: JevElement): string {
 }
 
 const OPERATION_CRITERIA: Record<JevOperation, string> = {
-  click: "Click one element (button, link, tab, menu item, checkbox) to do the goal.",
-  type: "Type the step's text into one input, text box or editable element. Only when the step has text to type.",
+  click: "Click one element (button, link, tab, menu item, checkbox, radio button) to do the goal.",
+  type: "Type the step's text into one input, text box or editable element, or choose it as the option of a dropdown (select, combobox). Only when the step has text.",
   scroll: "Scroll down: the element the goal needs is not in the list yet.",
   press_key: "Press a key such as Enter or Escape instead of clicking.",
   wait: "Wait: the page is still loading or changing.",

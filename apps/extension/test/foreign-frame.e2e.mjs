@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { driverCall, launchExtension } from "../../../test/e2e/lib/extension.mjs";
 import { serveHtml } from "../../../test/e2e/lib/serve.mjs";
 import { createSuite } from "../../../test/e2e/lib/suite.mjs";
-import { driverPage, findIndex, OTHER_PAGE } from "../../../test/fixtures/driver-page.mjs";
+import { driverPage, fillSignupForm, findIndex, OTHER_PAGE } from "../../../test/fixtures/driver-page.mjs";
 
 const injector = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "iframe-injector");
 const NOTE = "(Using fallback mode: another extension's frame on this page blocks Chrome's debugger. Clicks and typing are simulated.)";
@@ -154,6 +154,8 @@ try {
     assert.match(s.text, /Submitted: Ada/);
     return "submitted";
   });
+
+  await step("a form in fallback: dropdown chosen by label, checkbox set (not toggled), field replaced on retype", () => fillSignupForm(call, assert));
 
   await step("scroll in fallback moves the page and reports how far", async () => {
     const r = await call("scroll", { direction: "down", amount: 1 });

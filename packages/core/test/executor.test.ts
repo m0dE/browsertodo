@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clipEventText, MAX_EVENT_TEXT, OUT_OF_CREDIT, type TaskRunResult } from "@browsertodo/shared";
+import { clipEventText, MAX_ACT_STEPS, MAX_EVENT_TEXT, OUT_OF_CREDIT, type TaskRunResult } from "@browsertodo/shared";
 import { createToolExecutor, SecretRedactor } from "../src/index.js";
 import { REDACTED } from "../src/redact.js";
 import { picksEvent } from "../src/executor.js";
@@ -294,9 +294,9 @@ describe("createToolExecutor: act", () => {
     expect(r.text).not.toContain("not confident");
   });
 
-  it("rejects more than 8 steps", async () => {
+  it(`rejects more than ${MAX_ACT_STEPS} steps`, async () => {
     const { exec } = setup(new FakeX(), { jev: smartJev() });
-    const r = await exec.call("act", { steps: Array.from({ length: 9 }, () => ({ goal: "g" })) });
+    const r = await exec.call("act", { steps: Array.from({ length: MAX_ACT_STEPS + 1 }, () => ({ goal: "g" })) });
     expect(r.isError).toBe(true);
   });
 });

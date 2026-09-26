@@ -20,8 +20,20 @@ export interface ElementInfo {
   text?: string;
   /** input type, when tag is input. */
   type?: string;
-  /** Current value for inputs, truncated to 200 chars. */
+  /** Current value for inputs, truncated to 200 chars; for a <select>, the chosen option's label. */
   value?: string;
+  /** A <select>'s option labels (the first MAX_SNAPSHOT_OPTIONS), so a step can name one. */
+  options?: string[];
+  /** Checkboxes, radio buttons and switches: whether it is checked (absent: not one of those). */
+  checked?: boolean;
+  /** A form field that must be filled in (required, aria-required). */
+  required?: boolean;
+  /**
+   * A form field that fails validation, with the page's message (validationMessage, or the text
+   * of aria-errormessage / aria-describedby for aria-invalid fields). Only once it has a value or
+   * the form was submitted, so an empty form is not all invalid.
+   */
+  invalid?: string;
   href?: string;
   /** data-testid attribute, when present. Useful to Claude as a stable hint. */
   testId?: string;
@@ -44,6 +56,8 @@ export interface PageSnapshot {
 
 export const MAX_SNAPSHOT_TEXT = 8000;
 export const MAX_SNAPSHOT_ELEMENTS = 300;
+/** Option labels listed per <select> in a snapshot. */
+export const MAX_SNAPSHOT_OPTIONS = 30;
 
 export interface Screenshot {
   /** Base64 without the data: prefix. */
@@ -117,8 +131,16 @@ export type BrowserMethods = {
   /** tab: short tab id ("t2"); default the current tab. Reading never activates the tab. */
   "browser.readPage": { params: { tab?: string }; result: PageSnapshot };
   "browser.screenshot": { params: Record<string, never>; result: Screenshot };
-  "browser.click": { params: { index: number }; result: { ok: true } };
-  "browser.type": { params: { index: number; text: string }; result: { ok: true } };
+  /**
+   * checked: for a checkbox, radio button or switch, the state to set (clicked only when it is not
+   * so already); an error for other elements. The result's checked: the state afterwards, for those.
+   */
+  "browser.click": { params: { index: number; checked?: boolean }; result: { ok: true; checked?: boolean } };
+  /**
+   * Replaces a field's value with text (appended in a rich editor). For a <select>, chooses the
+   * option whose label or value is text instead: `selected` is its label.
+   */
+  "browser.type": { params: { index: number; text: string }; result: { ok: true; selected?: string } };
   "browser.paste": { params: { text: string }; result: { ok: true } };
   /** key is a KeyboardEvent.key value, optionally with modifiers: "Control+Enter". */
   "browser.pressKey": { params: { key: string }; result: { ok: true } };

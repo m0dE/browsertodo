@@ -35,14 +35,25 @@ export interface AgentTask {
    * look at the page they are on and do what is needed next.
    */
   screenHelp?: boolean;
-  /** The user's tab is a page Chrome keeps extensions out of: the agent works in other tabs. */
-  restrictedPage?: RestrictedPage;
+  /**
+   * The browser tab the user's chat belongs to (the one they are looking at),
+   * for a run started from it. Absent for runs without one (scheduled and
+   * TODO tasks): the agent works in its own tab.
+   */
+  userTab?: UserTab;
 }
 
-/** A page Chrome does not let extensions see or control (chrome://, the Web Store, ...), as chrome.tabs reports it. */
-export interface RestrictedPage {
+/** The tab a chat belongs to, as chrome.tabs reports it, and whether the run can work in it. */
+export interface UserTab {
   url: string;
   title: string;
+  /**
+   * here: the run works in this tab. restricted: Chrome keeps extensions out
+   * of the page (chrome://, the Web Store, ...), so the run works in a new tab
+   * next to it. elsewhere: the run works in a new tab next to it for another
+   * reason (another run is using it, or it cannot be controlled yet).
+   */
+  access: "here" | "restricted" | "elsewhere";
 }
 
 /** How a task run ended, as reported by either brain. */

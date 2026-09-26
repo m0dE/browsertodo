@@ -153,13 +153,13 @@ async function todoSource(): Promise<TodoSource> {
 
 const createApi = (s: ExtensionSettings) => new ApiClient({ apiBase: s.apiBase, runnerKey: s.runnerKey });
 
-/** A tab's address and title (no tabId: the tab the user is looking at); chrome.tabs works on every page. */
-async function pageOf(tabId?: number): Promise<{ url: string; title: string } | null> {
+/** A tab's id, address and title (no tabId: the tab the user is looking at); chrome.tabs works on every page. */
+async function pageOf(tabId?: number): Promise<{ tabId: number; url: string; title: string } | null> {
   const tab =
     tabId === undefined
       ? (await chrome.tabs.query({ active: true, lastFocusedWindow: true, windowType: "normal" }))[0]
       : await chrome.tabs.get(tabId).catch(() => undefined);
-  return tab ? { url: tabUrl(tab), title: tab.title ?? "" } : null;
+  return tab?.id === undefined ? null : { tabId: tab.id, url: tabUrl(tab), title: tab.title ?? "" };
 }
 
 // The keyboard shortcut: open the side panel with the cursor in the chat input (see panel-command.ts).

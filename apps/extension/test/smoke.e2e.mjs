@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { driverCall, EXTENSION_ID, launchExtension, pageUi, routerUi } from "../../../test/e2e/lib/extension.mjs";
 import { serveHtml } from "../../../test/e2e/lib/serve.mjs";
 import { createSuite, waitFor } from "../../../test/e2e/lib/suite.mjs";
-import { driverPage, findIndex, OTHER_PAGE } from "../../../test/fixtures/driver-page.mjs";
+import { driverPage, fillSignupForm, findIndex, OTHER_PAGE } from "../../../test/fixtures/driver-page.mjs";
 
 const site = await serveHtml((path) => (path === "/other" ? OTHER_PAGE : driverPage({ title: "Smoke fixture", heading: "Driver smoke page" })));
 const { base } = site;
@@ -218,6 +218,8 @@ try {
     assert.ok(s.text.includes("Hello from browsertodo!"), "paste appended at caret");
     return "Control+a and Escape seen by the page";
   });
+
+  await step("a form: dropdown chosen by label, checkbox set (not toggled), field replaced on retype", () => fillSignupForm(call, assert));
 
   await step("scroll moves the page and reports how far", async () => {
     const r = await call("scroll", { direction: "down", amount: 1 });

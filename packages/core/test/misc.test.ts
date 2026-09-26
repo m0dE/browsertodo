@@ -126,6 +126,19 @@ describe("jev", () => {
     expect(q.target.instructions).toMatch(/prefer the elements in the open dialog/);
   });
 
+  it("a dropdown is described with its options, and choosing one counts as the type operation", () => {
+    const snap: PageSnapshot = {
+      url: "https://acme.test/signup",
+      title: "Sign up",
+      text: "",
+      truncated: false,
+      elements: [{ index: 8, tag: "select", role: "combobox", name: "Country", options: ["Australia", "United Kingdom"], inViewport: true }],
+    };
+    const q = buildJevQuestions(buildJevState("select United Kingdom in the Country dropdown", snap, 250, { typesText: true }));
+    expect(q.target.criteria["8"]).toBe('combobox "Country", options: Australia, United Kingdom, in view');
+    expect(q.operation.criteria.type).toMatch(/choose it as the option of a dropdown/);
+  });
+
   it("asks operation + target choice questions and returns the lower confidence", async () => {
     const requests: any[] = [];
     const client: JevClientLike = {
@@ -244,7 +257,7 @@ describe("prompts", () => {
   it("jev prompt tells Claude to plan and batch steps with act", () => {
     const p = buildSystemPrompt({ tools: TOOL_NAMES, jev: true });
     expect(p).toMatch(/Plan the whole task/);
-    expect(p).toMatch(/one act call \(up to 8\)/);
+    expect(p).toMatch(/one act call \(up to 12\)/);
     expect(p).toMatch(/act replaces click and type/);
     expect(p).toMatch(/Jev picks the element of every act step from your words/);
     expect(p).toMatch(/the Reply button under the first post/);
@@ -329,16 +342,70 @@ describe("screen help and restricted pages", () => {
   });
 
   it("a page Chrome keeps extensions out of: named, worked around in other tabs, the user told what to press", () => {
-    const page = { url: "chrome://newtab/", title: "New Tab" };
-    const p = buildTaskPrompt({ id: "T", instructions: "verify my email", account: null, restrictedPage: page }, [], { isRetry: false });
+    const page = { url: "chrome://newtab/", title: "New Tab", access: "restricted" as const };
+    const p = buildTaskPrompt({ id: "T", instructions: "verify my email", account: null, userTab: page }, [], { isRetry: false });
     expect(p).toContain('"New Tab" (chrome://newtab/)');
     expect(p).toMatch(/does not allow extensions to see or control that page/);
     expect(p).toMatch(/other tabs/);
     expect(p).toMatch(/Click 'Verify email' on the page, then press Continue.*task_pause/s);
     expect(p).not.toMatch(/cannot see that page/);
-    expect(buildTaskPrompt({ ...screen, restrictedPage: page }, [], { isRetry: false })).toMatch(/cannot see that page.*title and address/s);
-    const next = buildFollowUpMessage({ text: "and now?", restrictedPage: page });
-    expect(next.startsWith("and now?\n\nNote: the user's tab shows")).toBe(true);
+    expect(buildTaskPrompt({ ...screen, userTab: page }, [], { isRetry: false })).toMatch(/cannot see that page.*title and address/s);
+    const next = buildFollowUpMessage({ text: "and now?", userTab: page });
+    expect(next.startsWith(`The user's tab: "New Tab" (chrome://newtab/).`)).toBe(true);
+    expect(next.endsWith("The user's message:\nand now?")).toBe(true);
+  });
+});
+
+describe("the user's tab", () => {
+  const inbox = { url: "http://localhost:4777/w/inbox", title: "Inbox (8) - Mail", access: "here" as const };
+  const ask = { id: "T", instructions: "Which emails need a reply? List senders.", account: null };
+
+  it("a task from a chat's tab starts with its title and address, and what 'this page' or 'these' refer to", () => {
+    const p = buildTaskPrompt({ ...ask, userTab: inbox }, [], { isRetry: false });
+    expect(p).toContain(`The user's tab: "Inbox (8) - Mail" (http://localhost:4777/w/inbox)`);
+    expect(p).toMatch(/"this page".*"these".*it means what this tab shows/s);
+    expect(p).toMatch(/navigate away only when the task needs another page/);
+    // Before the instructions, so they are read with it in mind.
+    expect(p.indexOf("The user's tab:")).toBeLessThan(p.indexOf("Task instructions:"));
+  });
+
+  it("a tab without a title is named by its address", () => {
+    expect(buildTaskPrompt({ ...ask, userTab: { ...inbox, title: " " } }, [], { isRetry: false })).toContain("The user's tab: http://localhost:4777/w/inbox.");
+  });
+
+  it("a tab the run cannot work in: the agent is told it works next to it, and where the page is", () => {
+    const p = buildTaskPrompt({ ...ask, userTab: { ...inbox, access: "elsewhere" } }, [], { isRetry: false });
+    expect(p).toMatch(/working in a new tab next to it/);
+    expect(p).toMatch(/open its address in your tab/);
+  });
+
+  it("runs without a tab (scheduled and TODO tasks) say nothing about one", () => {
+    expect(buildTaskPrompt(ask, [], { isRetry: false })).not.toMatch(/user's tab/);
+    expect(buildFollowUpMessage({ text: "and now?" })).toBe("and now?");
+  });
+
+  it("every next turn from the tab starts with it too, then the message", () => {
+    const next = buildFollowUpMessage({ text: " open the first one ", userTab: inbox });
+    expect(next).toMatch(/^The user's tab: "Inbox \(8\) - Mail"/);
+    expect(next.endsWith("The user's message:\nopen the first one")).toBe(true);
+  });
+
+  it("forms: all fields in one act call, dropdowns by text, checkboxes by checked, the field state instead of screenshots", () => {
+    for (const jev of [true, false]) {
+      const p = buildSystemPrompt({ tools: TOOL_NAMES, jev });
+      expect(p).toMatch(/Forms: fill all the fields in one act call/);
+      expect(p).toMatch(/submit button as the last step of the same call/);
+      expect(p).toMatch(/it replaces what the field holds/);
+      expect(p).toMatch(/for a dropdown \(the option's label/);
+      expect(p).toMatch(/`checked: true` for a checkbox or radio button/);
+      expect(p).toMatch(/validation error \(invalid: \.\.\.\): check those instead of taking screenshots/);
+    }
+  });
+
+  it("the system prompt uses the tab when it shows what the task is about, and navigates only when needed", () => {
+    const p = buildSystemPrompt({ tools: TOOL_NAMES, jev: true });
+    expect(p).toMatch(/When the user's tab .* already shows what the task is about, work on that page; navigate only when the task needs another page or site/);
+    expect(p).not.toMatch(/Start by navigating to the site/);
   });
 });
 

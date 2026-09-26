@@ -5,13 +5,14 @@
  * is told what was done so far. Either way its events append to the same
  * session, so the Activity view shows one thread.
  */
-import type { AgentTask, ExtensionSettings, SessionInfo, StampedAgentEvent, TaskRunResult } from "@browsertodo/shared";
+import type { AgentTask, ExtensionSettings, SessionInfo, StampedAgentEvent, TaskRunResult, UserTab } from "@browsertodo/shared";
 import { buildFollowUpMessage } from "@browsertodo/core";
 import { buildFollowUpInstructions, isContinuableOutcome } from "../../continue.js";
 import { isContinuable, SessionEndedError, type Brain } from "../brains.js";
 import type { LocalStore } from "../local-store.js";
 import { mediaSources, type TurnJob } from "./jobs.js";
-import { runConfig, type ActiveSession, type Cleanup, type TurnRunner } from "./turn.js";
+import { isRestrictedUrl } from "../../restricted.js";
+import { runConfig, userTabOf, type ActiveSession, type Cleanup, type TurnRunner } from "./turn.js";
 
 /** The message "Continue" sends when the user adds no note. */
 export const CONTINUE_TEXT = "Continue from where you stopped.";
@@ -52,13 +53,19 @@ export async function runNextTurn(
   const { from } = job;
   const sessionId = from.sessionId;
   const tab = await turns.tabOf(sessionId);
-  // The conversation's tab may now show a page Chrome keeps extensions out of: the turn goes on in a tab next to it.
-  const restricted = tab === null ? null : await turns.restrictedPage(tab);
+  // What the conversation's tab shows now. It may be a page Chrome keeps extensions out of: the turn goes on in a tab next to it.
+  const page = tab === null ? null : await turns.pageOf(tab);
+  let userTab: UserTab | undefined;
   if (tab === null) await active.slot.prepare({ mode: "own-tab" });
-  else await turns.follow(active, tab, await active.slot.prepare({ mode: "current-tab", tabId: tab }), restricted);
+  else {
+    const picked = await active.slot.prepare({ mode: "current-tab", tabId: tab });
+    await turns.follow(active, tab, picked, !!page && isRestrictedUrl(page.url));
+    if (page) userTab = userTabOf(page, picked);
+  }
   if (active.forced) throw new Error(active.forced.reason);
-  // What the agent gets: the message (for an empty one: look at the page again), and what a restricted page means.
-  const text = buildFollowUpMessage({ text: job.text, ...(job.screen ? { screenHelp: true } : {}), ...(restricted ? { restrictedPage: restricted } : {}) });
+  // What the agent gets: what the user's tab shows, then the message (for an empty one: look at the page again).
+  const message = { text: job.text, ...(job.screen ? { screenHelp: true } : {}) };
+  const text = buildFollowUpMessage({ ...message, ...(userTab ? { userTab } : {}) });
   // The brain echoes the message it got; the chat already shows the user's own words.
   active.said.push(text);
   if (from.brain === brain.kind && isContinuable(brain) && brain.isOpen?.(sessionId) !== false) {
@@ -73,10 +80,11 @@ export async function runNextTurn(
   turns.emit(active, { type: "status", text: FRESH_SESSION_STATUS });
   // Nothing echoes the message in a fresh session.
   active.said = [];
-  const instructions = buildFollowUpInstructions({ instructions: job.first.instructions, session: from, events, text });
+  // The tab goes with the task (buildTaskPrompt), not inside the summary's quoted message.
+  const instructions = buildFollowUpInstructions({ instructions: job.first.instructions, session: from, events, text: buildFollowUpMessage(message) });
   const sources = job.task ? await mediaSources({ source: "local", task: job.task }, localStore) : [];
   const mediaPaths = await turns.materialize(active, sources, cleanups);
-  const task: AgentTask = { id: job.task?.id ?? sessionId, instructions, account: job.first.account };
+  const task: AgentTask = { id: job.task?.id ?? sessionId, instructions, account: job.first.account, ...(userTab ? { userTab } : {}) };
   // After a stop, the agent first checks whether the work was already done.
   const run = turns.start(active, brain, { task, mediaPaths, config: runConfig(settings, from.outcome !== "done"), settings });
   return turns.drive(active, run, settings, cleanups);

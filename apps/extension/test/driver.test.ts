@@ -241,12 +241,75 @@ describe("Driver", () => {
     await expect(driver.click({ index: 9 })).rejects.toThrow("element 9 not found; call read_page again");
   });
 
-  it("type clicks, then inserts text", async () => {
-    evalResults.push(["scrollIntoView", { x: 1, y: 2 }]);
-    await driver.type({ index: 2, text: "hello" });
+  /** The page functions the driver ran, by name, in order. */
+  const pageCalls = () =>
+    chrome.debugger.commands
+      .filter((c) => c.method === "Runtime.evaluate")
+      .map((c) => /^\(function (\w+)/.exec(String((c.params as { expression: string }).expression))?.[1] ?? "expression");
+
+  it("type into a field: checks what it is, clicks it, selects its value so the text replaces it, then inserts text", async () => {
+    evalResults.push(["typeTargetInPage", { ok: true, value: "field" }], ["prepareTypingInPage", { ok: true, value: true }], ["scrollIntoView", { x: 1, y: 2 }]);
+    expect(await driver.type({ index: 2, text: "hello" })).toEqual({ ok: true });
     const methods = inputCommands().map((c) => c.method);
     expect(methods).toEqual(["Input.dispatchMouseEvent", "Input.dispatchMouseEvent", "Input.dispatchMouseEvent", "Input.insertText"]);
     expect(inputCommands().at(-1)!.params).toEqual({ text: "hello" });
+    expect(pageCalls()).toEqual(["typeTargetInPage", "expression", "prepareTypingInPage"]);
+  });
+
+  it("type into a dropdown chooses the option in the page: no click (it would open the native popup), no text input", async () => {
+    evalResults.push(["typeTargetInPage", { ok: true, value: "select" }], ["selectOptionInPage", { ok: true, value: "United Kingdom" }]);
+    expect(await driver.type({ index: 8, text: "united kingdom" })).toEqual({ ok: true, selected: "United Kingdom" });
+    expect(inputCommands()).toEqual([]);
+    expect(pageCalls()).toEqual(["typeTargetInPage", "selectOptionInPage"]);
+  });
+
+  it("type into what takes no text (a checkbox, a button) fails before anything is clicked or typed", async () => {
+    evalResults.push(["typeTargetInPage", { ok: false, error: "element 14 is a checkbox or radio button, which takes no text: set it with checked (true or false) instead" }]);
+    await expect(driver.type({ index: 14, text: "yes" })).rejects.toThrow(/set it with checked/);
+    expect(inputCommands()).toEqual([]);
+  });
+
+  it("type stops when the click focused no text field: the text never goes to the field focused before", async () => {
+    evalResults.push(
+      ["typeTargetInPage", { ok: true, value: "other" }],
+      ["prepareTypingInPage", { ok: false, error: "element 5 did not focus a text field when clicked, so nothing was typed" }],
+      ["scrollIntoView", { x: 1, y: 2 }],
+    );
+    await expect(driver.type({ index: 5, text: "United Kingdom" })).rejects.toThrow(/nothing was typed/);
+    expect(inputCommands().map((c) => c.method)).not.toContain("Input.insertText");
+  });
+
+  it("click with checked on an unchecked box clicks it and reports the new state", async () => {
+    let checked = false;
+    chrome.debugger.respond = (method, params) => {
+      if (method === "Input.dispatchMouseEvent" && (params as { type: string }).type === "mouseReleased") checked = !checked;
+      if (method !== "Runtime.evaluate") return {};
+      const expr = String((params as { expression: string }).expression);
+      if (expr.includes("checkStateInPage")) return { result: { value: { ok: true, value: { checkable: true, checked, radio: false } } } };
+      return { result: { value: { x: 5, y: 6 } } };
+    };
+    expect(await driver.click({ index: 14, checked: true })).toEqual({ ok: true, checked: true });
+    // A second call does not toggle it back.
+    expect(await driver.click({ index: 14, checked: true })).toEqual({ ok: true, checked: true });
+    expect(inputCommands().filter((c) => (c.params as { type: string }).type === "mouseReleased")).toHaveLength(1);
+    // A plain click toggles, and says so.
+    expect(await driver.click({ index: 14 })).toEqual({ ok: true, checked: false });
+  });
+
+  it("click with checked on what is not a checkbox fails without clicking", async () => {
+    evalResults.push(["checkStateInPage", { ok: true, value: { checkable: false, checked: false, radio: false } }]);
+    await expect(driver.click({ index: 4, checked: true })).rejects.toThrow(/not a checkbox, radio button or switch/);
+    expect(inputCommands()).toEqual([]);
+  });
+
+  it("click with checked sets the state in the page when the click did not (something covers the box)", async () => {
+    evalResults.push(
+      ["checkStateInPage", { ok: true, value: { checkable: true, checked: false, radio: false } }],
+      ["setCheckedInPage", { ok: true, value: true }],
+      ["scrollIntoView", { x: 1, y: 2 }],
+    );
+    expect(await driver.click({ index: 14, checked: true })).toEqual({ ok: true, checked: true });
+    expect(pageCalls()).toContain("setCheckedInPage");
   });
 
   it("paste inserts text at the focus", async () => {
@@ -383,7 +446,7 @@ describe("snapshotExpression", () => {
   it("is a self-contained expression with the limits baked in", () => {
     const expr = snapshotExpression();
     expect(expr).toMatch(/^\(function/);
-    expect(expr).toContain(`(${JSON.stringify(PAGE_MARKS)}, 8000, 300)`);
+    expect(expr).toContain(`(${JSON.stringify(PAGE_MARKS)}, 8000, 300, 30)`);
     expect(expr).not.toMatch(/__name|__vite|_interop|import\(/);
     expect(() => new Function(`return ${expr}`)).not.toThrow();
   });

@@ -1,5 +1,7 @@
 /**
- * The act tool: up to 8 small steps in one call.
+ * The act tool: up to MAX_ACT_STEPS small steps in one call. A step with text
+ * fills a field (or chooses a dropdown's option), a step with checked sets a
+ * checkbox or radio button, any other step clicks.
  *
  * Jev off: every step names an element index from read_page and runs directly.
  *
@@ -98,6 +100,11 @@ export function rankCandidates(snap: PageSnapshot, goal: string, ranked: number[
   return [...chosen.values()].sort((a, b) => a.index - b.index);
 }
 
+/** An element without its field state, which was read before the step changed it (the page after the batch has it). */
+function withoutState({ value: _value, options: _options, checked: _checked, required: _required, invalid: _invalid, ...el }: ElementInfo): ElementInfo {
+  return el;
+}
+
 /** Checks the index steps of a Jev-mode act call. Returns the refusal text, or null when every index step is allowed. */
 function checkIndexSteps(steps: Step[], offered: Map<string, Set<number>>): string | null {
   const problems: string[] = [];
@@ -134,16 +141,24 @@ export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult
   const jevOn = jev !== null;
   const readPage = () => browser("browser.readPage", {});
   const pageText = async () => formatSnapshot(await readPage(), { words: jevOn });
-  /** Types `text` into the element, or clicks it when there is no text, then lets the page settle. Returns what was done. */
-  const perform = async (index: number, text: string | undefined): Promise<string> => {
-    if (text) {
-      await browser("browser.type", { index, text });
+  /**
+   * Does the step on the element, then lets the page settle: sets a checkbox (checked), fills a field
+   * or chooses a dropdown's option (text), else clicks. Returns what was done, as "<verb> ELEMENT<after>".
+   */
+  const perform = async (index: number, step: Step): Promise<{ did: string; after: string }> => {
+    if (step.checked !== undefined) {
+      const r = await browser("browser.click", { index, checked: step.checked });
       await sleep(SETTLE_AFTER_TYPE_MS);
-      return `typed ${text.length} characters into`;
+      return { did: r?.checked === false ? "unchecked" : "checked", after: "" };
     }
-    await browser("browser.click", { index });
+    if (step.text) {
+      const r = await browser("browser.type", { index, text: step.text });
+      await sleep(SETTLE_AFTER_TYPE_MS);
+      return { did: r?.selected !== undefined ? `chose ${JSON.stringify(r.selected)} in` : `typed ${step.text.length} characters into`, after: "" };
+    }
+    const r = await browser("browser.click", { index });
     await sleep(SETTLE_AFTER_CLICK_MS);
-    return "clicked";
+    return { did: "clicked", after: r?.checked === undefined ? "" : ` (now ${r.checked ? "checked" : "not checked"})` };
   };
 
   // Jev mode: index steps only for the steps the last act result left to Claude.
@@ -191,7 +206,8 @@ export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult
     if (step.index !== undefined) {
       // The model knows the element (Jev off, or Jev was unsure about this step): run it directly.
       try {
-        lines.push(`step ${n}: ${await perform(step.index, step.text)} [${step.index}] (picked by Claude)`);
+        const { did, after } = await perform(step.index, step);
+        lines.push(`step ${n}: ${did} [${step.index}]${after} (picked by Claude)`);
         gate.picks.claude++;
       } catch (e) {
         return couldNotUse(step.index, e);
@@ -235,16 +251,16 @@ export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult
           jevEvent(false);
           return stop(n, `"${step.goal}": ${conf}, but element [${d.index}] does not exist`, snap, d);
         }
-        let did: string;
+        let done: { did: string; after: string };
         try {
-          did = await perform(target.index, op === "type" ? step.text : undefined);
+          done = await perform(target.index, op === "type" ? step : { ...step, text: undefined });
         } catch (e) {
           jevEvent(false, op);
           return couldNotUse(target.index, e, d);
         }
         jevEvent(true, op);
         gate.picks.jev++;
-        lines.push(`step ${n}: ${did} ${formatElement(target)} (picked by Jev, ${d.confidence.toFixed(2)}, ${ms} ms)`);
+        lines.push(`step ${n}: ${done.did} ${formatElement(withoutState(target))}${done.after} (picked by Jev, ${d.confidence.toFixed(2)}, ${ms} ms)`);
         break;
       }
       case "scroll":

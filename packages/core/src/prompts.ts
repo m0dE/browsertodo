@@ -1,5 +1,5 @@
 /** System prompt and per-task prompt for both brains. */
-import { MAX_SUGGESTION_CHARS, SUGGESTION_NEVER, toolDescription, xProfileUrl, type AgentTask, type RestrictedPage, type ToolName } from "@browsertodo/shared";
+import { MAX_ACT_STEPS, MAX_SUGGESTION_CHARS, SUGGESTION_NEVER, toolDescription, xProfileUrl, type AgentTask, type ToolName, type UserTab } from "@browsertodo/shared";
 
 /** Framing of a follow-up message (the next turn of a conversation), so the agent knows it continues the same conversation. */
 export const FOLLOW_UP_PREFIX = "Next message from the user (same conversation; the browser tab is as you left it): ";
@@ -45,7 +45,7 @@ export function buildSystemPrompt(opts: { tools: ToolName[]; jev: boolean; follo
       ? "On a login page of a site other than X, call get_credential for that site and sign in with the login it returns; if it has none, call task_pause. Call task_pause (never guess) when you see a login page on X, a 2FA or verification prompt, a CAPTCHA, a warning or challenge page, a locked or suspended account, or when X is signed in to an unexpected account that you cannot switch away from."
       : "Call task_pause (never guess) when you see a login page, a 2FA or verification prompt, a CAPTCHA, a warning or challenge page, a locked or suspended account, or when X is signed in to an unexpected account that you cannot switch away from.",
     "When a task on X names an X account, call switch_x_account with it first, before anything else on X.",
-    "Never refuse or fail a task because it is on a site other than X: every website is in scope. Start by navigating to the site the task is about (e.g. https://mail.google.com for Gmail).",
+    "Never refuse or fail a task because it is on a site other than X: every website is in scope. When the user's tab (named with the task) already shows what the task is about, work on that page; navigate only when the task needs another page or site (e.g. https://mail.google.com for Gmail).",
     "Tasks either ask you to do something (post, reply, fill in a form) or to find something out (check email, look up a price, see what someone needs). For the second kind, open the site, read what is there (open the relevant items, not just the list), then write the answer to the user as your normal message text: specific and complete, e.g. who wrote, when, what they said, and what they need from the user.",
     "If the message is only a greeting or a question you can answer without the browser, answer it in your normal message text. Do not call task_fail for that.",
     "The user reads your message text in a chat that renders Markdown: use short paragraphs, and lists, **bold** or headings where they help. Put every answer and any longer explanation in that text, never in task_complete. task_complete's summary is one short line for the task list (e.g. 'Answered how to publish a Chrome extension', 'Posted the thread'); it does not repeat the answer.",
@@ -53,16 +53,19 @@ export function buildSystemPrompt(opts: { tools: ToolName[]; jev: boolean; follo
   if (tools.includes("act")) {
     if (jev) {
       rules.push(
-        "Work fast: every model turn is slow, so do as much as possible per act call. Plan the whole task, then send its steps together in one act call (up to 8), e.g. [{goal: 'click the Post link in the side menu'}, {goal: 'type into the Post text box', text: '...'}, {goal: 'click the Post button in the composer'}]. Give `text` for every step that types: a fast picker (Jev) only chooses where, the text is yours. Each act result lists what happened per step and the page afterwards, so you rarely need an extra read_page.",
+        `Work fast: every model turn is slow, so do as much as possible per act call. Plan the whole task, then send its steps together in one act call (up to ${MAX_ACT_STEPS}), e.g. [{goal: 'click the Post link in the side menu'}, {goal: 'type into the Post text box', text: '...'}, {goal: 'click the Post button in the composer'}]. Give \`text\` for every step that types: a fast picker (Jev) only chooses where, the text is yours. Each act result lists what happened per step and the page afterwards, so you rarely need an extra read_page.`,
         "Jev picks the element of every act step from your words, so describe each one precisely: its visible label and role as read_page lists them, and its position when several look alike ('the Reply button under the first post', 'the second Like button', 'the Save button in the dialog'). read_page has no element index numbers; do not guess or ask for indices.",
         "act replaces click and type. If act stops at step N as not confident, it lists numbered candidates for that step only: send step N again with the same goal and the index of the right candidate, followed by the remaining steps in words. That is the only time a step may name an index.",
       );
     } else {
       rules.push(
-        "Work fast: every model turn is slow, so do as much as possible per act call. Read the page, plan, then send the steps together in one act call (up to 8), each naming the element index from read_page, e.g. [{goal: 'open composer', index: 4}, {goal: 'type the post', index: 9, text: '...'}, {goal: 'click Post', index: 12}]. Give `text` for every step that types. Each act result lists what happened per step and the page afterwards, so you rarely need an extra read_page.",
+        `Work fast: every model turn is slow, so do as much as possible per act call. Read the page, plan, then send the steps together in one act call (up to ${MAX_ACT_STEPS}), each naming the element index from read_page, e.g. [{goal: 'open composer', index: 4}, {goal: 'type the post', index: 9, text: '...'}, {goal: 'click Post', index: 12}]. Give \`text\` for every step that types. Each act result lists what happened per step and the page afterwards, so you rarely need an extra read_page.`,
         "act replaces click and type. If act stops at step N, send the remaining steps again, giving step N the element index from the list it returned.",
       );
     }
+    rules.push(
+      `Forms: fill all the fields in one act call, in page order, and when the task says to submit and you have every value, click the submit button as the last step of the same call. One step per field: \`text\` for a text field (it replaces what the field holds: to fix a field, send it again with the whole value) and for a dropdown (the option's label, e.g. ${jev ? "{goal: 'the Country dropdown', text: 'United Kingdom'}" : "{goal: 'country', index: 8, text: 'United Kingdom'}"}); \`checked: true\` for a checkbox or radio button to select (a plain click toggles it). The page after act shows each field's value, checked or not checked, required, and the page's validation error (invalid: ...): check those instead of taking screenshots, and redo only the fields that are wrong.`,
+    );
   }
   if (tools.includes("open_tabs")) {
     rules.push(
@@ -97,12 +100,12 @@ The human may send you messages while you work; follow them if they are about th
 /**
  * First user message for a task. isRetry adds the "check it wasn't already
  * done" instruction; task.screenHelp says what an empty message means;
- * task.restrictedPage, that the user's page cannot be touched.
+ * task.userTab, which page the user is looking at (userTabLines).
  */
 export function buildTaskPrompt(task: AgentTask, mediaPaths: string[], opts: { isRetry: boolean }): string {
   const lines = [`Task ID: ${task.id}`];
   lines.push(task.account ? `Account: ${task.account} (call switch_x_account with it first)` : "Account: none given (use whatever account is signed in)");
-  if (task.restrictedPage) lines.push("", ...restrictedPageLines(task.restrictedPage, { screenHelp: !!task.screenHelp }));
+  if (task.userTab) lines.push("", ...userTabLines(task.userTab, { screenHelp: !!task.screenHelp }));
   lines.push("", "Task instructions:", "<<<", task.instructions, ">>>");
   if (task.screenHelp) lines.push("", ...screenHelpLines());
   if (mediaPaths.length) lines.push("", "Media files to attach (absolute paths, use with upload):", ...mediaPaths.map((p) => `- ${p}`));
@@ -127,15 +130,16 @@ export interface FollowUpMessage {
   text: string;
   /** An empty message in Chat: look at the page now and continue. */
   screenHelp?: boolean;
-  /** The conversation's tab now shows a page Chrome keeps extensions out of. */
-  restrictedPage?: RestrictedPage;
+  /** The tab the conversation belongs to, as it is now (see AgentTask.userTab). */
+  userTab?: UserTab;
 }
 
-/** The user's next message in a conversation, with what an empty message or a restricted page means. */
+/** The user's next message in a conversation, after what their tab shows now; an empty message means: look again. */
 export function buildFollowUpMessage(m: FollowUpMessage): string {
-  const lines = m.screenHelp ? screenHelpFollowUpLines() : [m.text.trim()];
-  if (m.restrictedPage) lines.push("", ...restrictedPageLines(m.restrictedPage, { screenHelp: !!m.screenHelp }));
-  return lines.join("\n");
+  const message = m.screenHelp ? screenHelpFollowUpLines() : [m.text.trim()];
+  if (!m.userTab) return message.join("\n");
+  const label = m.screenHelp ? [] : ["The user's message:"];
+  return [...userTabLines(m.userTab, { screenHelp: !!m.screenHelp }), "", ...label, ...message].join("\n");
 }
 
 /** What the agent must never do on its own when it works out the next step from the screen. */
@@ -171,14 +175,33 @@ function screenHelpFollowUpLines(): string[] {
 }
 
 /**
+ * The tab the user's chat belongs to, at the start of every turn from it: the
+ * user is looking at it, so "this page", "these" or "the inbox here" mean what
+ * it shows, and the agent starts there instead of navigating to a guess.
+ */
+function userTabLines(tab: UserTab, opts: { screenHelp: boolean }): string[] {
+  const name = tab.title.trim() ? `"${tab.title.trim()}" (${tab.url})` : tab.url;
+  if (tab.access === "restricted") return restrictedPageLines(name, opts);
+  if (tab.access === "here") {
+    return [
+      `The user's tab: ${name}. The user is looking at this tab, and you are working in it.`,
+      `If the task refers to "this page", "this form", "these", "here", "the inbox" and the like, it means what this tab shows: start from it (read_page), and navigate away only when the task needs another page or site.`,
+    ];
+  }
+  return [
+    `The user's tab: ${name}. The user is looking at it, but it is busy (another run is using it) or cannot be controlled, so you are working in a new tab next to it.`,
+    `If the task refers to "this page", "these", "here" and the like, it means that page: open its address in your tab when you need it.`,
+  ];
+}
+
+/**
  * The user's tab is a page Chrome does not let extensions see or control
  * (chrome:// pages, the new-tab page, the Chrome Web Store, other extensions'
  * pages, view-source): the run works in a tab next to it.
  */
-function restrictedPageLines(page: RestrictedPage, opts: { screenHelp: boolean }): string[] {
-  const name = page.title.trim() ? `"${page.title.trim()}" (${page.url})` : page.url;
+function restrictedPageLines(name: string, opts: { screenHelp: boolean }): string[] {
   const lines = [
-    `Note: the user's tab shows ${name}. Chrome does not allow extensions to see or control that page, so you cannot read, screenshot or click anything on it. You are working in a new tab next to it.`,
+    `The user's tab: ${name}. The user is looking at it, but Chrome does not allow extensions to see or control that page, so you cannot read, screenshot or click anything on it. You are working in a new tab next to it.`,
     "Do the task in other tabs: for example, open the user's email in this tab or with open_tabs.",
     "If a step can only be done on that page, tell the user exactly what to press there (for example: \"Click 'Verify email' on the page, then press Continue\") and call task_pause.",
   ];

@@ -5,11 +5,26 @@
  */
 import type { AgentTabInfo, ElementInfo, PageSnapshot, ScrollDirection, ScrollReport } from "@browsertodo/shared";
 
+/**
+ * A form field's state: checked or not, its dropdown options, required, and
+ * the page's validation message, so the agent sees what is filled and what
+ * failed without screenshots or typing again.
+ */
+function fieldState(el: ElementInfo): string[] {
+  const parts: string[] = [];
+  if (el.checked !== undefined) parts.push(el.checked ? "checked" : "not checked");
+  if (el.options?.length) parts.push(`options=${JSON.stringify(el.options)}`);
+  if (el.required) parts.push("required");
+  if (el.invalid) parts.push(`invalid: ${JSON.stringify(el.invalid)}`);
+  return parts;
+}
+
 export function formatElement(el: ElementInfo): string {
   const parts: string[] = [el.tag];
   if (el.type) parts.push(`type=${el.type}`);
   if (el.testId) parts.push(`testid=${el.testId}`);
   if (el.value) parts.push(`value=${JSON.stringify(el.value)}`);
+  parts.push(...fieldState(el));
   if (el.href) parts.push(`href=${el.href}`);
   if (el.disabled) parts.push("disabled");
   if (el.text) parts.push(`text=${JSON.stringify(el.text)}`);
@@ -46,7 +61,7 @@ export function formatElementsInWords(elements: ElementInfo[], truncated = false
       entries.push(`file input ${JSON.stringify(clipName(el.name ?? ""))} (upload index ${el.index})`);
       continue;
     }
-    const key = [el.role || el.tag, el.name, el.type ?? "", el.testId ?? "", el.role === "link" ? (el.href ?? "") : "", el.inDialog ? "dialog" : ""].join("|");
+    const key = [el.role || el.tag, el.name, el.type ?? "", el.testId ?? "", el.role === "link" ? (el.href ?? "") : "", el.inDialog ? "dialog" : "", String(el.checked ?? "")].join("|");
     let g = groups.get(key);
     if (!g) {
       g = { el, count: 0, offscreen: 0, disabled: 0 };
@@ -66,6 +81,8 @@ export function formatElementsInWords(elements: ElementInfo[], truncated = false
     if (el.testId) parts.push(`testid=${el.testId}`);
     if (el.text && el.text !== el.name) parts.push(`text=${JSON.stringify(clipName(el.text, 60))}`);
     if (count === 1 && el.value) parts.push(`value=${JSON.stringify(clipName(el.value, 60))}`);
+    if (count === 1) parts.push(...fieldState(el));
+    else if (el.checked !== undefined) parts.push(el.checked ? "checked" : "not checked");
     if (el.role === "link" && el.href) parts.push(`href=${el.href}`);
     if (el.inDialog) parts.push("in dialog");
     if (g.disabled === count) parts.push("disabled");

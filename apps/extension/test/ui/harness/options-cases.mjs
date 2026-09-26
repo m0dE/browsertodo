@@ -129,6 +129,9 @@ export const OPTION_CASES = [
     ["test hidden", async () => !(await shown(p, "#test-jev"))],
   ]],
   ["options-tasks", "ok", "#tasks", () => {}, (p) => [
+    // Both shortcuts, as Chrome assigned them, each with Change.
+    ["open shortcut", async () => (await p.textContent("#shortcut-key")) === "Ctrl+." && (await p.textContent("#shortcut-change")) === "Change"],
+    ["talk shortcut", async () => (await p.textContent("#voice-shortcut-key")) === "Ctrl+," && (await p.textContent("#voice-shortcut-change")) === "Change"],
     ["interval", async () => (await p.inputValue("#f-intervalMinutes")) === "15"],
     ["tasks at once", async () => (await p.inputValue("#f-maxParallelTasks")) === "2"],
   ]],

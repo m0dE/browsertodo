@@ -4,7 +4,7 @@
  * themselves as they change; keys save with their own Save button.
  * What shows when comes from settingsView() (settings-view.ts).
  */
-import { openShortcutSettings, readShortcut } from "../shortcut.js";
+import { OPEN_CHAT_COMMAND, openShortcutSettings, readShortcut, VOICE_COMMAND, type ShortcutCommand } from "../shortcut.js";
 import { errorMessage, type BrainMode, type ExtensionSettings } from "@browsertodo/shared";
 import { uiRequest, type UiState } from "../ui-protocol.js";
 import { $, busy, find, flash, h } from "../ui/dom.js";
@@ -336,12 +336,18 @@ async function main(): Promise<void> {
 void main();
 initVaultSection();
 
-/** The keyboard shortcut as Chrome assigned it, and where to change it (chrome://extensions/shortcuts). */
-async function renderShortcut(): Promise<void> {
-  const key = await readShortcut();
-  $("shortcut-key").textContent = key ?? "Not set";
-  $("shortcut-change").textContent = key ? "Change" : "Set shortcut";
+/** The keyboard shortcuts as Chrome assigned them (id prefix of each row), and where to change them (chrome://extensions/shortcuts). */
+const SHORTCUT_ROWS: readonly [ShortcutCommand, string][] = [
+  [OPEN_CHAT_COMMAND, "shortcut"],
+  [VOICE_COMMAND, "voice-shortcut"],
+];
+async function renderShortcuts(): Promise<void> {
+  for (const [command, row] of SHORTCUT_ROWS) {
+    const key = await readShortcut(command);
+    $(`${row}-key`).textContent = key ?? "Not set";
+    $(`${row}-change`).textContent = key ? "Change" : "Set shortcut";
+  }
 }
-$("shortcut-change").addEventListener("click", () => void openShortcutSettings());
-window.addEventListener("focus", () => void renderShortcut());
-void renderShortcut();
+for (const [, row] of SHORTCUT_ROWS) $(`${row}-change`).addEventListener("click", () => void openShortcutSettings());
+window.addEventListener("focus", () => void renderShortcuts());
+void renderShortcuts();

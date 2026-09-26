@@ -23,7 +23,9 @@ import { createVerifyEmailSite, TOKEN } from "../../../test/fixtures/verify-emai
 const claude = process.argv.includes("--claude");
 const SCREEN = "Figure out what to do based on the current screen";
 /** The shortcut the manifest suggests (Chrome assigns it when no other extension uses it). */
-const SUGGESTED = JSON.parse(readFileSync(join(DIST, "manifest.json"), "utf8")).commands["open-chat"].suggested_key.default;
+const BUILT_COMMANDS = JSON.parse(readFileSync(join(DIST, "manifest.json"), "utf8")).commands;
+const SUGGESTED = BUILT_COMMANDS["open-chat"].suggested_key.default;
+const SUGGESTED_VOICE = BUILT_COMMANDS.voice.suggested_key.default;
 const RESTRICTED_STATUS = "Chrome doesn't let extensions see this page; browsertodo will work in other tabs";
 /** How long a key press gets to reach the extension's command handler before it counts as not delivered. */
 const KEY_PRESS_GRACE_MS = 1500;
@@ -95,12 +97,14 @@ try {
   } = await openPanelWithTabs(ext, [site.url("/signup")]);
   await bt((t) => chrome.tabs.update(t, { active: true }), signupTab);
 
-  await step(`the shortcut is declared and Chrome assigned the suggested key (${SUGGESTED})`, async () => {
+  await step(`both shortcuts are declared and Chrome assigned the suggested keys (${SUGGESTED}, ${SUGGESTED_VOICE})`, async () => {
     const cmds = await bt(() => chrome.commands.getAll());
-    const cmd = cmds.find((c) => c.name === "open-chat");
-    assert.ok(cmd, JSON.stringify(cmds));
-    assert.equal(cmd.shortcut, SUGGESTED);
-    return `${cmd.shortcut}: ${cmd.description}`;
+    const open = cmds.find((c) => c.name === "open-chat");
+    const voice = cmds.find((c) => c.name === "voice");
+    assert.ok(open && voice, JSON.stringify(cmds));
+    assert.equal(open.shortcut, SUGGESTED);
+    assert.equal(voice.shortcut, SUGGESTED_VOICE);
+    return `${open.shortcut}: ${open.description}; ${voice.shortcut}: ${voice.description}`;
   });
 
   await step("Playwright key presses do not reach Chrome's extension shortcuts (so the handler is tested directly)", async () => {
@@ -124,7 +128,7 @@ try {
     return err;
   });
 
-  await step("with a gesture the real side panel opens; with the focus in the page the shortcut puts it in the panel's box, and from there toggles voice", async () => {
+  await step("with a gesture the real side panel opens; with the focus in the page the shortcut puts it in the panel's box; the voice key then starts voice there", async () => {
     // A trusted click in an extension page is a user gesture, like the key press.
     await openSidePanel(sw, panel, windowId);
     await waitFor(() => bt((w) => globalThis.__browsertodo.panelCommands.isOpen(w), windowId), "the panel's hello");
@@ -148,16 +152,18 @@ try {
     const inBox = await waitFor(
       async () => {
         const p = await sidePanel();
-        return p?.hasFocus && p.active === "now-text" && (await bt((w) => globalThis.__browsertodo.panelCommands.inputFocused(w), windowId)) ? p : null;
+        return p?.hasFocus && p.active === "now-text" ? p : null;
       },
       "the real keyboard focus in the side panel's box",
       { timeout: 5000 },
     );
-    assert.equal(await press(site.url("/signup")), "voice");
+    // Pressed again, open-chat only focuses; the voice key starts voice in the same panel.
+    assert.equal(await press(site.url("/signup")), "focused");
+    assert.equal(await press(site.url("/signup"), "voice"), "voice");
     assert.equal(await bt(async () => (await chrome.runtime.getContexts({ contextTypes: ["SIDE_PANEL"] })).length), 1, "the panel stays open");
     await signup.bringToFront();
     await bt((t) => chrome.tabs.update(t, { active: true }), signupTab);
-    return `${first}: ${JSON.stringify(inBox)}; the second press toggled voice in it (signed out: it points at the locked mic)`;
+    return `${first}: ${JSON.stringify(inBox)}; open-chat again focused, the voice key started voice in it (signed out: it points at the locked mic)`;
   });
 
   await step("an empty Enter in Chat starts 'look at this page' in this tab, which the agent looks at in the background", async () => {

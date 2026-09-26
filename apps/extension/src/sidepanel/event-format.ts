@@ -1,8 +1,8 @@
 /** Pure view models for agent events in Chat and the Activity log. */
-import { picksText, SCREEN_HELP_TEXT, type AgentEvent, type Chip, type ElementPicks } from "@browsertodo/shared";
+import { picksText, SCREEN_HELP_TEXT, type AgentEvent, type Chip, type ElementPicks, type SessionInfo, type TaskSource } from "@browsertodo/shared";
 import { clip, isLongSummary, toolArgsSummary } from "../text.js";
 import { errorHelp, type ErrorHelp } from "./error-help.js";
-import { outcomeChip } from "./format.js";
+import { clockLabel, outcomeChip } from "./format.js";
 
 export type EventView =
   /** picks: the end-of-turn "Jev chose ..." line, shown in the end card instead of on its own. */
@@ -134,6 +134,54 @@ export function describeEvent(ev: AgentEvent, turn: TurnContext = {}): EventView
     case "error":
       return { kind: "error", help: errorHelp(ev.text) };
   }
+}
+
+/** The conversation's first message: what was asked, as the first bubble of the thread. */
+export interface OpeningView {
+  /** The prompt as typed, or the task's instructions (only its one-line title for runs that did not save them). */
+  text: string;
+  /** An empty send: "look at the page" (shown quieter, with an eye). */
+  screen?: true;
+  /** Not typed in Chat: where the instructions came from. */
+  origin?: string;
+  /** How many files the first turn came with (their names are not saved with the run). */
+  files?: number;
+  /** When the conversation started: "14:30", "yesterday 23:00". */
+  when: string;
+  /** The same moment (ISO), for the timestamp's tooltip. */
+  at: string;
+}
+
+const ORIGIN_OF: Partial<Record<TaskSource, string>> = { local: "From your TODO list", cloud: "Scheduled" };
+/** The status line a first turn with files starts with (see run/turn.ts). */
+const PREPARING_FILES = /^Preparing (\d+) file\(s\)$/;
+
+/** The first message of a conversation, from its session and its events (the first turn's files). */
+export function openingTurn(s: SessionInfo, events: readonly AgentEvent[], now = Date.now()): OpeningView {
+  const text = (s.source === "adhoc" && s.instructions?.trim()) || s.title;
+  const at = s.firstStartedAt ?? s.startedAt;
+  const v: OpeningView = { text, when: clockLabel(at, now).replace(/^today /, ""), at };
+  if (s.source === "adhoc" && isScreenHelp(text)) v.screen = true;
+  const origin = ORIGIN_OF[s.source];
+  if (origin) v.origin = origin;
+  const firstEnd = events.findIndex((e) => e.type === "task_end");
+  for (const e of firstEnd < 0 ? events : events.slice(0, firstEnd)) {
+    const n = e.type === "status" ? PREPARING_FILES.exec(e.text)?.[1] : undefined;
+    if (n) v.files = Number(n);
+  }
+  return v;
+}
+
+/**
+ * The line a brain writes as its session starts: "BrowserTODO AI (claude-opus-5-5) with Jev" or
+ * "Claude API (claude-sonnet-5)" (core's api-agent with the brain's label), "Claude Code started
+ * (claude-sonnet-5)" (the helper). Case-insensitive: older sessions spelled the hosted AI in lower case.
+ */
+const BRAIN_START = /^(?:Claude Code started(?: \([^()]*\))?|(?:Claude API|BrowserTODO AI) \([^()]*\)(?: with Jev)?)$/i;
+
+/** A brain's start line: the chat's brain chip says the same, so the chat leaves it out. */
+export function isBrainStartLine(text: string): boolean {
+  return BRAIN_START.test(text.trim());
 }
 
 /** The user's turn was an empty message in Chat: look at the page (SCREEN_HELP_TEXT). */

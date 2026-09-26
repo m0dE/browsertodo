@@ -1,12 +1,16 @@
 /**
- * The keyboard shortcut that opens the side panel (the manifest's
- * "commands" entry; the background handles it in panel-command.ts). The key
- * itself is only in the manifest: pages show what Chrome actually assigned
+ * The keyboard shortcuts (the manifest's "commands"; the background handles
+ * them in panel-command.ts): one opens the side panel with the cursor in the
+ * chat, the other starts or stops voice input there. The keys themselves are
+ * only in the manifest: pages show what Chrome actually assigned
  * (chrome.commands.getAll), else the manifest's suggestion.
  */
 
-/** The manifest "commands" key of the shortcut. */
+/** The manifest "commands" key of the shortcut that opens the chat. */
 export const OPEN_CHAT_COMMAND = "open-chat";
+/** The manifest "commands" key of the shortcut that talks (voice input). */
+export const VOICE_COMMAND = "voice";
+export type ShortcutCommand = typeof OPEN_CHAT_COMMAND | typeof VOICE_COMMAND;
 
 /** Where the user sets or changes it (opened with chrome.tabs.create). */
 export const SHORTCUTS_URL = "chrome://extensions/shortcuts";
@@ -40,19 +44,19 @@ export function isMac(nav: { platform?: string; userAgentData?: { platform?: str
 }
 
 /**
- * The shortcut's label, or null when Chrome has no key for it (e.g. another
+ * A shortcut's label, or null when Chrome has no key for it (e.g. another
  * extension already uses the suggested one): then the pages offer
  * SHORTCUTS_URL instead. Without chrome.commands, the manifest's suggestion.
  */
-export async function readShortcut(): Promise<string | null> {
+export async function readShortcut(command: ShortcutCommand = OPEN_CHAT_COMMAND): Promise<string | null> {
   const mac = isMac();
   try {
-    const cmd = (await chrome.commands.getAll()).find((c) => c.name === OPEN_CHAT_COMMAND);
+    const cmd = (await chrome.commands.getAll()).find((c) => c.name === command);
     if (cmd) return cmd.shortcut ? shortcutLabel(cmd.shortcut, mac) : null;
   } catch {
     // No commands API here: the manifest's suggestion below.
   }
-  const suggested = chrome.runtime.getManifest?.().commands?.[OPEN_CHAT_COMMAND]?.suggested_key;
+  const suggested = chrome.runtime.getManifest?.().commands?.[command]?.suggested_key;
   // suggested_key is a key for every platform, or one per platform.
   const key = typeof suggested === "string" ? suggested : ((mac ? suggested?.mac : undefined) ?? suggested?.default);
   return key ? shortcutLabel(key, mac) : null;

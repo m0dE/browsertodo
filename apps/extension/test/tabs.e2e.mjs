@@ -54,7 +54,8 @@ try {
   const activate = (tabId) => sw.evaluate(async (t) => void (await chrome.tabs.update(t, { active: true })), tabId);
   const panelView = () =>
     panel.evaluate(() => ({
-      title: document.getElementById("chat-titles").hidden ? null : document.getElementById("chat-title").textContent,
+      // The chat's first message: the prompt that opened it.
+      title: document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent ?? null,
       empty: !!document.querySelector("#chat-log .chat-empty"),
       chips: [...document.querySelectorAll("#chat-switch:not([hidden]) .act-chip")].map((c) => c.textContent.trim()),
     }));
@@ -148,7 +149,7 @@ try {
       () =>
         panel.evaluate(() => ({
           tab: document.querySelector(".tabs [aria-selected=true]")?.id,
-          title: document.getElementById("chat-title").textContent,
+          title: document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent,
           ends: document.querySelectorAll("#chat-log .ev-end").length,
           readOnlyView: !!document.getElementById("hist-past"),
         })).then((v) => (v.tab === "tab-btn-chat" && v.title === "task B" && v.ends > 0 ? v : null)),

@@ -3,7 +3,8 @@
  * orb in the middle of the panel, and the keys.
  *
  * - Click toggles listening; holding the button (push-to-talk) stops when
- *   let go. The keyboard shortcut toggles too (panel-command.ts).
+ *   let go. The voice shortcut (panel-command.ts) starts listening, and
+ *   pressed again stops and sends.
  * - The text streams into the box while you speak (Dictation), after what
  *   you had typed (VoiceDraft). Enter stops, finishes the text and sends it
  *   the way Enter always does; Esc cancels and removes the voice text.
@@ -18,10 +19,14 @@ import { VoiceDraft } from "../voice/draft.js";
 import type { MicPermission } from "../voice/mic-access.js";
 import { VoiceError } from "../voice/transcribe.js";
 import type { ComposerView } from "./composer.js";
+import { FIXES } from "./error-help.js";
 import { h, restartAnimation } from "../ui/dom.js";
 
 /** What the mic button shows. */
 export type VoiceUiState = "locked" | "idle" | "opening" | "listening" | "transcribing";
+
+/** Listening, starting to, or finishing the text: the voice shortcut then stops and sends. */
+export const isListening = (state: VoiceUiState): boolean => state === "listening" || state === "transcribing" || state === "opening";
 
 /** From the plan catalog, e.g. "Voice needs the Plus or Pro plan". */
 export const LOCKED_TEXT = `Voice needs ${plansWithText("voice")}`;
@@ -52,7 +57,7 @@ export interface VoiceTip {
 /** The tip for a failure: plan and credit come with the dashboard's Billing page, which fixes them. */
 export function errorTip(err: unknown, openBilling: () => void): VoiceTip {
   if (err instanceof VoiceError) {
-    if (err.kind === "plan") return { text: err.message, tone: "bad", action: { label: "Get a plan", run: openBilling } };
+    if (err.kind === "plan") return { text: err.message, tone: "bad", action: { label: FIXES.plans.label, run: openBilling } };
     if (err.kind === "credit") return { text: err.message, tone: "bad", action: { label: "Top up", run: openBilling } };
     return { text: err.message, tone: "bad" };
   }
@@ -74,6 +79,8 @@ export interface VoiceInputDeps {
   };
   /** The dashboard's Billing page (pick a plan, top up). */
   openBilling(): void;
+  /** Voice started or stopped listening (isListening). */
+  onListening?(listening: boolean): void;
   /** Where the listening orb goes (the panel's body). */
   host: HTMLElement;
 }
@@ -81,10 +88,10 @@ export interface VoiceInputDeps {
 export interface VoiceInput {
   /** The account may use voice (signed in, a plan with voice in good standing). */
   setAllowed(allowed: boolean): void;
-  /** The keyboard shortcut's label for the tooltip (null: none assigned). */
+  /** The voice shortcut's label for the tooltip (null: none assigned). */
   setShortcut(label: string | null): void;
-  /** The keyboard shortcut: start or stop; locked, it points at the button. */
-  toggle(): void;
+  /** The voice shortcut: start listening, or stop and send what was said; locked, it points at the button and says why. */
+  shortcut(): void;
   readonly state: VoiceUiState;
 }
 
@@ -95,8 +102,10 @@ const MIC_ICON =
 export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
   const { composer } = deps;
   let allowed = false;
-  let shortcut: string | null = null;
+  let shortcutLabel: string | null = null;
   let ui: VoiceUiState = "locked";
+  /** What onListening last said. */
+  let wasActive = false;
   let dictation: Dictation | null = null;
   let draft: VoiceDraft | null = null;
   /** This press started listening (push-to-talk if held). */
@@ -133,12 +142,14 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
 
   function render(next: VoiceUiState): void {
     ui = next;
-    const title = micButtonTitle(ui, shortcut);
+    const title = micButtonTitle(ui, shortcutLabel);
     button.dataset.state = ui;
     button.title = title;
     button.setAttribute("aria-label", title);
     button.setAttribute("aria-pressed", String(ui === "listening" || ui === "transcribing"));
-    const active = ui === "listening" || ui === "transcribing" || ui === "opening";
+    const active = isListening(ui);
+    if (active !== wasActive) deps.onListening?.(active);
+    wasActive = active;
     orb.hidden = !active;
     orb.dataset.state = ui;
     composer.setDictating(active);
@@ -162,7 +173,7 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
     tip.append(h("button.voice-tip-close", { type: "button", "aria-label": "Dismiss", onclick: () => showTip(null) }, "×"));
   }
 
-  const lockedTip = (): VoiceTip => ({ text: LOCKED_TEXT, tone: "info", action: { label: "Get a plan", run: () => deps.openBilling() } });
+  const lockedTip = (): VoiceTip => ({ text: LOCKED_TEXT, tone: "info", action: { label: FIXES.plans.label, run: () => deps.openBilling() } });
 
   /** Draws attention to the button (the shortcut was pressed while voice is locked). */
   function nudge(): void {
@@ -250,6 +261,12 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
     else if (ui === "listening" || ui === "opening") stop("toggle");
   }
 
+  /** The voice shortcut: like the button, except that stopping sends (the way Enter does); finishing, it waits. */
+  function shortcut(): void {
+    if (ui === "listening" || ui === "opening") stop("send");
+    else if (ui !== "transcribing") toggle();
+  }
+
   // Pointer: a press starts or stops; holding past pushToTalkMs and letting go stops (push-to-talk).
   button.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
@@ -308,10 +325,10 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
       if (ui === "locked" || ui === "idle") settle();
     },
     setShortcut(label) {
-      shortcut = label;
+      shortcutLabel = label;
       render(ui);
     },
-    toggle,
+    shortcut,
     get state() {
       return ui;
     },

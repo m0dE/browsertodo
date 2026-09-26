@@ -274,11 +274,11 @@ export type UiPush =
   | { type: "session"; session: SessionInfo }
   | { type: "tasks.changed" }
   /**
-   * The keyboard shortcut: show the Chat tab and put the cursor in the input (see panel-command.ts);
+   * A keyboard shortcut: show the Chat tab and put the cursor in the input (see panel-command.ts);
    * `draft`: the text the box had before the shortcut recreated the panel.
    */
   | { type: "panel.focus"; draft?: string }
-  /** The keyboard shortcut, pressed while the cursor is in the input: start or stop voice input. */
+  /** The voice shortcut: start voice input, or (listening) stop and send. */
   | { type: "panel.voice" };
 
 /** Typed helper for UI pages. */

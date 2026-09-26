@@ -1,7 +1,8 @@
 /**
  * Chat tab: the conversation of the browser tab that is active in the
  * panel's window, live (every turn of it in one thread: the user's messages
- * as bubbles, the agent's text, tool calls, results and Jev decisions), its
+ * as bubbles, starting with the prompt or task that opened it, the agent's
+ * text, tool calls, results and Jev decisions), its
  * action bar (New chat | Show tab) and, while conversations of
  * other tabs run, one chip each to switch to their tab. Which conversation
  * that is comes from sidepanel.ts (see tab-chat.ts); past runs live in the
@@ -14,8 +15,8 @@ import { chatActions, type BarAction } from "./chat-actions.js";
 import { $, busy, h } from "../ui/dom.js";
 import { errorHelp } from "./error-help.js";
 import { renderErrorHelp } from "./error-view.js";
-import { describeEvent, isNearBottom, isScreenHelp, turnError, turnPicks } from "./event-format.js";
-import { placeEvent, pruneContinue, renderEvent, renderScreenHelp, renderSessionHead, renderSessionTitle, renderText } from "./event-render.js";
+import { describeEvent, isBrainStartLine, isNearBottom, openingTurn, turnError, turnPicks } from "./event-format.js";
+import { placeEvent, pruneContinue, renderEvent, renderOpening, renderSessionHead, renderText } from "./event-render.js";
 import { LiveTexts } from "./live-text.js";
 import { MarkdownView } from "./markdown.js";
 import { renderSwitcher } from "./session-switcher.js";
@@ -30,10 +31,8 @@ export interface ChatView {
   show(sessionId: string | null): void;
   /** The conversation shown, or null. */
   shown(): SessionInfo | null;
-  /** The line under the header about the conversation's agent session (null hides it). */
-  setNote(text: string | null): void;
-  /** The keyboard shortcut that opens the panel, as the user reads it (null: none is set), for the new chat. */
-  setShortcut(shortcut: string | null): void;
+  /** The keyboard shortcuts (open the chat; talk), as the user reads them (null: none is set), for the new chat. */
+  setShortcuts(shortcuts: Shortcuts): void;
 }
 
 export interface ChatOptions {
@@ -45,10 +44,16 @@ export interface ChatOptions {
   onLeave?(session: SessionInfo): void;
   /** A chip of another tab's running conversation was picked: switch to that tab. */
   onSwitch?(session: SessionInfo): void;
-  /** The conversation's title was picked: show its task's details. */
+  /** The conversation's first message was picked: show its task's details. */
   onDetails?(session: SessionInfo, trigger: HTMLElement): void;
   /** The new chat's link to set a shortcut (chrome://extensions/shortcuts), when none is set. */
   onShortcuts?(): void;
+}
+
+/** The panel's keyboard shortcuts as the user reads them ("Ctrl+.", "Ctrl+,"); null: Chrome assigned none. */
+export interface Shortcuts {
+  open: string | null;
+  voice: string | null;
 }
 
 const eventKey = (e: StampedAgentEvent) => JSON.stringify(e);
@@ -65,10 +70,6 @@ const usable = (btn: HTMLButtonElement) => btn.getAttribute("aria-disabled") !==
 export function initChat(opts: ChatOptions = {}): ChatView {
   const log = $("chat-log");
   const head = $("chat-head");
-  const titles = $("chat-titles");
-  const title = $<HTMLButtonElement>("chat-title");
-  const meta = $("chat-meta");
-  const note = $("chat-conv");
   const switcher = $("chat-switch");
   const newBtn = $<HTMLButtonElement>("chat-new");
   const showBtn = $<HTMLButtonElement>("chat-show");
@@ -80,18 +81,12 @@ export function initChat(opts: ChatOptions = {}): ChatView {
   let backfilling = false;
   /** Recent events of every session, for a conversation shown after they arrived. */
   let buffered: StampedAgentEvent[] = [];
-  let noteText: string | null = null;
-  /** The panel's keyboard shortcut: undefined until known, null when none is set. */
-  let shortcut: string | null | undefined;
+  /** The panel's keyboard shortcuts: undefined until known. */
+  let shortcuts: Shortcuts | undefined;
   /** Every running session, for the switcher. */
   let runningList: readonly SessionInfo[] = [];
   /** onFocus starts after init: the first view (nothing shown) needs no notice, and callers may not be wired yet. */
   let ready = false;
-
-  function header(s: SessionInfo | null): void {
-    titles.hidden = !s;
-    if (s) renderSessionTitle(title, meta, s);
-  }
 
   function updateBar(): void {
     const a = chatActions(current, new Set(runningList.map((s) => s.sessionId)));
@@ -105,6 +100,8 @@ export function initChat(opts: ChatOptions = {}): ChatView {
   let paintQueued = false;
 
   function renderOne(e: StampedAgentEvent, i: number): void {
+    // The brain chip under the first message already says which brain started.
+    if (e.type === "status" && isBrainStartLine(e.text)) return;
     const s = e.type === "task_end" && current?.sessionId === e.sessionId ? current : null;
     const canContinue = !!opts.onContinue && e.type === "task_end" && isContinuableOutcome(e.outcome) && s?.source !== "cloud";
     const turn = e.type === "task_end" ? { picks: turnPicks(events, i), error: turnError(events, i) } : {};
@@ -172,9 +169,7 @@ export function initChat(opts: ChatOptions = {}): ChatView {
       log.replaceChildren(h("p.empty", null, "Loading…"));
       return;
     }
-    log.replaceChildren(renderSessionHead(current));
-    // A conversation started with an empty message: its first turn shows as that message.
-    if (current.source === "adhoc" && isScreenHelp(current.title)) log.append(renderScreenHelp(current.title));
+    log.replaceChildren(renderOpeningOf(current), renderSessionHead(current));
     events.forEach(renderOne);
     liveEls.clear();
     if (!events.length && !live.of(current.sessionId).some(([, t]) => t.trim())) log.append(h("p.empty", null, "Waiting for the agent…"));
@@ -183,18 +178,39 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     log.scrollTop = log.scrollHeight;
   }
 
-  /** "Press Ctrl+. to open this chat at any time.", or a link to set a shortcut when none is set. */
+  /**
+   * "Ctrl+. to open · Ctrl+, to talk"; with only the open key, "Press Ctrl+. to open this chat at any time.";
+   * without it, a link to set one.
+   */
   function shortcutHint(): HTMLElement | null {
-    if (shortcut === undefined) return null;
-    if (shortcut === null) {
+    if (!shortcuts) return null;
+    const { open, voice } = shortcuts;
+    const talk = voice ? [" · ", h("kbd", null, voice), " to talk"] : [];
+    if (!open) {
       const link = h("button.link.shortcut-link", { type: "button", onclick: () => opts.onShortcuts?.() }, "Set a keyboard shortcut");
-      return h("p.shortcut-hint", null, link, " to open this chat at any time.");
+      return h("p.shortcut-hint", null, link, " to open this chat at any time", ...(voice ? talk : ["."]));
     }
-    return h("p.shortcut-hint", null, "Press ", h("kbd", null, shortcut), " to open this chat at any time.");
+    if (!voice) return h("p.shortcut-hint", null, "Press ", h("kbd", null, open), " to open this chat at any time.");
+    return h("p.shortcut-hint", null, h("kbd", null, open), " to open", ...talk);
   }
 
   function refreshHead(s: SessionInfo): void {
     log.querySelector(":scope > .ev-head")?.replaceWith(renderSessionHead(s));
+  }
+
+  /** The conversation's first message (its prompt), which opens its details. */
+  function renderOpeningOf(s: SessionInfo): HTMLElement {
+    const v = openingTurn(s, events);
+    // The details of the session as it is now (it ends, gets an outcome, ...).
+    const el = renderOpening(v, (trigger) => opts.onDetails?.(current ?? s, trigger));
+    el.dataset.files = String(v.files ?? 0);
+    return el;
+  }
+
+  /** The first turn's files are known once its "Preparing N file(s)" line arrives. */
+  function refreshOpening(): void {
+    const el = log.querySelector<HTMLElement>(":scope > .ev-opening");
+    if (current && el && el.dataset.files !== String(openingTurn(current, events).files ?? 0)) el.replaceWith(renderOpeningOf(current));
   }
 
   /** Other tabs' running conversations: one chip each, to switch to that tab. */
@@ -202,18 +218,11 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     const others = otherRunning(runningList, shownId);
     switcher.hidden = !others.length;
     if (others.length) renderSwitcher(switcher, others, (s) => opts.onSwitch?.(s));
-    head.hidden = !current && !others.length;
-  }
-
-  function renderNote(): void {
-    note.hidden = !noteText || !current;
-    note.textContent = noteText ?? "";
+    head.hidden = !others.length;
   }
 
   function render(): void {
-    header(current);
     renderLog();
-    renderNote();
     updateSwitcher();
     updateBar();
     log.classList.toggle("busy", !!current && runningList.some((s) => s.sessionId === current!.sessionId));
@@ -256,6 +265,7 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     log.querySelector(":scope > p.empty")?.remove();
     // The final text of a streamed block takes the place of its live text.
     if (!settleLive(ev)) renderOne(ev, events.length - 1);
+    if (ev.type === "status") refreshOpening();
     pruneContinue(log);
     if (follow) log.scrollTop = log.scrollHeight;
   }
@@ -287,9 +297,6 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     for (const r of records) for (const n of r.addedNodes) if (n instanceof Element) stick.observe(n);
   }).observe(log, { childList: true });
 
-  title.addEventListener("click", () => {
-    if (current) opts.onDetails?.(current, title);
-  });
   newBtn.addEventListener("click", () => {
     const s = current;
     if (!usable(newBtn) || !s) return;
@@ -312,7 +319,6 @@ export function initChat(opts: ChatOptions = {}): ChatView {
       log.classList.toggle("busy", !!watching);
       if (watching) {
         current = watching;
-        header(current);
         refreshHead(current);
       }
       updateSwitcher();
@@ -333,7 +339,6 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     onSession(s) {
       if (s.sessionId !== shownId) return;
       current = s;
-      header(current);
       refreshHead(current);
       if (s.endedAt) log.scrollTop = log.scrollHeight;
       updateBar();
@@ -356,13 +361,9 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     shown() {
       return current;
     },
-    setNote(text) {
-      noteText = text;
-      renderNote();
-    },
-    setShortcut(next) {
-      if (next === shortcut) return;
-      shortcut = next;
+    setShortcuts(next) {
+      if (shortcuts?.open === next.open && shortcuts.voice === next.voice) return;
+      shortcuts = next;
       if (!shownId) renderLog();
     },
   };

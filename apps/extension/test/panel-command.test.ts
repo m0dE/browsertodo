@@ -1,8 +1,8 @@
-/** The keyboard shortcut: open the side panel, focus its input, toggle voice from there. */
+/** The keyboard shortcuts: one opens the side panel with the cursor in its input; the other talks (voice input) there. */
 import { describe, expect, it, vi } from "vitest";
 import { fakePort, type FakePort } from "./chrome-fake.js";
 import { PanelCommands, type PanelPort } from "../src/panel-command.js";
-import { OPEN_CHAT_COMMAND } from "../src/shortcut.js";
+import { OPEN_CHAT_COMMAND, VOICE_COMMAND } from "../src/shortcut.js";
 
 /** A side panel's port (its messages come in through deliver()). */
 function panelPort(): FakePort {
@@ -118,23 +118,57 @@ describe("PanelCommands", () => {
     expect(openPanel(pc, 3).posted).toEqual([{ type: "panel.focus", draft: "newer" }]);
   });
 
-  it("pressed while the panel's input has the focus: toggles voice in that panel", () => {
-    const { pc, open } = setup();
-    const port = panelPort();
-    const other = panelPort();
-    pc.attach(port);
-    pc.attach(other);
-    port.deliver({ type: "panel.hello", windowId: 3 });
-    other.deliver({ type: "panel.hello", windowId: 4 });
-    port.deliver({ type: "panel.input", focused: true });
-    expect(pc.onCommand(OPEN_CHAT_COMMAND, { windowId: 3 })).toBe("voice");
-    expect(port.posted).toEqual([{ type: "panel.voice" }]);
-    expect(other.posted).toEqual([]);
-    expect(open).not.toHaveBeenCalled();
-    // Focus left the input for another part of the panel: the shortcut focuses the input again.
-    port.deliver({ type: "panel.input", focused: false });
-    port.deliver({ type: "panel.document", focused: true, draft: "" });
+  it("open-chat only opens and focuses: pressed again with the cursor already in the box, it focuses (no voice)", () => {
+    const { pc } = setup();
+    const port = openPanel(pc, 3, true);
     expect(pc.onCommand(OPEN_CHAT_COMMAND, { windowId: 3 })).toBe("focused");
+    expect(pc.onCommand(OPEN_CHAT_COMMAND, { windowId: 3 })).toBe("focused");
+    expect(port.posted).toEqual([{ type: "panel.focus" }, { type: "panel.focus" }]);
+  });
+
+  it("voice with no panel: opens it in the gesture; when it says hello it takes the focus, then starts listening", () => {
+    const { pc, open } = setup();
+    expect(pc.onCommand(VOICE_COMMAND, { windowId: 3 })).toBe("opened");
+    expect(open).toHaveBeenCalledWith(3);
+    const port = openPanel(pc, 3, true);
+    expect(port.posted).toEqual([{ type: "panel.focus" }, { type: "panel.voice" }]);
+  });
+
+  it("voice with the panel focused: focus the box and start listening there (only that window)", () => {
+    const { pc, closeAllInstantly } = setup();
+    const here = openPanel(pc, 3, true);
+    const other = openPanel(pc, 4, true);
+    expect(pc.onCommand(VOICE_COMMAND, { windowId: 3 })).toBe("voice");
+    expect(here.posted).toEqual([{ type: "panel.focus" }, { type: "panel.voice" }]);
+    expect(other.posted).toEqual([]);
+    expect(closeAllInstantly).not.toHaveBeenCalled();
+  });
+
+  it("voice with the focus in the page: panels are recreated like open-chat; only this window's new panel starts listening", () => {
+    const { pc, calls } = setup();
+    const here = openPanel(pc, 3, false, "Post on X:");
+    const other = openPanel(pc, 4, false);
+    expect(pc.onCommand(VOICE_COMMAND, { windowId: 3 })).toBe("reopened");
+    expect(calls).toEqual(["closeAll", "open 3", "open 4"]);
+    here.hostDisconnect();
+    other.hostDisconnect();
+    expect(openPanel(pc, 3).posted).toEqual([{ type: "panel.focus", draft: "Post on X:" }, { type: "panel.voice" }]);
+    expect(openPanel(pc, 4, false).posted).toEqual([{ type: "panel.focus" }]);
+  });
+
+  it("voice while listening: stops and sends in that panel, wherever the focus is (never recreated mid-recording)", () => {
+    const { pc, open, closeAllInstantly } = setup();
+    const port = openPanel(pc, 3, false);
+    port.deliver({ type: "panel.listening", listening: true });
+    expect(pc.onCommand(VOICE_COMMAND, { windowId: 3 })).toBe("voice");
+    expect(port.posted).toEqual([{ type: "panel.voice" }]);
+    expect(open).not.toHaveBeenCalled();
+    expect(closeAllInstantly).not.toHaveBeenCalled();
+    // Stopped: the next press starts again, through the focus path.
+    port.deliver({ type: "panel.listening", listening: false });
+    port.deliver({ type: "panel.document", focused: true, draft: "" });
+    expect(pc.onCommand(VOICE_COMMAND, { windowId: 3 })).toBe("voice");
+    expect(port.posted.slice(1)).toEqual([{ type: "panel.focus" }, { type: "panel.voice" }]);
   });
 
   it("a closed panel is forgotten; other commands and calls without a tab are ignored", () => {

@@ -15,7 +15,7 @@ import {
   taskNextTime,
 } from "@browsertodo/shared";
 import { FIXES } from "../../src/sidepanel/error-help.js";
-import { accountLabel, bytesToBase64, clockLabel, firstLine, modelChip, sessionMeta, statusLine, todoGate } from "../../src/sidepanel/format.js";
+import { accountLabel, bytesToBase64, clockLabel, firstLine, modelChip, statusLine, todoGate } from "../../src/sidepanel/format.js";
 import { modelLabel } from "../../src/ui/labels.js";
 
 const NOW = new Date(2026, 8, 24, 12, 0, 0).getTime(); // local noon
@@ -70,11 +70,6 @@ describe("times", () => {
     expect(clockLabel(at(9, 5, 1), NOW)).toBe("tomorrow 09:05");
     expect(clockLabel(at(23, 0, -1), NOW)).toBe("yesterday 23:00");
     expect(clockLabel(at(8, 0, 6), NOW)).toBe("Sep 30 08:00");
-  });
-  it("sessionMeta", () => {
-    expect(sessionMeta({ startedAt: new Date(NOW - 5 * 60_000).toISOString() }, NOW)).toBe("started 5 min ago");
-    expect(sessionMeta({ startedAt: at(14, 30), endedAt: at(14, 32), outcome: "done", turns: 2 }, NOW)).toBe("today 14:30 · done · 2 messages");
-    expect(sessionMeta({ startedAt: at(9, 0), endedAt: at(9, 5), outcome: "paused", turns: 1 }, NOW)).toBe("today 09:00 · needs you");
   });
   it("localInputToIso", () => {
     const iso = localInputToIso("2026-09-25T09:30");

@@ -101,14 +101,10 @@ export function initComposer(opts: {
   /** A message or a new task went out: show its conversation. */
   onStarted: (sessionId: string) => void;
   onState: (state: UiState) => void;
-  /** The target changed (a conversation, a new chat, a run started or ended). */
-  onTargetChange?: () => void;
   /** "Top up…" in the model menu. */
   onTopup?: () => void;
   /** The browser tab the panel is showing the chat of (null: unknown). */
   tabId?: () => number | null;
-  /** The cursor entered or left the box (the keyboard shortcut toggles voice input from there). */
-  onInputFocus?: (focused: boolean) => void;
 }): ComposerView {
   const tab = (): { tabId?: number } => {
     const id = opts.tabId?.() ?? null;
@@ -279,10 +275,6 @@ export function initComposer(opts: {
     );
   }
 
-  text.addEventListener("focus", () => opts.onInputFocus?.(document.hasFocus()));
-  text.addEventListener("blur", () => opts.onInputFocus?.(false));
-  window.addEventListener("focus", () => opts.onInputFocus?.(document.activeElement === text));
-  window.addEventListener("blur", () => opts.onInputFocus?.(false));
 
   stop.addEventListener("click", () => {
     // Stops this conversation's turn; other tasks keep running.
@@ -290,8 +282,6 @@ export function initComposer(opts: {
     void busy(stop, () => uiRequest({ type: "run.stop", ...(t ? { sessionId: t.sessionId } : {}) }), msg);
   });
 
-  /** The first render is the initial state, not a change (callers may not be wired yet). */
-  let lastKey = "new:";
   function render(): void {
     const m = mode();
     const inChat = panelTab === "chat";
@@ -309,11 +299,6 @@ export function initComposer(opts: {
     filesList.hidden = m !== "new";
     form.classList.toggle("running", m === "running");
     model.setRunning(m === "running");
-    const key = `${m}:${target()?.sessionId ?? ""}`;
-    if (key !== lastKey) {
-      lastKey = key;
-      opts.onTargetChange?.();
-    }
   }
 
   const view: ComposerView = {

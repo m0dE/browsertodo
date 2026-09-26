@@ -1,7 +1,6 @@
 /** Pure formatting helpers for the side panel and the options page. */
 import {
   formatCents,
-  formatRelative,
   hostedModel,
   OUT_OF_CREDIT,
   plural,
@@ -12,7 +11,6 @@ import {
   type Tone,
 } from "@browsertodo/shared";
 import { todoAllowed } from "../account/types.js";
-import { API_IDLE_MS } from "../engine/api-brain.js";
 import { BRAIN_LABELS, brainLabel, modelLabel } from "../ui/labels.js";
 import type { AccountView, UiState } from "../ui-protocol.js";
 import { NO_AI } from "../engine/brain-resolver.js";
@@ -22,19 +20,6 @@ import { errorHelp, FIXES, type ErrorFix } from "./error-help.js";
 /** "Claude Code · claude-sonnet-5 · Jev on": the agent behind a conversation. */
 export function sessionHeadline(s: { brain: BrainKind; model?: string; jev: boolean }): string {
   return [BRAIN_LABELS[s.brain], s.model?.trim() || "default model", s.jev ? "Jev on" : "Jev off"].join(" · ");
-}
-
-/**
- * The note under the Chat header while a conversation waits for the
- * next message: whether it continues in the same agent session.
- */
-export function conversationNote(s: { brain: BrainKind; endedAt?: string }, open: boolean): string | null {
-  if (!s.endedAt) return null;
-  if (!open) return "Conversation open · session ended — the next message starts a fresh session with a summary";
-  const kept = `kept ${API_IDLE_MS / 60_000} min`;
-  return s.brain === "claude-code"
-    ? `Conversation open · Claude Code session ${kept}`
-    : `Conversation open · ${BRAIN_LABELS[s.brain]} history ${kept}`;
 }
 
 export interface StatusLine {
@@ -138,17 +123,6 @@ export function runNowButton(
     disabled: false,
     title: `Run the tasks whose time has come${cloud ? " and check the cloud queue" : ""}, instead of waiting for the next check${every}`,
   };
-}
-
-/** The Chat header's meta line: "started 2 min ago · 2 messages", or "today 14:30 · done" once ended. */
-export function sessionMeta(
-  s: { startedAt: string; endedAt?: string; outcome?: string; turns?: number },
-  now = Date.now(),
-): string {
-  const parts = [s.endedAt ? clockLabel(s.startedAt, now) : `started ${formatRelative(s.startedAt, now)}`];
-  if (s.endedAt) parts.push(outcomeChip(s.outcome).label);
-  if ((s.turns ?? 1) > 1) parts.push(`${s.turns} messages`);
-  return parts.join(" · ");
 }
 
 export function outcomeChip(outcome: string | undefined): Chip {

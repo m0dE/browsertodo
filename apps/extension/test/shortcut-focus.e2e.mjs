@@ -1,6 +1,6 @@
 // The keyboard shortcut (Ctrl+.) must put the real keyboard focus in the side panel's chat input, also when the
 // panel is ALREADY open and the focus is in the web page, in the built extension in a HEADED Playwright Chromium
-// (a real window, so focus is real).
+// (a real window, so focus is real). The voice shortcut (Ctrl+,) goes the same way, then starts voice input.
 //
 // Owner's report: "a lot of the time when the extension is already open, when I press ctrl+. it doesn't focus the
 // input field." Chrome gives a side panel the keyboard focus only when it creates the panel's page, so with the
@@ -61,6 +61,8 @@ try {
           tab: d.querySelector("[role=tab][aria-selected=true]")?.id,
           draft: d.getElementById("now-text").value,
           chat: d.getElementById("chat-log").textContent,
+          voice: d.querySelector(".voice-mic")?.dataset.state ?? null,
+          tip: d.querySelector(".voice-tip:not([hidden])")?.textContent ?? null,
           mark: v.__mark ?? null,
         };
       }
@@ -95,19 +97,19 @@ try {
     await web.click("#q");
     await waitFor(async () => (await panelOf())?.hasFocus === false, "the panel to lose the focus to the page");
   };
-  /** The panel's input has the real keyboard focus, in Chat, and the background knows (the next press toggles voice). */
+  /** The panel's input has the real keyboard focus, in Chat. */
   const inputHasRealFocus = async (what, w = windowId) => {
     const t0 = Date.now();
     const got = await waitFor(
       async () => {
         const f = await panelOf(w);
-        return f?.hasFocus && f.active === "now-text" && f.tab === "tab-btn-chat" && (await pc("inputFocused", w)) ? f : null;
+        return f?.hasFocus && f.active === "now-text" && f.tab === "tab-btn-chat" ? f : null;
       },
       what,
       { timeout: 3000 },
     ).catch(() => null);
     const f = await panelOf(w);
-    assert.ok(got, `${what}: panel ${JSON.stringify(f)}, background inputFocused=${await pc("inputFocused", w)} (expected hasFocus=true, active=now-text, tab=tab-btn-chat)`);
+    assert.ok(got, `${what}: panel ${JSON.stringify(f)} (expected hasFocus=true, active=now-text, tab=tab-btn-chat)`);
     return { panel: got, ms: Date.now() - t0 };
   };
 
@@ -150,9 +152,36 @@ try {
     return `focused ${ms} ms after the handler; the box has ${JSON.stringify(DRAFT)} and the chat "${REPLY}" ${shown} ms after the press`;
   });
 
-  await step("the second press, with the cursor in the input, toggles voice (and keeps the panel)", async () => {
+  await step("the second press, with the cursor in the input, only focuses it again (voice has its own key) and keeps the panel", async () => {
     await inPanel("mark", "kept");
-    assert.equal(await press(WEB), "voice");
+    assert.equal(await press(WEB), "focused");
+    const { panel } = await inputHasRealFocus("the input to keep the focus");
+    assert.equal(panel.mark, "kept", "the same panel page");
+    assert.equal(panel.voice, "locked", "voice did not start");
+    assert.equal(panel.tip, null, "no voice tip");
+    return "focused";
+  });
+
+  await step("the voice key with the focus in the web page: the panel is recreated with the focus, then voice starts (signed out: the locked mic says why, with Choose a plan)", async () => {
+    await userClicksIntoPage();
+    assert.equal(await press(WEB, "voice"), "reopened");
+    const got = await waitFor(
+      async () => {
+        const f = await panelOf();
+        return f?.hasFocus && f.mark === null && f.tab === "tab-btn-chat" && f.tip ? f : null;
+      },
+      "the new panel to have the focus and the locked-mic tip",
+      { timeout: 5000 },
+    );
+    assert.match(got.tip, /Voice needs/);
+    assert.match(got.tip, /Choose a plan/);
+    assert.equal(got.active, "BUTTON", "the mic has the focus (it points at the lock)");
+    return JSON.stringify({ tip: got.tip, active: got.active });
+  });
+
+  await step("the voice key with the focus in the panel: no panel is recreated", async () => {
+    await inPanel("mark", "kept");
+    assert.equal(await press(WEB, "voice"), "voice");
     assert.equal((await panelOf())?.mark, "kept", "the same panel page");
     return "voice";
   });

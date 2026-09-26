@@ -44,12 +44,8 @@
           <span class="bar-sep" aria-hidden="true"></span>
           <button id="chat-show" type="button" class="bar-btn">Show tab</button>
         </div>
-        <div id="chat-head" class="act-head">
-          <div id="chat-titles" class="act-title">
-            <button id="chat-title" type="button" class="title title-btn" aria-haspopup="dialog"></button>
-            <div id="chat-meta" class="meta"></div>
-          </div>
-          <div id="chat-conv" class="act-conv" title="The agent session stays open for a while: the next message continues it with everything it already knows" hidden></div>
+        <!-- Chats running in other tabs: one chip each (the conversation itself opens with its prompt, in the log). -->
+        <div id="chat-head" class="act-head" hidden>
           <div id="chat-switch" class="act-switch" role="group" aria-label="Chats running in other tabs" hidden></div>
         </div>
         <div id="chat-log" class="log scroll" aria-live="polite"></div>

@@ -11,7 +11,6 @@ import { initComposer } from "./composer.js";
 import { showDetails } from "./details-sheet.js";
 import { $, closeMenusOnOutsideClick } from "../ui/dom.js";
 import { setErrorFixes, type ErrorFixes } from "./error-view.js";
-import { conversationNote } from "./format.js";
 import { initHeader } from "./header.js";
 import { initHistory } from "./history.js";
 import { openSettings } from "./open-settings.js";
@@ -19,13 +18,13 @@ import { connectBackground } from "./port.js";
 import { chatForTab, isBound, tabOfSession } from "./tab-chat.js";
 import { initPanelTabs, tabHasComposer, type TabName } from "./tabs.js";
 import { initTasks } from "./tasks.js";
-import { openShortcutSettings, readShortcut } from "../shortcut.js";
+import { OPEN_CHAT_COMMAND, openShortcutSettings, readShortcut, VOICE_COMMAND } from "../shortcut.js";
 import { voiceAllowed } from "../account/types.js";
 import { openBilling, refreshOnReturn } from "../ui/billing.js";
 import { browserMicAccessDeps, watchMicPermission } from "../voice/mic-access.js";
 import { MicSource } from "../voice/recorder.js";
 import { panelTranscriber } from "../voice/transcribe.js";
-import { initVoiceInput } from "./voice-input.js";
+import { initVoiceInput, isListening } from "./voice-input.js";
 
 /** Relative times (the status line's next check, task times) are redrawn this often. */
 const CLOCK_TICK_MS = 60_000;
@@ -96,7 +95,7 @@ function openInTodo(taskId: string): void {
   void tasks.reveal(taskId);
 }
 
-/** The details sheet of a run's task (the Chat title): "Open in TODO" when the list has it. */
+/** The details sheet of a run's task (its first message in Chat): "Open in TODO" when the list has it. */
 const runDetails = (s: SessionInfo, trigger: HTMLElement) => void showDetails({ session: s }, trigger, { onOpenInTodo: openInTodo });
 
 /** Get a plan, Top up, Plan & billing: the dashboard's Billing page. */
@@ -116,11 +115,8 @@ const tasks = initTasks({
 const composer = initComposer({
   onStarted: startedHere,
   onState: (s) => applyState(s),
-  onTargetChange: () => updateNote(),
   onTopup: billing,
   tabId: () => activeTab,
-  // The keyboard shortcut toggles voice input when pressed while the cursor is in the box.
-  onInputFocus: (focused) => port.send({ type: "panel.input", focused }),
 });
 // Voice input: the mic left of Send; clips are transcribed by the background with the account.
 const micAccess = browserMicAccessDeps();
@@ -134,6 +130,8 @@ const voice = initVoiceInput({
   mic: { ...micAccess, watch: (onChange) => watchMicPermission(onChange) },
   openBilling: billing,
   host: document.body,
+  // The voice shortcut stops and sends while listening, wherever the keyboard focus is.
+  onListening: (listening) => port.send({ type: "panel.listening", listening }),
 });
 const chat = initChat({
   // Continue in an end card: go on now (with the note typed in the box, if any).
@@ -141,7 +139,6 @@ const chat = initChat({
   onFocus: (s) => {
     focused = s;
     composer.setConversation(s);
-    updateNote();
   },
   // New chat: this tab has no conversation any more (the session stays in the Activity log).
   onLeave: (s) => {
@@ -162,6 +159,8 @@ const chat = initChat({
   onShortcuts: () => void openShortcutSettings(),
 });
 const history = initHistory({ onOpenInChat: (s) => void openHere(s) });
+/** The voice shortcut arrived before the first state (a panel it just opened): run it once voice knows the plan. */
+let voicePending = false;
 /** Log in: the TODO tab's sign-in, where its progress shows. */
 function signIn(): void {
   tabs.show("todo");
@@ -226,13 +225,6 @@ async function trackTabs(): Promise<void> {
   await refresh();
 }
 
-/** "Conversation open · …" under the Chat header while the composer's conversation waits for a message. */
-function updateNote(): void {
-  const t = composer.target();
-  const open = !!t && (state?.openConversations ?? []).includes(t.sessionId);
-  chat.setNote(t && t.source !== "cloud" && composer.mode() === "conversation" ? conversationNote(t, open) : null);
-}
-
 /** The composer sits under Chat and TODO, but not under the TODO tab's Log in or Get a plan button. */
 function updateComposer(): void {
   $("composer").hidden = !tabHasComposer(currentTab) || (currentTab === "todo" && tasks.callToActionOnly());
@@ -243,6 +235,10 @@ function applyState(s: UiState): void {
   setErrorFixes(errorFixes(s));
   header.render(s);
   voice.setAllowed(!!s.account?.signedIn && voiceAllowed(s.account.plan));
+  if (voicePending) {
+    voicePending = false;
+    voice.shortcut();
+  }
   chat.setRunning(s.runningSessions);
   composer.setRunning(s.runningSessions);
   composer.setState(s);
@@ -251,7 +247,6 @@ function applyState(s: UiState): void {
   for (const [tab, id] of [...left]) if (!s.runningSessions.some((r) => r.sessionId === id)) left.delete(tab);
   resolveChat();
   updateComposer();
-  updateNote();
 }
 
 function onPush(msg: UiPush): void {
@@ -279,10 +274,10 @@ function onPush(msg: UiPush): void {
       composer.focus();
       break;
     case "panel.voice":
-      // The keyboard shortcut, pressed with the cursor in the box: start or stop voice input.
+      // The voice shortcut (after panel.focus): start listening, or stop and send.
       tabs.show("chat");
-      window.focus();
-      voice.toggle();
+      if (state) voice.shortcut();
+      else voicePending = true;
       break;
   }
 }
@@ -291,8 +286,9 @@ function onPush(msg: UiPush): void {
 function hello(): void {
   if (windowId === null) return;
   port.send({ type: "panel.hello", windowId });
-  port.send({ type: "panel.input", focused: document.hasFocus() && document.activeElement === $("now-text") });
   reportDocumentFocus();
+  // A background that restarted meanwhile learns it again (the voice shortcut stops a listening panel).
+  if (isListening(voice.state)) port.send({ type: "panel.listening", listening: true });
 }
 
 /** Whether this page has the keyboard focus, for the shortcut (see panel-command.ts), with the text in the box. */
@@ -302,11 +298,11 @@ function reportDocumentFocus(): void {
 window.addEventListener("focus", reportDocumentFocus);
 window.addEventListener("blur", reportDocumentFocus);
 
-/** The keyboard shortcut as Chrome assigned it (null: none is set), for the new chat. */
-async function loadShortcut(): Promise<void> {
-  const label = await readShortcut();
-  chat.setShortcut(label);
-  voice.setShortcut(label);
+/** The keyboard shortcuts as Chrome assigned them (null: none is set), for the new chat and the mic's tooltip. */
+async function loadShortcuts(): Promise<void> {
+  const [open, talk] = await Promise.all([readShortcut(OPEN_CHAT_COMMAND), readShortcut(VOICE_COMMAND)]);
+  chat.setShortcuts({ open, voice: talk });
+  voice.setShortcut(talk);
 }
 
 async function loadState(): Promise<void> {
@@ -327,11 +323,11 @@ const port = connectBackground(onPush, () => {
   hello();
   void loadState();
 });
-void loadShortcut();
+void loadShortcuts();
 // Back from the dashboard's Billing page: a new plan or credit shows without Refresh (the push brings it).
 refreshOnReturn(() => void uiRequest({ type: "account.refresh", force: true }).then(applyState, () => {}));
 // The shortcut may have been changed on chrome://extensions/shortcuts meanwhile.
-window.addEventListener("focus", () => void loadShortcut());
+window.addEventListener("focus", () => void loadShortcuts());
 // Opened (by the shortcut or the toolbar button): the cursor is in the box.
 composer.focus();
 setInterval(() => {

@@ -53,7 +53,14 @@
         "default": "Ctrl+Period",
         "mac": "Command+Period"
       },
-      "description": "Open browsertodo in the side panel and focus the chat input; press again there for voice input"
+      "description": "Open browsertodo in the side panel and focus the chat input"
+    },
+    "voice": {
+      "suggested_key": {
+        "default": "Ctrl+Comma",
+        "mac": "MacCtrl+Comma"
+      },
+      "description": "Talk to browsertodo: start voice input in the side panel; press again to send"
     }
   }
 }

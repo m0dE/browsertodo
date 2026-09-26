@@ -5,10 +5,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-/** The panel's shortcut as the manifest suggests it (what chrome.commands reports when Chrome assigned it). */
-export const SHORTCUT = JSON.parse(readFileSync(join(root, "static", "manifest.json"), "utf8")).commands["open-chat"].suggested_key.default;
-/** How the panel writes it ("Ctrl+Period" reads "Ctrl+."). */
-export const SHORTCUT_LABEL = SHORTCUT.split("+").map((k) => ({ Period: ".", Comma: "," })[k] ?? k).join("+");
+const COMMANDS = JSON.parse(readFileSync(join(root, "static", "manifest.json"), "utf8")).commands;
+/** The panel's shortcuts as the manifest suggests them (what chrome.commands reports when Chrome assigned them). */
+export const SHORTCUT = COMMANDS["open-chat"].suggested_key.default;
+export const VOICE_SHORTCUT = COMMANDS.voice.suggested_key.default;
+/** How the panel writes them ("Ctrl+Period" reads "Ctrl+.", "Ctrl+Comma" reads "Ctrl+,"). */
+const label = (key) => key.split("+").map((k) => ({ Period: ".", Comma: "," })[k] ?? k).join("+");
+export const SHORTCUT_LABEL = label(SHORTCUT);
+export const VOICE_SHORTCUT_LABEL = label(VOICE_SHORTCUT);
 
 /** A small JPEG "screenshot" for thumbnails (base64), rendered once by renderThumbnail(browser). */
 export let thumbnail = "";
@@ -196,7 +200,7 @@ export function scenario(kind) {
   ];
   const ev = (minutes, e) => ({ ...e, ts: iso(minutes), sessionId: "s-live" });
   const events = [
-    ev(-2, { type: "status", text: "Started with Claude API + Jev" }),
+    ev(-2, { type: "status", text: "Claude API (claude-sonnet-5) with Jev" }),
     ev(-2, { type: "assistant_text", text: "I'll open X, check that the right account is active, then write the thread." }),
     ev(-2, { type: "tool_call", id: "1", name: "switch_x_account", args: { handle: "@browsertodo" } }),
     ev(-2, { type: "tool_result", id: "1", name: "switch_x_account", text: "Already on @browsertodo" }),
@@ -356,7 +360,7 @@ export function scenario(kind) {
     const post = "Close the laptop lid, and browsertodo still posts on time. Your todo list runs in your own browser, on a schedule, with your own accounts. Try it";
     const sev = (minutes, e) => ({ ...e, ts: iso(minutes), sessionId: "s-stop" });
     eventsBySession["s-stop"] = [
-      sev(-3, { type: "status", text: "Started with Claude Code" }),
+      sev(-3, { type: "status", text: "Claude Code started" }),
       sev(-3, { type: "assistant_text", text: "I'll open X and write the post." }),
       sev(-3, { type: "tool_call", id: "1", name: "navigate", args: { url: "https://x.com/home" } }),
       sev(-3, { type: "tool_result", id: "1", name: "navigate", text: "Opened https://x.com/home (title: Home / X)" }),
@@ -464,8 +468,9 @@ export function scenario(kind) {
   }
   // Nothing runs in tab 1 when the default run is not running.
   if (state.running?.sessionId !== "s-live") delete state.runningTabs["s-live"];
-  // Another extension took the key: Chrome assigned none.
+  // Other extensions took the keys: Chrome assigned none.
   const shortcut = kind === "noshortcut" ? "" : SHORTCUT;
+  const voiceShortcut = kind === "noshortcut" ? "" : VOICE_SHORTCUT;
   // Log In in the stub signs in as a subscriber (the TODO tab then shows the list).
-  return { state, tasks, tasksSource, tasksLocked, signInPlan: PLUS, keys, events, sessions, eventsBySession, shortcut, pastEvents: events.slice(0, 6).map((e) => ({ ...e, sessionId: "s-2" })) };
+  return { state, tasks, tasksSource, tasksLocked, signInPlan: PLUS, keys, events, sessions, eventsBySession, shortcut, voiceShortcut, pastEvents: events.slice(0, 6).map((e) => ({ ...e, sessionId: "s-2" })) };
 }

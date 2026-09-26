@@ -23,8 +23,11 @@ export function installChromeStub(data) {
     "settings.testCloud": () => ({ ok: true, detail: "Server reachable, runner key accepted." }),
     "helper.connect": () => data.state,
     "run.adhoc": (req) => {
-      const title = req.screen ? "Figure out what to do based on the current screen" : req.instructions;
-      const s = { sessionId: "s-new", source: "adhoc", title, brain: "claude-api", jev: true, startedAt: new Date().toISOString() };
+      // Like the runner: the full message is kept, the title is it on one line, clipped.
+      const instructions = req.screen ? "Figure out what to do based on the current screen" : req.instructions;
+      const line = instructions.replace(/\s+/g, " ").trim();
+      const title = line.length > 80 ? `${line.slice(0, 79)}…` : line;
+      const s = { sessionId: "s-new", source: "adhoc", title, instructions, brain: "claude-api", jev: true, model: "claude-sonnet-5", startedAt: new Date().toISOString() };
       data.sessions = [s, ...data.sessions.filter((x) => x.sessionId !== "s-new")];
       data.eventsBySession = { ...(data.eventsBySession ?? {}), "s-new": [] };
       return { sessionId: "s-new" };
@@ -132,7 +135,7 @@ export function installChromeStub(data) {
   /** The canned answers, for a case that changes them mid-way (e.g. a subscription unlocking the TODO list). */
   window.__data = data;
   window.__opened = [];
-  /** What the panel sent on its UI port (panel.hello, panel.input), and tabs it opened. */
+  /** What the panel sent on its UI port (panel.hello, panel.document, panel.listening), and tabs it opened. */
   window.__portSent = [];
   window.__created = [];
   window.open = (url) => void window.__opened.push(url);
@@ -171,7 +174,12 @@ export function installChromeStub(data) {
       openOptionsPage: () => {},
       getURL: (path) => `${location.origin}/${path}`,
     },
-    commands: { getAll: async () => [{ name: "open-chat", shortcut: data.shortcut, description: "Open browsertodo" }] },
+    commands: {
+      getAll: async () => [
+        { name: "open-chat", shortcut: data.shortcut, description: "Open browsertodo" },
+        { name: "voice", shortcut: data.voiceShortcut, description: "Talk to browsertodo" },
+      ],
+    },
     tabs: {
       create: async (props) => {
         window.__created.push(props.url);

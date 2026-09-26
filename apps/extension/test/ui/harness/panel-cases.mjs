@@ -3,7 +3,7 @@
 // size's browser context and label, the checks (checks.mjs) and the panel helpers below.
 import { join } from "node:path";
 import { installChromeStub } from "./chrome-stub.mjs";
-import { EMAIL_ANSWER, scenario, SHORTCUT_LABEL, SUGGESTION, thumbnail } from "./scenarios.mjs";
+import { EMAIL_ANSWER, scenario, SHORTCUT_LABEL, SUGGESTION, thumbnail, VOICE_SHORTCUT_LABEL } from "./scenarios.mjs";
 
 export const SIZES = [
   { w: 360, h: 800 },
@@ -55,7 +55,33 @@ export function panelHelpers(label, problem) {
     if (bare.length) fail(`${what}: chips without a tooltip: ${bare.join(", ")}`);
   };
   const tabsText = (p) => p.evaluate(() => [...document.querySelectorAll(".tabs [role=tab]")].map((t) => t.textContent.trim()).join(" | "));
-  return { fail, chatBar, expectBar, expectChipHints, tabsText };
+  /**
+   * The chat's first message (the prompt or task that opened it, the first thing in the log): its text, its origin
+   * label, its files line, the time under it, the brain chip right after it; null when the chat has none.
+   */
+  const firstMessage = (p) =>
+    p.evaluate(() => {
+      const wrap = document.querySelector("#chat-log > .ev-opening");
+      const b = wrap?.querySelector(".ev-first");
+      if (!b) return null;
+      return {
+        first: wrap === document.getElementById("chat-log").firstElementChild,
+        text: b.querySelector(".ev-user-text, :scope.screen > span")?.textContent ?? null,
+        screen: b.classList.contains("screen"),
+        origin: b.querySelector(".ev-origin")?.textContent ?? null,
+        files: b.querySelector(".ev-files")?.textContent ?? null,
+        when: wrap.querySelector(".ev-when")?.textContent ?? null,
+        role: b.getAttribute("role"),
+        tabIndex: b.tabIndex,
+        head: wrap.nextElementSibling?.classList.contains("ev-head") ? wrap.nextElementSibling.textContent : null,
+        // The old header block is gone, and each brain's start line is left to the chip.
+        header: !!document.querySelector("#chat-title, #chat-meta, #chat-conv"),
+        startLines: [...document.querySelectorAll("#chat-log .ev-status")].filter((e) => /^(Claude Code started|Claude API \(|BrowserTODO AI \()/i.test(e.textContent)).length,
+      };
+    });
+  /** Waits until the chat's first message starts with `text`. */
+  const waitFirst = (p, text) => p.waitForFunction((t) => document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent.startsWith(t), text);
+  return { fail, chatBar, expectBar, expectChipHints, tabsText, firstMessage, waitFirst };
 }
 
 export const PANEL_CASES = [
@@ -120,7 +146,7 @@ export const PANEL_CASES = [
   // box does nothing but say so. The shortcut's push switches to Chat and focuses the box; Change opens Chrome's page.
   {
     names: ["panel-empty-send", "panel-empty-send-sent", "panel-restricted", "panel-empty-noshortcut"],
-    async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors }) {
+    async run({ ctx, size, scheme, label, fail, firstMessage, openPanel, shoot, checkLayout, reportErrors }) {
       const SCREEN = "Figure out what to do based on the current screen";
       const p = await openPanel(ctx, "idle", ".chat-empty .shortcut-hint");
       const look = await p.evaluate(() => {
@@ -139,7 +165,8 @@ export const PANEL_CASES = [
       if (!look.focused) fail("empty send: the box is not focused when the panel opens");
       if (look.opacity !== "1") fail(`empty send: Send looks unavailable (opacity ${look.opacity})`);
       if (!/look at this page/.test(look.title)) fail(`empty send: Send tooltip "${look.title}"`);
-      if (look.hint !== `Press ${SHORTCUT_LABEL} to open this chat at any time.`) fail(`empty send: shortcut hint "${look.hint}"`);
+      // Both keys, briefly: open, and talk.
+      if (look.hint !== `${SHORTCUT_LABEL} to open · ${VOICE_SHORTCUT_LABEL} to talk`) fail(`empty send: shortcut hint "${look.hint}"`);
       if (!look.hello) fail("empty send: the panel did not tell the background its window");
       // The placeholder is one line at this width (measured with the box's font).
       const oneLine = await p.evaluate((text) => {
@@ -171,8 +198,10 @@ export const PANEL_CASES = [
       });
       await push({ type: "tool_call", id: "3", name: "open_tabs", args: { urls: ["http://127.0.0.1/mail"] } });
       await p.waitForSelector("#chat-log .ev-text");
-      const turn = await p.evaluate(() => ({ text: document.querySelector("#chat-log .ev-user.screen")?.textContent, title: document.getElementById("chat-title").textContent }));
-      if (turn.text !== SCREEN || turn.title !== SCREEN) fail(`empty send: user turn ${JSON.stringify(turn)}`);
+      // The empty send is the chat's first message, in its own quiet look (no header over it repeating it).
+      const turn = await p.evaluate(() => ({ text: document.querySelector("#chat-log .ev-user.screen")?.textContent, users: document.querySelectorAll("#chat-log .ev-user").length }));
+      const first = await firstMessage(p);
+      if (turn.text !== SCREEN || turn.users !== 1 || !first?.first || !first.screen || first.text !== SCREEN || first.header || !first.when) fail(`empty send: user turn ${JSON.stringify({ turn, first })}`);
       await checkLayout(p, `empty send sent ${label}`);
       await shoot(p, "panel-empty-send-sent", size, scheme);
 
@@ -192,8 +221,8 @@ export const PANEL_CASES = [
       await p.evaluate(() => window.__push({ type: "panel.focus" }));
       const focused = await p.evaluate(() => ({ tab: document.querySelector(".tabs [aria-selected=true]").dataset.tab, box: document.activeElement?.id }));
       if (focused.tab !== "chat" || focused.box !== "now-text") fail(`shortcut focus ${JSON.stringify(focused)}`);
-      // The input's focus is reported (the shortcut then closes the panel from there).
-      if (!(await p.evaluate(() => window.__portSent.some((m) => m.type === "panel.input" && m.focused === true)))) fail("input focus not reported");
+      // The page's focus is reported with the text in the box (the shortcut recreates the panel from there when it lacks the focus).
+      if (!(await p.evaluate(() => window.__portSent.some((m) => m.type === "panel.document")))) fail("page focus not reported");
       reportErrors(p, `empty send ${label}`);
       await p.close();
 
@@ -265,7 +294,7 @@ export const PANEL_CASES = [
   // A running session: TODO, then Chat with its action bar, then the Activity Log.
   {
     names: ["panel-todo", "panel-model-running", "panel-add-form", "panel-finished-menu", "panel-chat-running", "panel-activity-log", "panel-activity-log-open"],
-    async run({ ctx, size, scheme, label, fail, expectBar, expectChipHints, want, only, openPanel, shoot, checkLayout, reportErrors, wantAny, shots, taken }) {
+    async run({ ctx, size, scheme, label, fail, expectBar, expectChipHints, firstMessage, want, only, openPanel, shoot, checkLayout, reportErrors, wantAny, shots, taken }) {
       const page = await openPanel(ctx, "ok", ".ev-tool");
       await page.click("#tab-btn-todo");
       await page.waitForSelector(".task");
@@ -334,7 +363,7 @@ export const PANEL_CASES = [
         await page.waitForSelector("#tab-chat:not([hidden]) #chat-log .ev-text");
         const opened = await page.evaluate(() => ({
           tab: document.querySelector(".tabs [aria-selected=true]")?.id,
-          title: document.getElementById("chat-title").textContent,
+          title: document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent,
           bind: window.__requests.filter((r) => r.type === "chat.bind").at(-1),
           composer: !document.getElementById("composer").hidden,
           focus: document.activeElement?.id,
@@ -354,10 +383,11 @@ export const PANEL_CASES = [
       await page.close();
     },
   },
-  // Task details: the Chat title, a TODO title and a past chat message's title open a sheet with everything known.
+  // Task details: the chat's first message (a task run's instructions, or a past chat's prompt), and a TODO title,
+  // open a sheet with everything known.
   {
-    names: ["panel-details-chat", "panel-details-focus", "panel-details-todo", "panel-details-message"],
-    async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, reportErrors, base, shots, taken }) {
+    names: ["panel-first-task", "panel-details-chat", "panel-details-focus", "panel-details-todo", "panel-first-long", "panel-details-message"],
+    async run({ ctx, size, scheme, label, fail, want, firstMessage, waitFirst, openPanel, shoot, checkLayout, reportErrors, base, shots, taken }) {
       const p = await openPanel(ctx, "details", ".ev-tool");
       const known = scenario("details");
       await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: base });
@@ -385,18 +415,20 @@ export const PANEL_CASES = [
         if (got.focus !== "Close") fail(`${what}: focus on "${got.focus}", not Close`);
       };
 
-      // Chat: the title is a keyboard-reachable button with a visible focus ring.
-      await p.focus("#chat-title");
+      // Chat: the task run opens with its instructions as the first message, labelled with where they came from.
+      const first = await firstMessage(p);
+      if (!first?.first || first.origin !== "From your TODO list" || first.text !== known.state.running.title || !first.when || first.header || first.head !== "Claude API · claude-sonnet-5 · Jev on") fail(`task run's first message ${JSON.stringify(first)}`);
+      await checkLayout(p, `details-task-run ${label}`);
+      await shoot(p, "panel-first-task", size, scheme);
+      // It is reachable by keyboard (Tab from the action bar) and shows a focus ring.
+      await p.focus("#chat-show");
+      await p.keyboard.press("Tab");
       const ring = await p.evaluate(() => {
-        const t = document.getElementById("chat-title");
-        return { tag: t.tagName, visible: t.matches(":focus-visible"), outline: getComputedStyle(t).outlineStyle };
+        const t = document.activeElement;
+        return { first: t.classList.contains("ev-first"), role: t.getAttribute("role"), visible: t.matches(":focus-visible"), outline: getComputedStyle(t).outlineStyle };
       });
-      if (ring.tag !== "BUTTON" || !ring.visible || ring.outline === "none") fail(`chat title focus ${JSON.stringify(ring)}`);
-      if (want("panel-details-focus", size, scheme)) {
-        const f = join(shots, `panel-details-focus-${size.w}-${scheme}.png`);
-        await p.locator("#chat-head").screenshot({ path: f });
-        taken.push(f);
-      }
+      if (!ring.first || ring.role !== "button" || !ring.visible || ring.outline === "none") fail(`first message focus ${JSON.stringify(ring)}`);
+      await shoot(p, "panel-details-focus", size, scheme);
       await p.keyboard.press("Enter");
       await p.waitForSelector("dialog.sheet[open]");
       const chat = await sheet();
@@ -420,9 +452,9 @@ export const PANEL_CASES = [
       // Esc closes and focus goes back to the title.
       await p.keyboard.press("Escape");
       await p.waitForFunction(() => !document.querySelector("dialog.sheet"));
-      if ((await p.evaluate(() => document.activeElement?.id)) !== "chat-title") fail("Esc did not return focus to the chat title");
-      // Open in TODO: the TODO tab, focused on the task.
-      await p.click("#chat-title");
+      if (!(await p.evaluate(() => document.activeElement?.classList.contains("ev-first")))) fail("Esc did not return focus to the first message");
+      // Open in TODO: the TODO tab, focused on the task (a click on the first message opens the sheet too).
+      await p.click("#chat-log .ev-first");
       await p.waitForSelector("dialog.sheet[open]");
       await p.locator("dialog.sheet button", { hasText: "Open in TODO" }).click();
       await p.waitForFunction(() => document.activeElement?.dataset?.taskId === "t2");
@@ -445,11 +477,23 @@ export const PANEL_CASES = [
       await p.waitForFunction(() => !document.querySelector("dialog.sheet"));
       if ((await p.evaluate(() => document.activeElement?.dataset?.taskId)) !== "t1") fail("backdrop click did not return focus to the task");
 
-      // Activity Log: a past one-off chat opens in Chat; its title's details show the whole message typed.
+      // Activity Log: a past one-off chat opens in Chat, with the whole message typed as its first bubble (a long,
+      // multi-line prompt, wrapped); the bubble opens its details.
       await p.click("#tab-btn-history");
       await p.locator(".sessions li button", { hasText: "Lisbon" }).click();
-      await p.waitForFunction(() => !document.getElementById("tab-chat").hidden && document.getElementById("chat-title").textContent.includes("Lisbon"));
-      await p.click("#chat-title");
+      await p.waitForFunction(() => !document.getElementById("tab-chat").hidden);
+      await waitFirst(p, "Find the cheapest flight");
+      const lisbonFirst = await firstMessage(p);
+      if (lisbonFirst.text !== known.sessions.find((x) => x.sessionId === "s-3").instructions || lisbonFirst.origin !== null) fail(`past chat's first message ${JSON.stringify(lisbonFirst)}`);
+      const wraps = await p.evaluate(() => {
+        const b = document.querySelector("#chat-log .ev-first").getBoundingClientRect();
+        return { lines: Math.round(b.height / 20), inside: b.right <= document.getElementById("chat-log").getBoundingClientRect().right + 0.5 };
+      });
+      if (wraps.lines < 3 || !wraps.inside) fail(`long prompt not wrapped in the bubble ${JSON.stringify(wraps)}`);
+      await checkLayout(p, `details-long-prompt ${label}`);
+      await shoot(p, "panel-first-long", size, scheme);
+      await p.focus("#chat-log .ev-first");
+      await p.keyboard.press("Enter");
       await p.waitForSelector("dialog.sheet[open]");
       const msg = await sheet();
       checkSheet(msg, "details of a chat message");
@@ -459,16 +503,71 @@ export const PANEL_CASES = [
       await shoot(p, "panel-details-message", size, scheme);
       await p.locator("dialog.sheet button", { hasText: "Close" }).click();
       await p.waitForFunction(() => !document.querySelector("dialog.sheet"));
-      if ((await p.evaluate(() => document.activeElement?.id)) !== "chat-title") fail("Close did not return focus to the chat title");
+      if (!(await p.evaluate(() => document.activeElement?.classList.contains("ev-first")))) fail("Close did not return focus to the first message");
       reportErrors(p, `details ${label}`);
       await p.close();
     },
   },
-  // A conversation: two turns in one thread (the second opened by the user's bubble), the composer talks to it,
-  // the header says whether its Claude Code session is still open; New Chat empties the thread and goes back to "Do this now".
+  // A new chat with a long, multi-line prompt and two files: the prompt as typed is the first message (wrapped, with
+  // its files), then the brain chip; the brain's start line is not repeated; the bubble opens the message's details.
   {
-    names: ["panel-conversation", "panel-conversation-ended", "panel-conversation-newchat", "panel-conversation-todo"],
-    async run({ ctx, size, scheme, label, fail, expectBar, want, only, openPanel, shoot, checkLayout, reportErrors }) {
+    names: ["panel-first-files", "panel-first-files-details"],
+    async run({ ctx, size, scheme, label, fail, firstMessage, openPanel, shoot, checkLayout, reportErrors }) {
+      const p = await openPanel(ctx, "idle", ".chat-empty");
+      await p.setInputFiles("#now-files", [
+        { name: "week38-photo-of-the-week-final.jpg", mimeType: "image/jpeg", buffer: Buffer.from("x") },
+        { name: "caption.txt", mimeType: "text/plain", buffer: Buffer.from("x") },
+      ]);
+      await p.click("#now-text");
+      await p.keyboard.insertText(LONG_TEXT);
+      await p.keyboard.press("Enter");
+      await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.adhoc"));
+      await p.waitForSelector("#chat-log .ev-first");
+      const push = (e) => p.evaluate((ev) => window.__push({ type: "event", event: { ...ev, ts: new Date().toISOString(), sessionId: "s-new" } }), e);
+      await push({ type: "status", text: "Preparing 2 file(s)" });
+      await push({ type: "status", text: "Claude API (claude-sonnet-5) with Jev" });
+      await push({ type: "assistant_text", text: "I'll open X, check the account, then write the thread with the photo." });
+      await push({ type: "tool_call", id: "1", name: "navigate", args: { url: "https://x.com/compose/post" } });
+      await p.waitForSelector("#chat-log .ev-first .ev-files");
+      const first = await firstMessage(p);
+      if (!first.first || first.text !== LONG_TEXT || first.files !== "2 files" || first.origin !== null || !first.when || first.header) fail(`first message with files ${JSON.stringify(first)}`);
+      if (first.head !== "Claude API · claude-sonnet-5 · Jev on" || first.startLines !== 0) fail(`brain shown more than once ${JSON.stringify(first)}`);
+      const box = await p.evaluate(() => {
+        const b = document.querySelector("#chat-log .ev-first").getBoundingClientRect();
+        const log = document.getElementById("chat-log").getBoundingClientRect();
+        return { tall: b.height > 200, inside: b.left >= log.left && b.right <= log.right + 0.5 };
+      });
+      if (!box.tall || !box.inside) fail(`long prompt bubble ${JSON.stringify(box)}`);
+      await checkLayout(p, `first-files ${label}`);
+      await p.evaluate(() => (document.getElementById("chat-log").scrollTop = 0));
+      await shoot(p, "panel-first-files", size, scheme);
+      // A click on the bubble opens the message's details, with the whole message.
+      await p.click("#chat-log .ev-first");
+      await p.waitForSelector("dialog.sheet[open]");
+      const sheet = await p.evaluate(() => ({ heading: document.querySelector("dialog.sheet h2").textContent, text: document.querySelector("dialog.sheet .sheet-text")?.textContent }));
+      if (sheet.heading !== "Chat message" || sheet.text !== LONG_TEXT) fail(`first message details ${JSON.stringify(sheet)}`);
+      await shoot(p, "panel-first-files-details", size, scheme);
+      await p.keyboard.press("Escape");
+      await p.waitForFunction(() => !document.querySelector("dialog.sheet"));
+      if (!(await p.evaluate(() => document.activeElement?.classList.contains("ev-first")))) fail("Esc did not return focus to the first message");
+      // Selecting text in the bubble (to copy it) does not open the sheet.
+      const b = await p.locator("#chat-log .ev-first").boundingBox();
+      const y = b.y + b.height / 2;
+      await p.mouse.move(b.x + 14, y);
+      await p.mouse.down();
+      await p.mouse.move(b.x + b.width - 14, y, { steps: 5 });
+      await p.mouse.up();
+      const picked = await p.evaluate(() => ({ selected: String(getSelection()), sheet: !!document.querySelector("dialog.sheet") }));
+      if (!picked.selected || picked.sheet) fail(`selecting the first message's text ${JSON.stringify(picked)}`);
+      reportErrors(p, `first-files ${label}`);
+      await p.close();
+    },
+  },
+  // A conversation: two turns in one thread, each opened by the user's bubble (the first is the prompt, with its time
+  // and the brain chip under it); the composer talks to it; New Chat empties the thread and goes back to "Do this now".
+  {
+    names: ["panel-conversation", "panel-conversation-newchat", "panel-conversation-todo"],
+    async run({ ctx, size, scheme, label, fail, expectBar, firstMessage, want, only, openPanel, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "conversation", "#chat-log .ev-user");
       const composer = () =>
         p.evaluate(() => ({
@@ -492,18 +591,22 @@ export const PANEL_CASES = [
         // Each end card says who picked its turn's elements; the picks status line itself is not shown on its own.
         picks: [...document.querySelectorAll("#chat-log .ev-end .ev-picks")].map((e) => e.textContent),
         loosePicks: [...document.querySelectorAll("#chat-log > .ev-status")].filter((e) => !e.hidden && /element pick/.test(e.textContent)).length,
-        head: document.querySelector("#chat-log .ev-head")?.textContent,
-        note: document.getElementById("chat-conv").hidden ? null : document.getElementById("chat-conv").textContent,
-        meta: document.getElementById("chat-meta").textContent,
-        // The bubble opens the second turn: right after the first turn's end card.
+        heads: document.querySelectorAll("#chat-log .ev-head").length,
+        // The second bubble opens the second turn: right after the first turn's end card.
         order: [...document.querySelectorAll("#chat-log > *")].map((e) => e.className).join(" ").includes("ev-end ev-user"),
       }));
-      if (view.bubbles.length !== 1 || view.bubbles[0] !== "Now like the first reply to it" || view.ends !== 2 || !view.order) fail(`thread ${JSON.stringify(view)}`);
-      if (view.head !== "Claude Code · claude-sonnet-5 · Jev on") fail(`session head "${view.head}"`);
+      const conv = scenario("conversation").sessions[0];
+      if (JSON.stringify(view.bubbles) !== JSON.stringify([conv.title, "Now like the first reply to it"]) || view.ends !== 2 || !view.order) fail(`thread ${JSON.stringify(view)}`);
+      const first = await firstMessage(p);
+      if (!first?.first || first.text !== conv.title || first.origin !== null || first.role !== "button" || first.tabIndex !== 0 || first.header) fail(`first message ${JSON.stringify(first)}`);
+      // The first turn's start: the time under the prompt (not the latest turn's).
+      const started = new Date(conv.firstStartedAt);
+      const hm = `${String(started.getHours()).padStart(2, "0")}:${String(started.getMinutes()).padStart(2, "0")}`;
+      if (!first.when?.endsWith(hm)) fail(`first message time "${first.when}", want ${hm}`);
+      // The brain shows once: the chip under the prompt; the brain's own start line is not repeated.
+      if (first.head !== "Claude Code · claude-sonnet-5 · Jev on" || view.heads !== 1 || first.startLines !== 0) fail(`brain shown more than once ${JSON.stringify({ first, heads: view.heads })}`);
       const wantPicks = ["Jev chose 2 of 2 element picks (clicks and typing)", "Jev chose 0 of 1 element pick (clicks and typing); Claude chose 1"];
       if (JSON.stringify(view.picks) !== JSON.stringify(wantPicks) || view.loosePicks !== 0) fail(`end card picks ${JSON.stringify(view)}`);
-      if (view.note !== "Conversation open · Claude Code session kept 30 min") fail(`note "${view.note}"`);
-      if (!/2 messages/.test(view.meta)) fail(`meta ${JSON.stringify(view)}`);
       // Ended Claude Code conversation: no agent tab any more.
       const bar = await expectBar(p, { "chat-new": true, "chat-show": false }, "ended conversation");
       if (!/only has one while it is working/.test(bar["chat-show"].title)) fail(`Show Tab tooltip "${bar["chat-show"].title}"`);
@@ -528,18 +631,11 @@ export const PANEL_CASES = [
       const sent = await p.evaluate(() => window.__requests.find((r) => r.type === "run.message"));
       if (sent.sessionId !== "s-conv" || sent.text !== "And retweet it") fail(`message sent ${JSON.stringify(sent)}`);
 
-      // The helper closed the session: the next message starts a fresh one with a summary.
-      await p.evaluate((st) => window.__push({ type: "state", state: { ...st, openConversations: [] } }), scenario("conversation").state);
-      await p.waitForFunction(() => document.getElementById("chat-conv").textContent.includes("session ended"));
-      await checkLayout(p, `conversation-ended ${label}`);
-      await shoot(p, "panel-conversation-ended", size, scheme);
-
       // New Chat: an empty thread, back to "Do this now"; the conversation's agent session is closed.
       await p.click("#chat-new");
       await expectComposer(NEW, "still in the conversation after New Chat");
       const closed = await p.evaluate(() => window.__requests.find((r) => r.type === "run.newChat"));
       if (closed?.sessionId !== "s-conv") fail(`newChat sent ${JSON.stringify(closed)}`);
-      if (!(await p.locator("#chat-conv").isHidden())) fail("conversation note still shown after New Chat");
       if (!(await p.locator(".chat-empty").isVisible())) fail("thread not emptied by New Chat");
       await expectBar(p, { "chat-new": false, "chat-show": false }, "after New Chat");
       await checkLayout(p, `conversation-newchat ${label}`);
@@ -832,12 +928,12 @@ export const PANEL_CASES = [
   // Two tasks at once, each in its own tab: the status line counts them; Chat shows this tab's and a chip for the other tab's.
   {
     names: ["panel-parallel", "panel-parallel-newchat"],
-    async run({ ctx, size, scheme, label, fail, only, openPanel, shoot, checkLayout, reportErrors }) {
+    async run({ ctx, size, scheme, label, fail, only, firstMessage, waitFirst, openPanel, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "parallel", "#chat-switch:not([hidden]) .act-chip");
       if ((await p.locator("#status-meta").textContent()) !== "· 2 running") fail(`status meta "${await p.locator("#status-meta").textContent()}"`);
       const chips = () => p.evaluate(() => [...document.querySelectorAll(".act-chip")].map((c) => c.dataset.id));
       if ((await chips()).join() !== "s-par2") fail(`switcher in tab 1 ${JSON.stringify(await chips())}`);
-      if (!(await p.locator("#chat-title").textContent()).startsWith("Post the launch")) fail("tab 1 does not show its run");
+      if (!(await p.locator("#chat-log .ev-first .ev-user-text").textContent()).startsWith("Post the launch")) fail("tab 1 does not show its run");
       const below = await p.evaluate(() => document.querySelector(".chat-bar").getBoundingClientRect().bottom <= document.getElementById("chat-switch").getBoundingClientRect().top);
       if (!below) fail("switcher is not below the action bar");
       await checkLayout(p, `parallel ${label}`);
@@ -847,7 +943,10 @@ export const PANEL_CASES = [
       const focus = await p.evaluate(() => window.__requests.find((r) => r.type === "tab.focus"));
       if (focus?.tabId !== 2) fail(`chip sent ${JSON.stringify(focus)}`);
       await p.waitForFunction(() => document.getElementById("chat-log").textContent.includes("Opening the doc"));
-      if (!(await p.locator("#chat-title").textContent()).startsWith("Post the photo")) fail("switching tabs did not change the chat");
+      // The other run's chat: its task as the first message; its brain's start line is left to the chip.
+      const other = await firstMessage(p);
+      if (other?.origin !== "From your TODO list" || other.startLines !== 0 || other.head !== "Claude API · claude-sonnet-5 · Jev on") fail(`tab 2's first message ${JSON.stringify(other)}`);
+      if (!(await p.locator("#chat-log .ev-first .ev-user-text").textContent()).startsWith("Post the photo")) fail("switching tabs did not change the chat");
       if ((await chips()).join() !== "s-live") fail(`switcher in tab 2 ${JSON.stringify(await chips())}`);
       // Show Tab and the composer act on this tab's run; Stop stops only it.
       await p.click("#chat-show");
@@ -867,7 +966,7 @@ export const PANEL_CASES = [
       await checkLayout(p, `parallel-newchat ${label}`);
       await shoot(p, "panel-parallel-newchat", size, scheme);
       await p.click('.act-chip[data-id="s-live"]');
-      await p.waitForFunction(() => document.getElementById("chat-title").textContent.startsWith("Post the launch"));
+      await waitFirst(p, "Post the launch");
       reportErrors(p, `parallel ${label}`);
       await p.close();
     },
@@ -875,11 +974,11 @@ export const PANEL_CASES = [
   // A chat per tab: tab 1 has a running chat, tab 2 has none; switching tabs switches the chat.
   {
     names: ["panel-tabs-a", "panel-tabs-b", "panel-tabs-b-started"],
-    async run({ ctx, size, scheme, label, fail, expectBar, openPanel, shoot, checkLayout, reportErrors }) {
+    async run({ ctx, size, scheme, label, fail, expectBar, firstMessage, waitFirst, openPanel, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "tabs", "#chat-log .ev-tool");
       const view = () =>
         p.evaluate(() => ({
-          title: document.getElementById("chat-titles").hidden ? null : document.getElementById("chat-title").textContent,
+          title: document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent ?? null,
           empty: !!document.querySelector("#chat-log .chat-empty"),
           chips: [...document.querySelectorAll("#chat-switch:not([hidden]) .act-chip")].map((c) => c.dataset.id),
           placeholder: document.getElementById("now-text").placeholder,
@@ -906,11 +1005,15 @@ export const PANEL_CASES = [
       const started = await p.evaluate(() => window.__requests.find((r) => r.type === "run.adhoc"));
       if (started.tabId !== 2) fail(`run.adhoc from tab 2 sent ${JSON.stringify(started)}`);
       await p.waitForFunction(() => !document.querySelector("#chat-log .chat-empty"));
+      // A fresh chat: the prompt as typed is its first message, with the time under it.
+      await waitFirst(p, "Translate");
+      const fresh = await firstMessage(p);
+      if (!fresh.first || fresh.text !== "Translate this page's intro to French" || fresh.origin !== null || !/^\d\d:\d\d$/.test(fresh.when ?? "") || fresh.header) fail(`fresh chat's first message ${JSON.stringify(fresh)}`);
       await checkLayout(p, `tabs-b-started ${label}`);
       await shoot(p, "panel-tabs-b-started", size, scheme);
       // Back to tab 1: its chat is still there.
       await p.evaluate(() => window.__activateTab(1));
-      await p.waitForFunction(() => document.getElementById("chat-title").textContent.startsWith("Summarize this pull request"));
+      await waitFirst(p, "Summarize this pull request");
       reportErrors(p, `tabs ${label}`);
       await p.close();
     },
@@ -1289,7 +1392,7 @@ export const PANEL_CASES = [
         await p.waitForSelector(".sessions li");
         await p.locator(".sessions li button", { hasText: "cheapest flight" }).click();
         await p.waitForSelector("#tab-chat:not([hidden]) #chat-log .ev-continue");
-        if (!(await p.locator("#chat-title").textContent()).includes("cheapest flight")) fail("the Activity Log row did not show the run in Chat");
+        if (!(await p.locator("#chat-log .ev-first .ev-user-text").textContent()).includes("cheapest flight")) fail("the Activity Log row did not show the run in Chat");
         await expectMode(CHAT, "not talking to a past stopped run opened from the Activity Log");
         if ((await p.evaluate(() => document.activeElement?.id)) !== "now-text") fail("opening from the Activity Log did not focus the box");
         await checkLayout(p, `continue-past-chat ${label}`);
@@ -1341,7 +1444,7 @@ export const PANEL_CASES = [
           return out;
         });
 
-      // Free plan: a lock; the tooltip and a click explain, "Get a plan" opens the dashboard's Billing page.
+      // Free plan: a lock; the tooltip and a click explain, "Choose a plan" opens the dashboard's Billing page.
       {
         const p = await openPanel(ctx, "free", ".chat-empty");
         if ((await voiceState(p)) !== "locked") fail(`free plan mic ${await voiceState(p)}`);
@@ -1349,14 +1452,15 @@ export const PANEL_CASES = [
         await p.click(mic);
         await p.waitForSelector(".voice-tip:not([hidden])");
         const tipText = await p.textContent(".voice-tip");
-        if (!/Voice needs the Plus or Pro plan/.test(tipText) || !/Get a plan/.test(tipText)) fail(`locked tip "${tipText}"`);
+        if (!/Voice needs the Plus or Pro plan/.test(tipText) || !/Choose a plan/.test(tipText)) fail(`locked tip "${tipText}"`);
         await checkLayout(p, `voice-locked ${label}`);
         await shoot(p, "panel-voice-locked", size, scheme);
         await p.click(".voice-tip button.link");
         await p.waitForFunction(() => window.__created.includes("https://app.browsertodo.com/billing"));
-        // The shortcut while locked points at the mic.
+        // The voice shortcut while locked points at the mic and says why, with Choose a plan.
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
-        if (!(await p.evaluate(() => document.querySelector(".voice-mic").classList.contains("nudge")))) fail("locked shortcut did not point at the mic");
+        const locked = await p.evaluate(() => ({ nudge: document.querySelector(".voice-mic").classList.contains("nudge"), tip: document.querySelector(".voice-tip:not([hidden])")?.textContent ?? "" }));
+        if (!locked.nudge || !/Voice needs/.test(locked.tip) || !/Choose a plan/.test(locked.tip)) fail(`locked voice shortcut ${JSON.stringify(locked)}`);
         reportErrors(p, `voice-locked ${label}`);
         await p.close();
       }
@@ -1365,7 +1469,7 @@ export const PANEL_CASES = [
       {
         const p = await openPanel(ctx, "account", ".chat-empty");
         if ((await voiceState(p)) !== "idle") fail(`paid plan mic ${await voiceState(p)}`);
-        if ((await p.getAttribute(mic, "title")) !== `Voice · ${SHORTCUT_LABEL}`) fail(`mic tooltip "${await p.getAttribute(mic, "title")}"`);
+        if ((await p.getAttribute(mic, "title")) !== `Voice · ${VOICE_SHORTCUT_LABEL}`) fail(`mic tooltip "${await p.getAttribute(mic, "title")}"`);
         await checkLayout(p, `voice-idle ${label}`);
         await shoot(p, "panel-voice-idle", size, scheme);
 
@@ -1402,17 +1506,29 @@ export const PANEL_CASES = [
         await waitVoice(p, "idle");
         if ((await p.inputValue("#now-text")) !== "On LinkedIn:") fail(`Esc left "${await p.inputValue("#now-text")}"`);
 
-        // The shortcut starts listening; Enter stops, finishes the text and sends it like a typed message.
+        // The voice shortcut starts listening (the panel tells the background, so the next press stops); Enter stops,
+        // finishes the text and sends it like a typed message.
         await p.fill("#now-text", "");
         await p.evaluate(() => (window.__voiceClips = 0));
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitVoice(p, "listening");
+        if (!(await p.evaluate(() => window.__portSent.some((m) => m.type === "panel.listening" && m.listening === true)))) fail("listening not reported to the background");
         await p.waitForFunction(() => document.getElementById("now-text").value.length > 0, null, { timeout: 15_000 });
         await p.keyboard.press("Enter");
         await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.adhoc"));
         const sent = await p.evaluate(() => window.__requests.find((r) => r.type === "run.adhoc").instructions);
         if (!/^Open Gmail/.test(sent)) fail(`Enter sent "${sent}"`);
         if ((await p.inputValue("#now-text")) !== "") fail("the box was not cleared after sending");
+        await waitVoice(p, "idle");
+        if ((await p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.listening").at(-1)?.listening)) !== false) fail("stopping not reported to the background");
+
+        // Pressed again while listening, the voice shortcut stops and sends (it does not just stop, as the mic does).
+        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await waitVoice(p, "listening");
+        await p.waitForFunction(() => document.getElementById("now-text").value.length > 0, null, { timeout: 15_000 });
+        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await p.waitForFunction(() => window.__requests.filter((r) => r.type === "run.adhoc" || r.type === "run.message").length === 2, null, { timeout: 15_000 });
+        await waitVoice(p, "idle");
         reportErrors(p, `voice ${label}`);
         await p.close();
       }

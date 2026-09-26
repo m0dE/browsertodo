@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { AgentEvent } from "@browsertodo/shared";
-import { describeEvent, isNearBottom, turnPicks } from "../../src/sidepanel/event-format.js";
+import { SCREEN_HELP_TEXT, type AgentEvent, type SessionInfo } from "@browsertodo/shared";
+import { describeEvent, isBrainStartLine, isNearBottom, openingTurn, turnPicks } from "../../src/sidepanel/event-format.js";
 import { shortUrl, toolArgsSummary } from "../../src/text.js";
 
 describe("toolArgsSummary", () => {
@@ -96,4 +96,74 @@ it("shortUrl and isNearBottom", () => {
   expect(shortUrl("http://www.example.com/x")).toBe("example.com/x");
   expect(isNearBottom({ scrollTop: 480, clientHeight: 500, scrollHeight: 1000 })).toBe(true);
   expect(isNearBottom({ scrollTop: 300, clientHeight: 500, scrollHeight: 1000 })).toBe(false);
+});
+
+describe("openingTurn: the conversation's first message", () => {
+  const NOW = new Date(2026, 8, 24, 12, 0, 0).getTime();
+  const at = (h: number, m = 0, dayOffset = 0) => new Date(2026, 8, 24 + dayOffset, h, m).toISOString();
+  const session = (over: Partial<SessionInfo> = {}): SessionInfo => ({
+    sessionId: "s1",
+    source: "adhoc",
+    title: "did i get my extension approved yet? can u check the e…",
+    brain: "browsertodo",
+    jev: true,
+    startedAt: at(11, 58),
+    ...over,
+  });
+  const PROMPT = "did i get my extension approved yet? can u check the email from the chrome web store\nand tell me what it says";
+
+  it("a typed prompt: its full text (not the clipped title), no origin label, the time it started", () => {
+    expect(openingTurn(session({ instructions: PROMPT }), [], NOW)).toEqual({ text: PROMPT, when: "11:58", at: at(11, 58) });
+  });
+  it("the start of the first turn, not the latest one; other days say which", () => {
+    expect(openingTurn(session({ instructions: "x", startedAt: at(11, 59), firstStartedAt: at(9, 5) }), [], NOW).when).toBe("09:05");
+    expect(openingTurn(session({ instructions: "x", startedAt: at(23, 0, -1) }), [], NOW).when).toBe("yesterday 23:00");
+  });
+  it("an old session without its instructions: the title it was saved with", () => {
+    expect(openingTurn(session(), [], NOW).text).toBe("did i get my extension approved yet? can u check the e…");
+  });
+  it("an empty send: the screen-help turn", () => {
+    const v = openingTurn(session({ title: SCREEN_HELP_TEXT, instructions: SCREEN_HELP_TEXT }), [], NOW);
+    expect(v).toMatchObject({ text: SCREEN_HELP_TEXT, screen: true });
+    expect(v.origin).toBeUndefined();
+  });
+  it("TODO list and cloud queue runs: their instructions, labelled with where they came from", () => {
+    expect(openingTurn(session({ source: "local", taskId: "t1", title: "Post gm on X" }), [], NOW)).toMatchObject({ text: "Post gm on X", origin: "From your TODO list" });
+    expect(openingTurn(session({ source: "cloud", taskId: "c1", title: "Post gm on X" }), [], NOW)).toMatchObject({ origin: "Scheduled" });
+  });
+  it("files: counted from the first turn's preparing line only", () => {
+    const events: AgentEvent[] = [
+      { type: "status", text: "Preparing 2 file(s)" },
+      { type: "task_end", outcome: "done" },
+      { type: "user_message", text: "again" },
+      { type: "status", text: "Preparing 5 file(s)" },
+    ];
+    expect(openingTurn(session({ instructions: "Post these" }), events, NOW).files).toBe(2);
+    expect(openingTurn(session({ instructions: "Post these" }), events.slice(1), NOW).files).toBeUndefined();
+  });
+});
+
+describe("isBrainStartLine: the brain's own start line, which the chat's brain chip already says", () => {
+  it("matches what each brain writes, including older sessions' lower-case hosted label", () => {
+    for (const t of [
+      "BrowserTODO AI (claude-opus-5-5) with Jev",
+      "browsertodo AI (claude-opus-5-5) with Jev",
+      "Claude API (claude-sonnet-5)",
+      "Claude Code started (claude-sonnet-5)",
+      "Claude Code started",
+    ]) {
+      expect(isBrainStartLine(t), t).toBe(true);
+    }
+  });
+  it("leaves every other status line alone", () => {
+    for (const t of [
+      "Preparing 2 file(s)",
+      "Continuing the same Claude Code session",
+      "Claude API rate limit (HTTP 429); retrying in 5 s",
+      "Post verified",
+      "Jev chose 2 of 2 element picks (clicks and typing)",
+    ]) {
+      expect(isBrainStartLine(t), t).toBe(false);
+    }
+  });
 });

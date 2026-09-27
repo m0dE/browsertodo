@@ -81,7 +81,7 @@ describe("memory in the prompts", () => {
     expect(p).toMatch(/Never save page content/);
     expect(p).toMatch(/proves wrong .* same kind and subject .* or forget it by id/);
     expect(p).toMatch(/memory_note/);
-    expect(p).toMatch(/many separate things, file what you learn about each under its identifier with remember .*key.*recall its key/);
+    expect(p).toMatch(/many separate things .*file what you learn about each under its identifier with remember .*key.*in a chat in the user.s own.*recall its key/);
     expect(buildSystemPrompt({ tools: toolsFor({ interactive: true }), jev: true })).not.toMatch(/Memory: /);
   });
 

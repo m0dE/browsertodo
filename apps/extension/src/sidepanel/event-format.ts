@@ -1,6 +1,6 @@
 /** Pure view models for agent events in Chat and the History tab. */
 import { describeSchedule, localTimeZone, picksText, SCREEN_HELP_TEXT, type AgentEvent, type Chip, type ElementPicks, type SessionInfo, type TaskSource } from "@browsertodo/shared";
-import { clip, isLongSummary, toolArgsSummary } from "../text.js";
+import { clip, isLongSummary, sharedWordShare, toolArgsSummary } from "../text.js";
 import { speakable } from "../voice/spoken-line.js";
 import { errorHelp, type ErrorHelp } from "./error-help.js";
 import { clockLabel, firstLine, outcomeChip } from "./format.js";
@@ -20,6 +20,11 @@ export type EventView =
    * spoken. sent: what the Realtime narrator passed to the agent for these words, when it says something else.
    */
   | { kind: "user"; text: string; screen?: true; voice?: true; sent?: string }
+  /**
+   * What the user said with hands-free voice that went to no one (thinking aloud, "one sec"): a muted line, never a
+   * message. Lines in a row show as one (placeEvent).
+   */
+  | { kind: "heard"; text: string }
   /** A line hands-free voice said aloud. echo: it repeats the start of the text written above it (shown compact). */
   | { kind: "spoken"; text: string; echo?: true }
   /**
@@ -198,7 +203,9 @@ export function describeEvent(ev: AgentEvent, turn: TurnContext = {}): EventView
     case "spoken":
       return turn.echo ? { kind: "spoken", text: ev.text, echo: true } : { kind: "spoken", text: ev.text };
     case "heard":
-      return ev.sent && handoffDiffers(ev.text, ev.sent) ? { kind: "user", text: ev.text, voice: true, sent: ev.sent } : { kind: "user", text: ev.text, voice: true };
+      // Nothing went to the agent for these words: not a message.
+      if (!ev.sent) return { kind: "heard", text: ev.text };
+      return handoffDiffers(ev.text, ev.sent) ? { kind: "user", text: ev.text, voice: true, sent: ev.sent } : { kind: "user", text: ev.text, voice: true };
     case "task_end":
       return describeEnd(ev, turn);
     case "error":
@@ -301,28 +308,12 @@ export function isScreenHelp(text: string | undefined): boolean {
  */
 export const HANDOFF_OVERLAP_MIN = 0.6;
 
-/** Lower-case words (letters and digits). */
-const wordsOf = (text: string): string[] => text.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? [];
-
 /**
  * The narrator's request differs meaningfully from what the user said: the words they share (each counted as
  * often as both have it) make up less than HANDOFF_OVERLAP_MIN of the longer of the two.
  */
 export function handoffDiffers(said: string, sent: string): boolean {
-  const a = wordsOf(said);
-  const b = wordsOf(sent);
-  const left = new Map<string, number>();
-  for (const w of a) left.set(w, (left.get(w) ?? 0) + 1);
-  let shared = 0;
-  for (const w of b) {
-    const n = left.get(w) ?? 0;
-    if (n > 0) {
-      shared++;
-      left.set(w, n - 1);
-    }
-  }
-  const longer = Math.max(a.length, b.length);
-  return longer > 0 && shared / longer < HANDOFF_OVERLAP_MIN;
+  return sharedWordShare(said, sent) < HANDOFF_OVERLAP_MIN;
 }
 
 /** Which user's own words (heard events) take the place of which voice message (see pairHeard). */
@@ -361,6 +352,9 @@ export function pairHeard(events: readonly AgentEvent[], opening: string | null)
 }
 
 const isVoiceMessage = (ev: AgentEvent | undefined, text: string) => ev?.type === "user_message" && !!ev.voice && sameWords(ev.text, text);
+
+/** Words said before the conversation existed (see the heard event's early): shown above its first message. */
+export const isEarlyHeard = (ev: AgentEvent): boolean => ev.type === "heard" && !!ev.early && !ev.sent;
 
 /** Should a scroll container keep following new content? (within `slack` px of the bottom) */
 export function isNearBottom(el: { scrollTop: number; clientHeight: number; scrollHeight: number }, slack = 24): boolean {

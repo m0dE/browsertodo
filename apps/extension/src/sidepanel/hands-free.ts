@@ -59,7 +59,6 @@ import {
   useThisTabLine,
   viewedTab,
   voiceKeyAction,
-  withLookingNote,
   type TabPage,
   type UseTabOutcome,
 } from "../voice/hands-free-tab.js";
@@ -84,6 +83,9 @@ const ORB_CAPTION = "Hands-free: say what to do · “stop” to end";
 /** A said line stays under the orb this long after it. */
 const CAPTION_LINGER_MS = 4_000;
 
+/** Words said before the session's chat exists and passed on to no one, kept for the chat a request starts: at most this many utterances. */
+export const MAX_EARLY_WORDS = 8;
+
 /** Notices about the engine (a fallback, the cost) go under this key, apart from voice's others. */
 const ENGINE_NOTICE = "voice.engine";
 
@@ -91,6 +93,12 @@ const ENGINE_NOTICE = "voice.engine";
 function endNote(reason: EndReason): string | null {
   if (reason === "silence") return "Hands-free stopped: it was quiet for a while.";
   return null;
+}
+
+/** What goes with a message besides its words (see HandsFreeDeps.send). */
+export interface SendExtra {
+  cid?: string;
+  context?: string;
 }
 
 /** A line being said: in which chat (null: none yet), its words so far, and whether the chat keeps it. */
@@ -121,9 +129,10 @@ export interface HandsFreeDeps {
   tabsOf(sessionId: string): readonly number[];
   /**
    * Sends what was said to chat `sessionId` (null: starts one in `tabId`); resolves with the chat's id.
-   * cid: the utterance's correlation id in the conversation's trace.
+   * cid: the utterance's correlation id in the conversation's trace. context: what the agent is told with it (the
+   * note on the tab the user looks at), never shown as the user's words.
    */
-  send(text: string, target: { tabId: number | null; sessionId: string | null }, cid?: string): Promise<string>;
+  send(text: string, target: { tabId: number | null; sessionId: string | null }, extra?: SendExtra): Promise<string>;
   /** A tab's title and address, for the bar and the notes on the tab the user looks at (null: no such tab). */
   tabPage(tabId: number): Promise<TabPage | null>;
   /** Shows a tab (Go to tab). */
@@ -132,8 +141,11 @@ export interface HandsFreeDeps {
   onSpeaking(line: { sessionId: string; text: string } | null): void;
   /** Keeps a said line in its chat. */
   keepSpoken(sessionId: string, text: string): void;
-  /** Keeps what the user said (Realtime) in its chat, with the request sent for it (null: none). */
-  keepHeard(sessionId: string, text: string, sent: string | null): void;
+  /**
+   * Keeps what the user said (Realtime) in its chat, with the request sent for it (null: none). early: said before
+   * the chat existed, kept as the request that started it went out.
+   */
+  keepHeard(sessionId: string, text: string, sent: string | null, early?: true): void;
   settings(): ExtensionSettings | null;
   account(): AccountView | undefined;
   /** The server's voice engines (null: could not be loaded). */
@@ -240,6 +252,8 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   let sending: Promise<void> = Promise.resolve();
   /** The message starting the session's chat, until its id is known: messages said meanwhile go to that chat after it. */
   let startingChat: Promise<void> | null = null;
+  /** The user's words (Realtime) said while the session had no chat and passed on to no one: kept once a chat starts. */
+  let earlyWords: string[] = [];
   const chatNow = () => chatId ?? deps.chatOf(tab);
   const follower = new ChatFollower(chatNow);
   const trace = deps.trace;
@@ -435,11 +449,13 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     heardAt = null;
     const delivery = traceStart();
     try {
-      // Said while the user looks at another tab: the agent learns it cannot see that tab.
+      // Said while the user looks at another tab: the agent learns it cannot see that tab (the chat shows the words alone).
       const note = here() ? null : await lookingNote();
       const target = { tabId: tab, sessionId: chatNow() };
-      const message = withLookingNote(text, note);
-      chatId = await (cid === undefined ? deps.send(message, target) : deps.send(message, target, cid));
+      const extra: SendExtra = { ...(cid === undefined ? {} : { cid }), ...(note ? { context: note } : {}) };
+      chatId = await (Object.keys(extra).length ? deps.send(text, target, extra) : deps.send(text, target));
+      // What was said before this chat existed goes in it now, before the words of this request.
+      for (const words of earlyWords.splice(0)) deps.keepHeard(chatId, words, null, true);
       if (trace && cid) {
         const ms = delivery.elapsed();
         trace.record({ t: delivery.t, ms, cat: "voice", name: "voice.deliver", cid, data: { chars: text.length, waitMs: ms } });
@@ -452,11 +468,17 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     syncChat();
   }
 
-  /** What the user said (Realtime), kept in the chat its request went to, or else the session's chat. */
+  /**
+   * What the user said (Realtime), kept in the chat its request went to, or else the session's chat (after a chat
+   * being started). No chat yet and nothing passed on: kept for the chat a request will start (MAX_EARLY_WORDS).
+   */
   async function keepWords(words: string, sent: string | null): Promise<void> {
     if (sent) await sending;
-    const chat = state.phase === "off" ? null : chatNow();
+    else if (startingChat) await startingChat;
+    if (state.phase === "off") return;
+    const chat = chatNow();
     if (chat) deps.keepHeard(chat, words, sent);
+    else if (!sent) earlyWords = [...earlyWords, words].slice(-MAX_EARLY_WORDS);
   }
 
   /** The user's words so far (Standard), in the box (after what was typed there) while the session's tab is shown. */
@@ -588,6 +610,8 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     tab = next;
     homePage = null;
     chatId = deps.chatOf(next);
+    // Words kept for a chat to come were said to the tab the session leaves.
+    earlyWords = [];
     ownTabs.clear();
     if (next !== null) ownTabs.add(next);
     follower.start();
@@ -675,6 +699,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     wroteBox = false;
     tab = null;
     chatId = null;
+    earlyWords = [];
     ownTabs.clear();
     lookingAway = false;
     // The background's view was of this session: it is over (its "none" follows).

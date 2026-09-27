@@ -347,11 +347,14 @@ function settleFact(f: WriterFact): NewMemory | null {
   return { kind: f.kind, subject: f.subject, text: f.text, ...(domain ? { scope: "domain" as const, domain } : { scope: "global" as const }) };
 }
 
-/** `id` when it names a fact the writer may replace (a writer kind, not the fact's own slot), else undefined. */
+/**
+ * `id` when it names a fact the writer may replace, else undefined: a fact of the same kind in the same place (the
+ * same site, or both everywhere), not the fact's own slot. A site's rule is narrower than one for everywhere, so it
+ * stands beside it and never replaces it (a small model names `replaces` too eagerly).
+ */
 function replaceable(entries: readonly MemoryEntry[], id: string, m: NewMemory): string | undefined {
   const e = entries.find((x) => x.id === id);
-  const kinds: readonly string[] = WriterFactKind.options;
-  return e && !isMemoryRecord(e) && kinds.includes(e.kind) && !sameSlot(e, m) ? id : undefined;
+  return e && !isMemoryRecord(e) && e.kind === m.kind && e.scope === m.scope && e.domain === m.domain && !sameSlot(e, m) ? id : undefined;
 }
 
 /**

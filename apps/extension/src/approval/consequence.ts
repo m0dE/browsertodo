@@ -79,7 +79,7 @@ export const STRONG_WORDS: Readonly<Record<ConsequenceKind, readonly string[]>> 
   send: ["send", "send now", "send message", "send email", "send invite", "send invitation", "invite", "forward message"],
   publish: [
     "post", "post all", "tweet", "tweet all", "tweet button", "repost", "retweet", "publish", "share now", "go live", "like",
-    "follow", "unfollow", "block", "report", "upvote", "downvote",
+    "follow", "unfollow", "block", "report", "upvote", "downvote", "deploy", "redeploy",
   ],
   submit: [
     "submit", "sign and send", "sign document", "sign contract", "sign now", "sign here", "e sign", "i agree", "agree",

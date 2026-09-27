@@ -350,6 +350,15 @@ export function createFakeTypeSafe() {
 // ---- Workers AI (voice transcription) ----------------------------------------------
 
 export const FAKE_TRANSCRIPT = "Open Gmail and reply to Sarah.";
+/** The fake's embedding size: the API's default model's (bge-m3), which it checks. */
+export const FAKE_EMBEDDING_DIMS = 1024;
+
+/** A deterministic stand-in embedding (NOT semantic): each lower-case word adds to one hashed dimension. */
+export function fakeEmbedding(text) {
+  const v = new Array(FAKE_EMBEDDING_DIMS).fill(0);
+  for (const w of String(text).toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []) v[createHash("md5").update(w).digest().readUInt32LE(0) % FAKE_EMBEDDING_DIMS] += 1;
+  return v;
+}
 
 /**
  * Workers AI's REST API shape (POST /ai/run/<model>, { success, result, errors }) for
@@ -363,6 +372,11 @@ export function createFakeWorkersAi() {
     const model = url.pathname.replace(/^\/ai\/run\//, "");
     if (req.method !== "POST" || model === url.pathname) return sendJson(res, 404, { success: false, errors: [{ message: "not found" }] });
     const body = JSON.parse(await readBody(req));
+    // Text embeddings (memory search): { text: string[] } -> one deterministic vector per text.
+    if (Array.isArray(body.text)) {
+      requests.push({ model, body, audioBytes: 0 });
+      return sendJson(res, 200, { success: true, errors: [], result: { shape: [body.text.length, FAKE_EMBEDDING_DIMS], data: body.text.map(fakeEmbedding), pooling: "cls" } });
+    }
     const audio = Buffer.from(typeof body.audio === "string" ? body.audio : body.audio?.body ?? "", "base64");
     requests.push({ model, body, audioBytes: audio.length });
     if (audio.subarray(0, 4).toString("latin1") !== "RIFF") {

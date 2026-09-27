@@ -79,3 +79,27 @@ export function toolArgsSummary(name: string, args: unknown, max = 70): string {
 export function isLongSummary(text: string): boolean {
   return text.includes("\n") || text.length > 160;
 }
+
+/** Lower-case words (letters and digits). */
+const wordsOf = (text: string): string[] => text.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? [];
+
+/**
+ * The share of words two texts have in common: the words they share (each counted as often as both have it) over
+ * the word count of the longer one. 1 when neither has words.
+ */
+export function sharedWordShare(a: string, b: string): number {
+  const left = new Map<string, number>();
+  const wa = wordsOf(a);
+  const wb = wordsOf(b);
+  for (const w of wa) left.set(w, (left.get(w) ?? 0) + 1);
+  let shared = 0;
+  for (const w of wb) {
+    const n = left.get(w) ?? 0;
+    if (n > 0) {
+      shared++;
+      left.set(w, n - 1);
+    }
+  }
+  const longer = Math.max(wa.length, wb.length);
+  return longer === 0 ? 1 : shared / longer;
+}

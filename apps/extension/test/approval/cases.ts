@@ -62,6 +62,9 @@ export const CASES: readonly LabelledCase[] = [
   // --- X (fake X and x.com)
   { name: "X: Post button in the home composer", action: click(el("button", "Post", { testId: "tweetButtonInline" }), X_HOME, [typed(xEditor, "Hello world")]), ask: true },
   { name: "X: Post button in the compose dialog", action: click(el("button", "Post", { testId: "tweetButton", inDialog: true }), X_COMPOSE, [typed(xEditor, "Hello")]), ask: true },
+  // An app builder's deploy puts a change live for the app's users.
+  { name: "App builder: Build & deploy", action: click(el("button", "Build & deploy"), page("http://builder.test/", "App Builder"), [typed(el("textbox", "Describe the change", { tag: "textarea" }), "Fix the export button")]), ask: true },
+  { name: "Hosting dashboard: Redeploy", action: click(el("button", "Redeploy"), page("https://vercel.com/acme/web/deployments", "Deployments - acme/web")), ask: true },
   { name: "X: sidebar Post link opens the composer", action: click(el("link", "Post", { testId: "SideNav_NewTweet_Button", href: "https://x.com/compose/post" }), X_HOME), ask: false },
   { name: "X: Reply icon under a post opens the reply box", action: click(el("button", "12 Replies. Reply", { testId: "reply" }), X_HOME), ask: false },
   { name: "X: Reply button in the reply dialog", action: click(el("button", "Reply", { testId: "tweetButton", inDialog: true }), X_STATUS, [typed(xEditor, "Thanks!")]), ask: true },

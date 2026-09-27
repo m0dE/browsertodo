@@ -6,7 +6,7 @@
  */
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { ExtensionSettings, VoiceEngineId, VoiceEnginesResponse } from "@browsertodo/shared";
-import { initHandsFree, type HandsFreeDeps } from "../../src/sidepanel/hands-free.js";
+import { initHandsFree, MAX_EARLY_WORDS, type HandsFreeDeps } from "../../src/sidepanel/hands-free.js";
 import type { VoiceTip } from "../../src/sidepanel/voice-input.js";
 import type { AudioSource } from "../../src/voice/dictation.js";
 import type { EngineEvents, HandsFreeEngine } from "../../src/voice/engine.js";
@@ -82,7 +82,7 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
     // Still replying: nothing yet (a second reply would be refused while one is being made).
     expect(socket.replies()).toEqual([]);
     replyDone(socket, "r1");
-    expect(socket.replies()).toEqual([{ type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS } }]);
+    expect(socket.replies()).toEqual([{ type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS, tool_choice: "none" } }]);
     // The acknowledgement itself asks for nothing more.
     socket.event({ type: "response.created", response: { id: "r2" } });
     socket.event({ type: "response.output_audio.delta", item_id: "a2", delta: "AAAA" });
@@ -98,7 +98,7 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
     replyDone(socket, "r1");
     answer("Sent to the agent.");
     await flush();
-    expect(socket.replies()).toEqual([{ type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS } }]);
+    expect(socket.replies()).toEqual([{ type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS, tool_choice: "none" } }]);
   });
 
   it("a reply that already spoke gets no acknowledgement", async () => {
@@ -455,6 +455,57 @@ describe("the side panel's hands-free session on Realtime", () => {
       expect(t.box.setDraft).not.toHaveBeenCalled();
       t.hf.toggle("button");
       expect(rt.stopped).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("words passed on to no one before the chat exists are kept (bounded) for the chat a request starts, before its words", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = panel();
+      t.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(0);
+      const rt = t.engines[0]!;
+      const early = Array.from({ length: MAX_EARLY_WORDS + 2 }, (_, i) => `hmm ${i}`);
+      for (const words of early) rt.events.userWords(words, null);
+      await vi.advanceTimersByTimeAsync(0);
+      // No chat: nothing kept yet.
+      expect(t.deps.keepHeard).not.toHaveBeenCalled();
+      rt.events.forward("Open Gmail");
+      rt.events.userWords("open my email", "Open Gmail");
+      // Said while the chat is starting: it goes in that chat after it, not as early words.
+      rt.events.userWords("one sec", null);
+      t.finish("s-new");
+      await vi.advanceTimersByTimeAsync(0);
+      const calls = (t.deps.keepHeard as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls).toEqual([
+        ...early.slice(-MAX_EARLY_WORDS).map((words) => ["s-new", words, null, true]),
+        ["s-new", "open my email", "Open Gmail"],
+        ["s-new", "one sec", null],
+      ]);
+      t.hf.toggle("button");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("words kept for a chat to come are let go when the session ends", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = panel();
+      t.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(0);
+      t.engines[0]!.events.userWords("hmm", null);
+      await vi.advanceTimersByTimeAsync(0);
+      t.hf.toggle("button");
+      t.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(0);
+      t.engines[1]!.events.forward("Open Gmail");
+      t.finish("s-new");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.deps.keepHeard).not.toHaveBeenCalled();
+      t.hf.toggle("button");
     } finally {
       vi.useRealTimers();
     }

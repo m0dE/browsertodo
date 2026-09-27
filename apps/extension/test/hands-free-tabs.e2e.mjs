@@ -46,7 +46,7 @@ const STUBS = `(() => {
   window.__sent = [];
   chrome.runtime.sendMessage = async (msg, ...rest) => {
     if (msg?.type === "voice.transcribe") return { ok: true, data: { text: window.__transcript ?? "What is on this page?" } };
-    if (msg?.type === "run.message" && msg.voice) { window.__sent.push({ text: msg.text, tabId: msg.tabId ?? null, sessionId: msg.sessionId ?? null }); return { ok: true, data: { sessionId: "s-hf", mode: "new" } }; }
+    if (msg?.type === "run.message" && msg.voice) { window.__sent.push({ text: msg.text, context: msg.context ?? null, tabId: msg.tabId ?? null, sessionId: msg.sessionId ?? null }); return { ok: true, data: { sessionId: "s-hf", mode: "new" } }; }
     const res = await send(msg, ...rest);
     return res?.ok ? { ...res, data: plus(res.data) } : res;
   };
@@ -196,14 +196,15 @@ try {
     await waitFor(() => panelA.evaluate(`document.visibilityState === "hidden"`), "A's panel to hide");
     await waitFor(() => panelA.evaluate(`document.getElementById("voice-bar").dataset.state === "elsewhere"`), "A's bar to say it listens elsewhere");
     const look = await panelA.evaluate(VOICE_LOOK);
-    // Said while the user looks at tab B: to A's chat, with the note.
+    // Said while the user looks at tab B: to A's chat as said, with the note as the message's context (the agent gets it, the chat does not show it).
     const said = await waitFor(() => panelA.evaluate(`window.__sent[${before}] ?? null`), "a message said while tab B shows", { timeout: 30_000 });
     const badges = { a: await badgeLook(ids.a), b: await badgeLook(ids.b) };
     const evidence = JSON.stringify({ said, tabA: ids.a, tabB: ids.b, aLook: look, badges });
     assert.equal(look.bar.state, "elsewhere", `A knows the user left its tab: ${evidence}`);
     assert.equal(look.voiceLive, false, evidence);
     assert.equal(said.tabId, ids.a, evidence);
-    assert.match(said.text, /^What is on this page\?\n\n\(The user is looking at another tab: Recipes B \(127\.0\.0\.1:\d+\)\. You work in Shop A \(127\.0\.0\.1:\d+\)\.\)$/, evidence);
+    assert.equal(said.text, "What is on this page?", evidence);
+    assert.match(said.context ?? "", /^The user is looking at another tab: Recipes B \(127\.0\.0\.1:\d+\)\. You work in Shop A \(127\.0\.0\.1:\d+\)\.$/, evidence);
     assert.deepEqual(badges, { a: "MIC:live", b: "MIC:elsewhere" }, evidence);
     return evidence;
   });

@@ -182,7 +182,7 @@ describe("RealtimeClient: the feed, the narrator's replies and its tools", () =>
     expect(onTool).toHaveBeenCalledWith("send_to_agent", { text: "Post gm on X" }, "in1");
     expect(socket().sent.at(-1)).toEqual({ type: "conversation.item.create", item: { type: "function_call_output", call_id: "c1", output: "Sent to the agent." } });
     socket().event({ type: "response.done", response: { id: "r1", status: "completed", output: [] } });
-    expect(socket().sent.at(-1)).toEqual({ type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS } });
+    expect(socket().sent.at(-1)).toEqual({ type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS, tool_choice: "none" } });
   });
 
   it("other tools ask for a plain reply after their output (the narrator says what happened)", async () => {

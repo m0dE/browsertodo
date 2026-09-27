@@ -218,7 +218,7 @@ export function installChromeStub(data) {
     },
     // What the user said (Realtime) is kept in its chat: pushed back as a "heard" event.
     "voice.heard": (req) => {
-      const event = { type: "heard", text: req.text, ...(req.sent ? { sent: req.sent } : {}), ts: new Date().toISOString(), sessionId: req.sessionId };
+      const event = { type: "heard", text: req.text, ...(req.sent ? { sent: req.sent } : {}), ...(req.early ? { early: true } : {}), ts: new Date().toISOString(), sessionId: req.sessionId };
       setTimeout(() => window.__push({ type: "event", event }), 0);
       return { ok: true };
     },

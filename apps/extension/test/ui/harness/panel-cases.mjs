@@ -1790,7 +1790,9 @@ export const PANEL_CASES = [
   // Hands-free voice (the voice shortcut): the orb and the voice bar while listening, "Sending…" with the utterance in
   // the box (Standard), the bar while the agent works, a spoken line with its caption; Realtime's one-time cost notice,
   // the narrator speaking, its send_to_agent starting a task at once with one acknowledgement, and the user's own
-  // words in the chat with "Sent to agent: …" under them; the fallback note when Realtime is unavailable.
+  // words in the chat with "Sent to agent: …" under them; what was said but passed on to no one as muted lines (one
+  // said before the chat existed, above its first message); the fallback note when Realtime is unavailable; on
+  // another tab, the note goes with the message as its context, never into the chat.
   {
     names: [
       "panel-handsfree-listening",
@@ -1800,8 +1802,10 @@ export const PANEL_CASES = [
       "panel-handsfree-cost",
       "panel-handsfree-narrator",
       "panel-handsfree-heard",
+      "panel-handsfree-aside",
       "panel-handsfree-fallback",
       "panel-handsfree-elsewhere",
+      "panel-handsfree-elsewhere-heard",
     ],
     async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors, base, want }) {
       await ctx.grantPermissions(["microphone"], { origin: base });
@@ -1947,7 +1951,7 @@ export const PANEL_CASES = [
       }
 
       // Realtime: the cost notice the first time, the narrator talking (caption), and its send_to_agent starting a task.
-      if (["cost", "narrator", "heard"].some((n) => want(`panel-handsfree-${n}`, size, scheme))) {
+      if (["cost", "narrator", "heard", "aside", "elsewhere-heard"].some((n) => want(`panel-handsfree-${n}`, size, scheme))) {
         const p = await openPanel(ctx, "account", ".chat-empty", { edit: (d) => (d.state.settings.realtimeCostNoticed = false), init: [installVoiceFakes] });
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
@@ -1974,10 +1978,29 @@ export const PANEL_CASES = [
         if ((await p.textContent(".voice-caption")) !== "Hi! What should I do?") fail(`narrator caption "${await p.textContent(".voice-caption")}"`);
         await shoot(p, "panel-handsfree-narrator", size, scheme);
 
+        /** A turn of the user's (input item `id`) that the narrator answers without passing anything on. */
+        const aside = (id, words) =>
+          p.evaluate(
+            ([id, words]) => {
+              window.__rt.emit({ type: "input_audio_buffer.speech_started", item_id: id });
+              window.__rt.emit({ type: "input_audio_buffer.speech_stopped", item_id: id });
+              window.__rt.emit({ type: "input_audio_buffer.committed", item_id: id, previous_item_id: null });
+              window.__rt.emit({ type: "response.created", response: { id: `r_${id}` } });
+              window.__rt.emit({ type: "response.done", response: { id: `r_${id}`, status: "completed", output: [] } });
+              window.__rt.emit({ type: "conversation.item.input_audio_transcription.completed", item_id: id, content_index: 0, transcript: words });
+            },
+            [id, words],
+          );
+        // Thinking aloud before asking (input item in0): there is no chat yet, and nothing goes out for it.
+        await p.evaluate(() => window.__rt.emit({ type: "response.done", response: { id: "r1", status: "completed", output: [] } }));
+        const early = "Hmm, one sec, let me think.";
+        await aside("in0", early);
+        await p.waitForTimeout(50);
+        if (await p.evaluate(() => window.__requests.some((r) => r.type === "voice.heard" || r.type === "run.message"))) fail("words passed on to no one went out before any chat existed");
+
         // The user asks (their turn is input item in1); the narrator calls send_to_agent before saying anything, and
         // the request goes out at once as a new task: no sending window, nothing written into the box.
         await p.evaluate(() => {
-          window.__rt.emit({ type: "response.done", response: { id: "r1", status: "completed", output: [] } });
           window.__rt.emit({ type: "input_audio_buffer.speech_started", item_id: "in1" });
           window.__rt.emit({ type: "input_audio_buffer.speech_stopped", item_id: "in1" });
           window.__rt.emit({ type: "input_audio_buffer.committed", item_id: "in1", previous_item_id: null });
@@ -2013,9 +2036,13 @@ export const PANEL_CASES = [
         await pushRunning(p, { ...newSession(sent), voice: true });
         const heardText = "Could you check what Sarah wrote me?";
         await p.evaluate((t) => window.__rt.emit({ type: "conversation.item.input_audio_transcription.completed", item_id: "in1", content_index: 0, transcript: t }), heardText);
-        await p.waitForFunction(() => window.__requests.some((r) => r.type === "voice.heard"));
-        const kept = await p.evaluate(() => window.__requests.find((r) => r.type === "voice.heard"));
-        if (kept.sessionId !== "s-new" || kept.text !== heardText || kept.sent !== sent) fail(`kept words ${JSON.stringify(kept)}`);
+        await p.waitForFunction(() => window.__requests.some((r) => r.type === "voice.heard" && r.sent));
+        const kept = await p.evaluate(() => window.__requests.filter((r) => r.type === "voice.heard"));
+        // The words said before the chat existed went in it first (early), then this request's.
+        const [keptEarly, keptSent] = kept;
+        if (kept.length !== 2 || keptEarly.sessionId !== "s-new" || keptEarly.text !== early || keptEarly.early !== true || keptEarly.sent !== undefined)
+          fail(`kept early words ${JSON.stringify(kept)}`);
+        if (keptSent?.sessionId !== "s-new" || keptSent.text !== heardText || keptSent.sent !== sent) fail(`kept words ${JSON.stringify(kept)}`);
         await p.waitForFunction((t) => document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent === t, heardText, { timeout: 5000 }).catch(() => undefined);
         const bubble = await p.evaluate(() => ({
           first: document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent,
@@ -2024,9 +2051,69 @@ export const PANEL_CASES = [
           users: document.querySelectorAll("#chat-log .ev-user").length,
         }));
         if (bubble.first !== heardText || !bubble.voice || bubble.sentLine !== `Sent to agent: ${sent}` || bubble.users !== 1) fail(`the user's words in the chat ${JSON.stringify(bubble)}`);
+        // The early words: a muted line above the first message, not a bubble.
+        await p.waitForSelector("#chat-log > .ev-heard", { timeout: 5000 }).catch(() => undefined);
+        const before = await p.evaluate(() => {
+          const line = document.querySelector("#chat-log > .ev-heard");
+          const opening = document.querySelector("#chat-log > .ev-opening");
+          return { text: line?.textContent, above: !!line && !!opening && !!(line.compareDocumentPosition(opening) & Node.DOCUMENT_POSITION_FOLLOWING) };
+        });
+        if (before.text !== early || !before.above) fail(`words said before the chat ${JSON.stringify(before)}`);
         await checkLayout(p, `handsfree-heard ${label}`);
         await shoot(p, "panel-handsfree-heard", size, scheme);
         if ((await replies()).length !== 1) fail(`more than one reply for the turn: ${JSON.stringify(await replies())}`);
+
+        // Said while the agent works, passed on to no one: muted lines, never bubbles; two in a row are one line.
+        const asides = ["Okay.", "Let me see what it finds."];
+        await aside("in2", asides[0]);
+        await aside("in3", asides[1]);
+        await p.waitForFunction(() => document.querySelectorAll("#chat-log > .ev-heard .ev-heard-text").length === 3, null, { timeout: 5000 }).catch(() => undefined);
+        const muted = await p.evaluate(() => ({
+          lines: [...document.querySelectorAll("#chat-log > .ev-heard")].map((l) => [...l.querySelectorAll(".ev-heard-text")].map((t) => t.textContent)),
+          users: document.querySelectorAll("#chat-log .ev-user").length,
+          sent: window.__requests.filter((r) => r.type === "run.message").length,
+        }));
+        if (JSON.stringify(muted.lines) !== JSON.stringify([[early], asides]) || muted.users !== 1 || muted.sent !== 1) fail(`words passed on to no one ${JSON.stringify(muted)}`);
+        if ((await replies()).length !== 1) fail(`a reply was asked for words passed on to no one: ${JSON.stringify(await replies())}`);
+        await checkLayout(p, `handsfree-aside ${label}`);
+        await shoot(p, "panel-handsfree-aside", size, scheme);
+
+        // The user looks at another tab and asks (the report on 81df820): the request goes out with the note naming
+        // both tabs as its context; the chat shows their words once with the request under them, never the note, and
+        // never the request as a bubble of its own.
+        // (This panel is a page of its own: it shows the active tab, as the user switching to tab 2.)
+        await p.evaluate(() => window.__activateTab(2));
+        await p.waitForSelector("#voice-bar[data-state=elsewhere]", { timeout: 5000 }).catch(() => fail("the bar does not say the user looks at another tab"));
+        const away = { words: "So, yeah, forget that for now, and look at the invoices from Acme instead.", request: "Forget that. Find the invoices from Acme." };
+        await p.evaluate((a) => {
+          window.__rt.emit({ type: "input_audio_buffer.speech_started", item_id: "in4" });
+          window.__rt.emit({ type: "input_audio_buffer.speech_stopped", item_id: "in4" });
+          window.__rt.emit({ type: "input_audio_buffer.committed", item_id: "in4", previous_item_id: null });
+          window.__rt.emit({ type: "response.created", response: { id: "r_in4" } });
+          window.__rt.emit({ type: "response.function_call_arguments.done", call_id: "c4", name: "send_to_agent", arguments: JSON.stringify({ text: a.request }) });
+          window.__rt.emit({ type: "response.done", response: { id: "r_in4", status: "completed", output: [] } });
+          window.__rt.emit({ type: "conversation.item.input_audio_transcription.completed", item_id: "in4", content_index: 0, transcript: a.words });
+        }, away);
+        await p.waitForFunction(() => window.__requests.filter((r) => r.type === "run.message").length === 2, null, { timeout: 5000 }).catch(() => undefined);
+        const awayReq = await p.evaluate(() => window.__requests.filter((r) => r.type === "run.message")[1]);
+        if (awayReq?.text !== away.request || awayReq.sessionId !== "s-new" || !/^The user is looking at another tab: .+\. You work in .+\.$/.test(awayReq.context ?? ""))
+          fail(`asked on another tab, sent ${JSON.stringify(awayReq)}`);
+        // Back on the session's tab. The background keeps the message as the words it was sent with (user_message), and
+        // the heard event pairs with it.
+        await p.evaluate(() => window.__activateTab(1));
+        await p.waitForFunction(() => document.getElementById("voice-bar").dataset.state !== "elsewhere" && !!document.querySelector("#chat-log .ev-first"), null, { timeout: 5000 }).catch(() => undefined);
+        await p.evaluate((text) => window.__push({ type: "event", event: { type: "user_message", text, voice: true, ts: new Date().toISOString(), sessionId: "s-new" } }), awayReq.text);
+        await p.waitForFunction((t) => [...document.querySelectorAll("#chat-log .ev-said .ev-user-text")].some((e) => e.textContent === t), away.words, { timeout: 5000 }).catch(() => undefined);
+        const awayChat = await p.evaluate(() => ({
+          bubbles: [...document.querySelectorAll("#chat-log .ev-user")].map((e) => e.textContent),
+          sentLines: [...document.querySelectorAll("#chat-log .ev-said .ev-sent")].map((e) => e.textContent),
+        }));
+        const awayBubbles = awayChat.bubbles.filter((t) => t !== heardText);
+        if (JSON.stringify(awayBubbles) !== JSON.stringify([away.words]) || JSON.stringify(awayChat.sentLines) !== JSON.stringify([`Sent to agent: ${away.request}`]) || awayChat.bubbles.some((t) => t.includes("looking at another tab")))
+          fail(`asked on another tab, the chat shows ${JSON.stringify(awayChat)}`);
+        if ((await replies()).length !== 2) fail(`not one acknowledgement for the request asked on another tab: ${JSON.stringify(await replies())}`);
+        await checkLayout(p, `handsfree-elsewhere-heard ${label}`);
+        await shoot(p, "panel-handsfree-elsewhere-heard", size, scheme);
 
         // The chat's events reach the narrator as notes; the result asks it to reply.
         await p.evaluate(() =>
@@ -2086,10 +2173,12 @@ export const PANEL_CASES = [
         if (away.label !== "Voice is on in Inbox (1) - ada.lovelace@ex…" || !away.go || !away.use || away.orb || away.live) fail(`bar on another tab ${JSON.stringify(away)}`);
         await checkLayout(p, `handsfree-elsewhere ${label}`);
         await shoot(p, "panel-handsfree-elsewhere", size, scheme);
-        // Said while tab 2 is in front: it goes to tab 1's chat, with the note naming both tabs.
+        // Said while tab 2 is in front: it goes to tab 1's chat as said, with the note naming both tabs as its context
+        // (the agent gets it; the chat shows the words alone).
         await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.message"), null, { timeout: 30_000 });
         const req = await p.evaluate(() => window.__requests.find((r) => r.type === "run.message"));
-        if (req.sessionId !== "s-voice" || req.tabId !== undefined || req.voice !== true || !/^Open Gmail/.test(req.text) || !req.text.endsWith("(The user is looking at another tab: Hacker News. You work in Inbox (1) - ada.lovelace@example.com - Gmail.)"))
+        const note = "The user is looking at another tab: Hacker News. You work in Inbox (1) - ada.lovelace@example.com - Gmail.";
+        if (req.sessionId !== "s-voice" || req.tabId !== undefined || req.voice !== true || !/^Open Gmail/.test(req.text) || req.text.includes("looking at another tab") || req.context !== note)
           fail(`said on another tab, sent ${JSON.stringify(req)}`);
         if ((await p.inputValue("#now-text")) !== "") fail(`the box got "${await p.inputValue("#now-text")}" while the user looked at another tab`);
         // Go to tab asks for the session's tab; back there, the plain bar.

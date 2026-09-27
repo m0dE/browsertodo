@@ -11,6 +11,7 @@
  * them, then any news. Pure.
  */
 import type { AgentEvent } from "@browsertodo/shared";
+import { sharedWordShare } from "../text.js";
 import { milestoneOf, siteName } from "./milestones.js";
 import { endLine, errorLine } from "./spoken-line.js";
 
@@ -23,6 +24,8 @@ export type SpokenKind = "ack" | "milestone" | "result" | "question" | "error";
 export const NARRATOR_MILESTONE_GAP_MS = 12_000;
 /** Milestones said at most per request. */
 export const MAX_MILESTONES_PER_REQUEST = 2;
+/** A request sharing at least this share of its words with the one just sent is that request again (sent once). */
+export const REPEATED_REQUEST_OVERLAP_MIN = 0.6;
 /** An empty transcript of at most this much speech is noise (a cough, a door): no reply, no message. */
 export const NOISE_MAX_SPEECH_MS = 2_500;
 
@@ -126,4 +129,20 @@ export const moreImportant = (a: SpokenKind | null, b: SpokenKind): SpokenKind =
 /** An empty transcript is noise when the speech was short (or its length is unknown). */
 export function isNoise(transcript: string, speechMs: number | null): boolean {
   return !transcript.trim() && (speechMs === null || speechMs <= NOISE_MAX_SPEECH_MS);
+}
+
+/** The request the narrator last passed on (send_to_agent), and the user's turn it answered (null: a reply we asked for). */
+export interface ForwardedRequest {
+  inputId: string | null;
+  text: string;
+}
+
+/**
+ * A send_to_agent that passes on `last` again: the same or nearly the same words, in the same user turn or in a reply
+ * we asked for (no new words of the user's came with it). One request goes to the agent once; a new turn may ask
+ * again.
+ */
+export function repeatsRequest(text: string, inputId: string | null, last: ForwardedRequest | null): boolean {
+  if (!last || (inputId !== null && inputId !== last.inputId)) return false;
+  return sharedWordShare(text, last.text) >= REPEATED_REQUEST_OVERLAP_MIN;
 }

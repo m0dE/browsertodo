@@ -293,6 +293,17 @@ describe("facts", () => {
     await memory.undo("chat", "a1");
     expect((await store.list()).map((e) => e.subject).sort()).toEqual(["Accountant", "Bo"]);
   });
+
+  it("never replaces a fact of another kind or place: a site's rule stands beside one for everywhere", async () => {
+    await store.put({ kind: "preference", subject: "Email sign-off", text: "Sign emails 'Cheers, Jae'.", scope: "global" }, { kind: "user" });
+    await conversation("chat");
+    answer({ episode: null, facts: [{ kind: "preference", subject: "Support sign-off", text: "Sign support replies 'Jae, RunHQ support'.", domain: "help.runhq.io", replaces: "m1" }] });
+    await writer.ended("chat", { soon: false });
+    await fireAlarm();
+    const after = await store.list();
+    expect(after.map((e) => e.subject).sort()).toEqual(["Email sign-off", "Support sign-off"]);
+    expect(after.find((e) => e.subject === "Support sign-off")?.history).toBeUndefined();
+  });
 });
 
 describe("failures", () => {

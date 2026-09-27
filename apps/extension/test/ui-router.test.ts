@@ -577,9 +577,15 @@ describe("UiRouter: a chat per browser tab", () => {
     await t.sessions.create({ sessionId: "s1", source: "adhoc", title: "t", brain: "claude-api", jev: false, startedAt: "2026-09-24T10:00:00Z" });
     expect(await t.req({ type: "voice.heard", sessionId: "s1", text: " uh, open gmail please ", sent: " Open Gmail " })).toEqual({ ok: true });
     expect(await t.req({ type: "voice.heard", sessionId: "s1", text: "what is it doing?" })).toEqual({ ok: true });
-    expect((await t.sessions.eventsOf("s1")).map(({ type, text, sent }: { type: string; text?: string; sent?: string }) => ({ type, text, sent }))).toEqual([
-      { type: "heard", text: "uh, open gmail please", sent: "Open Gmail" },
-      { type: "heard", text: "what is it doing?", sent: undefined },
+    // Said before the chat existed (early); a request's words never are.
+    expect(await t.req({ type: "voice.heard", sessionId: "s1", text: "one sec", early: true })).toEqual({ ok: true });
+    expect(await t.req({ type: "voice.heard", sessionId: "s1", text: "open it", sent: "Open it", early: true })).toEqual({ ok: true });
+    const kept = (await t.sessions.eventsOf("s1")).map(({ type, text, sent, early }: { type: string; text?: string; sent?: string; early?: true }) => ({ type, text, sent, early }));
+    expect(kept).toEqual([
+      { type: "heard", text: "uh, open gmail please", sent: "Open Gmail", early: undefined },
+      { type: "heard", text: "what is it doing?", sent: undefined, early: undefined },
+      { type: "heard", text: "one sec", sent: undefined, early: true },
+      { type: "heard", text: "open it", sent: "Open it", early: undefined },
     ]);
     expect(await t.req({ type: "voice.heard", sessionId: "nope", text: "x" })).toEqual({ ok: false });
     expect(await t.router.handle({ type: "voice.heard", sessionId: "s1", text: "" })).toEqual({ ok: false, error: "sessionId and text are required" });

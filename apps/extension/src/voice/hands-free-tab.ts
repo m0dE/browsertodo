@@ -117,11 +117,6 @@ export function lookingHomeNote(home: TabPage | null): string {
   return `The user is looking at ${pageName(home, "the tab you work in")} again, the tab you work in.`;
 }
 
-/** A message with the note on the tab the user looks at (null: they look at the session's tab). */
-export function withLookingNote(text: string, note: string | null): string {
-  return note ? `${text}\n\n(${note})` : text;
-}
-
 /** Said to move hands-free to the tab the user looks at: "use this tab", "switch here", "use voice here". */
 export function spokenUseThisTab(text: string): boolean {
   const said = text.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").replace(/\s+/g, " ").trim();

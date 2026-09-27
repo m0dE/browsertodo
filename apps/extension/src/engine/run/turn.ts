@@ -51,10 +51,11 @@ export interface ActiveSession {
   turnEndsAt?: number;
 }
 
-/** A message waiting for the next turn; voice: it was spoken. */
+/** A message waiting for the next turn; voice: it was spoken; context: told to the agent with it (see withContext). */
 export interface QueuedMessage {
   text: string;
   voice: boolean;
+  context?: string;
 }
 
 /** The automation level's line for the agent's prompt this turn (automation.ts); undefined at full autonomy. */

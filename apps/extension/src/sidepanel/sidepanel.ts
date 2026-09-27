@@ -33,7 +33,7 @@ import { RealtimeEngine } from "../voice/realtime-engine.js";
 import { Speaker } from "../voice/speaker.js";
 import { StandardEngine } from "../voice/standard-engine.js";
 import { panelTranscriber, VoiceError } from "../voice/transcribe.js";
-import { initHandsFree } from "./hands-free.js";
+import { initHandsFree, type SendExtra } from "./hands-free.js";
 import { initVoiceInput, VOICE_NOTICE } from "./voice-input.js";
 import { PanelTrace } from "../trace/panel-trace.js";
 
@@ -198,11 +198,11 @@ const chatOfTab = (tab: number | null): string | null =>
  * Hands-free voice sends what was said to its chat, whichever tab is shown: the chat by its id (it stays in the tab
  * it lives in), or a new chat in the session's tab.
  */
-async function sendSpoken(text: string, target: { tabId: number | null; sessionId: string | null }, cid?: string): Promise<string> {
+async function sendSpoken(text: string, target: { tabId: number | null; sessionId: string | null }, { cid, context }: SendExtra = {}): Promise<string> {
   const { tabId: tab, sessionId } = target;
   // A new chat carries the choice of memory made for its tab (the composer's menu).
   const where = sessionId ? { sessionId } : { ...(tab === null ? {} : { tabId: tab }), ...composer.memory.forNewChat(tab) };
-  const r = await uiRequest({ type: "run.message", ...where, text, voice: true, ...(cid ? { cid } : {}) });
+  const r = await uiRequest({ type: "run.message", ...where, text, voice: true, ...(cid ? { cid } : {}), ...(context ? { context } : {}) });
   if (sessionId) return r.sessionId;
   if (tab === null || tab === activeTab) startedHere(r.sessionId);
   else {
@@ -235,8 +235,8 @@ const handsFree = initHandsFree({
   onSpeaking: (line) => chat.setSpeaking(line),
   keepSpoken: (sessionId, text) =>
     void uiRequest({ type: "voice.spoken", sessionId, text }).catch((err: unknown) => console.warn(`[browsertodo] keeping a spoken line failed: ${errorMessage(err)}`)),
-  keepHeard: (sessionId, text, sent) =>
-    void uiRequest({ type: "voice.heard", sessionId, text, ...(sent ? { sent } : {}) }).catch((err: unknown) =>
+  keepHeard: (sessionId, text, sent, early) =>
+    void uiRequest({ type: "voice.heard", sessionId, text, ...(sent ? { sent } : {}), ...(early ? { early } : {}) }).catch((err: unknown) =>
       console.warn(`[browsertodo] keeping what was said failed: ${errorMessage(err)}`),
     ),
   settings: () => state?.settings ?? null,

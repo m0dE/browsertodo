@@ -25,11 +25,12 @@
   --text-sm: 12px;
   --text-md: 13px;
   --text-lg: 14px;
-  /* Stacking: sticky bars, popups (menus, tips), the voice veil and what stays above it. */
+  /* Stacking: sticky bars, the voice veil and what stays above it (the voice bar, the composer),
+  then popups (menus, tips): the user opened them, so they cover everything else. */
   --z-sticky: 2;
-  --z-popup: 10;
   --z-veil: 30;
   --z-above-veil: 31;
+  --z-popup: 40;
   --hover: color-mix(in srgb, var(--text) 8%, transparent);
   --focus-ring: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
   --knob: #fff;

@@ -5,6 +5,7 @@ import {
   handoffDiffers,
   HANDOFF_OVERLAP_MIN,
   isBrainStartLine,
+  isEarlyHeard,
   isNearBottom,
   openingText,
   openingTurn,
@@ -235,7 +236,16 @@ describe("Realtime voice in the chat: the user's own words, and the request sent
     expect(handoffDiffers("Post gm on X.", "post GM on x")).toBe(false);
     expect(describeEvent({ type: "heard", text: said, sent })).toEqual({ kind: "user", text: said, voice: true, sent });
     expect(describeEvent({ type: "heard", text: "open gmail please", sent: "Open Gmail" })).toEqual({ kind: "user", text: "open gmail please", voice: true });
-    expect(describeEvent({ type: "heard", text: "thanks" })).toEqual({ kind: "user", text: "thanks", voice: true });
+  });
+
+  it("words passed on to no one (thinking aloud, 'one sec') are a muted heard line, never a message", () => {
+    expect(describeEvent({ type: "heard", text: "thanks" })).toEqual({ kind: "heard", text: "thanks" });
+    expect(describeEvent({ type: "heard", text: "one sec", early: true })).toEqual({ kind: "heard", text: "one sec" });
+    // Said before the conversation existed: shown above its first message.
+    expect(isEarlyHeard({ type: "heard", text: "one sec", early: true })).toBe(true);
+    expect(isEarlyHeard({ type: "heard", text: "one sec" })).toBe(false);
+    expect(isEarlyHeard({ type: "heard", text: said, sent, early: true })).toBe(false);
+    expect(isEarlyHeard({ type: "user_message", text: "one sec" })).toBe(false);
   });
 
   it("the words take the place of the voice message their request became, kept before or after it", () => {

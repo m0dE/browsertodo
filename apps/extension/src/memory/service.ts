@@ -7,8 +7,10 @@
  *   and what the turn is (its repeating task, if any) for the tools.
  * - tool(): remember / recall / forget, for both brains (the API brains call it
  *   directly, Claude Code through the helper's memory.call). remember with a
- *   key files the fact in the task's record for that key; recall with a key
- *   returns that record.
+ *   key files the fact in the record for that key (a repeating task's own, or
+ *   from a chat the user's); recall with a key returns it (in a task its own
+ *   first). Turn start and recall add the account's semantic scores when
+ *   memory syncs (deps.semantic, at most MEMORY_SEARCH_TIMEOUT_MS).
  * - runNote(): a repeating task's note for its next run (task_complete `memory_note`).
  * - handle(): Settings > Memory and the chat (list, edit, delete, delete a
  *   task's memory, forget everything, Undo on a "Remembered" note, memory off

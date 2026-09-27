@@ -34,6 +34,8 @@ export interface AdhocInput {
   screen?: boolean;
   /** The instructions were spoken (the session's first message is marked). */
   voice?: boolean;
+  /** What the agent is told with the instructions, kept out of the chat's title and first message (see withContext). */
+  context?: string;
   /** The new chat was started with memory off (SessionInfo.memoryOff). */
   memoryOff?: boolean;
 }
@@ -52,6 +54,8 @@ export interface TurnJob {
   screen?: boolean;
   /** The message was spoken (its user_message is marked). */
   voice?: boolean;
+  /** What the agent is told with the message, kept out of its user_message (see withContext). */
+  context?: string;
   /** The browser tab the message was sent from: the conversation now belongs to it. */
   tabId?: number;
   /** The conversation's local task, when this turn continues its unfinished work (recorded on the task). */
@@ -115,7 +119,7 @@ export async function turnJob(
   stores: { sessions: SessionStore; localStore: LocalStore },
   sessionId: string,
   text: string,
-  opts: { screen?: boolean; voice?: boolean; tabId?: number } = {},
+  opts: { screen?: boolean; voice?: boolean; context?: string; tabId?: number } = {},
 ): Promise<TurnJob> {
   const from = await stores.sessions.get(sessionId);
   if (!from) throw new Error(`No session ${sessionId}`);
@@ -132,8 +136,17 @@ export async function turnJob(
   const job: TurnJob = { source: "turn", from, text, task, first };
   if (opts.screen) job.screen = true;
   if (opts.voice) job.voice = true;
+  if (opts.context) job.context = opts.context;
   if (opts.tabId !== undefined) job.tabId = opts.tabId;
   return job;
+}
+
+/**
+ * A user's message as the agent gets it: their words, then in parentheses what it is told with them (the message's
+ * context, e.g. the tab the user looks at). The chat shows the words alone.
+ */
+export function withContext(text: string, context: string | undefined): string {
+  return context ? `${text}\n\n(${context})` : text;
 }
 
 /** The local task whose result this job records, if any. */

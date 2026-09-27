@@ -5,7 +5,7 @@
  * What shows when comes from settingsView() (settings-view.ts).
  */
 import { OPEN_CHAT_COMMAND, openShortcutSettings, readShortcut, VOICE_COMMAND, type ShortcutCommand } from "../shortcut.js";
-import { errorMessage, type BrainMode, type ExtensionSettings } from "@browsertodo/shared";
+import { errorMessage, LONGEST_RUN_HINT, type BrainMode, type ExtensionSettings } from "@browsertodo/shared";
 import { isStale, uiRequest, type UiState } from "../ui-protocol.js";
 import { createAccountMenu } from "../ui/account-menu.js";
 import { $, busy, closeMenusOnOutsideClick, find, flash, h } from "../ui/dom.js";
@@ -190,6 +190,7 @@ modelSelect.addEventListener("change", () => {
 // ------------------------------------------------------------ keys (masked fields)
 
 const renderSecrets = initSecretFields({ saved: () => saved, save: sendPatch });
+$("maxTaskMinutes-hint").textContent = LONGEST_RUN_HINT;
 
 // ------------------------------------------------------------ rendering
 

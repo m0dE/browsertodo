@@ -226,6 +226,7 @@ export class UiRouter {
         const screen = msg.screen === true;
         const voice = msg.voice === true;
         const cid = optCid(msg.cid);
+        const context = typeof msg.context === "string" ? msg.context.trim() : "";
         // Sent from a tab: the runner binds the conversation to it once the message is taken.
         return d.runner.message(sessionId, text, {
           ...(tab === undefined ? {} : { tabId: tab }),
@@ -233,6 +234,7 @@ export class UiRouter {
           ...(voice ? { voice } : {}),
           ...(cid ? { cid } : {}),
           ...(msg.memoryOff === true ? { memoryOff: true } : {}),
+          ...(context ? { context } : {}),
         }) satisfies Promise<UiResults["run.message"]>;
       }
       case "run.newChat": {
@@ -392,7 +394,9 @@ export class UiRouter {
         const sent = typeof msg.sent === "string" ? msg.sent.trim() : "";
         const sessionId = optId(msg.sessionId);
         if (!sessionId || !text) throw new Error("sessionId and text are required");
-        const heard = { type: "heard" as const, text, ...(sent ? { sent } : {}) };
+        // Early words (said before the chat existed) are never a request's.
+        const early = !sent && msg.early === true;
+        const heard = { type: "heard" as const, text, ...(sent ? { sent } : {}), ...(early ? { early: true as const } : {}) };
         return { ok: !!(await d.sessions.note(sessionId, heard)) } satisfies UiResults["voice.heard"];
       }
       case "trace.add": {

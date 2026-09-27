@@ -67,7 +67,7 @@ export const MEMORY_WRITER_SYSTEM_PROMPT = [
   "",
   `episode: a dated summary of this conversation for later ("what did we do about X last month"). subject: a short title (at most ${MAX_MEMORY_SUBJECT_CHARS} characters). text: at most ${MAX_MEMORY_TEXT_CHARS} characters, plain sentences: what the user asked, what the agent did, and how it ended (done, stopped, failed, and why). entities: at most ${MAX_MEMORY_ENTITIES} sites (as hosts, e.g. app.channex.io), people, order or booking IDs and accounts it involved, written as they appeared. Null only when nothing happened worth remembering (a greeting, a question answered from general knowledge).`,
   "",
-  `facts: at most ${MAX_WRITER_FACTS}, usually none. Only durable facts about the user that will still be true and save time in later conversations, and that are not already in memory (the list you are given) or saved by the agent during the conversation. preference: how the user wants things done. account: which account is which (an address, a /u/N index, a handle). person: who someone is to the user. playbook: how to get something done on one site (give domain, the site's host). To correct an entry of the list under another subject, name its id in replaces. Never page content, what someone wrote, one-off details of this task, or guesses.`,
+  `facts: at most ${MAX_WRITER_FACTS}, usually none. Only durable facts about the user that will still be true and save time in later conversations, and that are not already in memory (the list you are given) or saved by the agent during the conversation. preference: how the user wants things done. account: which account is which (an address, a /u/N index, a handle). person: who someone is to the user. playbook: how to get something done on one site (give domain, the site's host). When the conversation makes an entry of the list untrue (the user changed it: a new accountant, a new address), name that entry's id in replaces. Never replace an entry that stays true: a narrower rule (support replies, beside all emails), another account or another person is a new fact next to it. Never page content, what someone wrote, one-off details of this task, or guesses.`,
   "",
   "Rules: the conversation's dates are given; never invent a date, a name or an outcome that is not in it. Never write passwords, one-time codes, PINs, API keys, tokens or card numbers, even if they appear. Answer with the JSON object and nothing else.",
 ].join("\n");
@@ -111,7 +111,7 @@ export function buildMemoryWriterPrompt(input: MemoryWriterInput, maxChars = MAX
     episodeTranscript(input.lines, maxChars),
     "</conversation>",
     "",
-    "Already in memory (do not repeat these; name an id in replaces only to correct it):",
+    "Already in memory (do not repeat these; name an id in replaces only when the new fact makes it untrue):",
     ...(existing.length ? existing : ["(nothing)"]),
     "",
     "Answer with the JSON object only.",

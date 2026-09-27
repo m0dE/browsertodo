@@ -137,9 +137,11 @@ describe("hands-free voice in the panel that runs it, while the user looks at an
 
     rt.events.forward("What is on this page?");
     await settle();
+    // The words as said; the note goes with them as the message's context (the agent gets it, the chat does not show it).
     expect(t.deps.send).toHaveBeenLastCalledWith(
-      "What is on this page?\n\n(The user is looking at another tab: Recipes (recipes.example). You work in Inbox (mail.example.com).)",
+      "What is on this page?",
       { tabId: 1, sessionId: null },
+      { context: "The user is looking at another tab: Recipes (recipes.example). You work in Inbox (mail.example.com)." },
     );
 
     // Back on tab 1: the narrator hears so; messages go as said.

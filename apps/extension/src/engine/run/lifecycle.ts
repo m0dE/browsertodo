@@ -12,7 +12,7 @@ import type { LocalStore } from "../local-store.js";
 import type { SessionStore } from "../sessions.js";
 import type { ActiveSessions, ForcedStop } from "./active.js";
 import { runNextTurn } from "./conversation.js";
-import { openTask, startHeartbeat, type FirstJob, type Job, type TurnJob } from "./jobs.js";
+import { openTask, startHeartbeat, withContext, type FirstJob, type Job, type TurnJob } from "./jobs.js";
 import type { ResultRecorder } from "./record.js";
 import { episodeTrigger, type EpisodeWriter } from "../../memory/episodes.js";
 import { X_WAIT_STATUS } from "./scheduling.js";
@@ -102,6 +102,8 @@ export class Lifecycle {
           if (task.account) info.account = task.account;
           if (job.input.voice) info.voice = true;
           if (job.input.memoryOff) info.memoryOff = true;
+          // The agent gets the instructions with their context; the title and first message are the user's words.
+          if (job.input.context) opened = { ...opened, task: { ...task, instructions: withContext(task.instructions, job.input.context) } };
         }
         const active = activate(info, isXTask(task), job.source === "local" ? job.task.id : null);
         await this.deps.sessions.create(info);

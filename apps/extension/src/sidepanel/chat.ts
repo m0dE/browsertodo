@@ -21,6 +21,7 @@ import { renderErrorHelp } from "./error-view.js";
 import {
   describeEvent,
   isBrainStartLine,
+  isEarlyHeard,
   isNearBottom,
   openingText,
   openingTurn,
@@ -343,8 +344,11 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     }
     lives = [];
     heard = pairsNow();
-    log.replaceChildren(renderOpeningOf(current), renderSessionHead(current));
-    events.forEach(renderOne);
+    // What was said before the conversation existed comes before its first message.
+    log.replaceChildren();
+    events.forEach((ev, i) => isEarlyHeard(ev) && renderOne(ev, i));
+    log.append(renderOpeningOf(current), renderSessionHead(current));
+    events.forEach((ev, i) => !isEarlyHeard(ev) && renderOne(ev, i));
     liveEls.clear();
     showSpeaking();
     if (!events.length && !live.of(current.sessionId).some(([, t]) => t.trim())) log.append(h("p.empty", null, "Waiting for the agent…"));
@@ -435,6 +439,11 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     events.push(ev);
     if (backfilling || !current) {
       settleLive(ev);
+      return;
+    }
+    // Said before the conversation existed: it goes above the first message.
+    if (isEarlyHeard(ev)) {
+      renderLog();
       return;
     }
     // The user's own words found their message (or the message its words): they are shown in its place.

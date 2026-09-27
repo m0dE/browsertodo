@@ -172,8 +172,10 @@ export type UiRequest =
    * (a new conversation, or the next turn: "look at the page now and continue").
    * tabId: the browser tab the message was sent from; the conversation
    * belongs to it (and a new one acts there). voice: the text was spoken.
+   * context: what the agent is told with the message but the chat does not show as the user's words (hands-free:
+   * the note on the tab the user looks at).
    */
-  | { type: "run.message"; sessionId?: string; text: string; tabId?: number; screen?: boolean; voice?: boolean; cid?: string; memoryOff?: true }
+  | { type: "run.message"; sessionId?: string; text: string; tabId?: number; screen?: boolean; voice?: boolean; cid?: string; memoryOff?: true; context?: string }
   /**
    * The conversation is over: close its kept-open agent session (a running
    * turn keeps running). tabId: that tab has no conversation any more.
@@ -261,7 +263,7 @@ export type UiRequest =
    * What the user said in Realtime hands-free voice, word for word: kept in its thread (a "heard" event).
    * sent: the request the narrator passed to the agent for it.
    */
-  | { type: "voice.heard"; sessionId: string; text: string; sent?: string }
+  | { type: "voice.heard"; sessionId: string; text: string; sent?: string; early?: true }
   /** The side panel's timings of a conversation (voice, sending), for its trace. */
   | { type: "trace.add"; sessionId: string; events: TraceEvent[] }
   /** The Raw view: the whole conversation, its timing trace, and what it ran on. */

@@ -69,10 +69,14 @@ export type AgentEvent =
    * What the user said in a Realtime hands-free turn, word for word (the
    * narrator's input transcription), kept in the thread as their voice
    * message. sent: what the narrator passed to the agent for it (that
-   * request's own voice message then shows these words instead). Written by
-   * the side panel, never by a brain.
+   * request's own voice message then shows these words instead). Without
+   * sent, nothing went to the agent (thinking aloud, "one sec"): the chat
+   * shows it as a muted line, not a message. early: said in the hands-free
+   * session before this conversation existed, kept when a request started it
+   * (shown above its first message). Written by the side panel, never by a
+   * brain.
    */
-  | { type: "heard"; text: string; sent?: string }
+  | { type: "heard"; text: string; sent?: string; early?: true }
   /**
    * The agent put a task in the user's TODO list from the chat
    * (schedule_task): the chat shows it as a card with View in TODO and Undo.

@@ -12,3 +12,6 @@
  * the same afternoon.
  */
 export const TURN_WALL_MINUTES = 240;
+
+/** What Settings says under "Longest run" (maxTaskMinutes). */
+export const LONGEST_RUN_HINT = `Time spent working. Waiting for a page to change or for your approval does not count; a run still ends after ${TURN_WALL_MINUTES / 60} hours.`;

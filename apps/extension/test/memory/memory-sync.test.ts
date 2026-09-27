@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { memoryWriteProblem, PLAN_REQUIRED, type MemoryDeletion, type MemoryEntry, type MemorySyncInput, type MemorySyncResponse } from "@browsertodo/shared";
+import { MAX_MEMORY_SEARCH_QUERY_CHARS, memoryWriteProblem, PLAN_REQUIRED, type MemoryDeletion, type MemoryEntry, type MemorySyncInput, type MemorySyncResponse } from "@browsertodo/shared";
 import { MemoryStore } from "../../src/memory/store.js";
 import { MemorySync, MEMORY_SYNC_KEY } from "../../src/memory/sync.js";
 import { syncText } from "../../src/options/memory-view.js";
@@ -257,5 +257,27 @@ describe("syncText (Settings > Memory)", () => {
     expect(syncText({ state: "on", lastSyncAt: "2026-09-26T21:14:00Z" }, new Date("2026-09-26T22:00:00Z"))).toMatchObject({ text: expect.stringMatching(/^Synced with your account, last Sep 26 /), tone: "ok" });
     expect(syncText({ state: "on", error: "offline" })).toMatchObject({ tone: "bad", text: expect.stringMatching(/offline/) });
     expect(syncText(undefined).text).toBe("");
+  });
+});
+
+describe("search (the account's semantic search)", () => {
+  it("asks the account only when this computer's memory syncs with it, cutting a long query", async () => {
+    const server = fakeServer();
+    const asked: unknown[] = [];
+    const api = { ...server.api, memorySearch: async (input: unknown) => (asked.push(input), { model: "m", hits: [{ id: "a1", score: 0.7 }], pending: 0 }) };
+    const account = { userId: "u1", email: "u@x.io", syncAllowed: true };
+    const storage = memoryStorage();
+    const store = new MemoryStore({ storage, now });
+    const sync = new MemorySync({ store, storage, now, account: async () => ({ ...account, api }) });
+    // Not synced with this account yet: nothing is asked.
+    expect(await sync.search("tax guy", { limit: 5 })).toBeNull();
+    await sync.sync();
+    expect(await sync.search(`tax guy ${"x".repeat(2 * MAX_MEMORY_SEARCH_QUERY_CHARS)}`, { taskKey: "tA", limit: 5 })).toEqual(new Map([["a1", 0.7]]));
+    expect(asked).toEqual([{ query: expect.stringMatching(/^tax guy x+$/), taskKey: "tA", limit: 5 }]);
+    expect((asked[0] as { query: string }).query.length).toBe(MAX_MEMORY_SEARCH_QUERY_CHARS);
+    // No plan: nothing is asked.
+    account.syncAllowed = false;
+    expect(await sync.search("tax guy", { limit: 5 })).toBeNull();
+    expect(asked).toHaveLength(1);
   });
 });

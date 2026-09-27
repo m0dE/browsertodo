@@ -10,7 +10,7 @@ import { buildFollowUpMessage } from "@browsertodo/core";
 import { buildFollowUpInstructions, isContinuableOutcome } from "../../continue.js";
 import { isContinuable, SessionEndedError, type Brain } from "../brains.js";
 import type { LocalStore } from "../local-store.js";
-import { mediaSources, type TurnJob } from "./jobs.js";
+import { mediaSources, withContext, type TurnJob } from "./jobs.js";
 import { isRestrictedUrl } from "../../restricted.js";
 import { approvalsLine, runConfig, userTabOf, type ActiveSession, type Cleanup, type TurnRunner } from "./turn.js";
 
@@ -63,8 +63,8 @@ export async function runNextTurn(
     if (page) userTab = userTabOf(page, picked);
   }
   if (active.forced) throw new Error(active.forced.reason);
-  // What the agent gets: what the user's tab shows, then the message (for an empty one: look at the page again).
-  const message = { text: job.text, ...(job.screen ? { screenHelp: true } : {}) };
+  // What the agent gets: what the user's tab shows, then the message with its context (for an empty one: look at the page again).
+  const message = { text: withContext(job.text, job.context), ...(job.screen ? { screenHelp: true } : {}) };
   // What waits for the user's approval this turn (the level may have changed since the last one).
   const approvals = approvalsLine(settings, active.scheduled);
   // The conversation's own task (a TODO or cloud task) keeps its run notes in memory; a chat has none.

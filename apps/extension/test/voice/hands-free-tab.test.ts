@@ -12,7 +12,6 @@ import {
   useThisTabLine,
   viewedTab,
   voiceKeyAction,
-  withLookingNote,
 } from "../../src/voice/hands-free-tab.js";
 import type { VoiceSessionView } from "../../src/voice-session.js";
 
@@ -89,13 +88,6 @@ describe("what the agent and the narrator are told while the user looks at anoth
     expect(lookingElsewhereNote(null, null)).toBe("The user is looking at another tab: another tab. You work in the tab where voice started.");
     expect(lookingElsewhereNote({ title: "", url: "chrome://newtab/" }, { title: "Shop A", url: null })).toBe("The user is looking at another tab: newtab. You work in Shop A.");
     expect(lookingHomeNote(shop)).toBe("The user is looking at Shop A (shop.example.com) again, the tab you work in.");
-  });
-
-  it("a message said meanwhile carries the note; on the session's tab it goes as said", () => {
-    expect(withLookingNote("What is on this page?", "The user is looking at another tab: B. You work in A.")).toBe(
-      "What is on this page?\n\n(The user is looking at another tab: B. You work in A.)",
-    );
-    expect(withLookingNote("What is on this page?", null)).toBe("What is on this page?");
   });
 
   it("hears 'use this tab' and its variants, not requests that mention a tab", () => {

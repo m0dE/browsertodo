@@ -43,7 +43,7 @@ import {
 } from "@browsertodo/shared";
 import { bytesToBase64 } from "../base64.js";
 import { REALTIME_NOT_AVAILABLE_NOTE } from "./engine-choice.js";
-import { floor, isNoise, moreImportant, type ReplyKind, type SpokenKind } from "./narrator-policy.js";
+import { floor, isNoise, moreImportant, repeatsRequest, type ForwardedRequest, type ReplyKind, type SpokenKind } from "./narrator-policy.js";
 
 /** PCM16 mono at this rate, both ways ("audio/pcm" is 24 kHz). */
 export const REALTIME_SAMPLE_RATE = 24_000;
@@ -77,6 +77,9 @@ export const NARRATOR_INSTRUCTIONS = [
 
 /** The one reply after send_to_agent, when the narrator did not speak before calling it. */
 export const ACKNOWLEDGE_INSTRUCTIONS = "Say one very short acknowledgement, a few words such as 'On it.', and nothing else.";
+
+/** The narrator's answer to a send_to_agent that passes on the request just sent again (repeatsRequest): it is not sent twice. */
+export const ALREADY_SENT_OUTPUT = "Already sent to the agent: it was not sent again. Its updates will follow.";
 
 /** The narrator's tools (function tools only: the relay refuses others). */
 export const NARRATOR_TOOLS = [
@@ -329,6 +332,8 @@ export class RealtimeClient {
   private askedAt: number | null = null;
   private reply: Reply | null = null;
   private readonly inputTimes = new Map<string, InputTiming>();
+  /** The request last passed on (send_to_agent), answered to the narrator once `answered` settles. */
+  private forwarded: (ForwardedRequest & { answered: Promise<void> }) | null = null;
 
   constructor(private readonly opts: RealtimeClientOptions) {}
 
@@ -426,7 +431,8 @@ export class RealtimeClient {
     if (kind === "ack" && this.spoke) return;
     this.askedAt = Date.now();
     this.askedKind = kind;
-    this.send(kind === "ack" ? { type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS } } : { type: "response.create" });
+    // The acknowledgement only speaks: with tools off for it (tool_choice "none"), it cannot pass the request on again.
+    this.send(kind === "ack" ? { type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS, tool_choice: "none" } } : { type: "response.create" });
   }
 
   /** The line waiting for the floor, if the floor is free now. */
@@ -634,7 +640,7 @@ export class RealtimeClient {
         break;
       case "response.function_call_arguments.done":
         this.writingCall = false;
-        void this.runTool(str("call_id"), str("name"), str("arguments"), this.replyInput);
+        void this.runTool(str("call_id"), str("name"), str("arguments"), this.replyInput, this.reply?.kind ?? null);
         break;
       case REALTIME_ERROR_EVENT: {
         const parsed = RealtimeErrorEvent.safeParse(ev);
@@ -652,8 +658,8 @@ export class RealtimeClient {
     }
   }
 
-  private async runTool(callId: string, name: string, rawArgs: string, inputId: string | null): Promise<void> {
-    let output: string;
+  /** replyKind: what the reply making the call is (null: not known). */
+  private async runTool(callId: string, name: string, rawArgs: string, inputId: string | null, replyKind: ReplyKind | null): Promise<void> {
     let args: Record<string, unknown> | null = null;
     try {
       const parsed: unknown = JSON.parse(rawArgs || "{}");
@@ -661,6 +667,18 @@ export class RealtimeClient {
     } catch {
       args = null;
     }
+    const request = name === "send_to_agent" && typeof args?.text === "string" ? args.text.trim() : "";
+    const earlier = this.forwarded;
+    if (request && earlier && repeatsRequest(request, inputId, earlier)) {
+      // The same request again (one turn, or a reply of ours): not sent twice, nothing more said; answered after the first.
+      await earlier.answered;
+      this.send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: ALREADY_SENT_OUTPUT } });
+      return;
+    }
+    let answered = () => {};
+    // Held before the first await: a repeat in the same reply arrives while this one runs.
+    if (request) this.forwarded = { inputId, text: request, answered: new Promise<void>((r) => (answered = r)) };
+    let output: string;
     if (!TOOL_NAMES.has(name)) output = `Error: unknown tool ${name}`;
     else if (!args) output = "Error: the arguments are not valid JSON";
     else {
@@ -671,13 +689,16 @@ export class RealtimeClient {
       }
     }
     this.send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output } });
+    answered();
     // Talked over while it wrote the call: the call ran, the rest of the reply is not wanted (the user has the floor).
     if (this.cancelAfterCall && this.responding && !this.writingCall) {
       this.cancelAfterCall = false;
       this.send({ type: "response.cancel" });
     }
-    // Tool first, then at most one short acknowledgement (none when the narrator already spoke in that reply).
-    this.requestReply(name === "send_to_agent" ? "ack" : "result");
+    // Tool first, then at most one short acknowledgement (none when the narrator already spoke in that reply, and
+    // never for a call the acknowledgement itself made: that would acknowledge the acknowledgement).
+    if (name !== "send_to_agent") this.requestReply("result");
+    else if (replyKind !== "ack") this.requestReply("ack");
   }
 
   /**

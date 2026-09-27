@@ -266,3 +266,39 @@ describe("a task's records (remember and recall with a key)", () => {
     await expect(memory.handle({ type: "memory.syncChoice", add: true })).rejects.toThrow(/does not sync/);
   });
 });
+
+describe("the account's semantic search", () => {
+  const paulFact = { kind: "person" as const, subject: "Paul Lee", text: "Paul Lee files the yearly return.", scope: "global" as const };
+
+  it("adds meaning to what a turn is given and to recall, with the turn's task and the clock's time zone", async () => {
+    const asked: { query: string; taskKey: string | null }[] = [];
+    const semantic = new MemoryService({
+      store,
+      sessions,
+      settings: async () => settings,
+      now: () => new Date(NOW),
+      semantic: async (query, taskKey) => {
+        asked.push({ query, taskKey });
+        const [paul] = await store.list();
+        return new Map([[paul!.id, 0.8]]);
+      },
+    });
+    await store.put(paulFact, { kind: "user" });
+    // "my tax guy" shares no word with the entry: only meaning finds it.
+    expect((await semantic.begin("chat", { title: "tax", request: "Who is my tax guy?" }))?.text).toContain("Paul Lee");
+    expect((await semantic.tool("chat", "recall", { query: "tax guy" })).text).toContain("Paul Lee");
+    expect(asked).toEqual([
+      { query: "Who is my tax guy?", taskKey: null },
+      { query: "tax guy", taskKey: null },
+    ]);
+    await semantic.begin("run1", { task: DAILY, title: DAILY.instructions, request: DAILY.instructions });
+    expect(asked.at(-1)!.taskKey).toBe(memoryTaskKey(DAILY.instructions, DAILY.account));
+  });
+
+  it("a failed search never stops a turn: words, entities and time go on alone", async () => {
+    const failing = new MemoryService({ store, sessions, settings: async () => settings, semantic: async () => Promise.reject(new Error("offline")) });
+    await store.put(paulFact, { kind: "user" });
+    expect(await failing.begin("chat", { title: "tax", request: "Who is my tax guy?" })).toBeUndefined();
+    expect((await failing.begin("chat", { title: "Paul", request: "Email Paul Lee" }))?.text).toContain("Paul Lee");
+  });
+});

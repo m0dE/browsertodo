@@ -31,7 +31,7 @@ import { ActiveSessions, pauseUrlStop, stopOf } from "./run/active.js";
 import { CONTINUE_TEXT, continueRefusal } from "./run/conversation.js";
 import { DueLoop } from "./run/due-loop.js";
 import { FailurePolicy } from "./run/failure-policy.js";
-import { turnJob, type AdhocInput, type FirstJob, type RunnerApi, type TurnJob } from "./run/jobs.js";
+import { turnJob, withContext, type AdhocInput, type FirstJob, type RunnerApi, type TurnJob } from "./run/jobs.js";
 import { Lifecycle, type RunBrain } from "./run/lifecycle.js";
 import { ResultRecorder } from "./run/record.js";
 import { KeepAlive, RunnerStateStore, type RunnerState } from "./run/state.js";
@@ -140,7 +140,9 @@ export class Runner {
       ...(deps.episodes ? { episodes: deps.episodes } : {}),
       nextTurn: (sessionId, messages) => {
         const text = messages.map((m) => m.text).join("\n\n");
-        this.message(sessionId, text, messages.some((m) => m.voice) ? { voice: true } : {}).catch((err: unknown) =>
+        // The latest context holds (where the user looks now).
+        const context = [...messages].reverse().find((m) => m.context)?.context;
+        this.message(sessionId, text, { ...(messages.some((m) => m.voice) ? { voice: true } : {}), ...(context ? { context } : {}) }).catch((err: unknown) =>
           this.log(`the next turn of ${sessionId} (messages sent while it closed) did not start: ${errorMessage(err)}`),
         );
       },
@@ -270,25 +272,34 @@ export class Runner {
    * one goes on with "look at the page now and continue". A running turn is
    * already looking: it takes typed messages only.
    * cid: the side panel's correlation id for the message (its timings join the turn it went to).
+   * context: told to the agent with the message, never shown as the user's words (see withContext).
    */
   async message(
     sessionId: string | null | undefined,
     text: string,
-    opts: { tabId?: number; screen?: boolean; voice?: boolean; cid?: string; memoryOff?: boolean } = {},
+    opts: { tabId?: number; screen?: boolean; voice?: boolean; cid?: string; memoryOff?: boolean; context?: string } = {},
   ): Promise<{ sessionId: string; mode: MessageMode }> {
     const screen = !!opts.screen && !text.trim();
     const t = screen ? SCREEN_HELP_TEXT : text.trim();
     if (!t) throw new Error("The message is empty");
     const tab = opts.tabId === undefined ? {} : { tabId: opts.tabId };
     const voice = !screen && !!opts.voice;
+    const context = screen ? undefined : opts.context?.trim() || undefined;
     if (!sessionId) {
-      const input: AdhocInput = { instructions: t, ...tab, ...(screen ? { screen } : {}), ...(voice ? { voice } : {}), ...(opts.memoryOff ? { memoryOff: true } : {}) };
+      const input: AdhocInput = {
+        instructions: t,
+        ...tab,
+        ...(screen ? { screen } : {}),
+        ...(voice ? { voice } : {}),
+        ...(context ? { context } : {}),
+        ...(opts.memoryOff ? { memoryOff: true } : {}),
+      };
       return { ...(await this.runAdhoc(input, opts.cid)), mode: "new" };
     }
     if (this.live.has(sessionId)) {
       if (screen) throw new Error("The agent is working on this page already; type a message, or Stop it first");
       if (opts.cid) this.deps.sessions.linkTrace(sessionId, opts.cid);
-      const mode = await this.deliver(t, sessionId, { voice });
+      const mode = await this.deliver(t, sessionId, { voice, ...(context ? { context } : {}) });
       if (!mode) throw new Error("The agent did not take the message");
       if (opts.tabId !== undefined && mode === "inject") await this.turns.bindChat(opts.tabId, sessionId);
       return { sessionId, mode };
@@ -299,7 +310,7 @@ export class Runner {
       await starting.catch(() => undefined);
       return this.message(sessionId, text, opts);
     }
-    const started = this.startOne(sessionId, () => turnJob(this.deps, sessionId, t, { screen, voice, ...tab }), opts.cid);
+    const started = this.startOne(sessionId, () => turnJob(this.deps, sessionId, t, { screen, voice, ...(context ? { context } : {}), ...tab }), opts.cid);
     this.startingTurns.set(sessionId, started);
     try {
       await started;
@@ -369,23 +380,25 @@ export class Runner {
    * while it starts), or, once the run is over and the session is closing, into its next turn ("turn", which
    * starts when the session has ended). Null: no such session, or the run refused it.
    */
-  private async deliver(text: string, sessionId: string | undefined, opts: { voice?: boolean }): Promise<"inject" | "turn" | null> {
+  private async deliver(text: string, sessionId: string | undefined, opts: { voice?: boolean; context?: string }): Promise<"inject" | "turn" | null> {
     const a = sessionId ? this.live.get(sessionId) : this.live.last();
     const t = text.trim();
     if (!a || !t) return null;
     const voice = !!opts.voice;
     if (!a.run && a.runOver) {
       // The next turn shows it as its own message.
-      a.nextTurn.push({ text: t, voice });
+      a.nextTurn.push({ text: t, voice, ...(opts.context ? { context: opts.context } : {}) });
       return "turn";
     }
+    // The chat shows the user's words; the agent gets them with their context.
     this.turns.emit(a, { type: "user_message", text: t, ...(voice ? { voice: true as const } : {}) });
+    const told = withContext(t, opts.context);
     if (!a.run) {
-      a.waiting.push(t);
+      a.waiting.push(told);
       return "inject";
     }
-    a.said.push(t);
-    return (await a.run.sendUserMessage(t)) ? "inject" : null;
+    a.said.push(told);
+    return (await a.run.sendUserMessage(told)) ? "inject" : null;
   }
 
   async pauseSchedule(reason?: string): Promise<void> {

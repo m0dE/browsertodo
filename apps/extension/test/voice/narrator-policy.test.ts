@@ -18,6 +18,7 @@ import {
   narrationOf,
   NARRATOR_MILESTONE_GAP_MS,
   NOISE_MAX_SPEECH_MS,
+  repeatsRequest,
   type Floor,
 } from "../../src/voice/narrator-policy.js";
 import { ACKNOWLEDGE_INSTRUCTIONS, NARRATOR_INSTRUCTIONS, type RealtimeSocketLike } from "../../src/voice/realtime-client.js";
@@ -205,7 +206,7 @@ describe("one reply per spoken request (the owner's report)", () => {
         t.engine.tick(T0 + ms);
         t.serve();
       }
-      expect(t.creates()).toEqual([{ type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS } }]);
+      expect(t.creates()).toEqual([{ type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS, tool_choice: "none" } }]);
       expect(t.words).toEqual(["Check my inbox."]);
       // The result is news: it is said, once.
       t.engine.agentEvent({ type: "task_end", outcome: "done", summary: "Summarized", spoken: "You have 3 new emails; one is from your accountant." }, T0 + 40_000);
@@ -314,5 +315,21 @@ describe("the owner's trace of 2026-09-27", () => {
     expect(t.creates()).toHaveLength(0);
     t.s.event({ type: "response.done", response: { id: "r0", status: "cancelled" } });
     expect(t.creates()).toEqual([{ type: "response.create" }]);
+  });
+});
+
+describe("repeatsRequest: a request passed on again goes to the agent once", () => {
+  const last = { inputId: "in1", text: "Resume from where I left off." };
+
+  it("the same or nearly the same words in the same turn, or in a reply we asked for (no new words of the user's)", () => {
+    expect(repeatsRequest("Resume from where I left off.", "in1", last)).toBe(true);
+    expect(repeatsRequest("resume from where I left off", null, last)).toBe(true);
+    expect(repeatsRequest("Please resume from where I left off", "in1", last)).toBe(true);
+  });
+
+  it("not another request in the same turn, the same words in a new turn, or nothing sent yet", () => {
+    expect(repeatsRequest("And then open my calendar for tomorrow.", "in1", last)).toBe(false);
+    expect(repeatsRequest("Resume from where I left off.", "in2", last)).toBe(false);
+    expect(repeatsRequest("Resume from where I left off.", "in1", null)).toBe(false);
   });
 });

@@ -7,7 +7,7 @@
  * abort) its message history stays in memory, and continueWith(text) runs
  * the next turn on top of it, like a chat.
  */
-import { ANTHROPIC_MESSAGES_URL, delay, DeltaBatcher, errorMessage, OUT_OF_CREDIT, toolsFor, type AgentEvent, type RunConfig, type Sleep, type TaskRunResult, type ToolName } from "@browsertodo/shared";
+import { ANTHROPIC_MESSAGES_URL, delay, DeltaBatcher, errorMessage, OUT_OF_CREDIT, stopwatch, toolsFor, traceText, type AgentEvent, type RunConfig, type Sleep, type TaskRunResult, type ToolName, type TraceDraft } from "@browsertodo/shared";
 import type { AgentSession, ApiAgentOptions } from "./types.js";
 import { createToolExecutor } from "./executor.js";
 import { agentError, CLAUDE_DECLINED, ENDED_WITHOUT_RESULT } from "./failures.js";
@@ -21,6 +21,7 @@ import {
   type ContentBlock,
   type MessageParam,
   type MessagesResponse,
+  type PostResult,
   type TextBlock,
   type ToolResultBlock,
   type ToolUseBlock,
@@ -43,6 +44,67 @@ export const MAX_IMAGES_IN_HISTORY = 3;
 export const KEY_REJECTED = "Claude API key rejected";
 /** Result text for tool calls a stopped turn never ran, so the history stays valid for the next turn. */
 export const NOT_RUN = "Not run: the turn was stopped before this tool ran.";
+
+/**
+ * One Messages request as the trace sees it: when the response started
+ * (headers), the stream's first and last text delta and how many there were,
+ * and at the end its span (outcome, stop reason, tokens). The deltas still go
+ * to the chat (`onDelta`); only counts are kept.
+ */
+function startModelCall(streaming: boolean, doFetch: typeof fetch, onDelta: (id: string, text: string) => void) {
+  const t = Date.now();
+  const took = stopwatch();
+  let headersMs: number | undefined;
+  let firstTextMs: number | undefined;
+  let lastTextMs: number | undefined;
+  let deltas = 0;
+  return {
+    fetch: (async (input, init) => {
+      const res = await doFetch(input, init);
+      headersMs = took();
+      return res;
+    }) as typeof fetch,
+    stream: streaming
+      ? {
+          onText: (messageId: string, index: number, text: string) => {
+            lastTextMs = took();
+            firstTextMs ??= lastTextMs;
+            deltas++;
+            onDelta(`${messageId}:${index}`, text);
+          },
+        }
+      : undefined,
+    span(r: PostResult, extra: { model: string; attempt: number; messages: number }): TraceDraft {
+      const data: NonNullable<TraceDraft["data"]> = { ...extra, result: r.kind, streamed: streaming };
+      if (headersMs !== undefined) data.responseMs = headersMs;
+      if (firstTextMs !== undefined) data.firstTextMs = firstTextMs;
+      if (lastTextMs !== undefined) data.lastTextMs = lastTextMs;
+      if (deltas) data.deltas = deltas;
+      if (r.kind === "ok") {
+        const m = r.message;
+        if (m.stop_reason) data.stop = m.stop_reason;
+        const content = Array.isArray(m.content) ? m.content : [];
+        data.toolUses = content.filter((b) => b.type === "tool_use").length;
+        Object.assign(data, usageOf(m.usage));
+      } else data.reason = traceText(r.reason);
+      return { t, ms: took(), cat: "model", name: "model.call", data };
+    },
+  };
+}
+
+/** Token counts of a Messages usage object (missing ones left out). */
+export function usageOf(usage: Record<string, unknown> | undefined): Record<string, number> {
+  const out: Record<string, number> = {};
+  const pick = (from: string, to: string) => {
+    const v = usage?.[from];
+    if (typeof v === "number" && Number.isFinite(v)) out[to] = v;
+  };
+  pick("input_tokens", "inTokens");
+  pick("output_tokens", "outTokens");
+  pick("cache_read_input_tokens", "cacheReadTokens");
+  pick("cache_creation_input_tokens", "cacheWriteTokens");
+  return out;
+}
 
 export interface ApiAgentInternals {
   /** Delays between retries of one request. Default 1 s, 3 s, 9 s. */
@@ -82,7 +144,13 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
     }
   });
   const emit = (e: AgentEvent) => batcher.emit(e);
-  const streamText = streaming ? { onText: (messageId: string, index: number, text: string) => batcher.delta(`${messageId}:${index}`, text) } : undefined;
+  const trace = (e: TraceDraft) => {
+    try {
+      opts.onTrace?.(e);
+    } catch {
+      /* listeners must not break the loop */
+    }
+  };
 
   /** The running turn's task_* result sink (the executor is shared by every turn). */
   let onTaskEnd: (r: TaskRunResult) => void = () => {};
@@ -94,6 +162,7 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
     onTaskEnd: (r) => onTaskEnd(r),
     mediaPaths: opts.mediaPaths,
     sleep,
+    ...(opts.onTrace ? { onTrace: trace } : {}),
   });
 
   const tools = toolsFor();
@@ -172,8 +241,10 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
     const request = async (): Promise<MessagesResponse | null> => {
       const body = buildRequest({ model: opts.model, system, tools, messages, jev: jevOn });
       for (let attempt = 0; ; attempt++) {
-        const r = await postMessages(doFetch, opts.apiKey, body, controller.signal, transport, streamText);
+        const call = startModelCall(streaming, doFetch, (id, text) => batcher.delta(id, text));
+        const r = await postMessages(call.fetch, opts.apiKey, body, controller.signal, transport, call.stream);
         batcher.flush();
+        trace(call.span(r, { model: opts.model, attempt: attempt + 1, messages: messages.length }));
         if (ended) return null;
         if (r.kind === "ok") return r.message;
         if (r.kind === "credit") {
@@ -203,7 +274,10 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
         }
         const wait = retryWaitMs(attempt, delays, r.retryAfterMs, random);
         emit({ type: "status", text: `${r.reason}; retrying in ${Math.max(1, Math.round(wait / 1000))} s` });
+        const t = Date.now();
+        const waited = stopwatch();
         await sleep(wait);
+        trace({ t, ms: waited(), cat: "model", name: "model.wait", data: { attempt: attempt + 1, planMs: wait, serverAsked: r.retryAfterMs !== undefined } });
         if (ended) return null;
       }
     };

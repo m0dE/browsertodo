@@ -5,7 +5,8 @@
  * text, tool calls, results and Jev decisions, and what hands-free voice said
  * aloud, shown playing while it is said; with Realtime voice the user's own
  * words take the place of the request the narrator sent for them), its
- * action bar (New chat | Show tab) and, while conversations of
+ * action bar (New chat | Show tab | Raw: the conversation with its timings,
+ * raw-view.ts, in place of the log until Back to chat) and, while conversations of
  * other tabs run, one chip each to switch to their tab. Which conversation
  * that is comes from sidepanel.ts (see tab-chat.ts); past runs live in the
  * Activity log tab (history.ts).
@@ -35,6 +36,8 @@ import { placeEvent, pruneContinue, renderEvent, renderOpening, renderSessionHea
 import { LiveTexts } from "./live-text.js";
 import { MarkdownView } from "./markdown.js";
 import { renderSwitcher } from "./session-switcher.js";
+import { initRawView } from "./raw-view.js";
+import type { ReportEnv } from "../trace/trace-report.js";
 import { otherRunning } from "./tab-chat.js";
 
 export interface ChatView {
@@ -68,6 +71,8 @@ export interface ChatOptions {
   onDetails?(session: SessionInfo, trigger: HTMLElement): void;
   /** The new chat's link to set a shortcut (chrome://extensions/shortcuts), when none is set. */
   onShortcuts?(): void;
+  /** What the panel knows about voice, for the Raw view's export. */
+  voiceEnv?(): ReportEnv["voice"];
 }
 
 /** The panel's keyboard shortcuts as the user reads them ("Ctrl+.", "Ctrl+,"); null: Chrome assigned none. */
@@ -93,6 +98,21 @@ export function initChat(opts: ChatOptions = {}): ChatView {
   const switcher = $("chat-switch");
   const newBtn = $<HTMLButtonElement>("chat-new");
   const showBtn = $<HTMLButtonElement>("chat-show");
+  const rawBtn = $<HTMLButtonElement>("chat-raw-btn");
+  const rawHost = $("chat-raw");
+  const raw = initRawView(rawHost, { voiceEnv: () => opts.voiceEnv?.(), onBack: () => setRaw(false) });
+
+  /** Raw in place of the log (true), or the log (false). */
+  function setRaw(on: boolean): void {
+    const id = on ? shownId : null;
+    if (id) raw.open(id);
+    else raw.close();
+    rawHost.hidden = !id;
+    log.hidden = !!id;
+    rawBtn.setAttribute("aria-pressed", String(!!id));
+    if (!id) updateSwitcher();
+    else head.hidden = true;
+  }
 
   /** The id of the conversation shown (set at once), and its info once known. */
   let shownId: string | null = null;
@@ -112,6 +132,7 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     const a = chatActions(current, new Set(runningList.map((s) => s.sessionId)));
     setBarAction(newBtn, a.newChat);
     setBarAction(showBtn, a.showTab);
+    setBarAction(rawBtn, a.raw);
   }
 
   /** Text Claude is still writing, and its elements while its conversation is shown. */
@@ -291,7 +312,7 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     const others = otherRunning(runningList, shownId);
     switcher.hidden = !others.length;
     if (others.length) renderSwitcher(switcher, others, (s) => opts.onSwitch?.(s));
-    head.hidden = !others.length;
+    head.hidden = !others.length || raw.shown !== null;
   }
 
   function render(): void {
@@ -389,6 +410,10 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     if (!usable(showBtn) || !s) return;
     void busy(showBtn, () => uiRequest({ type: "agent.show", sessionId: s.sessionId }), appendError);
   });
+  rawBtn.addEventListener("click", () => {
+    if (!usable(rawBtn) || !shownId) return;
+    setRaw(raw.shown === null);
+  });
 
   render();
   ready = true;
@@ -407,6 +432,7 @@ export function initChat(opts: ChatOptions = {}): ChatView {
       updateBar();
     },
     onEvent(ev) {
+      raw.touched(ev.sessionId);
       if (ev.type === "assistant_text_delta") {
         live.add(ev);
         if (shownId && ev.sessionId === shownId) paintLive();
@@ -419,6 +445,7 @@ export function initChat(opts: ChatOptions = {}): ChatView {
       }
     },
     onSession(s) {
+      raw.touched(s.sessionId);
       if (s.sessionId !== shownId) return;
       current = s;
       refreshHead(current);
@@ -428,6 +455,8 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     },
     show(sessionId) {
       if (sessionId === shownId) return;
+      // Raw shows one conversation: another one on screen goes back to its chat.
+      if (raw.shown !== null) setRaw(false);
       // Events of the conversation that was shown stay available if it comes back.
       if (shownId) buffered = [...buffered, ...events].slice(-MAX_BUFFERED_EVENTS);
       shownId = sessionId;

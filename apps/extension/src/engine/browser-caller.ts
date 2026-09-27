@@ -1,4 +1,4 @@
-import type { BrowserCallContext, BrowserMethod, BrowserMethods } from "@browsertodo/shared";
+import { errorMessage, traceStart, traceText, type BrowserCallContext, type BrowserMethod, type BrowserMethods, type TraceValue } from "@browsertodo/shared";
 import type { BrowserCaller } from "@browsertodo/core";
 import type { HelperPeer } from "../helper-link.js";
 
@@ -65,4 +65,61 @@ function serve<M extends BrowserMethod>(peer: HelperPeer, method: M, browserFor:
     const { sessionId, ...rest } = (params ?? {}) as BrowserMethods[M]["params"] & BrowserCallContext;
     return browserFor(typeof sessionId === "string" && sessionId ? sessionId : undefined).call(method, rest as BrowserMethods[M]["params"]);
   });
+}
+
+/** What a browser call's trace records: the method, its duration and what it returned (sizes, not content). */
+export type BrowserCallTrace = (call: { method: BrowserMethod; t: number; ms: number; data: Record<string, TraceValue> }) => void;
+
+/**
+ * `inner` with every call timed for the trace: the method, how long it took,
+ * which driver served it (the debugger, or the fallback), and the size of
+ * what came back (a page snapshot's elements and text, a screenshot's KB);
+ * never page content.
+ */
+export function tracedBrowser(inner: BrowserCaller, driverMode: () => "cdp" | "fallback", record: BrowserCallTrace): BrowserCaller {
+  return {
+    call: async (method, params) => {
+      const span = traceStart();
+      const data: Record<string, TraceValue> = {};
+      try {
+        const r = await inner.call(method, params);
+        Object.assign(data, resultSize(method, r));
+        return r;
+      } catch (err) {
+        data.error = traceText(errorMessage(err), 160);
+        throw err;
+      } finally {
+        data.driver = driverMode();
+        record({ method, t: span.t, ms: span.elapsed(), data });
+      }
+    },
+  };
+}
+
+function resultSize(method: BrowserMethod, r: unknown): Record<string, TraceValue> {
+  const o = (r && typeof r === "object" ? r : {}) as Record<string, unknown>;
+  switch (method) {
+    case "browser.readPage": {
+      const els = Array.isArray(o.elements) ? (o.elements as { name?: unknown; text?: unknown }[]) : [];
+      // Roughly what the snapshot carries: its elements' names and texts (the format adds a little).
+      const chars = els.reduce((n, e) => n + (typeof e.name === "string" ? e.name.length : 0) + (typeof e.text === "string" ? e.text.length : 0), 0);
+      return { elements: els.length, chars };
+    }
+    case "browser.screenshot":
+      return typeof o.base64 === "string" ? { kb: Math.round((o.base64.length * 3) / 4 / 1024) } : {};
+    case "browser.navigate":
+      return typeof o.url === "string" ? { host: hostOf(o.url) } : {};
+    case "browser.openTabs":
+      return Array.isArray(o.tabs) ? { tabs: o.tabs.length } : {};
+    default:
+      return {};
+  }
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
 }

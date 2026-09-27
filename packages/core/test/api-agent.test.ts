@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentEvent, RunConfig } from "@browsertodo/shared";
+import type { AgentEvent, RunConfig, TraceDraft } from "@browsertodo/shared";
 import { MAX_RETRY_AFTER_MS, RETRY_JITTER, retryWaitMs, startApiAgentWith } from "../src/api-agent.js";
 import { retryAfterMs } from "../src/anthropic.js";
 import { ENDED_WITHOUT_RESULT } from "../src/failures.js";
@@ -28,6 +28,7 @@ function start(
     browser?: BrowserCaller;
     /** Jitter source; default 0.5, which is no jitter. */
     random?: () => number;
+    onTrace?: ApiAgentOptions["onTrace"];
   } = {},
 ) {
   const server = fakeMessagesServer(replies);
@@ -43,6 +44,7 @@ function start(
     jev: over.jev === undefined ? null : over.jev,
     onEvent,
     fetch: server.fetchImpl,
+    ...(over.onTrace ? { onTrace: over.onTrace } : {}),
   };
   const session = startApiAgentWith(opts, { sleep: over.sleep ?? noSleep, retryDelaysMs: over.delays ?? [1000, 3000, 9000], random: over.random ?? (() => 0.5) });
   return { session, server, events };
@@ -233,6 +235,25 @@ describe("startApiAgent", () => {
     expect(await session.done).toMatchObject({ outcome: "done" });
     expect(waits).toEqual([1000, 3000, 9000]);
     expect(server.served).toBe(4);
+  });
+
+  it("traces each Messages request (attempt, outcome, tokens) and each retry wait, and the tools between", async () => {
+    const traces: TraceDraft[] = [];
+    const done = msg(tool("task_complete", { summary: "ok" }));
+    // Streamed: input usage from message_start, the output count from the final message_delta (the fake says 10).
+    (done.body as Record<string, unknown>).usage = { input_tokens: 12, output_tokens: 34, cache_read_input_tokens: 5000, cache_creation_input_tokens: 700 };
+    const { session } = start(new FakeX(), [{ status: 529 }, msg(tool("read_page")), done], { onTrace: (e) => traces.push(e) });
+    expect(await session.done).toMatchObject({ outcome: "done" });
+    const calls = traces.filter((e) => e.name === "model.call");
+    expect(calls.map((e) => [e.data?.attempt, e.data?.result])).toEqual([
+      [1, "transient"],
+      [2, "ok"],
+      [1, "ok"],
+    ]);
+    expect(calls[2]!.data).toMatchObject({ model: "claude-sonnet-5", stop: "tool_use", toolUses: 1, inTokens: 12, outTokens: 10, cacheReadTokens: 5000, cacheWriteTokens: 700 });
+    for (const c of calls) expect(typeof c.ms).toBe("number");
+    expect(traces.filter((e) => e.name === "model.wait").map((e) => e.data)).toEqual([{ attempt: 1, planMs: 1000, serverAsked: false }]);
+    expect(traces.filter((e) => e.name === "tool").map((e) => e.data?.tool)).toEqual(["read_page", "task_complete"]);
   });
 
   it("waits as long as the server's retry-after-ms / retry-after says (capped), else the backoff with jitter", async () => {

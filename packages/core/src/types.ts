@@ -15,6 +15,7 @@ import type {
   TaskRunResult,
   ToolName,
   ToolResult,
+  TraceDraft,
 } from "@browsertodo/shared";
 import type { SecretRedactor } from "./redact.js";
 
@@ -67,6 +68,11 @@ export interface ToolExecutorOptions {
   secrets?: SecretRedactor;
   /** For tests. Default: real setTimeout. */
   sleep?: Sleep;
+  /**
+   * The conversation's timing trace: one "tool" span per call (duration,
+   * result size) and one "act.step" span per act step. Redacted like events.
+   */
+  onTrace?: (e: TraceDraft) => void;
 }
 
 export interface ToolExecutor {
@@ -130,6 +136,12 @@ export interface ApiAgentOptions {
    * paused with reason OUT_OF_CREDIT ("Out of usage credit").
    */
   onOutOfCredit?(info: { message: string; topupUrl?: string }): void;
+  /**
+   * The conversation's timing trace: each Messages request (duration, time to
+   * the response and to the first text, stream deltas, tokens, retries and
+   * waits), and the tool executor's spans.
+   */
+  onTrace?: (e: TraceDraft) => void;
 }
 
 export type FailureKind = "transient" | "permanent";

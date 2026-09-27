@@ -60,6 +60,7 @@ export class TaskSession {
       jev: opts.jev,
       jevThreshold: opts.jevThreshold,
       onEvent: (e) => this.emit(e),
+      onTrace: (trace) => this.emit({ type: "trace", trace: { ...trace, src: "helper" } }),
       onTaskEnd: (r) => this.recordFinish(r),
       mediaPaths: opts.mediaPaths,
       secrets: opts.secrets,
@@ -76,8 +77,8 @@ export class TaskSession {
   emit(raw: AgentEvent): void {
     const e = this.opts.secrets.redact(raw);
     if (e.type === "error" && this.turn) this.turn.lastError = e.text;
-    // Live text deltas only go to the chat; the run log keeps the final text.
-    if (e.type !== "assistant_text_delta") this.log.event({ ...e });
+    // Live text deltas and timings only go to the extension; the run log keeps the final text.
+    if (e.type !== "assistant_text_delta" && e.type !== "trace") this.log.event({ ...e });
     try {
       this.opts.notify(this.sessionId, e);
     } catch {

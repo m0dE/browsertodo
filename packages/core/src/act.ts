@@ -11,7 +11,7 @@
  * (once). The batch stops at the first step Jev is not sure about and
  * returns candidates for that step only, so the model can pick one.
  */
-import { errorMessage, type AgentEvent, type BrowserMethod, type BrowserMethods, type ElementInfo, type ElementPicks, type PageSnapshot, type Sleep, type ToolArgsOf, type ToolResult } from "@browsertodo/shared";
+import { errorMessage, stopwatch, traceStart, traceText, type AgentEvent, type BrowserMethod, type BrowserMethods, type ElementInfo, type ElementPicks, type PageSnapshot, type Sleep, type ToolArgsOf, type ToolResult, type TraceDraft } from "@browsertodo/shared";
 import { OutOfCreditError } from "./api-errors.js";
 import type { JevDecision, JevLike } from "./types.js";
 import { formatCompact, formatElement, formatSnapshot } from "./page-format.js";
@@ -58,6 +58,21 @@ export interface ActContext {
   outOfCredit: (e: OutOfCreditError) => ToolResult;
   /** Default: a fresh gate (nothing pending). */
   gate?: ActGate;
+  /** One "act.step" span per step: its parts (reading the page, Jev, the action and the settle wait). */
+  trace?: (e: TraceDraft) => void;
+}
+
+/** What one act step spent its time on, and who picked its element. */
+interface StepTiming {
+  readMs: number;
+  /** The click or typing and the settle wait after it. */
+  performMs: number;
+  jevMs?: number;
+  picker?: "jev" | "claude";
+  confidence?: number;
+  operation?: string;
+  /** False when the batch stopped at this step. */
+  ran: boolean;
 }
 
 const STOP_WORDS = new Set(["the", "a", "an", "to", "of", "in", "on", "into", "and", "or", "for", "with", "this", "that", "it", "its", "click", "press", "type", "enter", "open", "field", "box"]);
@@ -135,17 +150,43 @@ function checkIndexSteps(steps: Step[], offered: Map<string, Set<number>>): stri
   ].join("\n");
 }
 
+/** The trace of one act step. */
+function stepSpan(span: { t: number; elapsed: () => number }, n: number, goal: string, s: StepTiming): TraceDraft {
+  const data: NonNullable<TraceDraft["data"]> = { step: n, goal: traceText(goal, 120), readMs: Math.round(s.readMs), performMs: Math.round(s.performMs), ran: s.ran };
+  if (s.picker) data.picker = s.picker;
+  if (s.jevMs !== undefined) data.jevMs = s.jevMs;
+  if (s.confidence !== undefined) data.confidence = Math.round(s.confidence * 100) / 100;
+  if (s.operation) data.operation = s.operation;
+  return { t: span.t, ms: span.elapsed(), cat: "act", name: "act.step", data };
+}
+
 export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult> {
   const { browser, jev, sleep, emit } = ctx;
   const gate = ctx.gate ?? createActGate();
   const jevOn = jev !== null;
-  const readPage = () => browser("browser.readPage", {});
+  let timing: StepTiming = { readMs: 0, performMs: 0, ran: false };
+  const readPage = async () => {
+    const took = stopwatch();
+    try {
+      return await browser("browser.readPage", {});
+    } finally {
+      timing.readMs += took();
+    }
+  };
   const pageText = async () => formatSnapshot(await readPage(), { words: jevOn });
   /**
    * Does the step on the element, then lets the page settle: sets a checkbox (checked), fills a field
    * or chooses a dropdown's option (text), else clicks. Returns what was done, as "<verb> ELEMENT<after>".
    */
   const perform = async (index: number, step: Step): Promise<{ did: string; after: string }> => {
+    const took = stopwatch();
+    try {
+      return await performStep(index, step);
+    } finally {
+      timing.performMs += took();
+    }
+  };
+  const performStep = async (index: number, step: Step): Promise<{ did: string; after: string }> => {
     if (step.checked !== undefined) {
       const r = await browser("browser.click", { index, checked: step.checked });
       await sleep(SETTLE_AFTER_TYPE_MS);
@@ -201,87 +242,98 @@ export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult
   for (let i = 0; i < steps.length; i++) {
     const n = i + 1;
     const step = steps[i]!;
-    const hasText = step.text !== undefined && step.text !== "";
-    const couldNotUse = async (index: number, e: unknown, d?: JevDecision) => stop(n, `"${step.goal}": could not use element [${index}]: ${errorMessage(e)}`, await readPage(), d);
-    if (step.index !== undefined) {
-      // The model knows the element (Jev off, or Jev was unsure about this step): run it directly.
-      try {
-        const { did, after } = await perform(step.index, step);
-        lines.push(`step ${n}: ${did} [${step.index}]${after} (picked by Claude)`);
-        gate.picks.claude++;
-      } catch (e) {
-        return couldNotUse(step.index, e);
-      }
-      continue;
-    }
-    if (!jev) return stop(n, `"${step.goal}": the fast model is off, so every step needs an element index`, await readPage());
-    const snap = await readPage();
-    const started = Date.now();
-    let d: JevDecision;
+    const span = traceStart();
+    timing = { readMs: 0, performMs: 0, ran: false };
     try {
-      const input: Parameters<JevLike["decide"]>[0] = { goal: step.goal, snapshot: snap, typesText: hasText };
-      const previous = lines.at(-1);
-      if (previous) input.previousStep = previous;
-      d = await jev.decide(input);
-    } catch (e) {
-      emit({ type: "jev", goal: step.goal, operation: "error", index: null, confidence: 0, executed: false, ms: Date.now() - started });
-      if (e instanceof OutOfCreditError) {
-        const ended = ctx.outOfCredit(e);
-        return { ...ended, text: [...lines, `step ${n}: "${step.goal}": ${e.message}`, ended.text].join("\n") };
-      }
-      return stop(n, `"${step.goal}": Jev is unavailable (${errorMessage(e)})`, snap);
-    }
-    const ms = Date.now() - started;
-    const target = d.index === null ? undefined : snap.elements.find((e) => e.index === d.index);
-    const conf = `${d.operation}, confidence ${d.confidence.toFixed(2)}`;
-    const jevEvent = (executed: boolean, operation = d.operation) =>
-      emit({ type: "jev", goal: step.goal, operation, index: d.index, confidence: d.confidence, executed, ms });
-
-    if (d.operation === "blocked" || d.confidence < ctx.jevThreshold) {
-      jevEvent(false);
-      return stop(n, `"${step.goal}": ${conf}`, snap, d);
-    }
-    // Clicking or typing is decided by the step: a step with text types into the element Jev picked, one without clicks it.
-    let op = d.operation;
-    if ((op === "click" || op === "type") && target) op = hasText ? "type" : "click";
-    switch (op) {
-      case "click":
-      case "type": {
-        if (!target) {
-          jevEvent(false);
-          return stop(n, `"${step.goal}": ${conf}, but element [${d.index}] does not exist`, snap, d);
-        }
-        let done: { did: string; after: string };
+      const hasText = step.text !== undefined && step.text !== "";
+      const couldNotUse = async (index: number, e: unknown, d?: JevDecision) => stop(n, `"${step.goal}": could not use element [${index}]: ${errorMessage(e)}`, await readPage(), d);
+      if (step.index !== undefined) {
+        // The model knows the element (Jev off, or Jev was unsure about this step): run it directly.
         try {
-          done = await perform(target.index, op === "type" ? step : { ...step, text: undefined });
+          timing.picker = "claude";
+          const { did, after } = await perform(step.index, step);
+          lines.push(`step ${n}: ${did} [${step.index}]${after} (picked by Claude)`);
+          gate.picks.claude++;
+          timing.ran = true;
         } catch (e) {
-          jevEvent(false, op);
-          return couldNotUse(target.index, e, d);
+          return couldNotUse(step.index, e);
         }
-        jevEvent(true, op);
-        gate.picks.jev++;
-        lines.push(`step ${n}: ${done.did} ${formatElement(withoutState(target))}${done.after} (picked by Jev, ${d.confidence.toFixed(2)}, ${ms} ms)`);
-        break;
+        continue;
       }
-      case "scroll":
-        await browser("browser.scroll", { direction: "down" });
-        jevEvent(true);
-        lines.push(`step ${n}: scrolled down (picked by Jev)`);
-        break;
-      case "press_key":
+      if (!jev) return stop(n, `"${step.goal}": the fast model is off, so every step needs an element index`, await readPage());
+      const snap = await readPage();
+      const started = Date.now();
+      let d: JevDecision;
+      try {
+        const input: Parameters<JevLike["decide"]>[0] = { goal: step.goal, snapshot: snap, typesText: hasText };
+        const previous = lines.at(-1);
+        if (previous) input.previousStep = previous;
+        d = await jev.decide(input);
+      } catch (e) {
+        emit({ type: "jev", goal: step.goal, operation: "error", index: null, confidence: 0, executed: false, ms: Date.now() - started });
+        if (e instanceof OutOfCreditError) {
+          const ended = ctx.outOfCredit(e);
+          return { ...ended, text: [...lines, `step ${n}: "${step.goal}": ${e.message}`, ended.text].join("\n") };
+        }
+        return stop(n, `"${step.goal}": Jev is unavailable (${errorMessage(e)})`, snap);
+      }
+      const ms = Date.now() - started;
+      Object.assign(timing, { jevMs: ms, picker: "jev", confidence: d.confidence, operation: d.operation });
+      const target = d.index === null ? undefined : snap.elements.find((e) => e.index === d.index);
+      const conf = `${d.operation}, confidence ${d.confidence.toFixed(2)}`;
+      const jevEvent = (executed: boolean, operation = d.operation) =>
+        emit({ type: "jev", goal: step.goal, operation, index: d.index, confidence: d.confidence, executed, ms });
+
+      if (d.operation === "blocked" || d.confidence < ctx.jevThreshold) {
         jevEvent(false);
-        return stop(n, `"${step.goal}": Jev chose to press a key${target ? ` on ${formatElement(target)}` : ""}; call press_key yourself, or pick the element`, snap, d);
-      case "wait":
-        await sleep(JEV_WAIT_MS);
-        jevEvent(true);
-        lines.push(`step ${n}: waited ${JEV_WAIT_MS / 1000} s for the page`);
-        break;
-      case "done": {
-        jevEvent(true);
-        lines.push(`step ${n}: "${step.goal}" is already done`);
-        const rest = steps.length > n ? ` Steps ${n + 1}-${steps.length} were not run; send them again if they are still needed.` : "";
-        return { text: `${lines.join("\n")}\nJev ended the batch at step ${n}.${rest}\n\n${await pageText()}` };
+        return stop(n, `"${step.goal}": ${conf}`, snap, d);
       }
+      // Clicking or typing is decided by the step: a step with text types into the element Jev picked, one without clicks it.
+      let op = d.operation;
+      if ((op === "click" || op === "type") && target) op = hasText ? "type" : "click";
+      switch (op) {
+        case "click":
+        case "type": {
+          if (!target) {
+            jevEvent(false);
+            return stop(n, `"${step.goal}": ${conf}, but element [${d.index}] does not exist`, snap, d);
+          }
+          let done: { did: string; after: string };
+          try {
+            done = await perform(target.index, op === "type" ? step : { ...step, text: undefined });
+          } catch (e) {
+            jevEvent(false, op);
+            return couldNotUse(target.index, e, d);
+          }
+          jevEvent(true, op);
+          gate.picks.jev++;
+          lines.push(`step ${n}: ${done.did} ${formatElement(withoutState(target))}${done.after} (picked by Jev, ${d.confidence.toFixed(2)}, ${ms} ms)`);
+          break;
+        }
+        case "scroll":
+          await browser("browser.scroll", { direction: "down" });
+          jevEvent(true);
+          lines.push(`step ${n}: scrolled down (picked by Jev)`);
+          break;
+        case "press_key":
+          jevEvent(false);
+          return stop(n, `"${step.goal}": Jev chose to press a key${target ? ` on ${formatElement(target)}` : ""}; call press_key yourself, or pick the element`, snap, d);
+        case "wait":
+          await sleep(JEV_WAIT_MS);
+          jevEvent(true);
+          lines.push(`step ${n}: waited ${JEV_WAIT_MS / 1000} s for the page`);
+          break;
+        case "done": {
+          jevEvent(true);
+          timing.ran = true;
+          lines.push(`step ${n}: "${step.goal}" is already done`);
+          const rest = steps.length > n ? ` Steps ${n + 1}-${steps.length} were not run; send them again if they are still needed.` : "";
+          return { text: `${lines.join("\n")}\nJev ended the batch at step ${n}.${rest}\n\n${await pageText()}` };
+        }
+      }
+      timing.ran = true;
+    } finally {
+      ctx.trace?.(stepSpan(span, n, step.goal, timing));
     }
   }
   return { text: `${lines.join("\n")}\nAll ${steps.length} step(s) done. Verify the result.\n\n${await pageText()}` };

@@ -35,7 +35,7 @@ const session = (extra: Partial<SessionInfo> = {}): SessionInfo => ({
 describe("chat action bar", () => {
   it("disables everything with a reason on an empty chat", () => {
     const a = chatActions(null, new Set());
-    for (const x of [a.newChat, a.showTab]) {
+    for (const x of [a.newChat, a.showTab, a.raw]) {
       expect(x.disabled).toBe(true);
       expect(x.title).not.toBe("");
     }
@@ -46,8 +46,12 @@ describe("chat action bar", () => {
     expect(ended.showTab).toEqual({ disabled: true, title: expect.stringContaining("only has one while it is working") });
     expect(ended.newChat.disabled).toBe(false);
   });
-  it("two actions only: New chat and Show tab", () => {
-    expect(Object.keys(chatActions(session(), new Set()))).toEqual(["newChat", "showTab"]);
+  it("Raw for any conversation on screen, running or ended", () => {
+    expect(chatActions(session(), new Set(["s1"])).raw.disabled).toBe(false);
+    expect(chatActions(session({ endedAt: "2026-09-24T10:05:00Z" }), new Set()).raw.disabled).toBe(false);
+  });
+  it("three actions: New chat, Show tab and Raw", () => {
+    expect(Object.keys(chatActions(session(), new Set()))).toEqual(["newChat", "showTab", "raw"]);
   });
 });
 

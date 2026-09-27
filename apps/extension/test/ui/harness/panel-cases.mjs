@@ -1,9 +1,11 @@
 // The side panel cases of the UI harness: each { names (its screenshots), run(t) } runs when --only
 // matches one of its names (or `when(t)` says so) at every panel size and colour scheme. `t` has the
 // size's browser context and label, the checks (checks.mjs) and the panel helpers below.
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { installChromeStub, installVoiceFakes } from "./chrome-stub.mjs";
 import { EMAIL_ANSWER, scenario, SHORTCUT_LABEL, SUGGESTION, thumbnail, VOICE_SHORTCUT_LABEL } from "./scenarios.mjs";
+import { RAW_SECRET } from "./raw-scenario.mjs";
 
 export const SIZES = [
   { w: 360, h: 800 },
@@ -33,7 +35,7 @@ export function panelHelpers(label, problem) {
   const chatBar = (p) =>
     p.evaluate(() =>
       Object.fromEntries(
-        ["chat-new", "chat-show"].map((id) => {
+        ["chat-new", "chat-show", "chat-raw-btn"].map((id) => {
           const b = document.getElementById(id);
           return [id, { text: b.textContent, on: b.getAttribute("aria-disabled") !== "true", title: b.title }];
         }),
@@ -42,7 +44,7 @@ export function panelHelpers(label, problem) {
   const expectBar = async (p, want, what) => {
     const bar = await chatBar(p);
     const order = await p.evaluate(() => [...document.querySelectorAll(".chat-bar .bar-btn")].map((b) => b.textContent).join(" | "));
-    if (order !== "New chat | Show tab") fail(`chat bar order "${order}"`);
+    if (order !== "New chat | Show tab | Raw") fail(`chat bar order "${order}"`);
     for (const [id, on] of Object.entries(want)) {
       if (bar[id].on !== on) fail(`${what}: #${id} ${bar[id].on ? "enabled" : "disabled"}`);
       if (!bar[id].title) fail(`${what}: #${id} has no tooltip`);
@@ -421,7 +423,7 @@ export const PANEL_CASES = [
       await checkLayout(p, `details-task-run ${label}`);
       await shoot(p, "panel-first-task", size, scheme);
       // It is reachable by keyboard (Tab from the action bar) and shows a focus ring.
-      await p.focus("#chat-show");
+      await p.focus("#chat-raw-btn");
       await p.keyboard.press("Tab");
       const ring = await p.evaluate(() => {
         const t = document.activeElement;
@@ -1908,6 +1910,107 @@ export const PANEL_CASES = [
       await p.evaluate(() => (document.getElementById("chat-log").scrollTop = 0));
       await shoot(p, "panel-voice-chat", size, scheme);
       reportErrors(p, `voice-chat ${label}`);
+      await p.close();
+    },
+  },
+  // Raw: a three-turn voice conversation (Standard, then Realtime) with its timings, in place of the log.
+  {
+    names: ["panel-raw", "panel-raw-turn", "panel-raw-realtime"],
+    async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors, expectBar }) {
+      const p = await openPanel(ctx, "raw", "#chat-log .ev-end");
+      await expectBar(p, { "chat-new": true, "chat-show": false, "chat-raw-btn": true }, "raw: before");
+      await p.click("#chat-raw-btn");
+      await p.waitForSelector("#chat-raw .raw-turn");
+      const got = await p.evaluate(() => {
+        const raw = document.getElementById("chat-raw");
+        const body = raw.querySelector(".raw-body");
+        const b = body.getBoundingClientRect();
+        return {
+          logHidden: document.getElementById("chat-log").hidden,
+          rawShown: !raw.hidden && raw.getBoundingClientRect().height > 200,
+          pressed: document.getElementById("chat-raw-btn").getAttribute("aria-pressed"),
+          tiles: [...raw.querySelectorAll(".raw-stat-label")].map((e) => e.textContent),
+          tileTitles: [...raw.querySelectorAll(".raw-stat")].every((e) => e.title),
+          slowest: raw.querySelectorAll(".raw-slowest li").length,
+          turns: [...raw.querySelectorAll(".raw-turn-title")].map((e) => e.textContent),
+          rels: [...raw.querySelectorAll(".raw-rel")].map((e) => e.textContent),
+          slow: raw.querySelectorAll(".raw-row.slow").length,
+          errors: raw.querySelectorAll(".raw-row.error").length,
+          labels: [...raw.querySelectorAll(".raw-label")].map((e) => e.textContent),
+          wide: [...raw.querySelectorAll(".raw-row, .raw-stat, .raw-summary")].filter((e) => e.getBoundingClientRect().right > b.right + 0.5).length,
+          scrollsX: body.scrollWidth > body.clientWidth + 1,
+          text: raw.textContent,
+        };
+      });
+      if (!got.logHidden || !got.rawShown || got.pressed !== "true") fail(`raw: not shown in place of the log ${JSON.stringify({ logHidden: got.logHidden, rawShown: got.rawShown, pressed: got.pressed })}`);
+      const tiles = ["Total", "First response", "Speech → agent", "Model", "Tools", "Voice", "Other", "Tokens"];
+      if (JSON.stringify(got.tiles) !== JSON.stringify(tiles)) fail(`raw: summary tiles ${JSON.stringify(got.tiles)}`);
+      if (!got.tileTitles) fail("raw: a summary tile without its explanation");
+      if (got.slowest !== 5) fail(`raw: ${got.slowest} slowest items`);
+      if (got.turns.length !== 3 || !/^Turn 1 · .* · done · first response/.test(got.turns[0]) || !/paused/.test(got.turns[2])) fail(`raw: turns ${JSON.stringify(got.turns)}`);
+      if (!got.rels.length || got.rels.some((r) => !/^[+-]\d+\.\d\d s$/.test(r))) fail(`raw: relative times ${got.rels.slice(0, 5)}`);
+      if (got.slow < 3) fail(`raw: only ${got.slow} slow rows`);
+      if (got.errors < 1) fail("raw: the failed screenshot is not marked");
+      for (const want of [
+        "Voice: end of speech → transcript",
+        "Voice: sending window",
+        "Voice: Realtime connected",
+        "Voice: narrator reply (to speech)",
+        "Voice: your words transcribed",
+        "Claude Code process ready",
+        "Model call",
+        "act step 1 · Jev type 0.97",
+        "Browser navigate",
+        "Voice: barge-in (cut the line off)",
+        "Voice: line said",
+      ]) {
+        if (!got.labels.includes(want)) fail(`raw: no "${want}" row`);
+      }
+      if (got.wide || got.scrollsX) fail(`raw: ${got.wide} items wider than the view, scrolls sideways: ${got.scrollsX}`);
+      if (got.text.includes(RAW_SECRET)) fail("raw: a secret is shown");
+      await checkLayout(p, `raw ${label}`);
+      await shoot(p, "panel-raw", size, scheme);
+
+      // Copy: the timeline as text (the page's clipboard, stubbed: the system clipboard is left alone in tests).
+      await p.evaluate(() => {
+        window.__copied = null;
+        Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (t) => void (window.__copied = t) } });
+      });
+      await p.click(".raw-copy");
+      const copied = await (await p.waitForFunction(() => window.__copied)).jsonValue();
+      if (!/^browsertodo trace · /.test(copied) || !copied.includes("SUMMARY") || !copied.includes("TURN 3") || copied.includes(RAW_SECRET)) fail(`raw: copied text ${copied.slice(0, 200)}`);
+      if (!(await p.textContent(".raw-copy")).includes("Copied")) fail("raw: Copy does not say it copied");
+
+      // Download .json: a valid, redacted export with the environment.
+      const [download] = await Promise.all([p.waitForEvent("download"), p.click(".raw-save")]);
+      const name = download.suggestedFilename();
+      if (!/^browsertodo-trace-s-raw-\d{8}-\d{4}\.json$/.test(name)) fail(`raw: download name ${name}`);
+      const json = await readFile(await download.path(), "utf8");
+      let doc = null;
+      try {
+        doc = JSON.parse(json);
+      } catch (err) {
+        fail(`raw: download is not JSON (${err})`);
+      }
+      if (doc) {
+        if (doc.format !== "browsertodo.trace" || doc.turns?.length !== 3) fail(`raw: export ${doc.format} with ${doc.turns?.length} turns`);
+        if (!doc.env?.extensionVersion || !doc.env?.helper?.version || !doc.env?.voice?.engine || !doc.env?.os) fail(`raw: export env ${JSON.stringify(doc.env)}`);
+        if (json.includes(RAW_SECRET)) fail("raw: the export carries a secret");
+        if (!doc.summary?.slowest?.length || !doc.summary?.tokens?.in) fail("raw: export summary incomplete");
+      }
+
+      // The turns below: each title stays on top while its rows scroll under it.
+      await p.evaluate(() => document.querySelector('#chat-raw .raw-turn[data-turn="2"]').scrollIntoView());
+      await shoot(p, "panel-raw-turn", size, scheme);
+      await p.evaluate(() => document.querySelector('#chat-raw .raw-turn[data-turn="3"]').scrollIntoView());
+      await shoot(p, "panel-raw-realtime", size, scheme);
+
+      // Back to chat: the log again.
+      await p.click(".raw-back");
+      const back = await p.evaluate(() => ({ log: !document.getElementById("chat-log").hidden, raw: document.getElementById("chat-raw").hidden, pressed: document.getElementById("chat-raw-btn").getAttribute("aria-pressed") }));
+      if (!back.log || !back.raw || back.pressed !== "false") fail(`raw: back to chat ${JSON.stringify(back)}`);
+      await checkLayout(p, `raw back ${label}`);
+      reportErrors(p, `raw ${label}`);
       await p.close();
     },
   },

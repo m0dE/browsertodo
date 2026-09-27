@@ -16,7 +16,7 @@
  * run and its checks), conversation.ts (next turns), record.ts (results),
  * state.ts (persisted state, keep-alive), deadline.ts (how long a run may take).
  */
-import { errorMessage, pauseReasonForUrl, SCREEN_HELP_TEXT, type ExtensionSettings, type SessionInfo, type Sleep } from "@browsertodo/shared";
+import { errorMessage, pauseReasonForUrl, SCREEN_HELP_TEXT, traceStart, type ExtensionSettings, type SessionInfo, type Sleep, type TraceValue } from "@browsertodo/shared";
 import type { SlotPool } from "../agent-slots.js";
 import { callSafely } from "../listeners.js";
 import type { TabChatsLike } from "../tab-chats.js";
@@ -189,10 +189,13 @@ export class Runner {
     return this.dueLoop.start(trigger);
   }
 
-  /** Starts a one-off task now: a new conversation. Resolves once its session exists. */
-  async runAdhoc(input: AdhocInput): Promise<{ sessionId: string }> {
+  /**
+   * Starts a one-off task now: a new conversation. Resolves once its session exists.
+   * cid: the side panel's correlation id for the message (its voice timings join the turn by it).
+   */
+  async runAdhoc(input: AdhocInput, cid?: string): Promise<{ sessionId: string }> {
     if (!input.instructions?.trim() && !input.screen) throw new Error("Instructions are empty");
-    return this.startOne(null, async () => ({ source: "adhoc", input }));
+    return this.startOne(null, async () => ({ source: "adhoc", input }), cid);
   }
 
   /**
@@ -205,11 +208,12 @@ export class Runner {
    * needed" (SCREEN_HELP_TEXT): a new conversation starts with it, an ended
    * one goes on with "look at the page now and continue". A running turn is
    * already looking: it takes typed messages only.
+   * cid: the side panel's correlation id for the message (its timings join the turn it went to).
    */
   async message(
     sessionId: string | null | undefined,
     text: string,
-    opts: { tabId?: number; screen?: boolean; voice?: boolean } = {},
+    opts: { tabId?: number; screen?: boolean; voice?: boolean; cid?: string } = {},
   ): Promise<{ sessionId: string; mode: MessageMode }> {
     const screen = !!opts.screen && !text.trim();
     const t = screen ? SCREEN_HELP_TEXT : text.trim();
@@ -218,10 +222,11 @@ export class Runner {
     const voice = !screen && !!opts.voice;
     if (!sessionId) {
       const input: AdhocInput = { instructions: t, ...tab, ...(screen ? { screen } : {}), ...(voice ? { voice } : {}) };
-      return { ...(await this.runAdhoc(input)), mode: "new" };
+      return { ...(await this.runAdhoc(input, opts.cid)), mode: "new" };
     }
     if (this.live.has(sessionId)) {
       if (screen) throw new Error("The agent is working on this page already; type a message, or Stop it first");
+      if (opts.cid) this.deps.sessions.linkTrace(sessionId, opts.cid);
       if (!(await this.say(t, sessionId, { voice }))) throw new Error("The agent did not take the message");
       if (opts.tabId !== undefined) await this.turns.bindChat(opts.tabId, sessionId);
       return { sessionId, mode: "inject" };
@@ -229,7 +234,7 @@ export class Runner {
     if (this.startingTurns.has(sessionId)) throw new Error("That conversation is already starting its next turn");
     this.startingTurns.add(sessionId);
     try {
-      await this.startOne(sessionId, () => turnJob(this.deps, sessionId, t, { screen, voice, ...tab }));
+      await this.startOne(sessionId, () => turnJob(this.deps, sessionId, t, { screen, voice, ...tab }), opts.cid);
     } finally {
       this.startingTurns.delete(sessionId);
     }
@@ -345,7 +350,7 @@ export class Runner {
    * once its session exists (or is reopened). conversation: the session whose
    * next turn this is (it prefers the slot it used).
    */
-  private async startOne(conversation: string | null, makeJob: () => Promise<AdhocJob | TurnJob>): Promise<{ sessionId: string }> {
+  private async startOne(conversation: string | null, makeJob: () => Promise<AdhocJob | TurnJob>, cid?: string): Promise<{ sessionId: string }> {
     const { slots } = this.live;
     // Reserved before anything async, so two quick starts never share a slot.
     const reservation = `starting:${++this.reservations}`;
@@ -357,10 +362,16 @@ export class Runner {
     let settings: ExtensionSettings;
     let run: RunBrain;
     let job: AdhocJob | TurnJob;
+    // How long picking the brain took (it may connect the helper first), for the trace.
+    const resolving = traceStart();
+    let resolveMs = 0;
+    let resolved: Record<string, TraceValue> = {};
     try {
       job = await makeJob();
       settings = await this.deps.loadSettings();
       const { brain, status } = await this.deps.resolveBrain(settings);
+      resolveMs = resolving.elapsed();
+      resolved = { brain: brain?.kind ?? null, mode: settings.brain, model: settings.anthropicModel, jev: status.jevActive };
       if (!brain) throw new Error(status.note ?? NO_AI);
       const refusal = job.source === "turn" ? autoSwitchRefusal(settings.brain, job.from.brain, brain.kind) : null;
       if (refusal) throw new Error(refusal);
@@ -379,6 +390,8 @@ export class Runner {
     const source = job.source;
     void this.track(ended.catch((err) => this.log(`${source} run failed: ${errorMessage(err)}`))).finally(created);
     await sessionReady;
+    this.deps.sessions.append(sessionId, { type: "trace", trace: { t: resolving.t, ms: resolveMs, cat: "brain", name: "brain.resolve", src: "engine", data: resolved } });
+    if (cid) this.deps.sessions.linkTrace(sessionId, cid);
     return { sessionId };
   }
 

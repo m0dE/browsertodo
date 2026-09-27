@@ -51,6 +51,33 @@ describe("Runner: conversations", () => {
     expect(users.map((e) => (e as { text: string }).text)).toEqual(["also retweet it"]);
   });
 
+  it("every turn is timed in the conversation's trace, apart from its events; a message's correlation id joins its turn", async () => {
+    const h = harness();
+    h.brain.script = (o) => {
+      o.onEvent({ type: "trace", trace: { t: env.clock, ms: 1500, cat: "brain", name: "claude.ready", src: "helper" } });
+      o.onEvent({ type: "tool_call", id: "t1", name: "read_page", args: {} });
+      return { outcome: "done", summary: "read it" };
+    };
+    const { sessionId } = await h.runner.message(undefined, "Read the page", { cid: "c1" });
+    await settle(h);
+    env.clock += 60_000;
+    h.brain.continueScript = (o) => {
+      o.onEvent({ type: "user_message", text: o.text });
+      o.onEvent({ type: "assistant_text", text: "Done." });
+      return { outcome: "done" };
+    };
+    await h.runner.message(sessionId, "and again", { cid: "c2" });
+    await settle(h);
+    expect((await h.sessions.eventsOf(sessionId)).some((e) => (e.type as string) === "trace")).toBe(false);
+    const book = (await h.sessions.traceOf(sessionId))!;
+    const names = (turn: number) => book.events.filter((e) => e.turn === turn).map((e) => e.name);
+    expect(names(1)).toEqual(expect.arrayContaining(["turn.start", "engine.tab", "brain.start", "claude.ready", "first.response", "brain.resolve", "turn.end"]));
+    expect(names(2)).toEqual(expect.arrayContaining(["turn.start", "brain.start", "first.response", "brain.resolve", "turn.end"]));
+    expect(book.cids).toEqual({ c1: 1, c2: 2 });
+    expect(book.events.find((e) => e.name === "brain.resolve")!.data).toMatchObject({ brain: h.brain.kind });
+    expect(book.turns.map((t) => t.outcome)).toEqual(["done", "done"]);
+  });
+
   it("no conversation: a message starts a new one-off conversation", async () => {
     const h = harness();
     const r = await h.runner.message(undefined, " Post gm ");

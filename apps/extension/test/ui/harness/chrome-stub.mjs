@@ -135,6 +135,14 @@ export function installChromeStub(data) {
     // Hands-free voice: the engines with the server's prices (as scenario Q of the e2e gets them), and the relay's address
     // (the page's WebSocket to it is installVoiceFakes' fake).
     "voice.engines": () => data.voiceEngines ?? VOICE_ENGINES,
+    // The Raw view: a conversation's events and timing trace (scenario "raw"); the panel's own timings are taken.
+    "trace.get": (req) => {
+      const t = data.traces?.[req.sessionId];
+      if (t) return t;
+      const session = data.sessions.find((s) => s.sessionId === req.sessionId) ?? data.state.running;
+      return { session, events: data.eventsBySession?.[req.sessionId] ?? [], trace: null, env: { extensionVersion: "0.4.0", userAgent: navigator.userAgent, helper: null } };
+    },
+    "trace.add": () => ({ ok: true }),
     "voice.realtime": () => data.realtimeTicket ?? { url: "ws://127.0.0.1:9/v1/ai/realtime?session=s-new", token: "tok" },
     // A said line is kept in its chat: the background pushes it back as a "spoken" event.
     "voice.spoken": (req) => {

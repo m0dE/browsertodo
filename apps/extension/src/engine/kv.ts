@@ -4,7 +4,8 @@
  * in-memory KvDb) never touches the IndexedDB API directly.
  */
 
-const KV_STORES = ["media", "sessions", "events"] as const;
+/** traces: each conversation's timing trace (trace-store.ts), added in version 2. */
+const KV_STORES = ["media", "sessions", "events", "traces"] as const;
 export type KvStoreName = (typeof KV_STORES)[number];
 
 export interface KvStore<T> {
@@ -29,7 +30,7 @@ export interface KvDb {
 }
 
 const DB_NAME = "browsertodo";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 function req<T>(r: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {

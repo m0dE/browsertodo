@@ -26,6 +26,7 @@ import {
   type Sleep,
   type TaskRunResult,
   type ToolName,
+  traceStart,
 } from "@browsertodo/shared";
 import { buildSystemPrompt, buildTaskPrompt, FOLLOW_UP_PREFIX, SecretRedactor, type BrowserCaller, type JevLike } from "@browsertodo/core";
 import { RunLog, type LiveLog } from "./logger.js";
@@ -159,6 +160,7 @@ export class TaskRunner {
 
   async run(params: RunTaskParams): Promise<TaskRunResult> {
     const { sessionId, task, mediaPaths, config } = params;
+    const setup = traceStart();
     if (sessionId === INTERACTIVE_TASK_ID) throw new Error(`sessionId "${INTERACTIVE_TASK_ID}" is reserved`);
     // A session runs one turn at a time; other sessions may run beside it.
     const previous = this.sessions.get(sessionId);
@@ -222,6 +224,8 @@ export class TaskRunner {
       });
       writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
       const systemPrompt = buildSystemPrompt({ tools: toolNames, jev: jev !== null, followUps: s.persistent });
+      // The run folder, the MCP config and the prompts, before the agent starts.
+      s.emit({ type: "trace", trace: { t: setup.t, ms: setup.elapsed(), cat: "brain", name: "helper.setup", src: "helper", data: { jev: jev !== null, media: mediaPaths.length } } });
       s.brainDone = brain
         .run({
           taskId: sessionId,

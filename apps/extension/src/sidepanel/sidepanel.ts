@@ -4,7 +4,7 @@
  * (port.ts), and decides which conversation Chat shows: the one of the
  * browser tab active in the panel's window (see tab-chat.ts).
  */
-import { errorMessage, type SessionInfo } from "@browsertodo/shared";
+import { errorMessage, type SessionInfo, type VoiceEngineId, type VoiceEnginesResponse } from "@browsertodo/shared";
 import { isStale, uiRequest, type UiPush, type UiState } from "../ui-protocol.js";
 import { initChat } from "./chat.js";
 import { initComposer } from "./composer.js";
@@ -30,6 +30,7 @@ import { StandardEngine } from "../voice/standard-engine.js";
 import { panelTranscriber, VoiceError } from "../voice/transcribe.js";
 import { initHandsFree } from "./hands-free.js";
 import { initVoiceInput, VOICE_NOTICE } from "./voice-input.js";
+import { PanelTrace } from "../trace/panel-trace.js";
 
 /** Relative times (the status line's next check, task times) are redrawn this often. */
 const CLOCK_TICK_MS = 60_000;
@@ -117,11 +118,23 @@ const tasks = initTasks({
   openBilling: billing,
   onGateChange: () => updateComposer(),
 });
+/** This panel's part of each conversation's timing trace (sending, voice), for the Raw view. */
+const panelTrace = new PanelTrace((sessionId, events) => uiRequest({ type: "trace.add", sessionId, events }));
+/** The voice engines' models as the server last listed them (for the trace). */
+const voiceModels: Partial<Record<VoiceEngineId, string>> = {};
+/** The server's voice engines (null: could not be loaded); remembers their models. */
+async function loadVoiceModels(): Promise<VoiceEnginesResponse | null> {
+  const r = await uiRequest({ type: "voice.engines" }).catch(() => null);
+  if (!r || "error" in r) return null;
+  for (const e of r.engines) voiceModels[e.id] = e.model;
+  return r;
+}
 const composer = initComposer({
   onStarted: startedHere,
   onState: (s) => applyState(s),
   onTopup: billing,
   tabId: () => activeTab,
+  trace: panelTrace,
 });
 // Voice: the mic left of Send and the voice shortcut start hands-free voice; Standard's clips are transcribed by the
 // background with the account.
@@ -146,10 +159,10 @@ const chatOfTab = (tab: number | null): string | null =>
  * Hands-free voice sends what was said to its chat, whichever tab is shown: the chat by its id (it stays in the tab
  * it lives in), or a new chat in the session's tab.
  */
-async function sendSpoken(text: string, target: { tabId: number | null; sessionId: string | null }): Promise<string> {
+async function sendSpoken(text: string, target: { tabId: number | null; sessionId: string | null }, cid?: string): Promise<string> {
   const { tabId: tab, sessionId } = target;
   const where = sessionId ? { sessionId } : tab === null ? {} : { tabId: tab };
-  const r = await uiRequest({ type: "run.message", ...where, text, voice: true });
+  const r = await uiRequest({ type: "run.message", ...where, text, voice: true, ...(cid ? { cid } : {}) });
   if (sessionId) return r.sessionId;
   if (tab === null || tab === activeTab) startedHere(r.sessionId);
   else {
@@ -183,13 +196,12 @@ const handsFree = initHandsFree({
     ),
   settings: () => state?.settings ?? null,
   account: () => state?.account,
-  engines: async () => {
-    const r = await uiRequest({ type: "voice.engines" });
-    return "error" in r ? null : r;
-  },
+  engines: loadVoiceModels,
   saveSettings: async (patch) => applyState(await uiRequest({ type: "settings.save", settings: patch })),
-  createEngine: (id, events) =>
-    id === "realtime"
+  createEngine: (id, events) => {
+    // Standard chosen in Settings skips the engine list: its model (for the trace) is asked for here.
+    if (id === "standard" && !voiceModels.standard && state?.account?.signedIn) void loadVoiceModels();
+    return id === "realtime"
       ? new RealtimeEngine({
           ticket: async () => {
             const sessionId = handsFree.chat();
@@ -201,13 +213,17 @@ const handsFree = initHandsFree({
           events,
           ...(state ? { voice: { voice: state.settings.realtimeVoice, speed: state.settings.realtimeSpeed } } : {}),
           log: (m) => console.info(`[browsertodo] ${m}`),
+          trace: panelTrace,
         })
       : new StandardEngine({
           createSource: () => new MicSource(),
           transcribe,
           speaker: new Speaker(() => ({ voice: state?.settings.speechVoice ?? "", rate: state?.settings.speechRate ?? 1 })),
           events,
-        }),
+          trace: panelTrace,
+          model: () => voiceModels.standard,
+        });
+  },
   stopTask: async (sessionId) => {
     if (!sessionId || !state?.runningSessions.some((s) => s.sessionId === sessionId)) return "No task is running.";
     await uiRequest({ type: "run.stop", sessionId });
@@ -217,6 +233,7 @@ const handsFree = initHandsFree({
   signIn: () => signIn(),
   onActive: reportListening,
   host: $("now-notices"),
+  trace: panelTrace,
   log: (m) => console.info(`[browsertodo] ${m}`),
 });
 const chat = initChat({
@@ -244,6 +261,21 @@ const chat = initChat({
   onSwitch: (s) => void switchTo(s.sessionId),
   onDetails: runDetails,
   onShortcuts: () => void openShortcutSettings(),
+  voiceEnv: () => {
+    const settings = state?.settings;
+    if (!settings) return undefined;
+    // Not listed yet (voice not used in this panel): ask now, for the next export.
+    if (!voiceModels.realtime && !voiceModels.standard && state?.account?.signedIn) void loadVoiceModels();
+    const engine = settings.voiceEngine;
+    const model = voiceModels[engine];
+    return {
+      engine,
+      ...(model ? { model } : {}),
+      ...(voiceModels.realtime ? { realtimeModel: voiceModels.realtime } : {}),
+      ...(voiceModels.standard ? { standardModel: voiceModels.standard } : {}),
+      ...(engine === "realtime" ? { voice: settings.realtimeVoice, speed: settings.realtimeSpeed } : { voice: settings.speechVoice || "browser default", speed: settings.speechRate }),
+    };
+  },
 });
 const history = initHistory({ onOpenInChat: (s) => void openHere(s) });
 /** The voice shortcut arrived before the first state (a panel it just opened): run it once voice knows the plan. */

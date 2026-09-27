@@ -1,11 +1,15 @@
 /**
  * Session history: one SessionInfo per agent run plus its event stream, in
  * IndexedDB. New events and session changes are pushed live to listeners
- * (the UI ports).
+ * (the UI ports). With a TraceStore, each conversation also has its timing
+ * trace: `trace` events go there instead of the event stream, every other
+ * event is counted there, and each turn's start is marked (create, reopen).
  */
-import { MAX_ASSISTANT_TEXT, MAX_EVENT_TEXT, clipEventText, type AgentEvent, type SessionInfo, type StampedAgentEvent } from "@browsertodo/shared";
+import { MAX_ASSISTANT_TEXT, MAX_EVENT_TEXT, clipEventText, type AgentEvent, type SessionInfo, type StampedAgentEvent, type TraceEvent } from "@browsertodo/shared";
 import { Listeners } from "../listeners.js";
 import type { KvDb, KvStore } from "./kv.js";
+import type { TraceBook } from "../trace/trace-book.js";
+import type { TraceStore } from "./trace-store.js";
 
 export const MAX_SESSIONS = 200;
 export const MAX_EVENTS_PER_SESSION = 2000;
@@ -60,10 +64,13 @@ export class SessionStore {
   /** Serializes writes so events keep their order. */
   private chain: Promise<unknown> = Promise.resolve();
 
-  constructor(db: KvDb, opts: { now?: () => Date } = {}) {
+  private readonly trace: TraceStore | null;
+
+  constructor(db: KvDb, opts: { now?: () => Date; trace?: TraceStore } = {}) {
     this.sessions = db.store<SessionInfo>("sessions");
     this.events = db.store<StampedAgentEvent>("events");
     this.now = opts.now ?? (() => new Date());
+    this.trace = opts.trace ?? null;
   }
 
   subscribe(l: SessionListener): () => void {
@@ -72,6 +79,7 @@ export class SessionStore {
 
   async create(info: SessionInfo): Promise<SessionInfo> {
     this.seq.set(info.sessionId, 0);
+    this.trace?.start(info.sessionId, this.now().getTime(), turnData(info, info.instructions?.length));
     await this.enqueue(async () => {
       await this.sessions.put(info.sessionId, info);
       await this.prune();
@@ -86,12 +94,19 @@ export class SessionStore {
    * what is kept.
    */
   append(sessionId: string, event: AgentEvent): StampedAgentEvent {
+    const now = this.now();
+    if (event.type === "trace") {
+      // Only for a session running now (a launch that never created its session leaves no trace behind).
+      if (this.seq.has(sessionId)) this.trace?.record(sessionId, event.trace);
+      return { ...event, ts: now.toISOString(), sessionId };
+    }
+    this.trace?.observe(sessionId, event, now.getTime());
     if (event.type === "assistant_text_delta") {
-      const live = { ...event, ts: this.now().toISOString(), sessionId } as StampedAgentEvent;
+      const live = { ...event, ts: now.toISOString(), sessionId } as StampedAgentEvent;
       this.listeners.emit({ event: live });
       return live;
     }
-    const stamped = { ...clipEvent(event), ts: this.now().toISOString(), sessionId } as StampedAgentEvent;
+    const stamped = { ...clipEvent(event), ts: now.toISOString(), sessionId } as StampedAgentEvent;
     const n = this.seq.get(sessionId) ?? 0;
     this.seq.set(sessionId, n + 1);
     void this.enqueue(async () => {
@@ -131,7 +146,10 @@ export class SessionStore {
       this.seq.set(sessionId, Math.max(await this.storedSeq(sessionId), this.seq.get(sessionId) ?? 0));
       return next;
     });
-    if (s) this.emitSession(s);
+    if (s) {
+      this.trace?.beginTurn(sessionId, s.turns ?? 1, this.now().getTime(), turnData(s));
+      this.emitSession(s);
+    }
     return s;
   }
 
@@ -141,13 +159,31 @@ export class SessionStore {
    * service worker restarted). Null when there is no such session.
    */
   async note(sessionId: string, event: AgentEvent): Promise<StampedAgentEvent | null> {
-    const known = this.seq.has(sessionId) || (await this.enqueue(async () => {
-      if (this.seq.has(sessionId)) return true;
-      if (!(await this.sessions.get(sessionId))) return false;
-      this.seq.set(sessionId, await this.storedSeq(sessionId));
-      return true;
-    }));
-    return known ? this.append(sessionId, event) : null;
+    return (await this.known(sessionId)) ? this.append(sessionId, event) : null;
+  }
+
+  /**
+   * Adds trace events to a stored conversation from outside its turns (the
+   * side panel's voice timings), also after it ended. False when there is no
+   * such session.
+   */
+  async addTrace(sessionId: string, events: readonly TraceEvent[]): Promise<boolean> {
+    if (!(await this.known(sessionId))) return false;
+    for (const trace of events) this.append(sessionId, { type: "trace", trace });
+    return true;
+  }
+
+  /** The session exists (its next event number is then known). */
+  private async known(sessionId: string): Promise<boolean> {
+    return (
+      this.seq.has(sessionId) ||
+      this.enqueue(async () => {
+        if (this.seq.has(sessionId)) return true;
+        if (!(await this.sessions.get(sessionId))) return false;
+        this.seq.set(sessionId, await this.storedSeq(sessionId));
+        return true;
+      })
+    );
   }
 
   async get(sessionId: string): Promise<SessionInfo | null> {
@@ -168,9 +204,20 @@ export class SessionStore {
     return (await this.events.list(`${sessionId}:`)).map((e) => e.value);
   }
 
+  /** The conversation's timing trace (null: none, or no TraceStore). */
+  async traceOf(sessionId: string): Promise<TraceBook | null> {
+    return this.trace ? this.trace.get(sessionId) : null;
+  }
+
+  /** The user message with correlation id `cid` (the panel's, for its voice timings) went to the conversation's running turn. */
+  linkTrace(sessionId: string, cid: string): void {
+    this.trace?.link(sessionId, cid);
+  }
+
   /** Waits for queued writes (tests, shutdown). */
   async flush(): Promise<void> {
     await this.chain.catch(() => {});
+    await this.trace?.flush();
   }
 
   /** The sequence number after the session's last stored event. */
@@ -186,6 +233,7 @@ export class SessionStore {
     for (const s of all.slice(0, all.length - MAX_SESSIONS)) {
       await this.sessions.delete(s.sessionId);
       await this.events.deletePrefix(`${s.sessionId}:`);
+      await this.trace?.delete(s.sessionId);
     }
   }
 
@@ -198,6 +246,15 @@ export class SessionStore {
     this.chain = run.catch(() => {});
     return run;
   }
+}
+
+/** What a turn runs with, for its turn.start trace event. */
+function turnData(s: SessionInfo, chars?: number): Record<string, string | number | boolean> {
+  const d: Record<string, string | number | boolean> = { brain: s.brain, jev: s.jev, source: s.source };
+  if (s.model) d.model = s.model;
+  if (s.voice) d.voice = true;
+  if (chars !== undefined) d.chars = chars;
+  return d;
 }
 
 /** Oldest first (ISO timestamps compare as text). */

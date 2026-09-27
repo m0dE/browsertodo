@@ -12,7 +12,7 @@ export { createJev, type CreateJevOptions } from "./jev.js";
 /** A hosted-AI request refused for lack of usage credit (HTTP 402); error text made readable for the user. */
 export { OutOfCreditError, plainErrorText } from "./api-errors.js";
 /** Keeps passwords the agent was given out of events and logs. */
-export { SecretRedactor } from "./redact.js";
+export { mapStrings, REDACTED, SecretRedactor } from "./redact.js";
 /** System prompt for either brain, the first user message of a task, and how later messages are framed. */
 export { buildFollowUpMessage, buildSystemPrompt, buildTaskPrompt, FOLLOW_UP_PREFIX, humanMessage, type FollowUpMessage } from "./prompts.js";
 /** Compact text form of a snapshot (as returned by read_page), and its parser for the helper's scripted brain. */
@@ -27,3 +27,5 @@ export { NOT_CONFIDENT } from "./act.js";
 export { verifyXPost } from "./verify.js";
 /** Claude API agent loop (Anthropic Messages API with tool use). */
 export { startApiAgent } from "./api-agent.js";
+/** Token counts of a Messages API usage object, as the trace records them (Claude Code reports the same shape). */
+export { usageOf } from "./api-agent.js";

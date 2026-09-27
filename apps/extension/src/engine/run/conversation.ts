@@ -56,9 +56,9 @@ export async function runNextTurn(
   // What the conversation's tab shows now. It may be a page Chrome keeps extensions out of: the turn goes on in a tab next to it.
   const page = tab === null ? null : await turns.pageOf(tab);
   let userTab: UserTab | undefined;
-  if (tab === null) await active.slot.prepare({ mode: "own-tab" });
+  if (tab === null) await turns.prepareTab(active, { mode: "own-tab" });
   else {
-    const picked = await active.slot.prepare({ mode: "current-tab", tabId: tab });
+    const picked = await turns.prepareTab(active, { mode: "current-tab", tabId: tab });
     await turns.follow(active, tab, picked, !!page && isRestrictedUrl(page.url));
     if (page) userTab = userTabOf(page, picked);
   }

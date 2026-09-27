@@ -296,3 +296,60 @@ describe("realtimeFailure: close codes and server errors -> what the panel says 
     expect(realtimeFailure({ closeCode: 1006, opened: false })).toMatchObject({ kind: "network", fallback: true });
   });
 });
+
+describe("RealtimeClient: timing trace", () => {
+  it("connecting, each reply from the end of speech (commit, start, first audio, done, usage), and the user's words", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const traces: { name: string; t: number; ms?: number; data?: Record<string, unknown>; inputId: string | null }[] = [];
+      const { socket } = setup({ onTrace: (e, inputId) => traces.push({ name: e.name, t: e.t, ms: e.ms, data: e.data, inputId }) });
+      vi.advanceTimersByTime(120);
+      socket().open();
+      vi.advanceTimersByTime(300);
+      socket().event({ type: "session.created", session: { model: "gpt-realtime" } });
+      vi.advanceTimersByTime(2000);
+      socket().event({ type: "input_audio_buffer.speech_stopped" });
+      vi.advanceTimersByTime(80);
+      socket().event({ type: "input_audio_buffer.committed", item_id: "item_1" });
+      vi.advanceTimersByTime(40);
+      socket().event({ type: "response.created" });
+      vi.advanceTimersByTime(500);
+      socket().event({ type: "response.output_audio.delta", delta: "AAAA", item_id: "a1" });
+      socket().event({ type: "response.output_audio.delta", delta: "AAAA", item_id: "a1" });
+      vi.advanceTimersByTime(200);
+      socket().event({ type: "conversation.item.input_audio_transcription.completed", item_id: "item_1", transcript: " check my email ", usage: { input_tokens: 40, output_tokens: 5 } });
+      vi.advanceTimersByTime(900);
+      socket().event({ type: "response.done", response: { status: "completed", usage: { input_tokens: 900, output_tokens: 120, input_token_details: { audio_tokens: 300, cached_tokens: 512 }, output_token_details: { audio_tokens: 100 } } } });
+      await vi.runAllTimersAsync();
+
+      expect(traces.map((x) => x.name)).toEqual(["voice.connect", "voice.user_words", "voice.narrator"]);
+      expect(traces[0]).toMatchObject({ t: 1_000_000, ms: 420, data: { openMs: 120, readyMs: 300, model: "gpt-realtime" }, inputId: null });
+      expect(traces[1]).toMatchObject({ t: 1_002_500, ms: 740, data: { chars: 14, inTokens: 40, outTokens: 5 }, inputId: "item_1" });
+      expect(traces[2]).toMatchObject({
+        t: 1_002_420,
+        ms: 1720,
+        inputId: "item_1",
+        data: { trigger: "speech", commitMs: 80, createdMs: 120, firstAudioMs: 620, waitMs: 620, audioDeltas: 2, status: "completed", inTokens: 900, outTokens: 120, inAudioTokens: 300, cachedTokens: 512, outAudioTokens: 100 },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a reply we asked for is timed from asking", async () => {
+    vi.useFakeTimers({ now: 5_000 });
+    try {
+      const traces: { name: string; t: number; data?: Record<string, unknown> }[] = [];
+      const { client, socket } = setup({ onTrace: (e) => traces.push(e) });
+      socket().open();
+      socket().event({ type: "session.updated" });
+      client.note("The agent finished.", true);
+      vi.advanceTimersByTime(700);
+      socket().event({ type: "response.created" });
+      socket().event({ type: "response.done", response: {} });
+      expect(traces.at(-1)).toMatchObject({ name: "voice.narrator", t: 5_000, data: { trigger: "update", createdMs: 700, firstAudioMs: null, waitMs: 700 } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

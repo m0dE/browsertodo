@@ -170,6 +170,9 @@ export function describeEvent(ev: AgentEvent, turn: TurnContext = {}): EventView
       return describeEnd(ev, turn);
     case "error":
       return { kind: "error", help: errorHelp(ev.text) };
+    case "trace":
+      // Timing goes to the conversation's trace (the Raw view), never into the chat: an empty line if one got here.
+      return { kind: "status", text: "" };
   }
 }
 

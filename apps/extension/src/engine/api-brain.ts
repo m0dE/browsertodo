@@ -92,6 +92,8 @@ export class ApiBrain implements Brain {
           browser: { call: (method, params) => route.browser.call(method, params) },
           jev,
           onEvent: (e) => route.sink(e),
+          // Model calls and tool spans for the conversation's trace (recorded here, in the engine).
+          onTrace: (trace) => route.sink({ type: "trace", trace: { ...trace, src: "engine" } }),
           ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}),
         }),
       };

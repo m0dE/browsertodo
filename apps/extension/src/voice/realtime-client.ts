@@ -38,6 +38,7 @@ import {
   REALTIME_SPEED,
   type RealtimeErrorCode,
   type RealtimeVoiceId,
+  type TraceDraft,
 } from "@browsertodo/shared";
 import { bytesToBase64 } from "../base64.js";
 import { REALTIME_NOT_AVAILABLE_NOTE } from "./engine-choice.js";
@@ -203,7 +204,33 @@ export interface RealtimeHandlers {
   onTurnDone?(inputId: string): void;
   /** The session ended: null when we closed it, else why. */
   onClose?(failure: RealtimeFailure | null): void;
+  /**
+   * Timing for the conversation's trace: "voice.connect" (the socket opening, the session ready, the model), one
+   * "voice.narrator" per reply (what started it, the time to its first audio and to its end, tokens) and one
+   * "voice.user_words" per input transcription. `inputId`: the user's input item it is about (null: none). The relay
+   * does not report what a reply was charged (it meters on the server).
+   */
+  onTrace?(e: TraceDraft, inputId: string | null): void;
   log?(message: string): void;
+}
+
+/** When the user's input item ended (server VAD's speech_stopped) and was committed; epoch ms. */
+interface InputTiming {
+  speechEnd: number | null;
+  committed: number;
+}
+
+/** Input items whose timing is remembered (their transcription may come after their reply). */
+const MAX_INPUT_TIMINGS = 16;
+
+/** A reply being made: what it answers (the user's input, else a request of ours), and its audio. */
+interface Reply {
+  inputId: string | null;
+  /** Epoch ms of what it answers: the end of the user's speech (else its commit), or our request. */
+  from: number;
+  created: number;
+  firstAudio?: number;
+  audioDeltas: number;
 }
 
 export interface RealtimeClientOptions {
@@ -236,15 +263,24 @@ export class RealtimeClient {
   private lastError: RealtimeErrorCode | undefined;
   private narratorText = "";
   private ready = false;
+  /** Timing (see RealtimeHandlers.onTrace). */
+  private connectAt = 0;
+  private openAt = 0;
+  private speechEndAt: number | null = null;
+  private askedAt: number | null = null;
+  private reply: Reply | null = null;
+  private readonly inputTimes = new Map<string, InputTiming>();
 
   constructor(private readonly opts: RealtimeClientOptions) {}
 
   connect(): void {
     const open = this.opts.open ?? ((url, protocols) => new WebSocket(url, protocols) as unknown as RealtimeSocketLike);
+    this.connectAt = Date.now();
     const ws = open(this.opts.url, [REALTIME_PROTOCOL, `${REALTIME_TOKEN_PROTOCOL_PREFIX}${this.opts.token}`]);
     this.socket = ws;
     ws.onopen = () => {
       this.opened = true;
+      this.openAt = Date.now();
       this.send({ type: "session.update", session: this.sessionConfig() });
     };
     ws.onmessage = (m) => this.onMessage(m.data);
@@ -318,7 +354,78 @@ export class RealtimeClient {
     }
     this.wantReply = null;
     if (kind === "acknowledge" && this.spoke) return;
+    this.askedAt = Date.now();
     this.send(kind === "acknowledge" ? { type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS } } : { type: "response.create" });
+  }
+
+  private trace(e: TraceDraft, inputId: string | null = null): void {
+    try {
+      this.opts.handlers.onTrace?.(e, inputId);
+    } catch {
+      /* a listener must not break the session */
+    }
+  }
+
+  /** A reply starts: to the user's input `inputId` (timed from the end of their speech), else to our request. */
+  private newReply(inputId: string | null): Reply {
+    const now = Date.now();
+    const input = inputId ? this.inputTimes.get(inputId) : undefined;
+    const from = input ? (input.speechEnd ?? input.committed) : (this.askedAt ?? now);
+    this.askedAt = null;
+    return { inputId, from, created: now, audioDeltas: 0 };
+  }
+
+  /** The reply is done: what started it, the waits for it to start and for its first audio, and its usage. */
+  private traceReply(ev: ServerEvent, inputId: string | null): void {
+    const r = this.reply;
+    this.reply = null;
+    if (!r) return;
+    const now = Date.now();
+    const response = (ev.response ?? {}) as { status?: unknown; usage?: Record<string, unknown> };
+    const u = response.usage ?? {};
+    const inDetails = (u.input_token_details ?? {}) as Record<string, unknown>;
+    const outDetails = (u.output_token_details ?? {}) as Record<string, unknown>;
+    const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+    const input = inputId ? this.inputTimes.get(inputId) : undefined;
+    const firstAudioMs = r.firstAudio === undefined ? null : r.firstAudio - r.from;
+    this.trace(
+      {
+        t: r.from,
+        ms: now - r.from,
+        cat: "voice",
+        name: "voice.narrator",
+        data: {
+          trigger: inputId ? "speech" : "update",
+          ...(input && input.speechEnd !== null ? { commitMs: input.committed - input.speechEnd } : {}),
+          createdMs: r.created - r.from,
+          firstAudioMs,
+          // What the user waited for: the narrator's first audio (a silent reply: all of it).
+          waitMs: firstAudioMs ?? now - r.from,
+          audioDeltas: r.audioDeltas,
+          status: typeof response.status === "string" ? response.status : null,
+          inTokens: n(u.input_tokens),
+          outTokens: n(u.output_tokens),
+          inAudioTokens: n(inDetails.audio_tokens),
+          cachedTokens: n(inDetails.cached_tokens),
+          outAudioTokens: n(outDetails.audio_tokens),
+        },
+      },
+      inputId,
+    );
+  }
+
+  /** The user's words of input `inputId` are transcribed (or could not be): the time since the input was committed. */
+  private traceWords(inputId: string, text: string, usage: unknown, failed = false): void {
+    const input = this.inputTimes.get(inputId);
+    const now = Date.now();
+    const u = (usage && typeof usage === "object" ? usage : {}) as Record<string, unknown>;
+    const data: NonNullable<TraceDraft["data"]> = { chars: text.length, model: REALTIME_INPUT_TRANSCRIPTION_MODEL };
+    if (failed) data.failed = true;
+    for (const [from, to] of [["input_tokens", "inTokens"], ["output_tokens", "outTokens"], ["seconds", "audioSeconds"]] as const) {
+      if (typeof u[from] === "number") data[to] = u[from] as number;
+    }
+    const t = input ? input.committed : now;
+    this.trace({ t, ms: now - t, cat: "voice", name: "voice.user_words", data }, inputId);
   }
 
   private onMessage(data: unknown): void {
@@ -336,20 +443,32 @@ export class RealtimeClient {
       case "session.updated":
         if (!this.ready) {
           this.ready = true;
+          const now = Date.now();
+          const model = (ev.session as { model?: unknown } | undefined)?.model;
+          this.trace({
+            t: this.connectAt,
+            ms: now - this.connectAt,
+            cat: "voice",
+            name: "voice.connect",
+            data: { openMs: this.openAt ? this.openAt - this.connectAt : null, readyMs: now - (this.openAt || this.connectAt), model: typeof model === "string" ? model : null, waitMs: now - this.connectAt },
+          });
           h.onReady?.();
         }
         break;
-      case "response.created":
+      case "response.created": {
         this.responding = true;
         this.spoke = false;
         this.narratorText = "";
         this.replyInput = this.unansweredInput;
         this.unansweredInput = null;
+        this.reply = this.newReply(this.replyInput);
         break;
+      }
       case "response.done": {
         this.responding = false;
         const answered = this.replyInput;
         this.replyInput = null;
+        this.traceReply(ev, answered);
         h.onReplyDone?.();
         if (answered) h.onTurnDone?.(answered);
         if (this.wantReply) this.requestReply(this.wantReply);
@@ -357,18 +476,36 @@ export class RealtimeClient {
       }
       case "response.output_audio.delta":
         this.spoke = true;
+        if (this.reply) {
+          this.reply.firstAudio ??= Date.now();
+          this.reply.audioDeltas++;
+        }
         h.onAudio?.(str("delta"), str("item_id"));
+        break;
+      case "input_audio_buffer.speech_stopped":
+        this.speechEndAt = Date.now();
         break;
       case "input_audio_buffer.committed":
         // The user's turn is in: the reply the server makes next answers it.
-        if (str("item_id")) this.unansweredInput = str("item_id");
+        if (str("item_id")) {
+          this.unansweredInput = str("item_id");
+          this.inputTimes.set(str("item_id"), { speechEnd: this.speechEndAt, committed: Date.now() });
+          if (this.inputTimes.size > MAX_INPUT_TIMINGS) this.inputTimes.delete(this.inputTimes.keys().next().value!);
+          this.speechEndAt = null;
+        }
         break;
       case "conversation.item.input_audio_transcription.completed":
-        if (str("item_id")) h.onUserWords?.(str("item_id"), str("transcript").trim());
+        if (str("item_id")) {
+          this.traceWords(str("item_id"), str("transcript").trim(), ev.usage);
+          h.onUserWords?.(str("item_id"), str("transcript").trim());
+        }
         break;
       case "conversation.item.input_audio_transcription.failed":
         this.log("realtime: the user's words could not be transcribed");
-        if (str("item_id")) h.onUserWords?.(str("item_id"), "");
+        if (str("item_id")) {
+          this.traceWords(str("item_id"), "", undefined, true);
+          h.onUserWords?.(str("item_id"), "");
+        }
         break;
       case "response.output_audio_transcript.delta":
         this.narratorText += str("delta");

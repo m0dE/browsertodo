@@ -201,7 +201,7 @@ export class Lifecycle {
     const id = active.session.sessionId;
     if (xTurn.heldByOther(id)) {
       this.deps.turns.emit(active, { type: "status", text: X_WAIT_STATUS });
-      await xTurn.waitFor(id, () => active.forced !== null);
+      await this.deps.turns.timed(active, "engine.x_wait", () => xTurn.waitFor(id, () => active.forced !== null));
       if (active.forced) throw new Error(active.forced.reason);
       // Its turn starts now.
       const startedAt = this.deps.now().toISOString();

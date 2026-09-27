@@ -7,6 +7,7 @@ import { LocalStore } from "../src/engine/local-store.js";
 import type { AdhocInput } from "../src/engine/run/jobs.js";
 import type { RunnerState } from "../src/engine/run/state.js";
 import { SessionStore } from "../src/engine/sessions.js";
+import { TraceStore } from "../src/engine/trace-store.js";
 import { LocalTodo } from "../src/account/todo-source.js";
 import { ApiRequestError, NotSignedInError } from "../src/http-client.js";
 import { UiHub } from "../src/engine/ui-hub.js";
@@ -52,7 +53,7 @@ function setup() {
     call: vi.fn(async (_method: string, _p?: unknown, _o?: unknown): Promise<any> => ({ text: "log lines" })),
   };
   const localStore = new LocalStore({ db });
-  const sessions = new SessionStore(db);
+  const sessions = new SessionStore(db, { trace: new TraceStore(db) });
   const vault = {
     unlock: vi.fn(async (_passphrase: string) => {}),
     lock: vi.fn(async () => {}),
@@ -497,6 +498,47 @@ describe("UiRouter: a chat per browser tab", () => {
     ]);
     expect(await t.req({ type: "voice.spoken", sessionId: "nope", text: "x" })).toEqual({ ok: false });
     expect(await t.router.handle({ type: "voice.spoken", sessionId: "s1", text: " " })).toEqual({ ok: false, error: "sessionId and text are required" });
+  });
+
+  it("run.message and run.adhoc pass a well-formed correlation id to the runner, and drop anything else", async () => {
+    const t = setup();
+    await t.req({ type: "run.message", sessionId: "S1", text: "go", cid: "c-1_a" });
+    expect(t.runner.message).toHaveBeenLastCalledWith("S1", "go", { cid: "c-1_a" });
+    await t.req({ type: "run.message", sessionId: "S1", text: "go", cid: "bad id!" });
+    expect(t.runner.message).toHaveBeenLastCalledWith("S1", "go", {});
+    await t.req({ type: "run.adhoc", instructions: "do", cid: "c2" });
+    expect(t.runner.runAdhoc).toHaveBeenLastCalledWith(expect.objectContaining({ instructions: "do" }), "c2");
+  });
+
+  it("trace.add takes the panel's timings, checked and bounded; trace.get returns the conversation, its trace and where it ran", async () => {
+    const t = setup();
+    await t.sessions.create({ sessionId: "s1", source: "adhoc", title: "t", brain: "claude-api", jev: false, startedAt: "2026-09-24T10:00:00Z" });
+    t.sessions.append("s1", { type: "status", text: "hi" });
+    const ok = await t.req({
+      type: "trace.add",
+      sessionId: "s1",
+      events: [
+        { t: 1, ms: 700, cat: "voice", name: "voice.transcript", cid: "u1", src: "engine", data: { waitMs: 700, model: "m".repeat(1000), nested: { no: 1 } } },
+        // Not the panel's to record, or not an event at all.
+        { t: 2, cat: "model", name: "model.call" },
+        { t: "x", cat: "voice", name: "voice.speech" },
+        "junk",
+      ],
+    });
+    expect(ok).toEqual({ ok: true });
+    expect(await t.req({ type: "trace.add", sessionId: "nope", events: [] })).toEqual({ ok: false });
+    await t.sessions.flush();
+    const raw = await t.req({ type: "trace.get", sessionId: "s1" });
+    expect(raw.session.sessionId).toBe("s1");
+    expect(raw.events.map((e: { type: string }) => e.type)).toEqual(["status"]);
+    const panel = raw.trace.events.filter((e: { src: string }) => e.src === "panel");
+    expect(panel).toHaveLength(1);
+    // Recorded as the panel's, whatever it said; strings bounded, only plain values kept.
+    expect(panel[0]).toMatchObject({ cat: "voice", name: "voice.transcript", cid: "u1", ms: 700 });
+    expect(panel[0].data.model).toHaveLength(300);
+    expect(panel[0].data.nested).toBeUndefined();
+    expect(raw.env).toMatchObject({ helper: null });
+    expect(await t.router.handle({ type: "trace.get", sessionId: "nope" })).toEqual({ ok: false, error: "No session nope" });
   });
 
   it("voice.heard keeps the user's own words in their conversation, with the request sent for them", async () => {

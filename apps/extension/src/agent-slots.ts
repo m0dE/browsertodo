@@ -10,7 +10,7 @@ import type { Screenshot } from "@browsertodo/shared";
 import { AgentTab, type TabMode } from "./agent-tab.js";
 import type { Cdp } from "./cdp.js";
 import { Driver } from "./driver.js";
-import { createBrowserCaller, type VaultLike } from "./engine/browser-caller.js";
+import { createBrowserCaller, tracedBrowser, type BrowserCallTrace, type VaultLike } from "./engine/browser-caller.js";
 import { isRestrictedError } from "./restricted.js";
 
 /** What the runner needs of a slot (see RunnerDeps.slots). */
@@ -56,22 +56,31 @@ export class AgentSlots implements SlotPool {
     private readonly vault: VaultLike,
     /** Tabs that belong to a conversation: scheduled runs do not take them over. */
     private readonly isChatTab?: (tabId: number) => Promise<boolean>,
+    /** Each browser call of a session, timed, for its conversation's trace. */
+    private readonly onBrowserCall?: (sessionId: string, call: Parameters<BrowserCallTrace>[0]) => void,
   ) {}
 
   /** Slot n, created on first use. Slot 0 is the first agent tab. */
   get(index: number): Slot {
-    let s = this.slots.get(index);
-    if (s) return s;
+    const existing = this.slots.get(index);
+    if (existing) return existing;
     const isChatTab = this.isChatTab;
     const tab = new AgentTab(index, { isTaken: (tabId) => this.takenByOther(index, tabId), ...(isChatTab ? { isChatTab } : {}) });
     const driver = new Driver(this.cdp, tab, { knownTabs: () => this.allTabIds() });
     const cdp = this.cdp;
-    s = {
+    const onCall = this.onBrowserCall;
+    const plain = createBrowserCaller(driver, this.vault);
+    const slot: Slot = {
       index,
       tab,
       driver,
       sessionId: null,
-      browser: createBrowserCaller(driver, this.vault),
+      // Calls made for a session are timed in its trace.
+      browser: onCall
+        ? tracedBrowser(plain, () => (driver.inFallback ? "fallback" : "cdp"), (call) => {
+            if (slot.sessionId) onCall(slot.sessionId, call);
+          })
+        : plain,
       async prepare(opts) {
         cdp.reset();
         // The run's tab is picked once; the driver keeps using it for the whole turn.
@@ -86,8 +95,8 @@ export class AgentSlots implements SlotPool {
       isAgentTab: (tabId) => tab.isAgentTab(tabId),
       screenshot: () => driver.screenshot(),
     };
-    this.slots.set(index, s);
-    return s;
+    this.slots.set(index, slot);
+    return slot;
   }
 
   take(index: number, sessionId: string): AgentSlot {

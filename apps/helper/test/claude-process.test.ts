@@ -58,9 +58,14 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     expect(init.nested).toBeNull();
     expect(init.child).toBeNull();
     expect(log.find((e) => e.type === "claude_stdout")).toEqual({ type: "claude_stdout", text: "not json" });
-    expect(events).toEqual([
+    expect(events.filter((e) => e.type !== "trace")).toEqual([
       { type: "status", text: "Claude Code started (sonnet)" },
       { type: "assistant_text", text: `got: ${c.prompt}` },
+    ]);
+    // Its timings go on the same stream, as trace events (the extension keeps them apart).
+    expect(events.flatMap((e) => (e.type === "trace" ? [[e.trace.name, e.trace.src]] : []))).toEqual([
+      ["claude.ready", "helper"],
+      ["claude.result", "helper"],
     ]);
     expect(c.input.closed).toBe(true);
     expect(log.at(-1)).toMatchObject({ type: "claude_exit", code: 0 });
@@ -80,7 +85,8 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     expect(deltas.length).toBeLessThan(15);
     expect(deltas.every((d) => d.id === "msg_fake_1:0")).toBe(true);
     expect(deltas.map((d) => d.text).join("")).toBe(final.text);
-    expect(events.indexOf(final)).toBe(events.length - 1);
+    const shown = events.filter((e) => e.type !== "trace");
+    expect(shown.indexOf(final)).toBe(shown.length - 1);
     expect(log.some((e) => e.type === "claude" && e.event.type === "stream_event")).toBe(false);
     expect(log.some((e) => e.type === "claude" && e.event.type === "assistant")).toBe(true);
   });
@@ -93,7 +99,7 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     const init = log.find((e) => e.type === "claude" && e.event.type === "system")!.event;
     expect(init.args).toEqual(buildClaudeArgs({ ...c, model: "claude-opus-5-5" }));
     expect(log.find((e) => e.type === "claude_start")).toMatchObject({ model: "claude-opus-5-5" });
-    expect(events[0]).toEqual({ type: "status", text: "Claude Code started (claude-opus-5-5)" });
+    expect(events.find((e) => e.type !== "trace")).toEqual({ type: "status", text: "Claude Code started (claude-opus-5-5)" });
   });
 
   it("injects user messages mid-turn into the same session", async () => {

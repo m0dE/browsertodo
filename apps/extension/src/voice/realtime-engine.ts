@@ -7,7 +7,8 @@
  * the request sent for them (RealtimeTurns). Turn-taking and barge-in are
  * OpenAI's server VAD; local playback stops the moment the user speaks.
  */
-import type { AgentEvent, RealtimeVoiceId } from "@browsertodo/shared";
+import { traceStart, type AgentEvent, type RealtimeVoiceId } from "@browsertodo/shared";
+import type { VoiceTracer } from "../trace/panel-trace.js";
 import type { AudioSource } from "./dictation.js";
 import type { EngineEvents, HandsFreeEngine } from "./engine.js";
 import { PcmPlayer } from "./pcm-player.js";
@@ -34,6 +35,8 @@ export interface RealtimeEngineDeps {
   log?(message: string): void;
   openSocket?: OpenSocket;
   player?: Pick<PcmPlayer, "play" | "stop" | "close" | "playing">;
+  /** The conversation's trace: the relay's check (ticket), connecting, each narrator reply, its tool calls. */
+  trace?: VoiceTracer;
 }
 
 export class RealtimeEngine implements HandsFreeEngine {
@@ -57,7 +60,11 @@ export class RealtimeEngine implements HandsFreeEngine {
 
   /** Resolves once the narrator listens; stopped meanwhile (stop()), it closes what it opened and resolves. */
   async start(): Promise<void> {
+    const trace = this.deps.trace;
+    const asking = traceStart();
     const ticket = await this.deps.ticket();
+    // The background asks the account server first (signed in, plan, credit): the relay's pre-check.
+    trace?.record({ t: asking.t, ms: asking.elapsed(), cat: "voice", name: "voice.ticket", data: { waitMs: asking.elapsed() } });
     if (this.stopped) return;
     const ev = this.deps.events;
     let client!: RealtimeClient;
@@ -92,7 +99,11 @@ export class RealtimeEngine implements HandsFreeEngine {
           },
           onTool: (name, args, inputId) => this.tool(name, args, inputId),
           onUserWords: (inputId, text) => this.turns.words(inputId, text),
-          onTurnDone: (inputId) => this.turns.replied(inputId),
+          onTurnDone: (inputId) => {
+            this.turns.replied(inputId);
+            // A turn that sent nothing: its timings stay with the session's chat.
+            trace?.endUtterance(inputCid(inputId));
+          },
           onClose: (f) => {
             if (f) return fail(f);
             // We closed it before it was ready (stop() while connecting): starting is over.
@@ -101,6 +112,8 @@ export class RealtimeEngine implements HandsFreeEngine {
             clearTimeout(timer);
             resolve();
           },
+          // Timings of the user's turn join the message it led to (by its input item).
+          ...(trace ? { onTrace: (e, inputId) => trace.record(inputId ? { ...e, cid: inputCid(inputId) } : e) } : {}),
           log: (m) => this.deps.log?.(m),
         },
       });
@@ -156,6 +169,11 @@ export class RealtimeEngine implements HandsFreeEngine {
 
   private async tool(name: NarratorTool, args: Record<string, unknown>, inputId: string | null): Promise<string> {
     const ev = this.deps.events;
+    const trace = this.deps.trace;
+    // The request goes out as the utterance of the turn that called it (its message carries that id).
+    const cid = inputId ? inputCid(inputId) : undefined;
+    if (trace && cid && name === "send_to_agent") trace.useUtterance(cid);
+    trace?.record({ t: Date.now(), cat: "voice", name: `voice.tool.${name}`, ...(cid ? { cid } : {}) });
     switch (name) {
       case "send_to_agent": {
         const text = typeof args.text === "string" ? args.text.trim() : "";
@@ -191,4 +209,9 @@ export class RealtimeEngine implements HandsFreeEngine {
     this.chunked = 0;
     this.client?.appendAudio(toInt16(all));
   }
+}
+
+/** The trace's correlation id of the user's input item `inputId` (a turn of theirs). */
+export function inputCid(inputId: string): string {
+  return `rt-${inputId.replace(/[^\w-]/g, "").slice(0, 60)}`;
 }

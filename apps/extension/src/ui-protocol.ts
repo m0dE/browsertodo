@@ -13,7 +13,9 @@ import type {
   RepeatRule,
   SessionInfo,
   StampedAgentEvent,
+  TraceEvent,
 } from "@browsertodo/shared";
+import type { TraceBook } from "./trace/trace-book.js";
 import type { RealtimeTicketResult, VoiceEnginesResult } from "./voice/realtime-access.js";
 import type { VoiceClipRequest, VoiceTranscribeResult } from "./voice/transcribe.js";
 import type { ApiKeyInfo, CreatedApiKey, CreditInfo, KeyRole, PlanId, PlanInfo } from "./account/types.js";
@@ -135,6 +137,8 @@ export type UiRequest =
       tabId?: number;
       /** An empty message in Chat: look at the tab's page and do what is needed (instructions may be empty). */
       screen?: boolean;
+      /** Correlation id of this message in the conversation's trace (the panel's own timings of it carry the same). */
+      cid?: string;
     }
   /** Run everything that is due now (local, then cloud if enabled). */
   | { type: "run.due" }
@@ -154,7 +158,7 @@ export type UiRequest =
    * tabId: the browser tab the message was sent from; the conversation
    * belongs to it (and a new one acts there). voice: the text was spoken.
    */
-  | { type: "run.message"; sessionId?: string; text: string; tabId?: number; screen?: boolean; voice?: boolean }
+  | { type: "run.message"; sessionId?: string; text: string; tabId?: number; screen?: boolean; voice?: boolean; cid?: string }
   /**
    * The conversation is over: close its kept-open agent session (a running
    * turn keeps running). tabId: that tab has no conversation any more.
@@ -219,7 +223,11 @@ export type UiRequest =
    * What the user said in Realtime hands-free voice, word for word: kept in its thread (a "heard" event).
    * sent: the request the narrator passed to the agent for it.
    */
-  | { type: "voice.heard"; sessionId: string; text: string; sent?: string };
+  | { type: "voice.heard"; sessionId: string; text: string; sent?: string }
+  /** The side panel's timings of a conversation (voice, sending), for its trace. */
+  | { type: "trace.add"; sessionId: string; events: TraceEvent[] }
+  /** The Raw view: the whole conversation, its timing trace, and what it ran on. */
+  | { type: "trace.get"; sessionId: string };
 
 export type UiResponse<T = unknown> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -286,6 +294,27 @@ export interface UiResults {
   "voice.realtime": RealtimeTicketResult;
   "voice.spoken": { ok: boolean };
   "voice.heard": { ok: boolean };
+  "trace.add": { ok: boolean };
+  "trace.get": RawTrace;
+}
+
+/** What the background knows about where a conversation ran (the panel adds its own: voice, display). */
+export interface TraceEnv {
+  extensionVersion: string;
+  /** The browser as it names itself (navigator.userAgent) and the OS (chrome.runtime.getPlatformInfo). */
+  userAgent: string;
+  os?: string;
+  arch?: string;
+  helper: { version: string; brain: string; jev: boolean } | null;
+}
+
+/** trace.get: a conversation in full (events as stored), with its timing trace. */
+export interface RawTrace {
+  session: SessionInfo;
+  events: StampedAgentEvent[];
+  /** Null for conversations from before traces were kept. */
+  trace: TraceBook | null;
+  env: TraceEnv;
 }
 
 /** Pushed by the background on the UI port. */

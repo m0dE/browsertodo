@@ -23,6 +23,7 @@ import { LocalStore } from "./engine/local-store.js";
 import { MediaFiles } from "./engine/media-files.js";
 import { Runner, type ResolvedBrain } from "./engine/runner.js";
 import { SessionStore } from "./engine/sessions.js";
+import { TraceStore } from "./engine/trace-store.js";
 import { testClaude, testCloud, testJev } from "./engine/settings-tests.js";
 import { UiHub } from "./engine/ui-hub.js";
 import { UiRouter, type ExtraRequest } from "./engine/ui-router.js";
@@ -52,11 +53,18 @@ const vault = new Vault();
 const tabChats = new TabChats();
 // Each running session acts in its own agent tab (slot); slot 0 is the first agent tab.
 // Scheduled runs never take over a tab that has a chat.
-const slots = new AgentSlots(cdp, vault, async (tabId) => (await tabChats.get(tabId)) !== null);
+// Every browser call of a session is timed in its conversation's trace (the Raw view).
+const slots = new AgentSlots(
+  cdp,
+  vault,
+  async (tabId) => (await tabChats.get(tabId)) !== null,
+  (sessionId, call) => sessions.append(sessionId, { type: "trace", trace: { t: call.t, ms: call.ms, cat: "browser", name: call.method, src: "engine", data: call.data } }),
+);
 const { tab: agentTab, driver, browser } = slots.get(0);
 const db = new IdbKvDb();
 const localStore = new LocalStore({ db });
-const sessions = new SessionStore(db);
+// Each conversation's timing trace (Raw view) lives beside its events.
+const sessions = new SessionStore(db, { trace: new TraceStore(db, { log: logger("trace") }) });
 // Claude Code's browser calls name their task session: they are served in that session's tab.
 const helper = new HelperLink({ registerHandlers: (peer) => registerBrowserHandlers(peer, (sessionId) => slots.browserFor(sessionId)) });
 const mediaFiles = new MediaFiles();
@@ -242,6 +250,16 @@ const router = new UiRouter({
     } catch {
       return false;
     }
+  },
+  traceEnv: async () => {
+    const platform = await chrome.runtime.getPlatformInfo().catch(() => null);
+    const h = helper.info;
+    return {
+      extensionVersion: chrome.runtime.getManifest().version,
+      userAgent: navigator.userAgent,
+      ...(platform ? { os: platform.os, arch: platform.arch } : {}),
+      helper: h ? { version: h.version, brain: h.brain ?? "claude", jev: h.jevAvailable } : null,
+    };
   },
   runningTabs: async () => {
     const out: Record<string, number[]> = {};

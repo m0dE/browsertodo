@@ -94,3 +94,22 @@ export function closeMenusOnOutsideClick(selector: string): void {
     }
   });
 }
+
+/**
+ * Copies `text` to the clipboard. Without the clipboard API (older Chrome, no permission) it selects a hidden
+ * textarea inside `host` (e.g. a dialog, when that is the only live part of the page) and copies that.
+ */
+export async function copyText(text: string, host: HTMLElement = document.body): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = h("textarea", { "aria-hidden": "true", tabindex: "-1", style: "position:fixed;opacity:0;pointer-events:none" });
+    area.value = text;
+    host.append(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
+  }
+}

@@ -100,3 +100,58 @@ describe("StandardEngine", () => {
     expect(speaker.cancel).toHaveBeenCalled();
   });
 });
+
+describe("StandardEngine: timing trace", () => {
+  function traced(speaking = false) {
+    const mic = new FakeMic();
+    const ev = events();
+    const records: { name: string; cid?: string; data?: Record<string, unknown> }[] = [];
+    const trace = { record: (e: { name: string; cid?: string; data?: Record<string, unknown> }) => void records.push(e), utterance: () => "u1", useUtterance: () => {}, endUtterance: () => {} };
+    let onStart: (() => void) | undefined;
+    const speaker = {
+      speaking,
+      speak: vi.fn(async (_text: string, opts?: { onStart?: () => void }) => {
+        onStart = opts?.onStart;
+        onStart?.();
+      }),
+      cancel: vi.fn(),
+    };
+    const transcribe = vi.fn(async () => "open gmail");
+    const engine = new StandardEngine({ createSource: () => mic, transcribe, speaker, events: ev, trace, model: () => "@cf/deepgram/nova-3" });
+    return { mic, ev, engine, records };
+  }
+
+  it("speech start, then the transcript from the end of speech: its requests, round trip, size and model", async () => {
+    const { mic, engine, records } = traced();
+    await engine.start();
+    engine.setTranscribing(true);
+    await settle();
+    mic.play(900, true);
+    mic.play(1500, false);
+    await settle();
+    await settle();
+    expect(records.map((r) => r.name)).toEqual(["voice.speech", "voice.transcript"]);
+    expect(records[0]!.cid).toBe("u1");
+    expect(records[1]).toMatchObject({ cid: "u1", data: { chars: 10, reason: "send", model: "@cf/deepgram/nova-3" } });
+    const d = records[1]!.data!;
+    expect(d.requests).toBeGreaterThanOrEqual(1);
+    for (const k of ["lastRequestMs", "lastKB", "waitMs"]) expect(typeof d[k]).toBe("number");
+    engine.stop();
+  });
+
+  it("each line said: queued to started (waited) and its whole length, and whether it was cut off", async () => {
+    const { engine, records } = traced();
+    engine.speak("Opening Gmail.");
+    await settle();
+    expect(records).toEqual([expect.objectContaining({ name: "voice.tts", data: expect.objectContaining({ chars: 14, cut: false, startMs: expect.any(Number), waitMs: expect.any(Number) }) })]);
+  });
+
+  it("a barge-in is recorded as such", async () => {
+    const { mic, engine, records } = traced(true);
+    await engine.start();
+    engine.setTranscribing(false);
+    mic.play(HANDS_FREE.bargeInMs + 100, true);
+    expect(records.map((r) => r.name)).toEqual(["voice.barge_in"]);
+    engine.stop();
+  });
+});

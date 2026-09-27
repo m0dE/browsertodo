@@ -1,4 +1,5 @@
 import type { TaskOutcome, TaskSource } from "./task.js";
+import type { TraceEvent } from "./trace.js";
 
 /**
  * Everything an agent run emits, in order. Both brains produce these, the
@@ -68,7 +69,13 @@ export type AgentEvent =
    * request's own voice message then shows these words instead). Written by
    * the side panel, never by a brain.
    */
-  | { type: "heard"; text: string; sent?: string };
+  | { type: "heard"; text: string; sent?: string }
+  /**
+   * Timing for the conversation's trace (trace.ts): a model call, a tool's
+   * duration, Claude Code's start. Never shown in the chat or stored with the
+   * events: the extension keeps it in the conversation's trace.
+   */
+  | { type: "trace"; trace: TraceEvent };
 
 /** Element picks of act steps (clicks and typing) in a turn: by Jev, or by Claude naming an index. */
 export interface ElementPicks {

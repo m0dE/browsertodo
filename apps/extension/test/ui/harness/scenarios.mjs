@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { RAW_SESSION as rawSessionId, rawScenario } from "./raw-scenario.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const COMMANDS = JSON.parse(readFileSync(join(root, "static", "manifest.json"), "utf8")).commands;
@@ -510,5 +511,7 @@ export function scenario(kind) {
   const shortcut = kind === "noshortcut" ? "" : SHORTCUT;
   const voiceShortcut = kind === "noshortcut" ? "" : VOICE_SHORTCUT;
   // Log In in the stub signs in as a subscriber (the TODO tab then shows the list).
-  return { state, tasks, tasksSource, tasksLocked, signInPlan: PLUS, keys, events, sessions, eventsBySession, shortcut, voiceShortcut, pastEvents: events.slice(0, 6).map((e) => ({ ...e, sessionId: "s-2" })) };
+  // The Raw view: a two-turn voice conversation with its timing trace (raw-scenario.mjs).
+  const traces = kind === "raw" ? { [rawSessionId]: rawScenario({ state, sessions, eventsBySession }) } : {};
+  return { state, tasks, tasksSource, tasksLocked, signInPlan: PLUS, keys, events, sessions, eventsBySession, traces, shortcut, voiceShortcut, pastEvents: events.slice(0, 6).map((e) => ({ ...e, sessionId: "s-2" })) };
 }

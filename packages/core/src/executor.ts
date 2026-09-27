@@ -22,6 +22,9 @@ import {
   type ToolArgsOf,
   type ToolName,
   type ToolResult,
+  traceStart,
+  traceText,
+  type TraceDraft,
 } from "@browsertodo/shared";
 import type { BrowserCaller, ToolExecutor, ToolExecutorOptions } from "./types.js";
 import { createActGate, runAct } from "./act.js";
@@ -51,6 +54,18 @@ function withExtras(r: TaskRunResult, extras: { suggestion?: string | undefined;
   return out;
 }
 
+/** The trace of one tool call: how long it took and how big its answer was (what the model reads). */
+function toolSpan(span: { t: number; elapsed: () => number }, id: string, name: string, args: unknown, result: ToolResult): TraceDraft {
+  const data: NonNullable<TraceDraft["data"]> = { tool: name, id, args: traceText(args), chars: result.text?.length ?? 0 };
+  // base64 is 4 characters per 3 bytes.
+  if (result.image) data.imageKB = Math.round((result.image.base64.length * 3) / 4 / 1024);
+  if (result.isError) {
+    data.error = true;
+    data.detail = traceText(result.text ?? "");
+  }
+  return { t: span.t, ms: span.elapsed(), cat: "tool", name: "tool", data };
+}
+
 /** Case- and slash-insensitive path key, for comparing upload paths with mediaPaths. */
 function pathKey(p: string): string {
   return p.trim().replace(/\\/g, "/").replace(/\/+/g, "/").toLowerCase();
@@ -73,6 +88,15 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
       /* a listener must not break tool execution */
     }
   };
+  const trace = opts.onTrace
+    ? (e: TraceDraft) => {
+        try {
+          opts.onTrace!(secrets.redact(e));
+        } catch {
+          /* a listener must not break tool execution */
+        }
+      }
+    : undefined;
   /** Notes the browser attaches to results (e.g. "Using fallback mode…"), shown once with the next tool result. */
   const notes: string[] = [];
   const browser = async <M extends BrowserMethod>(method: M, params: BrowserMethods[M]["params"]) => {
@@ -201,6 +225,7 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
           sleep,
           emit,
           gate,
+          ...(trace ? { trace } : {}),
           // The hosted Jev and the hosted AI share one credit: pause the task, like a 402 from the Messages API does.
           outOfCredit: () => endTask({ outcome: "paused", reason: OUT_OF_CREDIT }, "Task paused: the account is out of usage credit. Stop now."),
         });
@@ -229,10 +254,12 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
     },
     async call(name: ToolName, args: unknown): Promise<ToolResult> {
       const id = `t${nextId++}`;
+      const span = traceStart();
       // Candidates Jev left to the model stay valid only while the page is left alone.
       if (!KEEPS_PENDING.has(name)) gate.pending.clear();
       // Arguments can be long (a pasted text): each string is clipped like any other event text.
-      emit({ type: "tool_call", id, name, args: mapStrings(args ?? {}, (s) => clipEventText(s)) });
+      const shownArgs = mapStrings(args ?? {}, (s) => clipEventText(s));
+      emit({ type: "tool_call", id, name, args: shownArgs });
       let result: ToolResult;
       try {
         if (!(TOOL_NAMES as string[]).includes(name)) {
@@ -259,6 +286,7 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
       if (text !== undefined) ev.text = clipEventText(text);
       if (result.isError) ev.isError = true;
       emit(ev);
+      trace?.(toolSpan(span, id, name, shownArgs, result));
       return result;
     },
   };

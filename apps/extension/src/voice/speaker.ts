@@ -23,8 +23,8 @@ export class Speaker {
     private readonly makeUtterance: MakeUtterance = (text) => new SpeechSynthesisUtterance(text),
   ) {}
 
-  /** Says `text`; resolves when it is over (finished, cut off or failed). */
-  speak(text: string): Promise<void> {
+  /** Says `text`; resolves when it is over (finished, cut off or failed). onStart: the voice started (the browser may take a moment). */
+  speak(text: string, opts: { onStart?: () => void } = {}): Promise<void> {
     this.cancel();
     const { voice, rate } = this.settings();
     const u = this.makeUtterance(text);
@@ -40,6 +40,7 @@ export class Speaker {
         resolve();
       };
       this.current = { utterance: u, done };
+      u.onstart = () => opts.onStart?.();
       u.onend = done;
       u.onerror = done;
       this.synth.speak(u);

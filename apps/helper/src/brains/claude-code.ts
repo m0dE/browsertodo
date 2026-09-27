@@ -14,6 +14,7 @@ import { DeltaBatcher, MAX_ASSISTANT_TEXT, clipEventText, type AgentEvent } from
 import { humanMessage, plainErrorText } from "@browsertodo/core";
 import { claudeEnv, isolatedClaudeArgs, killTree } from "../claude-process.js";
 import { LineSplitter } from "../line-framing.js";
+import { ClaudeStreamTimer } from "./claude-timing.js";
 import type { Brain, BrainContext } from "./brain.js";
 
 export function buildClaudeArgs(opts: { systemPrompt: string; mcpConfigPath: string; allowedTools: string[]; model: string }): string[] {
@@ -200,6 +201,11 @@ export class ClaudeCodeBrain implements Brain {
       } catch (e) {
         return reject(e);
       }
+      const mapper = new ClaudeStreamMapper();
+      // Live text goes out in ~50 ms batches; every other event first sends what is pending.
+      const out = new DeltaBatcher(ctx.emit);
+      const timer = new ClaudeStreamTimer((trace) => out.emit({ type: "trace", trace: { ...trace, src: "helper" } }));
+      timer.spawned();
       const stdin = child.stdin!;
       stdin.on("error", (e) => ctx.log({ type: "claude_stdin_error", message: e.message }));
 
@@ -212,6 +218,7 @@ export class ClaudeCodeBrain implements Brain {
         if (stdin.destroyed || stdin.writableEnded) return;
         sent++;
         stdin.write(userMessageLine(text));
+        timer.sent();
       };
       send(ctx.prompt);
       ctx.input.onMessage((text, kind) => {
@@ -229,9 +236,6 @@ export class ClaudeCodeBrain implements Brain {
       };
       ctx.signal.addEventListener("abort", onAbort, { once: true });
 
-      const mapper = new ClaudeStreamMapper();
-      // Live text goes out in ~50 ms batches; every other event first sends what is pending.
-      const out = new DeltaBatcher(ctx.emit);
       const lines = new LineSplitter();
       child.stdout!.on("data", (chunk: Buffer) => {
         for (const line of lines.push(chunk)) {
@@ -243,6 +247,7 @@ export class ClaudeCodeBrain implements Brain {
             continue;
           }
           if (!isNoisyStreamLine(event)) ctx.log({ type: "claude", event: withoutBase64Data(event) });
+          timer.line(event);
           // Claude Code repeats its init event for every turn; "started" is said once per session.
           const ev = asStreamLine(event);
           const isInit = ev?.type === "system" && ev.subtype === "init";

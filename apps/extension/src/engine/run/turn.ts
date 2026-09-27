@@ -4,7 +4,7 @@
  * brain's events into the session, and the checks on the result (X post
  * verification, failure classification). Next turns: conversation.ts.
  */
-import { bareToolName, errorMessage, isXStatusUrl, type AgentEvent, type AgentTask, type ExtensionSettings, type RunConfig, type SessionInfo, type TaskRunResult, type UserTab } from "@browsertodo/shared";
+import { bareToolName, errorMessage, isXStatusUrl, traceStart, type AgentEvent, type AgentTask, type ExtensionSettings, type RunConfig, type SessionInfo, type TaskRunResult, type TraceCategory, type TraceValue, type UserTab } from "@browsertodo/shared";
 import type { AgentSlot } from "../../agent-slots.js";
 import { SessionEndedError, type Brain, type BrainRun, type ContinuableBrain, type CoreApi } from "../brains.js";
 import type { LocalStore } from "../local-store.js";
@@ -114,6 +114,21 @@ export class TurnRunner {
     this.deps.sessions.append(active.session.sessionId, e);
   }
 
+  /** Runs `work` and records how long it took in the conversation's trace (also when it throws). */
+  async timed<T>(active: ActiveSession, name: string, work: () => Promise<T>, data: Record<string, TraceValue> = {}, cat: TraceCategory = "turn"): Promise<T> {
+    const span = traceStart();
+    try {
+      return await work();
+    } finally {
+      this.emit(active, { type: "trace", trace: { t: span.t, ms: span.elapsed(), cat, name, src: "engine", data } });
+    }
+  }
+
+  /** Picks the turn's tab and attaches the debugger (timed: engine.tab). */
+  prepareTab(active: ActiveSession, opts: Parameters<ActiveSession["slot"]["prepare"]>[0]): Promise<number> {
+    return this.timed(active, "engine.tab", () => active.slot.prepare(opts), { mode: opts.mode ?? "own-tab" });
+  }
+
   /**
    * The first turn of a new session: picks its tab, writes its files, starts
    * the brain and waits for the result. One-off runs act on the tab they were
@@ -136,11 +151,11 @@ export class TurnRunner {
     const restricted = !!page && isRestrictedUrl(page.url);
     let picked: number;
     if (origin === undefined) {
-      picked = await active.slot.prepare({ mode: adhoc ? "current-tab" : "own-tab" });
+      picked = await this.prepareTab(active, { mode: adhoc ? "current-tab" : "own-tab" });
       if (restricted) this.emit(active, { type: "status", text: RESTRICTED_STATUS });
     } else {
       // Not brought to the front: the user may have moved on to another tab already.
-      picked = await active.slot.prepare({ mode: "current-tab", tabId: origin });
+      picked = await this.prepareTab(active, { mode: "current-tab", tabId: origin });
       await this.follow(active, origin, picked, restricted);
     }
     // The agent is told which page the user is looking at (buildTaskPrompt); scheduled and TODO tasks have none.
@@ -184,13 +199,15 @@ export class TurnRunner {
 
   /** Writes the files to disk for the brain; they are deleted with the cleanups. */
   async materialize(active: ActiveSession, sources: MediaSource[], cleanups: Cleanup[]): Promise<string[]> {
-    const media = await this.deps.media.materialize(active.session.sessionId, sources);
+    const materialize = () => this.deps.media.materialize(active.session.sessionId, sources);
+    const media = sources.length ? await this.timed(active, "engine.media", materialize, { files: sources.length }) : await materialize();
     cleanups.push(() => media.cleanup());
     return media.paths;
   }
 
   /** Starts the brain on a task in the session's tab. */
   start(active: ActiveSession, brain: Brain, opts: { task: AgentTask; mediaPaths: string[]; config: RunConfig; settings: ExtensionSettings }): BrainRun {
+    this.mark(active, "brain.start", { brain: brain.kind, fresh: true, chars: opts.task.instructions.length });
     return brain.start({
       sessionId: active.session.sessionId,
       ...opts,
@@ -201,12 +218,18 @@ export class TurnRunner {
 
   /** The next turn in the conversation's own agent session (the brain has continue()). */
   continue(active: ActiveSession, brain: ContinuableBrain, opts: { text: string; config: RunConfig; settings: ExtensionSettings }): BrainRun {
+    this.mark(active, "brain.start", { brain: brain.kind, fresh: false, chars: opts.text.length });
     return brain.continue({
       sessionId: active.session.sessionId,
       ...opts,
       browser: active.slot.browser,
       onEvent: (e) => this.onBrainEvent(active, e),
     });
+  }
+
+  /** A moment in the conversation's trace. */
+  mark(active: ActiveSession, name: string, data: Record<string, TraceValue>): void {
+    this.emit(active, { type: "trace", trace: { t: Date.now(), cat: "brain", name, src: "engine", data } });
   }
 
   /**

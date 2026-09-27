@@ -6,7 +6,7 @@
  */
 import type { SessionInfo } from "@browsertodo/shared";
 import { uiRequest } from "../ui-protocol.js";
-import { h } from "../ui/dom.js";
+import { copyText, h } from "../ui/dom.js";
 import { detailsModel, linkParts, type DetailsInput, type DetailsModel, type DetailsTask } from "./task-details.js";
 
 export interface SheetOptions {
@@ -21,22 +21,6 @@ export function renderText(text: string): HTMLElement {
     null,
     ...linkParts(text).map((p) => ("url" in p ? h("a", { href: p.url, target: "_blank", rel: "noopener noreferrer" }, p.url) : p.text)),
   );
-}
-
-async function copyText(text: string, host: HTMLElement): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    // Older Chrome or no clipboard permission: the selection way (inside the dialog, which is the only live part).
-    const area = h("textarea", { "aria-hidden": "true", tabindex: "-1", style: "position:fixed;opacity:0;pointer-events:none" });
-    area.value = text;
-    host.append(area);
-    area.select();
-    const ok = document.execCommand("copy");
-    area.remove();
-    return ok;
-  }
 }
 
 let current: HTMLDialogElement | null = null;

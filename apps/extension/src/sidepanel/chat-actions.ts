@@ -1,5 +1,5 @@
 /**
- * The Chat tab's action bar (New chat | Show tab): whether each
+ * The Chat tab's action bar (New chat | Show tab | Raw): whether each
  * action applies to the chat on screen, and a tooltip that says what it does
  * or why it cannot be used. Pure.
  */
@@ -13,7 +13,11 @@ export interface BarAction {
 export interface ChatActions {
   newChat: BarAction;
   showTab: BarAction;
+  raw: BarAction;
 }
+
+/** The Raw button's tooltip (it applies to any conversation, running or not). */
+export const RAW_TITLE = "The whole conversation with how long each step took (to find what is slow); copy it or download it for the developer";
 
 type Shown = Pick<SessionInfo, "sessionId" | "endedAt">;
 
@@ -23,6 +27,7 @@ export function chatActions(shown: Shown | null, running: ReadonlySet<string>): 
     return {
       newChat: { disabled: true, title: "This is already a new chat: type below to start" },
       showTab: { disabled: true, title: "No chat yet, so there is no agent tab to show" },
+      raw: { disabled: true, title: "No chat yet: send a message, then Raw shows it with its timings" },
     };
   }
   const isRunning = running.has(shown.sessionId) && !shown.endedAt;
@@ -37,5 +42,6 @@ export function chatActions(shown: Shown | null, running: ReadonlySet<string>): 
     showTab: isRunning
       ? { disabled: false, title: "Switch to the tab the agent is using" }
       : { disabled: true, title: "The agent has no tab for this chat right now: it only has one while it is working" },
+    raw: { disabled: false, title: RAW_TITLE },
   };
 }

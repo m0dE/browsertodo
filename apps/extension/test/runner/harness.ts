@@ -11,6 +11,7 @@ import { LocalStore } from "../../src/engine/local-store.js";
 import type { MediaSource } from "../../src/engine/media-files.js";
 import { Runner, type RunnerDeps } from "../../src/engine/runner.js";
 import { SessionStore } from "../../src/engine/sessions.js";
+import { TraceStore } from "../../src/engine/trace-store.js";
 import type { BrainStatus } from "../../src/ui-protocol.js";
 
 /** The chrome fake and the fake clock of the current test (reset before each test by setupRunnerTests). */
@@ -159,7 +160,7 @@ export function harness(overrides: Partial<ExtensionSettings> = {}): Harness {
   let n = 0;
   const now = () => new Date(env.clock);
   const store = new LocalStore({ db, now, newId: () => `t${++n}` });
-  const sessions = new SessionStore(db, { now });
+  const sessions = new SessionStore(db, { now, trace: new TraceStore(db) });
   const brain = new FakeBrain();
   const h = {
     brain,

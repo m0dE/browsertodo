@@ -31,12 +31,16 @@
           <button id="chat-new" type="button" class="bar-btn">New chat</button>
           <span class="bar-sep" aria-hidden="true"></span>
           <button id="chat-show" type="button" class="bar-btn">Show tab</button>
+          <span class="bar-sep" aria-hidden="true"></span>
+          <button id="chat-raw-btn" type="button" class="bar-btn" aria-pressed="false" aria-controls="chat-raw">Raw</button>
         </div>
         <!-- Chats running in other tabs: one chip each (the conversation itself opens with its prompt, in the log). -->
         <div id="chat-head" class="act-head" hidden>
           <div id="chat-switch" class="act-switch" role="group" aria-label="Chats running in other tabs" hidden></div>
         </div>
         <div id="chat-log" class="log scroll" aria-live="polite"></div>
+        <!-- Raw: the conversation with its timings (raw-view.ts), in place of the log while open. -->
+        <div id="chat-raw" class="raw" role="region" aria-label="Raw conversation with timings" hidden></div>
       </section>
 
       <!-- TODO -->

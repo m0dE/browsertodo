@@ -11,7 +11,8 @@
  * nothing. After a turn, Chat offers the agent's follow-up suggestion faded
  * in the box (see suggestion.ts): Tab takes it, it is never sent by itself.
  */
-import { errorMessage, type SessionInfo } from "@browsertodo/shared";
+import { errorMessage, traceStart, type SessionInfo } from "@browsertodo/shared";
+import type { PanelTrace } from "../trace/panel-trace.js";
 import { uiRequest, type UiRequest, type UiState } from "../ui-protocol.js";
 import { $, busy } from "../ui/dom.js";
 import { errorHelp } from "./error-help.js";
@@ -104,6 +105,8 @@ export function initComposer(opts: {
   onTopup?: () => void;
   /** The browser tab the panel is showing the chat of (null: unknown). */
   tabId?: () => number | null;
+  /** The conversation's trace: when each message was sent and how long the background took to take it. */
+  trace?: Pick<PanelTrace, "newCid" | "record" | "bind">;
 }): ComposerView {
   const tab = (): { tabId?: number } => {
     const id = opts.tabId?.() ?? null;
@@ -215,6 +218,23 @@ export function initComposer(opts: {
     fit();
   };
 
+  /**
+   * A message is going out: its correlation id for the trace, and once the background took it (in `sessionId`),
+   * a "user.send" event with how long that took.
+   */
+  const traced = (chars: number) => {
+    const cid = opts.trace?.newCid();
+    const span = traceStart();
+    return {
+      cid: cid ? { cid } : {},
+      sent(sessionId: string, mode: string) {
+        if (!cid || !opts.trace) return;
+        opts.trace.record({ t: span.t, ms: span.elapsed(), cat: "user", name: "user.send", cid, data: { chars, mode, via: "typed" } });
+        opts.trace.bind(cid, sessionId);
+      },
+    };
+  };
+
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     const value = text.value.trim();
@@ -222,6 +242,7 @@ export function initComposer(opts: {
     const m = mode();
     const t = target();
     dismissSuggestion();
+    const sending = traced(value.length);
     void busy(
       submit,
       async () => {
@@ -229,7 +250,8 @@ export function initComposer(opts: {
           clearInput();
           if (m === "conversation") progress("Sending…");
           try {
-            await uiRequest({ type: "run.message", sessionId: t.sessionId, text: value, ...tab() });
+            const r = await uiRequest({ type: "run.message", sessionId: t.sessionId, text: value, ...tab(), ...sending.cid });
+            sending.sent(r.sessionId, r.mode);
           } catch (err) {
             // Not sent: the text goes back into the box.
             text.value = value;
@@ -243,7 +265,8 @@ export function initComposer(opts: {
         progress("Starting…");
         const media = await filesToUploads(files.files());
         // No account field here: the agent picks up accounts named in the text ("post this from @beta").
-        const { sessionId } = await uiRequest({ type: "run.adhoc", instructions: value, ...(media.length ? { media } : {}), ...tab() });
+        const { sessionId } = await uiRequest({ type: "run.adhoc", instructions: value, ...(media.length ? { media } : {}), ...tab(), ...sending.cid });
+        sending.sent(sessionId, "new");
         clearInput();
         files.clear();
         settled();

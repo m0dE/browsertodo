@@ -30,7 +30,8 @@
  * closes, so the microphone is never on without the indicator in view.
  */
 import type { AccountView } from "../ui-protocol.js";
-import { errorMessage, type AgentEvent, type ExtensionSettings, type StampedAgentEvent, type VoiceEngine, type VoiceEngineId, type VoiceEnginesResponse } from "@browsertodo/shared";
+import { errorMessage, traceStart, type AgentEvent, type ExtensionSettings, type StampedAgentEvent, type VoiceEngine, type VoiceEngineId, type VoiceEnginesResponse } from "@browsertodo/shared";
+import type { PanelTrace } from "../trace/panel-trace.js";
 import { h } from "../ui/dom.js";
 import { chooseEngine, costPerMinuteText } from "../voice/engine-choice.js";
 import type { EngineEvents, HandsFreeEngine } from "../voice/engine.js";
@@ -91,8 +92,11 @@ export interface HandsFreeDeps {
   chatOf(tabId: number | null): string | null;
   /** The tabs a chat lives in now: the tab it belongs to and the tabs its running task works in. */
   tabsOf(sessionId: string): readonly number[];
-  /** Sends what was said to chat `sessionId` (null: starts one in `tabId`); resolves with the chat's id. */
-  send(text: string, target: { tabId: number | null; sessionId: string | null }): Promise<string>;
+  /**
+   * Sends what was said to chat `sessionId` (null: starts one in `tabId`); resolves with the chat's id.
+   * cid: the utterance's correlation id in the conversation's trace.
+   */
+  send(text: string, target: { tabId: number | null; sessionId: string | null }, cid?: string): Promise<string>;
   /** A tab's title, for the pill on other tabs. */
   tabTitle(tabId: number): Promise<string | null>;
   /** Shows a tab (Go to tab). */
@@ -117,6 +121,8 @@ export interface HandsFreeDeps {
   onActive(active: boolean): void;
   /** Where the pill goes (the notice row above the input). */
   host: HTMLElement;
+  /** The conversation's trace: what was heard, the sending window, and how long the message took to go out. */
+  trace?: Pick<PanelTrace, "record" | "utterance" | "endUtterance" | "bind" | "target">;
   log?(message: string): void;
   now?(): number;
 }
@@ -171,6 +177,15 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   let sending: Promise<void> = Promise.resolve();
   const chatNow = () => chatId ?? deps.chatOf(tab);
   const follower = new ChatFollower(chatNow);
+  const trace = deps.trace;
+  // Voice events without an utterance (lines said, the narrator's updates) belong to the chat the session talks to.
+  if (trace) trace.target = () => (on() ? chatNow() : null);
+  /** When the words to send were heard (the sending window starts). */
+  let heardAt: number | null = null;
+  const heard = (text: string) => {
+    heardAt = Date.now();
+    trace?.record({ t: heardAt, cat: "voice", name: "voice.heard", cid: trace.utterance(), data: { chars: text.length } });
+  };
   const on = () => state.phase !== "off" || starting;
   /** Adds the tabs the session's chat works in now to its own. */
   const learnTabs = () => {
@@ -284,6 +299,9 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       case "cancelled":
         if (wroteBox) deps.composer.setDraft(boxBase);
         wroteBox = false;
+        heardAt = null;
+        trace?.record({ t: Date.now(), cat: "voice", name: "voice.cancelled", cid: trace.utterance() });
+        trace?.endUtterance();
         deps.notify({ text: "Cancelled.", level: "info" });
         break;
       case "end":
@@ -299,11 +317,26 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     if (wroteBox) deps.composer.setDraft("");
     wroteBox = false;
     boxBase = "";
+    const cid = trace?.utterance();
+    // The sending window (cancellable) was waiting too.
+    if (trace && heardAt !== null) {
+      const waited = Date.now() - heardAt;
+      trace.record({ t: heardAt, ms: waited, cat: "voice", name: "voice.send_window", cid: cid!, data: { waitMs: waited } });
+    }
+    heardAt = null;
+    const delivery = traceStart();
     try {
-      chatId = await deps.send(text, { tabId: tab, sessionId: chatNow() });
+      const target = { tabId: tab, sessionId: chatNow() };
+      chatId = await (cid === undefined ? deps.send(text, target) : deps.send(text, target, cid));
+      if (trace && cid) {
+        const ms = delivery.elapsed();
+        trace.record({ t: delivery.t, ms, cat: "voice", name: "voice.deliver", cid, data: { chars: text.length, waitMs: ms } });
+        trace.bind(cid, chatId);
+      }
     } catch (err) {
       deps.notify({ ...failureTip(err), key: "voice" });
     }
+    trace?.endUtterance();
     syncChat();
   }
 
@@ -329,7 +362,10 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       speech: () => alive(() => dispatch({ type: "speech", now: now() }))(),
       heard: (text, forward) =>
         alive(() => {
+          if (forward && text.trim()) heard(text);
           dispatch({ type: "heard", text, forward, now: now() });
+          // Not going out (a stop word, nothing said): the utterance is over.
+          if (state.phase !== "sending") trace?.endUtterance();
           if (state.phase === "sending") showWords("");
           else if (!forward && state.phase !== "off" && wroteBox) {
             deps.composer.setDraft(boxBase);
@@ -345,7 +381,12 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
           dispatch({ type: "said", now: now() });
         })(),
       narratorText: (t) => alive(() => narratorWords(t))(),
-      forward: (text) => alive(() => dispatch({ type: "forward", text, now: now() }))(),
+      forward: (text) =>
+        alive(() => {
+          // Realtime sends at once (no sending window).
+          trace?.record({ t: Date.now(), cat: "voice", name: "voice.forward", cid: trace.utterance(), data: { chars: text.length } });
+          dispatch({ type: "forward", text, now: now() });
+        })(),
       userWords: (words, sent) => alive(() => void keepWords(words, sent))(),
       stopTask: () => deps.stopTask(chatNow()),
       endVoice: () => stop("narrator"),
@@ -355,6 +396,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
 
   /** Why an engine stopped: Realtime trouble that Standard can cover switches over; anything else ends the session. */
   async function onEngineFailure(err: unknown): Promise<void> {
+    traceFailure(engine?.id ?? null, err);
     const f = err as Partial<RealtimeFailure>;
     if (engine?.id === "realtime" && f.fallback && f.message) {
       engine.stop();
@@ -365,6 +407,12 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     }
     finish(null);
     deps.notify(failureTip(err));
+  }
+
+  /** An engine could not start or go on: an error in the trace of the chat the session talks to. */
+  function traceFailure(id: VoiceEngineId | null, err: unknown): void {
+    const message = (err as Partial<RealtimeFailure>)?.message ?? errorMessage(err);
+    trace?.record({ t: Date.now(), cat: "error", name: "voice.failed", data: { engine: id, error: message.slice(0, 160) } });
   }
 
   function failureTip(err: unknown): VoiceTip {
@@ -384,6 +432,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       await e.start();
     } catch (err) {
       if (engine !== e) return false; // stopped meanwhile
+      traceFailure(id, err);
       e.stop();
       engine = null;
       const f = err as Partial<RealtimeFailure>;

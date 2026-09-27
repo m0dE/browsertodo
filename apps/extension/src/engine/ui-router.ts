@@ -2,11 +2,11 @@
  * Background side of ui-protocol.ts: answers every UiRequest. The pushes to
  * the side panel are in ui-hub.ts.
  */
-import { errorMessage, IssuableKeyRole, redactSettings, type ExtensionSettings, type HelperInfo, type HelperMethods } from "@browsertodo/shared";
+import { errorMessage, IssuableKeyRole, MAX_TRACE_TEXT, redactSettings, type ExtensionSettings, type HelperInfo, type HelperMethods, type TraceCategory, type TraceEvent, type TraceValue } from "@browsertodo/shared";
 import type { AccountService } from "../account/account.js";
 import { LocalTodo, type TodoSource } from "../account/todo-source.js";
 import { HELPER_CALL_TIMEOUT_MS } from "../helper-link.js";
-import type { BrainStatus, UiRequest, UiResponse, UiResults, UiState } from "../ui-protocol.js";
+import type { BrainStatus, TraceEnv, UiRequest, UiResponse, UiResults, UiState } from "../ui-protocol.js";
 import { realtimeTicketForPanel, voiceEnginesForPanel, type RealtimeAccount } from "../voice/realtime-access.js";
 import { transcribeForPanel, type VoiceAccount } from "../voice/transcribe.js";
 import type { LocalStore } from "./local-store.js";
@@ -70,6 +70,8 @@ export interface UiRouterDeps {
   runningTabs?(): Promise<Record<string, number[]>>;
   /** Activates a browser tab and focuses its window. */
   focusTab?(tabId: number): Promise<boolean>;
+  /** Where conversations run (extension, browser, OS, helper), for the Raw view's export. */
+  traceEnv?(): Promise<TraceEnv>;
 }
 
 /** The helper log's last lines for helper.getLog: by default, and at most. */
@@ -109,6 +111,13 @@ export class UiRouter {
     if (rs.lastError) state.lastError = rs.lastError;
     if (next) state.nextRunAt = next;
     return state;
+  }
+
+  /** Where conversations run, for trace.get (a stand-in when the background did not say). */
+  private async traceEnv(): Promise<TraceEnv> {
+    if (this.deps.traceEnv) return this.deps.traceEnv();
+    const h = this.deps.helper.info;
+    return { extensionVersion: "", userAgent: "", helper: h ? { version: h.version, brain: h.brain ?? "claude", jev: h.jevAvailable } : null };
   }
 
   /** The last state's stamp (UiState.rev): a newer state always has a higher one, also after a restart (it is the clock). */
@@ -161,7 +170,7 @@ export class UiRouter {
         const tab = optTab(msg.tabId);
         if (tab !== undefined) input.tabId = tab;
         if (msg.screen === true) input.screen = true;
-        return d.runner.runAdhoc(input) satisfies Promise<UiResults["run.adhoc"]>;
+        return d.runner.runAdhoc(input, optCid(msg.cid)) satisfies Promise<UiResults["run.adhoc"]>;
       }
       case "run.continue": {
         if (typeof msg.sessionId !== "string" || !msg.sessionId) throw new Error("sessionId is required");
@@ -176,8 +185,14 @@ export class UiRouter {
         const tab = optTab(msg.tabId);
         const screen = msg.screen === true;
         const voice = msg.voice === true;
+        const cid = optCid(msg.cid);
         // Sent from a tab: the runner binds the conversation to it once the message is taken.
-        return d.runner.message(sessionId, text, { ...(tab === undefined ? {} : { tabId: tab }), ...(screen ? { screen } : {}), ...(voice ? { voice } : {}) }) satisfies Promise<UiResults["run.message"]>;
+        return d.runner.message(sessionId, text, {
+          ...(tab === undefined ? {} : { tabId: tab }),
+          ...(screen ? { screen } : {}),
+          ...(voice ? { voice } : {}),
+          ...(cid ? { cid } : {}),
+        }) satisfies Promise<UiResults["run.message"]>;
       }
       case "run.newChat": {
         const tab = optTab(msg.tabId);
@@ -319,10 +334,50 @@ export class UiRouter {
         const heard = { type: "heard" as const, text, ...(sent ? { sent } : {}) };
         return { ok: !!(await d.sessions.note(sessionId, heard)) } satisfies UiResults["voice.heard"];
       }
+      case "trace.add": {
+        const sessionId = optId(msg.sessionId);
+        if (!sessionId) throw new Error("sessionId is required");
+        const events = (Array.isArray(msg.events) ? msg.events : []).slice(0, MAX_PANEL_TRACE_EVENTS).map(panelTraceEvent).filter((e): e is TraceEvent => e !== null);
+        return { ok: await d.sessions.addTrace(sessionId, events) } satisfies UiResults["trace.add"];
+      }
+      case "trace.get": {
+        const session = await d.sessions.get(msg.sessionId);
+        if (!session) throw new Error(`No session ${msg.sessionId}`);
+        const [events, trace, env] = await Promise.all([d.sessions.eventsOf(msg.sessionId), d.sessions.traceOf(msg.sessionId), this.traceEnv()]);
+        return { session, events, trace, env } satisfies UiResults["trace.get"];
+      }
       default:
         throw new Error(`Unknown request type: ${String((msg as { type?: unknown }).type)}`);
     }
   }
+}
+
+/** Trace events one trace.add may carry. */
+const MAX_PANEL_TRACE_EVENTS = 200;
+const PANEL_CATEGORIES = new Set<TraceCategory>(["user", "voice", "error"]);
+
+/** A trace event from the side panel, checked and bounded (null when it is not one); it is the panel's. */
+function panelTraceEvent(v: unknown): TraceEvent | null {
+  const e = (v && typeof v === "object" ? v : {}) as Partial<TraceEvent>;
+  if (typeof e.t !== "number" || !Number.isFinite(e.t) || typeof e.name !== "string" || !PANEL_CATEGORIES.has(e.cat as TraceCategory)) return null;
+  const out: TraceEvent = { t: e.t, cat: e.cat as TraceCategory, name: e.name.slice(0, 60), src: "panel" };
+  if (typeof e.ms === "number" && Number.isFinite(e.ms) && e.ms >= 0) out.ms = e.ms;
+  const cid = optCid(e.cid);
+  if (cid) out.cid = cid;
+  if (e.data && typeof e.data === "object") {
+    const data: Record<string, TraceValue> = {};
+    for (const [k, x] of Object.entries(e.data).slice(0, 24)) {
+      if (typeof x === "string") data[k.slice(0, 40)] = x.slice(0, MAX_TRACE_TEXT);
+      else if ((typeof x === "number" && Number.isFinite(x)) || typeof x === "boolean" || x === null) data[k.slice(0, 40)] = x;
+    }
+    out.data = data;
+  }
+  return out;
+}
+
+/** A correlation id from a UI message, or undefined. */
+function optCid(v: unknown): string | undefined {
+  return typeof v === "string" && /^[\w-]{1,64}$/.test(v) ? v : undefined;
 }
 
 /** The account's Realtime voice side, when it has one. */

@@ -135,6 +135,7 @@ button[aria-disabled="true"]:hover { border-color: var(--border); }
 .bar-btn:hover:not([aria-disabled="true"]):not(:disabled) { color: var(--text); background: var(--hover); }
 .bar-btn[aria-disabled="true"] { opacity: 0.5; }
 .bar-sep { flex: none; width: 1px; height: 12px; background: var(--border); }
+.bar-btn[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
 
 /* Chat: chats running in other tabs, under the action bar */
 .act-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
@@ -643,3 +644,55 @@ body:has(.voice-orb:not([hidden])) .composer { z-index: var(--z-above-veil); }
   .voice-mic::after { transition: none; transform: none; }
   .voice-mic.nudge { animation: none; outline: 2px solid var(--accent); }
 }
+
+/* Raw: the conversation with its timings (raw-view.ts), in place of the log.
+   Proportional text for what happened; monospace only for times, durations and raw details. */
+.raw { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.raw .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.raw-bar {
+  display: flex; align-items: center; gap: 6px; padding: 5px 10px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.raw-back { font-size: var(--text-sm); }
+.raw-body { flex: 1; min-height: 0; padding: 10px 12px 18px; display: flex; flex-direction: column; gap: 12px; }
+.raw-body > * { flex-shrink: 0; min-width: 0; }
+
+.raw-summary { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.raw-meta { margin: 0; font-size: var(--text-xs); color: var(--muted); overflow-wrap: anywhere; }
+.raw-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+.raw-stat { display: flex; flex-direction: column; min-width: 0; padding: 6px 8px; border-radius: var(--radius-sm); background: var(--bg); }
+.raw-stat-label { font-size: var(--text-xs); color: var(--muted); }
+.raw-stat-value { font-size: var(--text-lg); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.raw-stat-hint { font-size: 10.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.raw-note { margin: 0; font-size: var(--text-xs); color: var(--muted); }
+.raw-slowest-title { margin: 0 0 2px; font-size: var(--text-xs); color: var(--muted); }
+.raw-slowest ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.raw-slowest li { display: grid; grid-template-columns: 64px 1fr; column-gap: 8px; font-size: var(--text-sm); }
+.raw-slowest .raw-dur { color: var(--warn); font-weight: 600; text-align: right; }
+.raw-slowest-label { min-width: 0; overflow-wrap: anywhere; }
+.raw-slowest-where { grid-column: 2; font-size: var(--text-xs); color: var(--faint); }
+
+.raw-turn { display: flex; flex-direction: column; gap: 2px; }
+.raw-turn-title {
+  position: sticky; top: -10px; z-index: var(--z-sticky); margin: 0 -12px; padding: 6px 12px;
+  background: var(--bg); font-size: var(--text-sm); font-weight: 600; color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.raw-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
+.raw-row {
+  display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; column-gap: 8px; align-items: baseline;
+  padding: 3px 6px; margin: 0 -6px; border-radius: var(--radius-sm); font-size: var(--text-sm);
+}
+.raw-row + .raw-row { border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.raw-rel, .raw-dur { font-size: var(--text-xs); color: var(--faint); white-space: nowrap; }
+.raw-dur { text-align: right; min-width: 44px; }
+.raw-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.raw-label { color: var(--muted); overflow-wrap: anywhere; }
+.raw-row.event .raw-label { color: var(--text); font-weight: 500; }
+.raw-detail { font-size: 10.5px; line-height: 1.4; color: var(--faint); overflow-wrap: anywhere; }
+.raw-text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font-size: var(--text-sm); }
+.raw-row.trace .raw-dur { color: var(--muted); }
+.raw-row.slow { background: var(--warn-soft); }
+.raw-row.slow .raw-dur { color: var(--warn); font-weight: 600; }
+.raw-row.slow .raw-dur::before { content: "▲ "; font-size: 8px; vertical-align: 1px; }
+.raw-row.error .raw-label { color: var(--bad); }

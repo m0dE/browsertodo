@@ -1,5 +1,5 @@
 /**
- * Settings > AI > Automation: the chat agent's level (Ask before every
+ * Settings > Permission: the chat agent's level (Ask before every
  * action / Ask before posting, sending or paying / Full autonomy) and the
  * scheduled tasks' choice. Saves by itself like the rest of the page; turning
  * on full autonomy first asks in a dialog, and while it is on a warning stays

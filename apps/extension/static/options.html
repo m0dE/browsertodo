@@ -210,27 +210,6 @@
             </div>
           </div>
 
-          <div class="group" id="automation-group">
-            <h2 class="group-title" id="h-automation">Automation</h2>
-            <p class="group-hint">What the chat agent may do without asking you. Actions that wait show a card in the chat with Allow and Deny.</p>
-            <!-- Filled from automation.ts by automation-section.ts. -->
-            <div class="box options" id="automation-levels" role="radiogroup" aria-labelledby="h-automation"></div>
-            <p id="automation-warning" class="note" data-tone="bad" role="status" hidden></p>
-            <h3 class="group-subtitle" id="h-scheduled-automation">Scheduled tasks (TODO list)</h3>
-            <div class="box options" id="scheduled-automation" role="radiogroup" aria-labelledby="h-scheduled-automation"></div>
-            <p id="automation-msg" class="msg" role="status"></p>
-          </div>
-
-          <!-- Inside the settings form, so no form of its own: automation-section.ts closes it with the answer. -->
-          <dialog id="automation-confirm" class="confirm-dialog" aria-labelledby="automation-confirm-title">
-            <h2 id="automation-confirm-title"></h2>
-            <div id="automation-confirm-body"></div>
-            <div class="row dialog-actions">
-              <button type="button" id="automation-confirm-cancel" class="small primary" autofocus></button>
-              <button type="button" id="automation-confirm-ok" class="small danger"></button>
-            </div>
-          </dialog>
-
           <div class="group" id="jev-group">
             <h2 class="group-title">Speed (Jev)</h2>
             <p class="group-hint">Optional. Jev handles simple clicks and typing faster than Claude. Without it, Claude does every step.</p>
@@ -298,25 +277,31 @@
           </div>
         </section>
 
-
-        <!-- Tasks -->
-        <section class="panel" id="panel-tasks" role="tabpanel" aria-labelledby="tab-tasks" tabindex="-1" hidden>
-          <div class="group">
-            <h2 class="group-title">Keyboard shortcuts</h2>
-            <div class="box">
-              <div class="srow">
-                <div class="srow-label"><b>Open BrowserTODO</b><small>Opens the side panel with the cursor in the chat, on any page while Chrome is in front.</small></div>
-                <div class="srow-control shortcut"><kbd id="shortcut-key" class="shortcut-key">Not set</kbd><button id="shortcut-change" type="button" class="ghost small">Change</button></div>
-              </div>
-              <div class="srow">
-                <div class="srow-label"><b>Talk</b><small>Opens the side panel and starts voice input. Press it again to send what you said.</small></div>
-                <div class="srow-control shortcut"><kbd id="voice-shortcut-key" class="shortcut-key">Not set</kbd><button id="voice-shortcut-change" type="button" class="ghost small">Change</button></div>
-              </div>
-            </div>
+        <!-- Permission: what the agent may do without asking, in chat and on schedule (automation-section.ts), and when scheduled tasks run. -->
+        <section class="panel" id="panel-permission" role="tabpanel" aria-labelledby="tab-permission" tabindex="-1" hidden>
+          <div class="group" id="automation-group">
+            <h2 class="group-title" id="h-automation">Chat</h2>
+            <p class="group-hint">What the chat agent may do without asking you. Actions that wait show a card in the chat with Allow and Deny.</p>
+            <!-- Filled from automation.ts by automation-section.ts. -->
+            <div class="box options" id="automation-levels" role="radiogroup" aria-labelledby="h-automation"></div>
+            <p id="automation-warning" class="note" data-tone="bad" role="status" hidden></p>
+            <p id="automation-msg" class="msg" role="status"></p>
           </div>
 
-          <div class="group">
-            <h2 class="group-title">Schedule</h2>
+          <!-- Inside the settings form, so no form of its own: automation-section.ts closes it with the answer. -->
+          <dialog id="automation-confirm" class="confirm-dialog" aria-labelledby="automation-confirm-title">
+            <h2 id="automation-confirm-title"></h2>
+            <div id="automation-confirm-body"></div>
+            <div class="row dialog-actions">
+              <button type="button" id="automation-confirm-cancel" class="small primary" autofocus></button>
+              <button type="button" id="automation-confirm-ok" class="small danger"></button>
+            </div>
+          </dialog>
+
+          <div class="group" id="schedule-group">
+            <h2 class="group-title" id="h-scheduled-automation">Scheduled tasks (TODO list)</h2>
+            <p class="group-hint">What a task from your TODO list may do without asking you, and when tasks run.</p>
+            <div class="box options" id="scheduled-automation" role="radiogroup" aria-labelledby="h-scheduled-automation"></div>
             <div class="box">
               <div class="srow">
                 <label class="srow-label" for="f-intervalMinutes"><b>Check for due tasks every</b></label>
@@ -333,6 +318,23 @@
               <div class="srow">
                 <label class="srow-label" for="f-delayMaxSec"><b>Longest pause between tasks</b><small>Each pause is a random time between the two.</small></label>
                 <div class="srow-control"><div class="num"><input id="f-delayMaxSec" type="number" step="1" aria-describedby="err-delayMaxSec" /><span class="unit">s</span></div><small id="err-delayMaxSec" class="field-error"></small></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tasks -->
+        <section class="panel" id="panel-tasks" role="tabpanel" aria-labelledby="tab-tasks" tabindex="-1" hidden>
+          <div class="group">
+            <h2 class="group-title">Keyboard shortcuts</h2>
+            <div class="box">
+              <div class="srow">
+                <div class="srow-label"><b>Open BrowserTODO</b><small>Opens the side panel with the cursor in the chat, on any page while Chrome is in front.</small></div>
+                <div class="srow-control shortcut"><kbd id="shortcut-key" class="shortcut-key">Not set</kbd><button id="shortcut-change" type="button" class="ghost small">Change</button></div>
+              </div>
+              <div class="srow">
+                <div class="srow-label"><b>Talk</b><small>Opens the side panel and starts voice input. Press it again to send what you said.</small></div>
+                <div class="srow-control shortcut"><kbd id="voice-shortcut-key" class="shortcut-key">Not set</kbd><button id="voice-shortcut-change" type="button" class="ghost small">Change</button></div>
               </div>
             </div>
           </div>

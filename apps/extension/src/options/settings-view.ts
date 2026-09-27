@@ -10,6 +10,7 @@ import {
   formatCents,
   isClaudeModel,
   OUT_OF_CREDIT,
+  PERMISSION_TITLE,
   planName,
   REASONING_LEVELS,
   type BrainMode,
@@ -26,6 +27,7 @@ export const TABS = [
   { id: "account", label: "Account" },
   { id: "keys", label: "API keys" },
   { id: "ai", label: "AI" },
+  { id: "permission", label: PERMISSION_TITLE },
   { id: "tasks", label: "Tasks" },
   { id: "logins", label: "Site logins" },
   { id: "memory", label: "Memory" },
@@ -33,7 +35,10 @@ export const TABS = [
 ] as const;
 export type TabId = (typeof TABS)[number]["id"];
 
-/** Other names a link may use for a tab (options.html#jev opens AI, at its Jev section). "speed" was Jev's own tab. */
+/**
+ * Other names a link may use for a tab (options.html#jev opens AI, at its Jev section). "speed" was Jev's own tab;
+ * automation (with approvals) was on AI and the schedule on Tasks before they moved to Permission.
+ */
 const TAB_ALIASES: Record<string, TabId> = {
   brain: "ai",
   model: "ai",
@@ -41,11 +46,13 @@ const TAB_ALIASES: Record<string, TabId> = {
   jev: "ai",
   speed: "ai",
   voice: "ai",
-  automation: "ai",
-  approvals: "ai",
+  automation: "permission",
+  approvals: "permission",
+  permissions: "permission",
+  autonomy: "permission",
   "api-keys": "keys",
   billing: "account",
-  schedule: "tasks",
+  schedule: "permission",
   vault: "logins",
   memories: "memory",
   cloud: "advanced",
@@ -61,7 +68,7 @@ export function tabFromHash(hash: string | null | undefined): TabId | null {
 }
 
 /** Links that name a section inside a tab -> that section's element id. */
-const SECTIONS: Record<string, string> = { jev: "jev-group", speed: "jev-group", voice: "voice-group", automation: "automation-group", approvals: "automation-group" };
+const SECTIONS: Record<string, string> = { jev: "jev-group", speed: "jev-group", voice: "voice-group", schedule: "schedule-group" };
 
 /** "#jev" -> "jev-group": the section to scroll to once its tab shows; null for a tab's own link. */
 export function sectionFromHash(hash: string | null | undefined): string | null {

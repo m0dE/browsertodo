@@ -21,7 +21,7 @@ describe("Runner: local tasks", () => {
     expect(await runAll(h)).toEqual({ started: true });
 
     const start = h.brain.starts[0]!;
-    // Scheduled runs are told they may do what the task says (Settings > AI > Automation, scheduled tasks).
+    // Scheduled runs are told they may do what the task says (Settings > Permission, scheduled tasks).
     expect(start.task).toEqual({ id: t.id, instructions: "Post hello", account: "@me", timeZone: localTimeZone(), approvals: automationPromptLine("full_within_task") });
     expect(start.mediaPaths).toEqual(["C:\\dl\\a.png"]);
     // Scheduled runs use the agent's own tab, in the background.

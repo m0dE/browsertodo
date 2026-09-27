@@ -14,7 +14,6 @@ import {
   parseCron,
   readStoredRepeat,
   repeatLabel,
-  repeatSummary,
   repeatToForm,
   requestedSchedule,
   RepeatSchedule,
@@ -26,7 +25,12 @@ import {
   UpdateTaskInput,
   whenText,
   zonedTimeToUtc,
+  openSchedule,
+  saveSchedule,
+  SCHEDULE_MODES,
+  withMode,
   type RepeatForm,
+  type ScheduleDraft,
 } from "../src/index.js";
 
 const rule = (cron: string, tz = "UTC", extra: Partial<RepeatSchedule> = {}): RepeatSchedule => RepeatSchedule.parse({ cron, tz, ...extra });
@@ -334,10 +338,10 @@ describe("describeCron", () => {
     expect(d(cron, interval, hour12)).toBe(text);
   });
 
-  it("describes start, end and count, and the form's summary line", () => {
+  it("describes start, end and count", () => {
     const now = new Date("2026-09-26T12:00:00Z");
     const r = rule(timesToCron(["09:00", "18:30"], "* * 1-5"), "UTC", { start: "2026-09-28", end: "2026-12-31" });
-    expect(repeatSummary(r, { hour12: true, now })).toBe("Repeats every weekday at 9:00 AM and 6:30 PM, starting Sep 28, until Dec 31");
+    expect(describeRepeat(r, { hour12: true, now })).toBe("Every weekday at 9:00 AM and 6:30 PM, starting Sep 28, until Dec 31");
     expect(describeRepeat(rule("0 9 * * *", "UTC", { start: "2026-09-01", end: "2027-01-31", count: 5 }), { hour12: true, now })).toBe(
       "Daily at 9:00 AM, until Jan 31, 2027, for 5 runs",
     );
@@ -408,6 +412,96 @@ describe("form <-> rule", () => {
     [{ frequency: "custom", cron: "* * * * *" }, "cron", "That runs up to 1440 times a day; the most is 24"],
   ])("says what to fix: %j", (over, field, error) => {
     expect(formToRepeat(base(over))).toEqual({ ok: false, field, error });
+  });
+});
+
+describe("schedule: One time or Repeat", () => {
+  const now = new Date("2026-09-27T12:00:00Z");
+  const ctx = { tz: "UTC", now };
+  const edit = (d: ScheduleDraft, over: Partial<ScheduleDraft>): ScheduleDraft => ({ ...d, ...over });
+  const editRule = (d: ScheduleDraft, over: Partial<RepeatForm>): ScheduleDraft => ({ ...d, rule: { ...d.rule, ...over }, ruleTouched: true });
+
+  it("names the two modes in one place, One time first", () => {
+    expect(SCHEDULE_MODES).toEqual([
+      ["once", "One time"],
+      ["repeat", "Repeat"],
+    ]);
+  });
+
+  it("a new task opens as One time, empty: as soon as possible", () => {
+    const d = openSchedule(null, ctx);
+    expect(d).toMatchObject({ mode: "once", date: "", time: "", tz: "UTC", ruleTouched: false });
+    expect(saveSchedule(d, now)).toEqual({ ok: true, value: { at: null, repeat: null } });
+  });
+
+  it("One time saves its date and time and no rule", () => {
+    const d = edit(openSchedule(null, ctx), { date: "2026-09-30", time: "15:00" });
+    expect(saveSchedule(d, now)).toEqual({ ok: true, value: { at: "2026-09-30T15:00:00.000Z", repeat: null } });
+  });
+
+  it("One time with a time only runs today at that time", () => {
+    const d = edit(openSchedule(null, ctx), { time: "18:00" });
+    expect(saveSchedule(d, now)).toEqual({ ok: true, value: { at: "2026-09-27T18:00:00.000Z", repeat: null } });
+  });
+
+  it("One time with a date but no valid time says so, on the time field", () => {
+    const d = edit(openSchedule(null, ctx), { date: "2026-09-30", time: "" });
+    expect(saveSchedule(d, now)).toEqual({ ok: false, field: "time", error: "Pick a date and a time" });
+  });
+
+  it("Repeat saves the rule and no first time: Starts and the rule give the first run", () => {
+    const d = withMode(openSchedule(null, ctx), "repeat", now);
+    const saved = saveSchedule(d, now);
+    expect(saved).toEqual({ ok: true, value: { at: null, repeat: { cron: "0 9 * * *", tz: "UTC", start: "2026-09-27" } } });
+  });
+
+  it("switching to Repeat starts the rule from the One time date and time until the rule is changed", () => {
+    const once = edit(openSchedule(null, ctx), { date: "2026-10-02", time: "08:15" });
+    const rep = withMode(once, "repeat", now);
+    expect(rep.rule).toMatchObject({ start: "2026-10-02", times: ["08:15"], weekdays: [5], monthly: { by: "day", day: 2 } });
+    // Changed by the user: switching away and back keeps it.
+    const changed = editRule(rep, { frequency: "weekly", weekdays: [1, 3] });
+    const back = withMode(edit(withMode(changed, "once", now), { date: "2026-11-01" }), "repeat", now);
+    expect(back.rule).toEqual(changed.rule);
+  });
+
+  it("switching modes keeps the other mode's values; only the chosen one is saved", () => {
+    const once = edit(openSchedule(null, ctx), { date: "2026-10-02", time: "08:15" });
+    const rep = editRule(withMode(once, "repeat", now), { frequency: "weekly", weekdays: [2] });
+    const again = withMode(rep, "once", now);
+    expect(again).toMatchObject({ mode: "once", date: "2026-10-02", time: "08:15" });
+    expect(saveSchedule(again, now)).toEqual({ ok: true, value: { at: "2026-10-02T08:15:00.000Z", repeat: null } });
+    const rep2 = withMode(again, "repeat", now);
+    expect(rep2.rule).toEqual(rep.rule);
+    expect(saveSchedule(rep2, now)).toEqual({ ok: true, value: { at: null, repeat: { cron: "15 8 * * 2", tz: "UTC", start: "2026-10-02" } } });
+  });
+
+  it("Repeat says what to fix: the rule's fields, and a rule that never runs", () => {
+    const rep = withMode(openSchedule(null, ctx), "repeat", now);
+    expect(saveSchedule(editRule(rep, { times: [] }), now)).toEqual({ ok: false, field: "times", error: "Add a time" });
+    const never = editRule(rep, { start: "2026-09-01", ends: "on", endDate: "2026-09-02" });
+    expect(saveSchedule(never, now)).toEqual({ ok: false, field: "start", error: "This rule never runs: check its days, start and end" });
+  });
+
+  it("Repeat ignores a bad One time date it is not saving", () => {
+    const bad = edit(openSchedule(null, ctx), { date: "2026-09-30", time: "" });
+    expect(saveSchedule(withMode(bad, "repeat", now), now).ok).toBe(true);
+  });
+
+  it("editing a one-time task opens One time with its date and time", () => {
+    const d = openSchedule({ at: "2026-10-05T14:30:00.000Z", repeat: null }, ctx);
+    expect(d).toMatchObject({ mode: "once", date: "2026-10-05", time: "14:30", ruleTouched: false });
+    expect(d.rule).toMatchObject({ start: "2026-10-05", times: ["14:30"] });
+    expect(saveSchedule(d, now)).toEqual({ ok: true, value: { at: "2026-10-05T14:30:00.000Z", repeat: null } });
+  });
+
+  it("editing a repeating task opens Repeat with its rule, in the rule's zone; saving One time drops the rule", () => {
+    const repeat = rule("0 9 * * 1,3,5", "America/New_York", { start: "2026-09-28", end: "2026-12-31" });
+    const d = openSchedule({ at: "2026-09-28T13:00:00.000Z", repeat }, ctx);
+    expect(d).toMatchObject({ mode: "repeat", tz: "America/New_York", ruleTouched: true, date: "2026-09-28", time: "09:00" });
+    expect(d.rule).toMatchObject({ frequency: "weekly", weekdays: [1, 3, 5], start: "2026-09-28", ends: "on", endDate: "2026-12-31" });
+    expect(saveSchedule(d, now)).toEqual({ ok: true, value: { at: null, repeat } });
+    expect(saveSchedule(withMode(d, "once", now), now)).toEqual({ ok: true, value: { at: "2026-09-28T13:00:00.000Z", repeat: null } });
   });
 });
 

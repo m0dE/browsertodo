@@ -217,14 +217,14 @@ input[aria-invalid="true"] { border-color: var(--bad); }
 .opt-text .voice-cost { color: var(--text); font-variant-numeric: tabular-nums; }
 #speech-box { margin-top: 8px; }
 /* A section link (#jev, #voice) scrolls its section under the sticky tab row, not behind it. */
-#panel-ai > .group { scroll-margin-top: 56px; }
+#panel-ai > .group, #panel-permission > .group { scroll-margin-top: 56px; }
 /* Settings > AI > Voice: the speed slider with its value. */
 .speed-row { flex-wrap: nowrap; }
 .speed-row input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); }
 .speed-row output { flex: none; min-width: 3.2em; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); font-size: var(--text-sm); }
 
-/* Settings > AI > Automation (automation-section.ts). Full autonomy is shown as a warning for as long as it is on. */
-.group-subtitle { font-size: var(--text-md); font-weight: 500; margin: 14px 0 6px; color: var(--text); }
+/* Settings > Permission (automation-section.ts). Full autonomy is shown as a warning for as long as it is on. */
+#scheduled-automation + .box { margin-top: 8px; }
 .note[data-tone="bad"] { background: var(--bad-soft); color: var(--bad); }
 .opt[data-dangerous] .opt-text b { color: var(--bad); }
 .opt[data-dangerous]:has(input:checked) { background: var(--bad-soft); box-shadow: inset 3px 0 0 var(--bad); }

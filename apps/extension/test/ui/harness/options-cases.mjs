@@ -185,8 +185,8 @@ export const OPTION_CASES = [
           return window.scrollY > 0 && top >= 0 && (Math.abs(top - 56) < 40 || atEnd);
         }),
       )],
-    ["order: Brain, Model, Automation, Jev, Voice", async () =>
-      (await p.evaluate(() => [...document.querySelectorAll("#panel-ai > .group > h2")].map((e) => e.textContent).join(" | "))) === "Brain | Model | Automation | Speed (Jev) | Voice"],
+    ["order: Brain, Model, Jev, Voice (automation is on Permission)", async () =>
+      (await p.evaluate(() => [...document.querySelectorAll("#panel-ai > .group > h2")].map((e) => e.textContent).join(" | "))) === "Brain | Model | Speed (Jev) | Voice"],
     ["Jev key shown", () => shown(p, "[data-secret=jevApiKey]")],
     ["threshold shown", () => shown(p, "#f-jevThreshold")],
   ]],
@@ -223,17 +223,24 @@ export const OPTION_CASES = [
     ["speed shown", async () => (await p.textContent("#speech-rate-value")) === "1.4×" && (await p.textContent("#speech-rate-hint")) === "0.5× to 2.0×; 1.0× is normal."],
     ["local test", async () => (await p.textContent("#speech-test-hint")) === "Says a sample line with this voice and speed, on this computer."],
   ]],
-  // Settings > AI > Automation: the three chat levels (the middle one by default) and the scheduled-task choice;
-  // full autonomy on shows its warning and the level in the warning colour.
-  ["options-automation", "ok", "#automation", () => {}, (p) => [
+  // Settings > Permission: the three chat levels (the middle one by default), then scheduled tasks: their choice and
+  // when they run. The old #automation link (it was on AI) lands here; full autonomy on shows its warning and the level
+  // in the warning colour.
+  ["options-permission", "ok", "#automation", () => {}, (p) => [
+    ["on the Permission tab", async () => (await p.getAttribute("#tab-permission", "aria-selected")) === "true" && (await p.textContent("#tab-permission")) === "Permission"],
+    ["hash normalised", async () => (await p.evaluate(() => location.hash)) === "#permission"],
+    ["tab order: AI, Permission, Tasks", async () => (await p.locator("#tabs [role=tab]").allTextContents()).slice(2, 5).join(" | ") === "AI | Permission | Tasks"],
+    ["sections: Chat, then Scheduled tasks", async () =>
+      (await p.evaluate(() => [...document.querySelectorAll("#panel-permission > .group > h2")].map((e) => e.textContent).join(" | "))) === "Chat | Scheduled tasks (TODO list)"],
     ["three levels, the middle one checked", async () =>
       (await p.locator("#automation-levels .opt b").allTextContents()).join(" | ") === "Ask before every action | Ask before posting, sending or paying | Full autonomy (dangerous)" &&
       (await p.isChecked("input[name=automationLevel][value=ask_consequential]"))],
     ["scheduled tasks do what they say", () => p.isChecked("input[name=scheduledAutomation][value=full_within_task]")],
+    ["schedule under it", async () => (await shown(p, "#schedule-group #f-intervalMinutes")) && (await p.inputValue("#f-intervalMinutes")) === "15" && (await p.inputValue("#f-maxParallelTasks")) === "2"],
     ["no warning", async () => !(await shown(p, "#automation-warning"))],
     ["the section is in view", () => p.evaluate(() => { const r = document.getElementById("automation-group").getBoundingClientRect(); return r.top >= 0 && r.top < innerHeight; })],
   ]],
-  ["options-automation-full", "ok", "#automation", (d) => (d.state.settings.automationLevel = "full"), (p) => [
+  ["options-permission-full", "ok", "#permission", (d) => (d.state.settings.automationLevel = "full"), (p) => [
     ["full checked", () => p.isChecked("input[name=automationLevel][value=full]")],
     ["warning shown", async () => (await shown(p, "#automation-warning")) && /Full autonomy is on/.test(await p.textContent("#automation-warning"))],
     ["full in the warning colour", () => p.evaluate(() => {
@@ -245,8 +252,9 @@ export const OPTION_CASES = [
     // Both shortcuts, as Chrome assigned them, each with Change.
     ["open shortcut", async () => (await p.textContent("#shortcut-key")) === "Ctrl+." && (await p.textContent("#shortcut-change")) === "Change"],
     ["talk shortcut", async () => (await p.textContent("#voice-shortcut-key")) === "Ctrl+," && (await p.textContent("#voice-shortcut-change")) === "Change"],
-    ["interval", async () => (await p.inputValue("#f-intervalMinutes")) === "15"],
-    ["tasks at once", async () => (await p.inputValue("#f-maxParallelTasks")) === "2"],
+    // The schedule moved to Permission.
+    ["no schedule here", async () => (await p.locator("#panel-tasks #f-intervalMinutes").count()) === 0],
+    ["limits", async () => shown(p, "#f-maxToolCalls")],
   ]],
   ["options-logins", "ok", "#logins", () => {}, (p) => [
     ["saved sites", async () => (await p.locator("#vault-sites li").count()) === 2],
@@ -366,18 +374,18 @@ export const OPTION_FLOWS = [
   // Automation: turning on full autonomy asks first (Keep asking saves nothing); confirmed, it saves and warns; the
   // other choices save at once.
   {
-    name: "options-automation-confirm",
+    name: "options-permission-confirm",
     size: { w: 1280 },
     scheme: "light",
     async run({ openOptions, optChecks, optShot }) {
-      const p = await openOptions({ w: 1280, h: 1000 }, "light", "ok", "#automation");
+      const p = await openOptions({ w: 1280, h: 1000 }, "light", "ok", "#permission");
       const saved = () => p.evaluate(() => window.__requests.filter((r) => r.type === "settings.save").map((r) => r.settings));
       const checks = [];
       const check = (what, ok) => checks.push([what, async () => ok]);
       await p.click("input[name=automationLevel][value=full]");
       check("the dialog opens", await eventually(() => p.evaluate(() => document.getElementById("automation-confirm").open)));
       check("it says what full autonomy does", /post, send messages, pay, delete/.test(await p.textContent("#automation-confirm")));
-      await optShot(p, "options-automation-confirm", { w: 1280, h: 1000 }, "light");
+      await optShot(p, "options-permission-confirm", { w: 1280, h: 1000 }, "light");
       await p.click("#automation-confirm-cancel");
       check("Keep asking closes it", await eventually(() => p.evaluate(() => !document.getElementById("automation-confirm").open)));
       check("nothing saved", (await saved()).length === 0);
@@ -562,8 +570,8 @@ export const OPTION_FLOWS = [
       check("Thorough saved", (await saves()).some((s) => s.reasoning === "thorough"));
       check("auto-raise hidden under Thorough", !(await shown(p, "#f-reasoningAutoRaise")));
 
-      // Validation: out of range is explained and not saved; fixing it saves.
-      await p.click("#tab-tasks");
+      // Validation: out of range is explained and not saved; fixing it saves (the schedule is on Permission).
+      await p.click("#tab-permission");
       const before = (await saves()).length;
       await autoRefused(() => p.fill("#f-maxParallelTasks", "9"));
       check("range error", /1 to 4/.test(await p.textContent("#err-maxParallelTasks")));

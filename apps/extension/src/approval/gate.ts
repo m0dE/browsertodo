@@ -23,6 +23,7 @@ import {
   approvalRefusalText,
   CONSEQUENCE_TEXT,
   isApprovalGated,
+  PERMISSION_TITLE,
   type ApprovalGatedMethod,
   type ApprovalOutcome,
   type AgentTabInfo,
@@ -78,7 +79,7 @@ export const GATED_METHODS: Record<ApprovalGatedMethod, GateMethod> = {
 const MAX_TYPED = 8;
 /** The text an approval card shows at most. */
 const MAX_CARD_TEXT = 2000;
-const ASK_ALL_WHY = "You asked to approve every action (Settings > AI > Automation)";
+const ASK_ALL_WHY = `You asked to approve every action (Settings > ${PERMISSION_TITLE})`;
 
 export class ApprovalGate {
   /** The session the slot serves now: "allow for this task" and what was typed belong to it. */

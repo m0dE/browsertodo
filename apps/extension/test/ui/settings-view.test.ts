@@ -62,15 +62,22 @@ describe("tabs", () => {
     expect(tabFromHash("#keys")).toBe("keys");
     expect(tabFromHash("#api-keys")).toBe("keys");
     expect(tabFromHash("#billing")).toBe("account");
+    // Automation (approvals) moved from AI, and the schedule from Tasks, to Permission; old links land there.
+    expect(tabFromHash("#permission")).toBe("permission");
+    expect(tabFromHash("#automation")).toBe("permission");
+    expect(tabFromHash("#approvals")).toBe("permission");
+    expect(tabFromHash("#schedule")).toBe("permission");
     expect(tabFromHash("#nope")).toBeNull();
     expect(tabFromHash("")).toBeNull();
     expect(tabFromHash(null)).toBeNull();
   });
   it("arrow keys move and wrap; Home and End go to the ends; other keys do nothing", () => {
-    expect(TABS.map((t) => t.label)).toEqual(["Account", "API keys", "AI", "Tasks", "Site logins", "Memory", "Advanced"]);
+    expect(TABS.map((t) => t.label)).toEqual(["Account", "API keys", "AI", "Permission", "Tasks", "Site logins", "Memory", "Advanced"]);
     expect(nextTab("account", "ArrowRight")).toBe("keys");
     expect(nextTab("keys", "ArrowRight")).toBe("ai");
     expect(nextTab("ai", "ArrowLeft")).toBe("keys");
+    expect(nextTab("ai", "ArrowRight")).toBe("permission");
+    expect(nextTab("permission", "ArrowRight")).toBe("tasks");
     expect(nextTab("account", "ArrowLeft")).toBe(TABS[TABS.length - 1]!.id);
     expect(nextTab("advanced", "ArrowRight")).toBe("account");
     expect(nextTab("tasks", "Home")).toBe("account");
@@ -82,6 +89,9 @@ describe("tabs", () => {
     expect(sectionFromHash("#speed")).toBe("jev-group");
     expect(sectionFromHash("#voice")).toBe("voice-group");
     expect(sectionFromHash("#ai")).toBeNull();
+    // Automation is the Permission tab's first section: its old link opens the tab at the top; #schedule scrolls.
+    expect(sectionFromHash("#automation")).toBeNull();
+    expect(sectionFromHash("#schedule")).toBe("schedule-group");
     expect(sectionFromHash("")).toBeNull();
   });
 });

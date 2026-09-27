@@ -338,7 +338,7 @@ function signIn(): void {
 }
 
 const header = initHeader({ onState: (s) => applyState(s), onBilling: billing, onSignIn: signIn });
-// While the agent may act without asking, the panel says so (Settings > AI > Automation).
+// While the agent may act without asking, the panel says so (Settings > Permission).
 const autonomyWarning = initAutonomyWarning();
 
 /** What the fix buttons of error cards and the status line do (error-help.ts names them). Billing ones need an account. */

@@ -36,7 +36,13 @@ export interface AutomationChoice<T extends string> {
   dangerous?: true;
 }
 
-/** The chat levels, as Settings > AI shows them (safest first). */
+/** Where these choices live: the settings tab's name, and the side panel's banner while full autonomy is on. */
+export const PERMISSION_TITLE = "Permission";
+
+/** The name of the level that never asks ("Permission: Full autonomy" in the side panel). */
+export const FULL_AUTONOMY_NAME = "Full autonomy";
+
+/** The chat levels, as Settings > Permission shows them (safest first). */
 export const AUTOMATION_LEVELS: readonly AutomationChoice<AutomationLevel>[] = [
   { id: "ask_all", label: "Ask before every action", detail: "Clicks, typing, keys, uploads and opening pages each wait for your OK. Reading pages never does." },
   {
@@ -46,13 +52,13 @@ export const AUTOMATION_LEVELS: readonly AutomationChoice<AutomationLevel>[] = [
   },
   {
     id: "full",
-    label: "Full autonomy (dangerous)",
+    label: `${FULL_AUTONOMY_NAME} (dangerous)`,
     detail: "Never asks. The agent can post, send, pay and delete on its own, and a web page that tricks it can make it do so.",
     dangerous: true,
   },
 ];
 
-/** The scheduled-task choices, as Settings > AI shows them. */
+/** The scheduled-task choices, as Settings > Permission shows them. */
 export const SCHEDULED_AUTOMATION_CHOICES: readonly AutomationChoice<ScheduledAutomation>[] = [
   {
     id: "full_within_task",

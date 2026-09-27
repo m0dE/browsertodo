@@ -1,7 +1,8 @@
 // The TODO tab's cases of the UI harness: the rows (Run / Stop, the schedule in words, Run due (N)), and the
-// add/edit form with its schedule section (packages/shared ui/schedule-fields.ts): once, daily at two times,
-// weekly Mon/Wed/Fri, monthly on the first Monday, a custom cron, an end date, and editing a task. Each form
-// case is screenshotted (the form itself) at every panel size and scheme, and checks what the form sends.
+// add/edit form with its schedule section (packages/shared ui/schedule-fields.ts): One time | Repeat (radios; each
+// shows only its own fields), once, daily at two times, weekly Mon/Wed/Fri, monthly on the first Monday, a custom
+// cron, an end date, and editing repeating and one-time tasks (switching modes). Each form case is screenshotted
+// (the form itself) at every panel size and scheme, and checks what the form sends.
 import { join } from "node:path";
 
 /** "YYYY-MM-DD" `days` from today, in this machine's zone (the browser's too). */
@@ -22,7 +23,7 @@ async function checkForm(p, fail, what) {
     const boxes = [...document.querySelectorAll("#add-form:not([hidden]), #task-list > li")];
     for (const box of boxes) {
       const b = box.getBoundingClientRect();
-      for (const el of box.querySelectorAll("input, select, textarea, button, label, .sch-summary")) {
+      for (const el of box.querySelectorAll("input, select, textarea, button, label, .sch-first")) {
         const r = el.getBoundingClientRect();
         if (!r.width || el.closest("[hidden]")) continue;
         if (r.right > b.right + 0.5 || r.left < b.left - 0.5) problems.push(`${el.id || el.className || el.tagName} clipped (${Math.round(r.left)}-${Math.round(r.right)} in ${Math.round(b.left)}-${Math.round(b.right)})`);
@@ -39,7 +40,21 @@ async function checkForm(p, fail, what) {
   if (out.length) fail(`${what}: ${out.join("; ")}`);
 }
 
-const summary = (p) => p.locator(".sch-summary").textContent();
+/** The line under the rule: its first run, or what to fix. */
+const firstRun = (p) => p.locator("#add-sched-first").textContent();
+
+/** The chosen mode and what shows: One time shows only Scheduled at; Repeat only the rule. No summary line. */
+async function checkMode(p, fail, mode, what) {
+  const got = await p.evaluate(() => ({
+    once: document.getElementById("add-sched-mode-once").checked,
+    repeat: document.getElementById("add-sched-mode-repeat").checked,
+    when: !!document.getElementById("add-sched-when").getBoundingClientRect().height,
+    rule: !!document.getElementById("add-sched-rule").getBoundingClientRect().height,
+    summary: document.querySelectorAll(".sch-summary").length,
+  }));
+  const want = mode === "once" ? { once: true, repeat: false, when: true, rule: false, summary: 0 } : { once: false, repeat: true, when: false, rule: true, summary: 0 };
+  if (JSON.stringify(got) !== JSON.stringify(want)) fail(`${what}: mode ${mode} shows ${JSON.stringify(got)}`);
+}
 
 export const TODO_CASES = [
   {
@@ -52,6 +67,7 @@ export const TODO_CASES = [
       "panel-form-custom",
       "panel-form-end",
       "panel-form-edit",
+      "panel-form-edit-once",
     ],
     async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, checkLayout, reportErrors, shots, taken }) {
       const p = await openPanel(ctx, "ok", ".ev-tool");
@@ -77,8 +93,8 @@ export const TODO_CASES = [
         await p.fill("#add-text", text);
       };
       const repeatOn = async () => {
-        await p.locator(".sch-switch").click();
-        if (!(await p.locator("#add-sched-rule").isVisible())) fail("the Repeat switch did not show the repeat choices");
+        await p.getByRole("radio", { name: "Repeat", exact: true }).check();
+        await checkMode(p, fail, "repeat", "Repeat");
       };
       /** Submits and returns what tasks.add (or tasks.update) sent. */
       const submit = async (type = "tasks.add") => {
@@ -117,12 +133,22 @@ export const TODO_CASES = [
       await p.click("#tab-btn-todo");
       await p.waitForSelector(".task");
 
-      // Once: a date and time; the summary says when.
+      // One time (the default): only Scheduled at; empty is as soon as possible.
       await openForm("Post the launch thread on X from @alpha");
-      if ((await summary(p)) !== "Runs as soon as possible") fail(`empty schedule summary "${await summary(p)}"`);
+      await checkMode(p, fail, "once", "new task");
+      if ((await p.textContent("#add-sched-when-hint")) !== "Empty: as soon as possible") fail(`empty schedule hint "${await p.textContent("#add-sched-when-hint")}"`);
       await p.fill("#add-sched-date", dateIn(3));
       await p.fill("#add-sched-time", "15:00");
-      if (!/^Runs once, [A-Z][a-z]{2} 3:00 PM$/.test(await summary(p))) fail(`one-off summary "${await summary(p)}"`);
+      // The modes are one radio group: arrows switch them, the focus shows, and each keeps its values.
+      await p.focus("#add-sched-mode-once");
+      await p.keyboard.press("ArrowRight");
+      await checkMode(p, fail, "repeat", "ArrowRight");
+      const ring = await p.evaluate(() => getComputedStyle(document.activeElement.nextElementSibling).outlineStyle);
+      if ((await p.evaluate(() => document.activeElement?.id)) !== "add-sched-mode-repeat" || ring === "none") fail(`the focused mode shows no focus (${ring})`);
+      await p.keyboard.press("ArrowLeft");
+      await checkMode(p, fail, "once", "ArrowLeft");
+      if ((await p.inputValue("#add-sched-date")) !== dateIn(3) || (await p.inputValue("#add-sched-time")) !== "15:00") fail("switching back to One time lost Scheduled at");
+      await p.focus("#add-text");
       await checkForm(p, fail, `once ${label}`);
       await shootForm("panel-form-once");
       const once = await submit();
@@ -135,7 +161,7 @@ export const TODO_CASES = [
       await repeatOn();
       await p.click(".sch-add");
       await p.locator(".sch-time input").nth(1).fill("18:30");
-      if ((await summary(p)) !== "Repeats daily at 9:00 AM and 6:30 PM") fail(`daily summary "${await summary(p)}"`);
+      if (!/^First run: /.test(await firstRun(p))) fail(`daily first run "${await firstRun(p)}"`);
       await checkForm(p, fail, `daily ${label}`);
       await shootForm("panel-form-daily");
       const daily = await submit();
@@ -148,7 +174,7 @@ export const TODO_CASES = [
       const pressed = () => p.evaluate(() => [...document.querySelectorAll(".sch-day[aria-pressed=true]")].map((b) => b.textContent));
       for (const day of ["Monday", "Wednesday", "Friday"]) if (!(await pressed()).includes(day.slice(0, 2))) await p.getByRole("button", { name: day, exact: true }).click();
       for (const day of await pressed()) if (!["Mo", "We", "Fr"].includes(day)) await p.locator(".sch-day", { hasText: day }).click();
-      if ((await summary(p)) !== "Repeats every Mon, Wed and Fri at 9:00 AM") fail(`weekly summary "${await summary(p)}"`);
+      if ((await pressed()).join() !== "Mo,We,Fr" || !/^First run: /.test(await firstRun(p))) fail(`weekly ${await pressed()} "${await firstRun(p)}"`);
       await checkForm(p, fail, `weekly ${label}`);
       await shootForm("panel-form-weekly");
       const weekly = await submit();
@@ -162,7 +188,7 @@ export const TODO_CASES = [
       await p.selectOption("#add-sched-nth", "1");
       await p.selectOption("#add-sched-nth-day", "1");
       if (!(await p.locator("#add-sched-by-weekday").isChecked())) fail("picking a weekday did not pick its way of saying the day");
-      if ((await summary(p)) !== "Repeats every 2 months on the first Monday at 9:00 AM") fail(`monthly summary "${await summary(p)}"`);
+      if (!/^First run: /.test(await firstRun(p))) fail(`monthly first run "${await firstRun(p)}"`);
       await checkForm(p, fail, `monthly ${label}`);
       await shootForm("panel-form-monthly");
       const monthly = await submit();
@@ -186,7 +212,8 @@ export const TODO_CASES = [
       const custom = await submit();
       if (custom.repeat?.cron !== "*/30 9-17 * * 1-5") fail(`custom sent ${JSON.stringify(custom)}`);
 
-      // Ends on a date (and the error when it is before the start).
+      // Ends on a date (and the error when it is before the start). The rule starts from the One time date and time;
+      // saving Repeat sends only the rule (Starts and the rule give the first run).
       await openForm("Water the plants reminder");
       await p.fill("#add-sched-date", dateIn(2));
       await p.fill("#add-sched-time", "08:00");
@@ -194,13 +221,13 @@ export const TODO_CASES = [
       if ((await p.inputValue("#add-sched-start")) !== dateIn(2) || (await p.inputValue(".sch-time input")) !== "08:00") fail("the rule did not start from Scheduled at");
       await p.selectOption("#add-sched-ends", "on");
       await p.fill("#add-sched-end-date", dateIn(1));
-      if ((await summary(p)) !== "The end date is before the start date") fail(`end before start "${await summary(p)}"`);
+      if ((await firstRun(p)) !== "The end date is before the start date" || (await p.getAttribute("#add-sched-first", "data-tone")) !== "bad") fail(`end before start "${await firstRun(p)}"`);
       await p.fill("#add-sched-end-date", `${new Date().getFullYear()}-12-31`);
-      if (!/^Repeats daily at 8:00 AM, starting \w{3} \d+, until Dec 31$/.test(await summary(p))) fail(`end summary "${await summary(p)}"`);
+      if (!/^First run: /.test(await firstRun(p))) fail(`end first run "${await firstRun(p)}"`);
       await checkForm(p, fail, `end ${label}`);
       await shootForm("panel-form-end");
       const ending = await submit();
-      if (ending.repeat?.end !== `${new Date().getFullYear()}-12-31` || ending.notBefore !== new Date(`${dateIn(2)}T08:00`).toISOString()) fail(`end sent ${JSON.stringify(ending)}`);
+      if (ending.repeat?.end !== `${new Date().getFullYear()}-12-31` || ending.repeat.start !== dateIn(2) || "notBefore" in ending) fail(`end sent ${JSON.stringify(ending)}`);
 
       // Edit: "⋯" > Edit opens the form with the task as it is; Save sends the change.
       const row = p.locator("#task-list > li", { hasText: "Reply to new mentions" });
@@ -210,7 +237,7 @@ export const TODO_CASES = [
         title: document.getElementById("add-title").textContent,
         submit: document.getElementById("add-submit").textContent,
         text: document.getElementById("add-text").value,
-        repeat: document.getElementById("add-sched-repeat").checked,
+        repeat: document.getElementById("add-sched-mode-repeat").checked,
         freq: document.getElementById("add-sched-freq").value,
         times: [...document.querySelectorAll(".sch-time input")].map((i) => i.value),
         attach: !document.getElementById("add-attach").hidden,
@@ -218,12 +245,35 @@ export const TODO_CASES = [
       if (edit.title !== "Edit task" || edit.submit !== "Save" || !edit.text.startsWith("Reply to new mentions") || !edit.repeat || edit.freq !== "daily" || edit.times.join() !== "09:00,18:00" || edit.attach) {
         fail(`edit form ${JSON.stringify(edit)}`);
       }
+      await checkMode(p, fail, "repeat", "edit a repeating task");
       await checkForm(p, fail, `edit ${label}`);
       await shootForm("panel-form-edit");
       await p.locator(".sch-time input").nth(1).fill("17:00");
       const saved = await submit("tasks.update");
-      if (saved.id !== "t1" || saved.patch.repeat?.cron !== "0 9,17 * * *" || !saved.patch.instructions.startsWith("Reply")) fail(`edit sent ${JSON.stringify(saved)}`);
+      if (saved.id !== "t1" || saved.patch.repeat?.cron !== "0 9,17 * * *" || saved.patch.notBefore !== null || !saved.patch.instructions.startsWith("Reply")) fail(`edit sent ${JSON.stringify(saved)}`);
       if ((await p.evaluate(() => document.activeElement?.dataset.taskId)) !== "t1") fail("Save did not return the focus to the task");
+
+      const editRow = async (text) => {
+        const r = p.locator("#task-list > li", { hasText: text });
+        await r.locator(".menu summary").click();
+        await r.getByRole("button", { name: "Edit" }).click();
+      };
+      // A repeating task made One time: Scheduled at holds its next run; saving drops the rule.
+      await editRow("Reply to new mentions");
+      const shownAt = await p.evaluate(() => [document.getElementById("add-sched-date").value, document.getElementById("add-sched-time").value]);
+      await p.getByRole("radio", { name: "One time", exact: true }).check();
+      await checkMode(p, fail, "once", "repeating task to One time");
+      const once2 = await submit("tasks.update");
+      if (once2.patch.repeat !== null || once2.patch.notBefore !== new Date(`${shownAt[0]}T${shownAt[1]}`).toISOString() || !shownAt[0]) fail(`to One time sent ${JSON.stringify(once2)} (shown ${shownAt})`);
+
+      // A one-time task opens in One time; made Repeat, it sends only the rule.
+      await editRow("Post the photo of the week");
+      await checkMode(p, fail, "once", "edit a one-time task");
+      if ((await p.inputValue("#add-sched-date")) || (await p.inputValue("#add-sched-time"))) fail("an as-soon-as-possible task opened with a Scheduled at");
+      await shootForm("panel-form-edit-once");
+      await repeatOn();
+      const toRepeat = await submit("tasks.update");
+      if (toRepeat.id !== "t3" || toRepeat.patch.notBefore !== null || toRepeat.patch.repeat?.cron !== "0 9 * * *") fail(`to Repeat sent ${JSON.stringify(toRepeat)}`);
       reportErrors(p, `todo ${label}`);
       await p.close();
     },

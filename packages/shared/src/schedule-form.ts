@@ -1,8 +1,12 @@
 /**
- * The repeat part of the add/edit form as plain data, and the way between it
- * and a stored rule: the form's choices (frequency, every N, weekdays, a day
- * of the month, times, start and end) build the cron; a stored rule opens in
- * the form when those choices can say it, else as "Custom" with its cron.
+ * The add/edit form's schedule as plain data. It is One time (a date and time;
+ * empty = as soon as possible) or Repeat (a rule whose first run comes from
+ * its start and its days and times). Both modes' values are kept while the
+ * user switches; only the chosen one is saved.
+ *
+ * The repeat part's choices (frequency, every N, weekdays, a day of the month,
+ * times, start and end) build the cron; a stored rule opens in them when they
+ * can say it, else as "Custom" with its cron.
  * Pure: the side panel and the dashboard share it (ui/schedule-fields.ts).
  */
 import { allMonthDays, allWeekdays, parseCron, type CronLine } from "./cron.js";
@@ -10,12 +14,13 @@ import {
   MAX_REPEAT_COUNT,
   MAX_REPEAT_INTERVAL,
   MAX_REPEAT_TIMES,
+  nextRun,
   RepeatSchedule,
   timesToCron,
   type RepeatInterval,
   type RepeatUnit,
 } from "./schedule.js";
-import { parseIsoDate } from "./zoned-time.js";
+import { fromZonedInputs, parseIsoDate, toZonedInputs } from "./zoned-time.js";
 
 export type Frequency = "daily" | "weekly" | "monthly" | "custom";
 /** -1: the last. */
@@ -193,4 +198,74 @@ export function repeatToForm(r: RepeatSchedule, fallback: { date: string; time: 
   };
   // The form's choices hold the same days and times; they build the cron in its own words.
   return formToRepeat(form).ok ? form : custom;
+}
+
+// ---- the whole schedule: One time or Repeat ---------------------------------
+
+export type ScheduleMode = "once" | "repeat";
+export const SCHEDULE_MODES: readonly [ScheduleMode, string][] = [
+  ["once", "One time"],
+  ["repeat", "Repeat"],
+];
+
+/** A task's schedule as the form reads and writes it. */
+export interface ScheduleValue {
+  /** One time: when, ISO; null = as soon as possible. Repeat: null (the rule gives the first run). */
+  at: string | null;
+  repeat: RepeatSchedule | null;
+}
+
+export interface ScheduleDraft {
+  mode: ScheduleMode;
+  /** One time: "YYYY-MM-DD" and "HH:MM" in `tz`; both "" = as soon as possible. */
+  date: string;
+  time: string;
+  /** Repeat: the rule's choices. */
+  rule: RepeatForm;
+  /** The user changed the rule: switching to Repeat no longer starts it from the One time date and time. */
+  ruleTouched: boolean;
+  tz: string;
+}
+
+export type ScheduleField = FormField | "date" | "time";
+export type ScheduleSave = { ok: true; value: ScheduleValue } | { ok: false; field: ScheduleField; error: string };
+
+/** A rule starting from a date and time: daily at that time (09:00 when there is none), from that day. */
+function ruleFrom(date: string, time: string, tz: string, now: Date): RepeatForm {
+  const today = toZonedInputs(now.getTime(), tz).date;
+  return defaultRepeatForm({ date: date || today, time: time || "09:00", tz });
+}
+
+/** A task's schedule in the form (null: a new task). A repeating task opens in its rule's zone. */
+export function openSchedule(value: ScheduleValue | null, o: { tz: string; now: Date }): ScheduleDraft {
+  const tz = value?.repeat?.tz ?? o.tz;
+  const at = value?.at ? toZonedInputs(Date.parse(value.at), tz) : { date: "", time: "" };
+  const rule = value?.repeat ? repeatToForm(value.repeat, at.date ? at : { date: toZonedInputs(o.now.getTime(), tz).date, time: "09:00" }) : ruleFrom(at.date, at.time, tz, o.now);
+  return { mode: value?.repeat ? "repeat" : "once", date: at.date, time: at.time, rule, ruleTouched: !!value?.repeat, tz };
+}
+
+/** The draft in `mode`. An untouched rule starts from the One time date and time (keeping its frequency and every N). */
+export function withMode(d: ScheduleDraft, mode: ScheduleMode, now: Date): ScheduleDraft {
+  if (mode === "once" || d.ruleTouched) return { ...d, mode };
+  return { ...d, mode, rule: { ...ruleFrom(d.date, d.time, d.tz, now), frequency: d.rule.frequency, every: d.rule.every } };
+}
+
+/** The One time date and time as an instant; "" when empty (as soon as possible); null when not a valid date and time. */
+export function onceInstant(d: Pick<ScheduleDraft, "date" | "time" | "tz">, now: Date): string | "" | null {
+  if (!d.date && !d.time) return "";
+  const at = fromZonedInputs(d.date || toZonedInputs(now.getTime(), d.tz).date, d.time, d.tz);
+  return at === null ? null : new Date(at).toISOString();
+}
+
+/** What the chosen mode saves, or the field to fix. One time never saves a rule; Repeat never saves a first time. */
+export function saveSchedule(d: ScheduleDraft, now: Date): ScheduleSave {
+  if (d.mode === "once") {
+    const at = onceInstant(d, now);
+    if (at === null) return { ok: false, field: d.date ? "time" : "date", error: "Pick a date and a time" };
+    return { ok: true, value: { at: at || null, repeat: null } };
+  }
+  const built = formToRepeat({ ...d.rule, tz: d.tz });
+  if (!built.ok) return built;
+  if (!nextRun(built.repeat, now)) return { ok: false, field: "start", error: "This rule never runs: check its days, start and end" };
+  return { ok: true, value: { at: null, repeat: built.repeat } };
 }

@@ -163,9 +163,3 @@ export function describeRepeat(stored: RepeatSchedule | LegacyRepeatRule, opts: 
   if (repeat.count !== undefined) extra.push(`for ${plural(repeat.count, "run")}`);
   return [describeCron(repeat.cron, repeat.interval, opts), ...extra].join(", ");
 }
-
-/** The form's summary line: "Repeats every weekday at 9:00 AM, starting Sep 28, until Dec 31". */
-export function repeatSummary(repeat: RepeatSchedule, opts: TextOptions = {}): string {
-  const text = describeRepeat(repeat, opts);
-  return `Repeats ${text[0]!.toLowerCase()}${text.slice(1)}`;
-}

@@ -1,5 +1,5 @@
 /**
- * Settings > AI > Automation, as data: the chat levels and the scheduled-task
+ * Settings > Permission, as data: the chat levels and the scheduled-task
  * choice (from automation.ts, so the words are the same everywhere), which
  * is checked, whether full autonomy is on (a warning that stays), and when a
  * change needs the user to confirm it. The page (automation-section.ts)

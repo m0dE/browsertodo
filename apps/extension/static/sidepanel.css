@@ -128,23 +128,23 @@ button.icon-btn:hover { color: var(--text); }
 .sch-row > input[type="time"] { flex: 0 1 112px; }
 .sch-row > input.sch-num { flex: 0 0 64px; }
 .sch-hint { margin: 0; color: var(--muted); font-size: var(--text-xs); }
-.sch-hint[data-tone="bad"], .sch-cron-text[data-tone="bad"], .sch-summary[data-tone="bad"] { color: var(--bad); }
+.sch-hint[data-tone="bad"], .sch-cron-text[data-tone="bad"] { color: var(--bad); }
 button.sch-link { border: 0; background: none; padding: 2px 4px; color: var(--accent); font-size: var(--text-sm); }
 button.sch-link:hover { text-decoration: underline; background: none; }
-.sch-switch { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; cursor: pointer; font-weight: 500; position: relative; }
-.sch-switch input { position: absolute; opacity: 0; width: 30px; height: 18px; margin: 0; cursor: pointer; }
-.sch-track {
-  width: 30px; height: 18px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--muted) 35%, transparent);
-  position: relative; transition: background 0.15s; flex: none;
+/* One time | Repeat: native radios drawn as a segmented control. */
+.sch-mode {
+  border: 0; margin: 0; padding: 2px; display: inline-flex; gap: 2px; align-self: flex-start;
+  background: color-mix(in srgb, var(--muted) 14%, transparent); border-radius: var(--radius);
 }
-.sch-track::after {
-  content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
-  background: var(--knob); box-shadow: 0 1px 2px rgb(0 0 0 / 0.25); transition: transform 0.15s;
+.sch-mode label { position: relative; }
+.sch-mode input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.sch-mode span {
+  display: block; padding: 3px 12px; border-radius: calc(var(--radius) - 2px);
+  font-size: var(--text-sm); font-weight: 500; color: var(--muted); white-space: nowrap;
 }
-.sch-switch input:checked + .sch-track { background: var(--accent); }
-.sch-switch input:checked + .sch-track::after { transform: translateX(12px); }
-.sch-switch input:focus-visible + .sch-track { outline: var(--focus-ring); outline-offset: 2px; }
-@media (prefers-reduced-motion: reduce) { .sch-track, .sch-track::after { transition: none; } }
+.sch-mode label:hover span { color: var(--text); }
+.sch-mode input:checked + span { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgb(0 0 0 / 0.18); }
+.sch-mode input:focus-visible + span { outline: var(--focus-ring); outline-offset: 1px; }
 .sch-rule {
   margin: 0; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius);
   display: flex; flex-direction: column; gap: 10px; min-width: 0; background: color-mix(in srgb, var(--bg) 55%, var(--surface));
@@ -171,7 +171,9 @@ textarea.sch-cron { font-family: var(--mono); font-size: var(--text-sm); min-hei
 .sch-cron-text { margin: 0; font-size: var(--text-sm); color: var(--text); min-height: 1.2em; }
 .sch-cron-text:empty { display: none; }
 .sch-field .sch-row > select { min-width: 0; }
-.sch-summary { margin: 0; font-size: var(--text-sm); color: var(--text); font-weight: 500; }
+/* Ends: the choice keeps its words; the end date or run count wraps under it when the column is narrow. */
+.sch-range .sch-row { flex-wrap: wrap; }
+.sch-range .sch-row > select { flex: 1 0 auto; width: auto; }
 .sch-first:empty { display: none; }
 .sch-tz { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; }
 .sch-tz select { max-width: 100%; font-size: var(--text-sm); padding: 2px 6px; }
@@ -844,7 +846,7 @@ body:has(.voice-orb:not([hidden])) .composer { z-index: var(--z-above-veil); }
 .log .ev-approval[data-state="refused"] .appr-head { color: color-mix(in srgb, var(--bad) 80%, var(--text)); }
 .log .ev-approval:not([data-state="pending"]) .appr-text { max-height: none; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--muted); }
 
-/* Full autonomy is on (autonomy-warning.ts): one red line under the status for as long as it lasts. */
+/* Full autonomy is on (autonomy-warning.ts): one short red line under the status for as long as it lasts. */
 .autonomy-warning {
   display: flex; align-items: baseline; gap: 6px; margin: 0; padding: 4px 12px;
   font-size: var(--text-xs); line-height: 1.4; background: var(--bad-soft); color: var(--bad); border-bottom: 1px solid color-mix(in srgb, var(--bad) 30%, transparent);

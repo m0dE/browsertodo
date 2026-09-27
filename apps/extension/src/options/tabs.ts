@@ -1,8 +1,9 @@
 /**
  * The options page's tabs: an accessible tablist (arrow keys, Home / End),
  * the open tab in location.hash (so options.html#ai opens the AI tab; a
- * section link such as #jev opens its tab scrolled to it) and, for a plain
- * options.html, the tab opened last in this browser.
+ * section link such as #jev opens its tab scrolled to it; an old link such
+ * as #automation opens the tab it moved to) and, for a plain options.html,
+ * the tab opened last in this browser.
  */
 import { $, h } from "../ui/dom.js";
 import { nextTab, sectionFromHash, TABS, tabFromHash, type TabId } from "./settings-view.js";

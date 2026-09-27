@@ -788,19 +788,20 @@ export const PANEL_CASES = [
         reportErrors(p, `approval-denied ${label}`);
         await p.close();
       }
-      // Full autonomy: a red line under the status, as long as it is on; Change opens Settings > AI > Automation.
+      // Full autonomy: one short red line under the status, as long as it is on, with what it means as its tooltip;
+      // Change opens Settings > Permission.
       if (want("panel-autonomy-full", size, scheme)) {
         const p = await openPanel(ctx, "idle", ".chat-empty", { edit: (d) => (d.state.settings.automationLevel = "full") });
         const w = await p.evaluate(() => {
           const el = document.getElementById("autonomy-warning");
           const r = el.getBoundingClientRect();
-          return { shown: !el.hidden && r.height > 0, text: el.textContent.replace(/\s+/g, " ").trim(), oneLine: r.height < 40, inside: r.right <= innerWidth + 0.5 };
+          return { shown: !el.hidden && r.height > 0, text: el.textContent.replace(/\s+/g, " ").trim(), title: el.title, oneLine: r.height < 40, inside: r.right <= innerWidth + 0.5 };
         });
-        if (!w.shown || !w.text.startsWith("Full autonomy: the agent posts, sends, pays and deletes without asking.") || !w.inside) fail(`autonomy warning ${JSON.stringify(w)}`);
+        if (!w.shown || w.text !== "Permission: Full autonomy Change" || !/^Never asks\. The agent can post, send, pay and delete/.test(w.title) || !w.oneLine || !w.inside) fail(`autonomy warning ${JSON.stringify(w)}`);
         await checkLayout(p, `autonomy ${label}`);
         await shoot(p, "panel-autonomy-full", size, scheme);
         await p.click("#autonomy-warning-change");
-        await p.waitForFunction(() => [...(window.__created ?? []), ...(window.__opened ?? [])].some((u) => u.endsWith("options.html#automation")));
+        await p.waitForFunction(() => [...(window.__created ?? []), ...(window.__opened ?? [])].some((u) => u.endsWith("options.html#permission")));
         // Back to asking: the warning goes with the next state.
         await p.evaluate(() => { const st = window.__data.state; window.__push({ type: "state", state: { ...st, rev: (st.rev ?? 0) + 1, settings: { ...st.settings, automationLevel: "ask_consequential" } } }); });
         await p.waitForSelector("#autonomy-warning", { state: "hidden" });

@@ -21,7 +21,7 @@ export function installChromeStub(data) {
   const newChat = (instructions, req) => {
     const line = instructions.replace(/\s+/g, " ").trim();
     const title = line.length > 80 ? `${line.slice(0, 79)}…` : line;
-    const s = { sessionId: "s-new", source: "adhoc", title, instructions, brain: "claude-api", jev: true, model: "claude-sonnet-5", startedAt: new Date().toISOString(), ...(req.voice ? { voice: true } : {}) };
+    const s = { sessionId: "s-new", source: "adhoc", title, instructions, brain: "claude-api", jev: true, model: "claude-sonnet-5", startedAt: new Date().toISOString(), ...(req.voice ? { voice: true } : {}), ...(req.heard?.length ? { heard: req.heard } : {}) };
     data.sessions = [s, ...data.sessions.filter((x) => x.sessionId !== "s-new")];
     data.eventsBySession = { ...(data.eventsBySession ?? {}), "s-new": [] };
     if (req.tabId !== undefined) data.state = { ...data.state, tabChats: { ...data.state.tabChats, [req.tabId]: "s-new" } };
@@ -168,13 +168,29 @@ export function installChromeStub(data) {
       data.keys = (data.keys ?? []).filter((k) => k.id !== req.id);
       return { ok: true };
     },
+    // A task's details: what its memory keeps of its earlier runs (data.taskRuns, for the task whose instructions start with data.taskRunsFor).
+    "memory.taskRuns": (req) => ({ runs: data.taskRunsFor && req.task.instructions.startsWith(data.taskRunsFor) ? (data.taskRuns ?? []) : [] }),
     "tasks.add": () => ({ task: data.tasks[0] }),
     "tasks.update": (req) => ({ task: { ...data.tasks.find((t) => t.id === req.id), ...req.patch } }),
     // Run on a row: the task runs now (a new session for it, bound to nothing).
     "tasks.run": (req) => ({ sessionId: `s-run-${req.id}` }),
     "tasks.delete": () => ({ ok: true }),
     "tasks.retry": () => ({ task: data.tasks[0] }),
-    "sessions.list": (req) => ({ sessions: data.sessions.filter((s) => req.taskId === undefined || s.taskId === req.taskId) }),
+    // chats: only conversations to go on with (a one-off chat, or a run the user went on with), as the router lists them.
+    "sessions.list": (req) => {
+      const chat = (s) => s.source === "adhoc" || (s.turns ?? 1) > 1;
+      const list = data.sessions.filter((s) => (req.taskId === undefined || s.taskId === req.taskId) && (!req.chats || chat(s)));
+      return { sessions: list.slice(0, req.limit ?? 50) };
+    },
+    // A chat renamed in History: the session changes (and is pushed, as the background does).
+    "session.rename": (req) => {
+      const cur = data.sessions.find((s) => s.sessionId === req.sessionId);
+      if (cur.source !== "adhoc") throw new Error("Only chats can be renamed: a TODO run is named by its task");
+      const session = { ...cur, title: req.title.replace(/\s+/g, " ").trim(), titleBy: "user" };
+      data.sessions = data.sessions.map((s) => (s.sessionId === req.sessionId ? session : s));
+      setTimeout(() => window.__push({ type: "session", session }), 0);
+      return { session };
+    },
     "sessions.events": (req) =>
       data.eventsBySession?.[req.sessionId]
         ? { session: data.sessions.find((s) => s.sessionId === req.sessionId) ?? data.state.running, events: data.eventsBySession[req.sessionId] }
@@ -224,9 +240,9 @@ export function installChromeStub(data) {
       setTimeout(() => window.__push({ type: "event", event: { type: "spoken", text: req.text, ts: new Date().toISOString(), sessionId: req.sessionId } }), 0);
       return { ok: true };
     },
-    // What the user said (Realtime) is kept in its chat: pushed back as a "heard" event.
+    // What the user said (Realtime) that led to no request is kept in its chat: pushed back as a "heard" event.
     "voice.heard": (req) => {
-      const event = { type: "heard", text: req.text, ...(req.sent ? { sent: req.sent } : {}), ...(req.early ? { early: true } : {}), ts: new Date().toISOString(), sessionId: req.sessionId };
+      const event = { type: "heard", text: req.text, ts: new Date().toISOString(), sessionId: req.sessionId };
       setTimeout(() => window.__push({ type: "event", event }), 0);
       return { ok: true };
     },
@@ -317,8 +333,9 @@ export function installChromeStub(data) {
  * Runs in the page before any script (hands-free voice cases): the browser's speech and the Realtime relay, faked.
  * speechSynthesis records each line in window.__spoken and ends it after window.__ttsMs (default 600 ms), or, with
  * window.__ttsHold, when window.__ttsRelease() is called. A WebSocket to /v1/ai/realtime is window.__rt: it opens,
- * sends OpenAI's session.created (or, with window.__rtMode = "unavailable", the relay's refusal and close 4503), keeps
- * what the panel sent in __rt.sent, and __rt.emit(event) plays a server event.
+ * sends OpenAI's session.created (or, with window.__rtMode = "unavailable", the relay's refusal and close 4503; with
+ * "hold", nothing: the test sends it), keeps what the panel sent in __rt.sent, __rt.emit(event) plays a server event,
+ * and __rt.drop(code) closes it from the server's side.
  */
 export function installVoiceFakes() {
   window.__spoken = [];
@@ -369,6 +386,7 @@ export function installVoiceFakes() {
           this.onclose?.({ code: 4503, reason: "realtime_unavailable" });
           return;
         }
+        if (window.__rtMode === "hold") return;
         this.emit({ type: "session.created", event_id: "ev_session", session: { type: "realtime", model: "gpt-realtime-2.1" } });
       }, 20);
     }
@@ -383,6 +401,10 @@ export function installVoiceFakes() {
     }
     emit(event) {
       this.onmessage?.({ data: JSON.stringify(event) });
+    }
+    drop(code = 1011) {
+      this.readyState = 3;
+      this.onclose?.({ code, reason: "" });
     }
   };
 }

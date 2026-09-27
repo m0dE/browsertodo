@@ -30,11 +30,17 @@
  * shows the user's words in the box while they speak, then sends them after
  * a short window in which "cancel" or Esc takes them back.
  *
- * The engine is the one picked in Settings (voice/engine-choice.ts):
- * Realtime unless the server cannot run it or the credit is low; a Realtime
- * failure that Standard can cover switches to Standard with a one-line note.
- * The first Realtime session shows what it costs once, with a switch to
- * Standard. Mic permission and plan gating are voice-input.ts's.
+ * The engine is always the one picked in Settings; only the user changes it
+ * (Settings, or a button they press). Realtime that cannot run says why and
+ * offers Standard for this once (voice/engine-choice.ts). A Realtime
+ * connection that drops is made again (RECONNECT_DELAYS_MS: the strip says
+ * "Reconnecting…", the chat and the session go on, the trace says why);
+ * if it cannot be, the session ends with "Voice disconnected." and Try
+ * again. Connections this browser hands over (Use voice here, reconnecting)
+ * take the place of its own session still closing on the server
+ * (takeover); another window's or device's is only taken over when the user
+ * presses Take over here. The first Realtime session shows what it costs
+ * once. Mic permission and plan gating are voice-input.ts's.
  *
  * Mute (the bar's Mute, or Alt+M in the panel: MUTE_KEY) turns the
  * microphone off to the engine while the session goes on: nothing heard is
@@ -51,7 +57,7 @@
 import type { AccountView } from "../ui-protocol.js";
 import { errorMessage, traceStart, type AgentEvent, type ApprovalAnswer, type ExtensionSettings, type StampedAgentEvent, type VoiceEngine, type VoiceEngineId, type VoiceEnginesResponse } from "@browsertodo/shared";
 import type { PanelTrace } from "../trace/panel-trace.js";
-import { chooseEngine, costPerMinuteText } from "../voice/engine-choice.js";
+import { checkEngine, costPerMinuteText } from "../voice/engine-choice.js";
 import type { EngineEvents, HandsFreeEngine } from "../voice/engine.js";
 import { HANDS_FREE, handsFree, initialHandsFree, type EndReason, type HandsFreeEffect, type HandsFreeEvent, type HandsFreePhase, type HandsFreeState } from "../voice/hands-free.js";
 import {
@@ -74,7 +80,8 @@ import type { VoiceSessionView } from "../voice-session.js";
 import { ChatFollower } from "../voice/chat-follower.js";
 import { Narration } from "../voice/narration.js";
 import { spokenApprovalAnswer, WaitingApprovals } from "../voice/approval-voice.js";
-import type { RealtimeFailure } from "../voice/realtime-client.js";
+import { ECHO_WINDOW_MS, echoesSpoken } from "../voice/narrator-policy.js";
+import { asRealtimeFailure } from "../voice/realtime-client.js";
 import { VoiceError } from "../voice/transcribe.js";
 import { errorHelp } from "./error-help.js";
 import { Earcons, type Earcon } from "../voice/earcons.js";
@@ -87,17 +94,25 @@ const STARTING_TEXT = "Hands-free · starting…";
 
 /** Under the orb before anything was sent. */
 const ORB_CAPTION = "Hands-free: say what to do · “stop” to end";
+/** Under the orb while a dropped connection is made again. */
+const RECONNECTING_CAPTION = "Reconnecting voice…";
 /** Under the orb while muted (and nothing is being said). */
 const MUTED_CAPTION = "Microphone muted · Unmute to talk";
 
 /** A said line stays under the orb this long after it. */
 const CAPTION_LINGER_MS = 4_000;
 
-/** Words said before the session's chat exists and passed on to no one, kept for the chat a request starts: at most this many utterances. */
-export const MAX_EARLY_WORDS = 8;
-
-/** Notices about the engine (a fallback, the cost) go under this key, apart from voice's others. */
+/** Notices about the engine (why it cannot start, the cost) go under this key, apart from voice's others. */
 const ENGINE_NOTICE = "voice.engine";
+
+/**
+ * A Realtime connection that dropped (or, while connecting, found the user's previous session still closing on the
+ * server) is tried again after each of these waits; then the session ends and says so.
+ */
+export const RECONNECT_DELAYS_MS = [500, 2_000, 5_000] as const;
+
+/** How an engine's opening went: it runs, the session was stopped meanwhile, or it failed (why). */
+type Opened = "open" | "stopped" | { failed: unknown };
 
 /** Why the session stopped, when the user did not stop it themselves. */
 function endNote(reason: EndReason): string | null {
@@ -109,6 +124,8 @@ function endNote(reason: EndReason): string | null {
 export interface SendExtra {
   cid?: string;
   context?: string;
+  /** The user's words for it, word for word (Realtime: the text is the request as the narrator understood it). */
+  heard?: readonly string[];
 }
 
 /** A line being said: in which chat (null: none yet), its words so far, and whether the chat keeps it. */
@@ -125,7 +142,7 @@ export interface HandsFreeDeps {
     draft(): string;
     setDraft(value: string): void;
   };
-  /** Voice's notices above the box (a fallback, the cost, why it stopped). */
+  /** Voice's notices above the box (why it cannot start or stopped, the cost). */
   notify(tip: VoiceTip & { key?: string }): void;
   /** The browser tab the panel shows (null: unknown). */
   activeTab(): number | null;
@@ -151,17 +168,17 @@ export interface HandsFreeDeps {
   onSpeaking(line: { sessionId: string; text: string } | null): void;
   /** Keeps a said line in its chat. */
   keepSpoken(sessionId: string, text: string): void;
-  /**
-   * Keeps what the user said (Realtime) in its chat, with the request sent for it (null: none). early: said before
-   * the chat existed, kept as the request that started it went out.
-   */
-  keepHeard(sessionId: string, text: string, sent: string | null, early?: true): void;
+  /** Keeps what the user said (Realtime) that led to no request in its chat, for the record (not shown). */
+  keepHeard(sessionId: string, text: string): void;
   settings(): ExtensionSettings | null;
   account(): AccountView | undefined;
   /** The server's voice engines (null: could not be loaded). */
   engines(): Promise<VoiceEnginesResponse | null>;
   saveSettings(patch: Partial<ExtensionSettings>): Promise<void>;
-  createEngine(id: VoiceEngineId, events: EngineEvents): HandsFreeEngine;
+  /** Settings > AI, where the voice engine is picked. */
+  openVoiceSettings(): void;
+  /** takeover: a Realtime engine ends the user's session still open on the server and takes its place. */
+  createEngine(id: VoiceEngineId, events: EngineEvents, opts?: { takeover?: boolean }): HandsFreeEngine;
   /** Stops the running task of a chat; says what happened. */
   stopTask(sessionId: string | null): Promise<string>;
   /** Answers an approval request of a chat by voice; true when it was still waiting. */
@@ -248,10 +265,19 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   let caption = "";
   let captionTimer: ReturnType<typeof setTimeout> | null = null;
   let line: Line | null = null;
+  /** Lines said aloud lately, with when: the microphone hearing one of them is not the user (echoesSpoken). */
+  const saidAloud: { text: string; at: number }[] = [];
+  const recentlySaid = () => {
+    const since = now() - ECHO_WINDOW_MS;
+    while (saidAloud[0] && saidAloud[0].at < since) saidAloud.shift();
+    return saidAloud.map((s) => s.text);
+  };
   /** Milestone lines (said, but not kept: the chat shows those steps already). */
   const passing = new Set<string>();
   /** Starting (engine choice, microphone, connection). */
   let starting = false;
+  /** The Realtime connection dropped and is being made again (the session goes on). */
+  let reconnecting = false;
   /** When the session started (the bar's time on). */
   let startedAt = 0;
   /** The start sound was made: the stop sound goes with it. */
@@ -268,8 +294,6 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   let sending: Promise<void> = Promise.resolve();
   /** The message starting the session's chat, until its id is known: messages said meanwhile go to that chat after it. */
   let startingChat: Promise<void> | null = null;
-  /** The user's words (Realtime) said while the session had no chat and passed on to no one: kept once a chat starts. */
-  let earlyWords: string[] = [];
   const chatNow = () => chatId ?? deps.chatOf(tab);
   const follower = new ChatFollower(chatNow);
   const trace = deps.trace;
@@ -297,11 +321,9 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   /** Another tab's session, as this panel shows it (Go to tab, Use voice here, Stop). */
   const shownRemote = () => (!on() && remoteSession(remote, deps.homeTab) === "notice" ? remote : null);
 
-  // The bar's buttons act on this panel's session, else on the one another panel runs.
+  // The strip's links act on this panel's session, else on the one another panel runs.
   const bar = initVoiceBar(deps.bar, {
-    stop: () => (on() ? stop("button") : deps.stopRemote()),
-    interrupt: () => state.phase === "speaking" && dispatch({ type: "cancel", now: now() }),
-    mute: () => toggleMute(),
+    turnOff: () => (on() ? stop("button") : deps.stopRemote()),
     goToTab: () => {
       const t = on() ? tab : (remote?.tabId ?? null);
       if (t !== null) deps.goToTab(t);
@@ -326,10 +348,10 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       phase: phase ?? "starting",
       hearing,
       muted: muted(),
+      reconnecting,
       engine: engine?.id ?? null,
       elapsedMs: t - startedAt,
       elsewhere: elsewhere ? { title: homePage?.title ?? null } : null,
-      shortcut: deps.voice.shortcutLabel,
     });
     bar.show(view);
     // The phase, and where the session is at home (for debugging and tests): its chat and its tabs.
@@ -341,10 +363,11 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     deps.voice.showHandsFree({
       orb,
       phase: phase ?? "opening",
-      caption: phase === "sending" ? "Sending…" : caption || (!phase ? STARTING_TEXT : muted() ? MUTED_CAPTION : ORB_CAPTION),
-      status: elsewhere ? "on in another tab" : view.title,
+      caption: reconnecting ? RECONNECTING_CAPTION : phase === "sending" ? "Sending…" : caption || (!phase ? STARTING_TEXT : muted() ? MUTED_CAPTION : ORB_CAPTION),
       elsewhere,
       muted: muted(),
+      mute: view.mute,
+      interrupt: phase === "speaking",
     });
   }
 
@@ -400,6 +423,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     const l = line;
     line = null;
     if (!l) return;
+    if (l.text.trim()) saidAloud.push({ text: l.text, at: now() });
     setCaption(l.text, true);
     if (!l.keep || !l.sessionId) return;
     deps.onSpeaking(null);
@@ -409,7 +433,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   function run(effect: HandsFreeEffect): void {
     switch (effect.type) {
       case "send":
-        sending = send(effect.text);
+        sending = send(effect.text, effect.heard);
         break;
       case "speak":
         beginLine(effect.text);
@@ -440,7 +464,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
         deps.notify({ text: "Cancelled.", level: "info" });
         break;
       case "end":
-        finish(endNote(effect.reason));
+        finish(endNote(effect.reason), effect.reason);
         break;
     }
   }
@@ -449,11 +473,11 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
    * Sends a message at once, unless the session's chat is still being started by an earlier one: then right after
    * it, into that chat (sent now, it would start a second chat).
    */
-  function send(text: string): Promise<void> {
+  function send(text: string, heard?: readonly string[]): Promise<void> {
     const cid = trace?.utterance();
-    if (startingChat) return startingChat.then(() => sendNow(text, cid));
+    if (startingChat) return startingChat.then(() => sendNow(text, cid, heard));
     const startsChat = chatNow() === null;
-    const out = sendNow(text, cid);
+    const out = sendNow(text, cid, heard);
     if (startsChat) {
       startingChat = out;
       void out.finally(() => {
@@ -463,8 +487,8 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     return out;
   }
 
-  /** What was said goes to the session's chat, whichever tab is shown. cid: its utterance in the trace. */
-  async function sendNow(text: string, cid: string | undefined): Promise<void> {
+  /** What was said goes to the session's chat, whichever tab is shown. cid: its utterance in the trace; heard: see SendExtra. */
+  async function sendNow(text: string, cid: string | undefined, heard?: readonly string[]): Promise<void> {
     sent = true;
     follower.sent(now());
     if (wroteBox) deps.composer.setDraft("");
@@ -481,10 +505,8 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       // Said while the user looks at another tab: the agent learns it cannot see that tab (the chat shows the words alone).
       const note = here() ? null : await lookingNote();
       const target = { tabId: tab, sessionId: chatNow() };
-      const extra: SendExtra = { ...(cid === undefined ? {} : { cid }), ...(note ? { context: note } : {}) };
+      const extra: SendExtra = { ...(cid === undefined ? {} : { cid }), ...(note ? { context: note } : {}), ...(heard?.length ? { heard } : {}) };
       chatId = await (Object.keys(extra).length ? deps.send(text, target, extra) : deps.send(text, target));
-      // What was said before this chat existed goes in it now, before the words of this request.
-      for (const words of earlyWords.splice(0)) deps.keepHeard(chatId, words, null, true);
       if (trace && cid) {
         const ms = delivery.elapsed();
         trace.record({ t: delivery.t, ms, cat: "voice", name: "voice.deliver", cid, data: { chars: text.length, waitMs: ms } });
@@ -497,17 +519,11 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     syncChat();
   }
 
-  /**
-   * What the user said (Realtime), kept in the chat its request went to, or else the session's chat (after a chat
-   * being started). No chat yet and nothing passed on: kept for the chat a request will start (MAX_EARLY_WORDS).
-   */
-  async function keepWords(words: string, sent: string | null): Promise<void> {
-    if (sent) await sending;
-    else if (startingChat) await startingChat;
-    if (state.phase === "off") return;
-    const chat = chatNow();
-    if (chat) deps.keepHeard(chat, words, sent);
-    else if (!sent) earlyWords = [...earlyWords, words].slice(-MAX_EARLY_WORDS);
+  /** What the user said (Realtime) that led to no request: kept in the session's chat for the record (none yet: let go). */
+  async function keepWords(words: readonly string[]): Promise<void> {
+    if (startingChat) await startingChat;
+    const chat = state.phase === "off" ? null : chatNow();
+    if (chat && words.length) deps.keepHeard(chat, words.join(" "));
   }
 
   /** The user's words so far (Standard), in the box (after what was typed there) while the session's tab is shown. */
@@ -525,6 +541,11 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       speech: () => alive(() => dispatch({ type: "speech", now: now() }))(),
       heard: (text, forward) =>
         alive(() => {
+          // The speaker's own line heard back (Standard): not the user.
+          if (forward && echoesSpoken(text, recentlySaid())) {
+            forward = false;
+            trace?.record({ t: Date.now(), cat: "voice", name: "voice.echo", data: { chars: text.length } });
+          }
           // A yes or no while the chat waits for an approval answers it, and is not sent as a message.
           if (forward && answerByVoice(text)) forward = false;
           // "Use this tab" (Standard) moves the session to the tab the user looks at, and says so.
@@ -551,13 +572,13 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
           dispatch({ type: "said", now: now() });
         })(),
       narratorText: (t) => alive(() => narratorWords(t))(),
-      forward: (text) =>
+      forward: (text, heard) =>
         alive(() => {
           // Realtime sends at once (no sending window).
           trace?.record({ t: Date.now(), cat: "voice", name: "voice.forward", cid: trace.utterance(), data: { chars: text.length } });
-          dispatch({ type: "forward", text, now: now() });
+          dispatch({ type: "forward", text, ...(heard?.length ? { heard } : {}), now: now() });
         })(),
-      userWords: (words, sent) => alive(() => void keepWords(words, sent))(),
+      userWords: (words) => alive(() => void keepWords(words))(),
       stopTask: () => deps.stopTask(chatNow()),
       answerApproval: async (allow) => {
         const chat = chatNow();
@@ -572,59 +593,78 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     };
   }
 
-  /** Why an engine stopped: Realtime trouble that Standard can cover switches over; anything else ends the session. */
-  async function onEngineFailure(err: unknown): Promise<void> {
-    traceFailure(engine?.id ?? null, err);
-    const f = err as Partial<RealtimeFailure>;
-    if (engine?.id === "realtime" && f.fallback && f.message) {
-      engine.stop();
-      engine = null;
-      deps.notify({ key: ENGINE_NOTICE, text: f.message, level: "fallback" });
-      await openEngine("standard");
+  /**
+   * Why an engine stopped: a Realtime connection that dropped is made again (reconnect); anything else ends the
+   * session and says why. Never another engine.
+   */
+  function onEngineFailure(err: unknown): void {
+    const id = engine?.id ?? null;
+    traceFailure(id, err);
+    if (id === "realtime" && state.phase !== "off" && asRealtimeFailure(err)?.transient) return void reconnect(err);
+    finish(null, "error");
+    deps.notify(failureTip(err));
+  }
+
+  /** The Realtime connection dropped: a new one is made (the chat, the phase and the mute go on), or the session ends. */
+  async function reconnect(err: unknown): Promise<void> {
+    const dropped = engine;
+    engine = null;
+    dropped?.stop();
+    // What was being said is gone with the connection.
+    endLine();
+    if (state.phase === "speaking") dispatch({ type: "said", now: now() });
+    reconnecting = true;
+    render();
+    trace?.record({ t: Date.now(), cat: "voice", name: "voice.reconnect", data: { reason: asRealtimeFailure(err)?.kind ?? "unknown", attempt: 0 } });
+    // This browser held the one session: the server's end of it may still be closing, so this one takes its place.
+    const r = await connect("realtime", true);
+    reconnecting = false;
+    if (r === "stopped") return;
+    if (r !== "open") {
+      finish(null, "error");
+      deps.notify(failureTip(r.failed));
       return;
     }
-    finish(null);
-    deps.notify(failureTip(err));
+    render();
   }
 
   /** An engine could not start or go on: an error in the trace of the chat the session talks to. */
   function traceFailure(id: VoiceEngineId | null, err: unknown): void {
-    const message = (err as Partial<RealtimeFailure>)?.message ?? errorMessage(err);
+    const message = asRealtimeFailure(err)?.message ?? errorMessage(err);
     trace?.record({ t: Date.now(), cat: "error", name: "voice.failed", data: { engine: id, error: message.slice(0, 160) } });
   }
 
+  /** What to say when voice could not start or go on, with what the user can do about it (never done for them). */
   function failureTip(err: unknown): VoiceTip {
     if (err instanceof VoiceError) return errorTip(err, deps.openBilling);
-    const message = (err as Partial<RealtimeFailure>)?.message ?? errorMessage(err);
+    const f = asRealtimeFailure(err);
+    const standard = { label: "Use Standard voice", run: () => void start("standard") };
+    if (f?.kind === "busy" || f?.kind === "replaced") return { text: f.message, level: "error", actions: [{ label: "Take over here", run: () => void start("realtime", false, true) }] };
+    if (f?.transient) return { text: f.message, level: "error", actions: [{ label: "Try again", run: () => void start("realtime") }, standard] };
+    if (f?.kind === "unavailable") return { text: f.message, level: "error", actions: [standard] };
+    const message = f?.message ?? errorMessage(err);
     const help = errorHelp(message);
     const fix = help.fixes.find((x) => x.kind === "topup" || x.kind === "plans" || x.kind === "login");
-    const action = fix ? { label: fix.label, run: fix.kind === "login" ? deps.signIn : deps.openBilling } : undefined;
-    return { text: help.known ? help.message : message, level: "error", ...(action ? { action } : {}) };
+    const actions = fix ? [{ label: fix.label, run: fix.kind === "login" ? deps.signIn : deps.openBilling }] : [];
+    return { text: help.known ? help.message : message, level: "error", ...(actions.length ? { actions } : {}) };
   }
 
-  /** Opens `id` (falling back from Realtime when it cannot start); true when a session runs. */
-  async function openEngine(id: VoiceEngineId): Promise<boolean> {
-    const e = deps.createEngine(id, events());
+  /** Opens `id` (takeover: see HandsFreeDeps.createEngine); on success the session runs on it. */
+  async function openEngine(id: VoiceEngineId, takeover: boolean): Promise<Opened> {
+    const e = deps.createEngine(id, events(), takeover ? { takeover } : undefined);
     engine = e;
-    // Muted before the microphone opens (a muted session moved here, or the engine replaced while muted).
+    // Muted before the microphone opens (a muted session moved here, or reconnecting while muted).
     if (muted()) e.setMuted(true);
     try {
       await e.start();
     } catch (err) {
-      if (engine !== e) return false; // stopped meanwhile
+      if (engine !== e) return "stopped";
       traceFailure(id, err);
       e.stop();
       engine = null;
-      const f = err as Partial<RealtimeFailure>;
-      if (id === "realtime" && f.fallback && f.message) {
-        deps.notify({ key: ENGINE_NOTICE, text: f.message, level: "fallback" });
-        return openEngine("standard");
-      }
-      finish(null);
-      deps.notify(failureTip(err));
-      return false;
+      return { failed: err };
     }
-    if (engine !== e) return false;
+    if (engine !== e) return "stopped";
     report();
     // The narrator starts out knowing whether the user looks at another tab.
     lookingAway = false;
@@ -632,8 +672,23 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     if (state.phase === "off") dispatch({ type: "start", now: now(), halfDuplex: e.halfDuplex, muted: startMuted });
     else if (e.halfDuplex !== state.halfDuplex) state = { ...state, halfDuplex: e.halfDuplex };
     e.setTranscribing(state.phase !== "speaking");
+    e.setAgentWorking?.(working);
     if (working) dispatch({ type: "agent", working, now: now() });
-    return true;
+    return "open";
+  }
+
+  /** Opens `id`, trying Realtime again after RECONNECT_DELAYS_MS while its failure may pass; the trace says why. */
+  async function connect(id: VoiceEngineId, takeover: boolean): Promise<Opened> {
+    for (let attempt = 1; ; attempt++) {
+      const r = await openEngine(id, takeover);
+      if (r === "open" || r === "stopped") return r;
+      const f = asRealtimeFailure(r.failed);
+      const delayMs = RECONNECT_DELAYS_MS[attempt - 1];
+      if (id !== "realtime" || !f?.transient || delayMs === undefined) return r;
+      trace?.record({ t: Date.now(), cat: "voice", name: "voice.reconnect", data: { reason: f.kind, attempt, delayMs } });
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      if (!on()) return "stopped";
+    }
   }
 
   /** Binds the session to `next` (its start, or the shortcut pressed there): its chat is followed from now on. */
@@ -641,8 +696,6 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     tab = next;
     homePage = null;
     chatId = deps.chatOf(next);
-    // Words kept for a chat to come were said to the tab the session leaves.
-    earlyWords = [];
     ownTabs.clear();
     if (next !== null) ownTabs.add(next);
     follower.start();
@@ -657,10 +710,10 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   }
 
   /**
-   * `preferred`: the engine to use (a session moved here keeps its engine); else the one in Settings. `mute`: it
-   * starts muted (a muted session moved here stays so).
+   * `picked`: the engine to use (a session moved here keeps its engine; the user chose one on a notice); else the one
+   * in Settings. `mute`: it starts muted (a muted session moved here stays so). `takeover`: see createEngine.
    */
-  async function start(preferred: VoiceEngineId | null = null, mute = false): Promise<void> {
+  async function start(picked: VoiceEngineId | null = null, mute = false, takeover = false): Promise<void> {
     if (on()) return;
     starting = true;
     startMuted = mute;
@@ -671,17 +724,27 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     render();
     report();
     const settings = deps.settings();
-    const wanted = preferred ?? settings?.voiceEngine ?? "realtime";
+    const id = picked ?? settings?.voiceEngine ?? "realtime";
+    trace?.record({ t: Date.now(), cat: "voice", name: "voice.start", data: { engine: id, why: picked ? (takeover ? "taken over" : "chosen") : "settings", ...(takeover ? { takeover } : {}) } });
     try {
       if (!(await deps.voice.ensureMic())) return void finish(null);
-      const engines = wanted === "standard" ? null : await deps.engines().catch(() => null);
+      const engines = id === "standard" ? null : await deps.engines().catch(() => null);
       if (!starting) return; // stopped meanwhile
-      const choice = chooseEngine({ preferred: wanted, engines, creditCents: deps.account()?.credit?.totalCents });
-      if (choice.note) deps.notify({ key: ENGINE_NOTICE, text: choice.note, level: "fallback" });
-      else if (choice.engine === "realtime" && settings && !settings.realtimeCostNoticed) costNotice(engines?.engines ?? null);
-      // Replaced while it started (Standard took over, or the cost notice switched to it), the session goes on with
-      // the new engine and needs the clock just the same; stopped meanwhile, there is none.
-      if (!(await openEngine(choice.engine)) && !engine) return;
+      const check = checkEngine({ picked: id, engines, creditCents: deps.account()?.credit?.totalCents });
+      if (check.blocked) {
+        finish(null);
+        deps.notify({ key: ENGINE_NOTICE, text: check.blocked, level: "error", actions: [{ label: "Use Standard voice", run: () => void start("standard") }] });
+        return;
+      }
+      if (check.note) deps.notify({ key: ENGINE_NOTICE, text: check.note, level: "info", actions: [{ label: "Top up", run: deps.openBilling }] });
+      else if (id === "realtime" && settings && !settings.realtimeCostNoticed) costNotice(engines?.engines ?? null);
+      const r = await connect(id, takeover);
+      if (r === "stopped") return;
+      if (r !== "open") {
+        finish(null, "error");
+        deps.notify(failureTip(r.failed));
+        return;
+      }
       // The microphone is live.
       chimed = true;
       sound("start");
@@ -697,30 +760,17 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     }
   }
 
-  /** Once: what Realtime costs, with a one-click switch to Standard. */
+  /** Once: what Realtime costs; the engine is changed in Settings. */
   function costNotice(engines: VoiceEngine[] | null): void {
     const rt = engines?.find((e) => e.id === "realtime");
     const cost = rt ? `Realtime voice uses ${costPerMinuteText(rt.approxCentsPerMinute)}.` : "Realtime voice uses usage credit by the minute.";
-    deps.notify({
-      key: ENGINE_NOTICE,
-      text: `${cost} Standard costs much less.`,
-      level: "info",
-      action: {
-        label: "Use Standard",
-        run: () => {
-          void deps.saveSettings({ voiceEngine: "standard" }).catch((err: unknown) => deps.log?.(`switching to Standard failed: ${errorMessage(err)}`));
-          if (engine?.id === "realtime") {
-            engine.stop();
-            engine = null;
-            void openEngine("standard");
-          }
-        },
-      },
-    });
+    deps.notify({ key: ENGINE_NOTICE, text: `${cost} Standard costs much less.`, level: "info", actions: [{ label: "Voice settings", run: deps.openVoiceSettings }] });
     void deps.saveSettings({ realtimeCostNoticed: true }).catch((err: unknown) => deps.log?.(`saving the cost notice failed: ${errorMessage(err)}`));
   }
 
-  function finish(note: string | null): void {
+  /** Ends the session; `why` goes in the trace (the state machine's reason, or what ended it here). */
+  function finish(note: string | null, why: EndReason | "tab closed" | "moved" | "not started" = "not started"): void {
+    if (on()) trace?.record({ t: Date.now(), cat: "voice", name: "voice.end", data: { engine: engine?.id ?? null, why } });
     if (timer) clearInterval(timer);
     timer = null;
     startMuted = false;
@@ -736,7 +786,6 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     wroteBox = false;
     tab = null;
     chatId = null;
-    earlyWords = [];
     ownTabs.clear();
     lookingAway = false;
     // The background's view was of this session: it is over (its "none" follows).
@@ -847,6 +896,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     const next = running.has(chatNow() ?? "");
     if (next === working) return;
     working = next;
+    engine?.setAgentWorking?.(next);
     dispatch({ type: "agent", working: next, now: now() });
   }
 
@@ -895,6 +945,9 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       return on() && muted();
     },
     toggleMute,
+    interrupt() {
+      if (state.phase === "speaking") dispatch({ type: "cancel", now: now() });
+    },
     get tab() {
       return on() ? tab : null;
     },
@@ -918,7 +971,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       render();
     },
     tabClosed(closed) {
-      if (on() && endsWithTab(tab, closed)) finish(TAB_CLOSED_NOTE);
+      if (on() && endsWithTab(tab, closed)) finish(TAB_CLOSED_NOTE, "tab closed");
     },
     setSession(view) {
       const before = remote;
@@ -931,7 +984,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
         // The session ended where it ran: Use voice here starts it in this panel now.
         const moving = takeOver;
         takeOver = null;
-        if (moving) void start(moving.engine, moving.muted);
+        if (moving) void start(moving.engine, moving.muted, true);
         return render();
       }
       const kind = remoteSession(view, deps.homeTab);
@@ -944,7 +997,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       render();
     },
     stopHere() {
-      if (on()) stop("button");
+      if (on()) stop("remote");
     },
     chat: chatNow,
   };

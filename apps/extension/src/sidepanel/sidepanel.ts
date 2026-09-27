@@ -15,11 +15,12 @@ import { $, closeMenusOnOutsideClick } from "../ui/dom.js";
 import { setErrorFixes, type ErrorFixes } from "./error-view.js";
 import { initHeader } from "./header.js";
 import { initHistory } from "./history.js";
+import { initRecentChats } from "./recent-chats.js";
 import { openSettings } from "./open-settings.js";
 import { initAutonomyWarning } from "./autonomy-warning.js";
 import { connectBackground } from "./port.js";
 import type { PanelMessage } from "../panel-command.js";
-import { chatForTab, followChat, isBound, tabOfSession } from "./tab-chat.js";
+import { chatForTab, followChat, isBound, ownChatOfTab, tabOfSession } from "./tab-chat.js";
 import { openTabPanel, panelTabOf } from "../panel-tabs.js";
 import { initPanelTabs, tabHasComposer, type TabName } from "./tabs.js";
 import { initTasks } from "./tasks.js";
@@ -30,6 +31,7 @@ import { browserMicAccessDeps, watchMicPermission } from "../voice/mic-access.js
 import { MicSource } from "../voice/recorder.js";
 import { REALTIME_SAMPLE_RATE } from "../voice/realtime-client.js";
 import { RealtimeEngine } from "../voice/realtime-engine.js";
+import { voiceLanguages } from "../voice/voice-language.js";
 import { Speaker } from "../voice/speaker.js";
 import { StandardEngine } from "../voice/standard-engine.js";
 import { panelTranscriber, VoiceError } from "../voice/transcribe.js";
@@ -193,16 +195,22 @@ const voice = initVoiceInput({
 /** The chat of a browser tab (null: it has none yet); an unknown tab's is the one Chat shows. */
 const chatOfTab = (tab: number | null): string | null =>
   tab === null ? (focused?.sessionId ?? pending?.sessionId ?? null) : chatForTab(tab, state ?? {}, { pending, left });
+/**
+ * Hands-free voice's chat for its tab: the tab's own chat only, never a scheduled or other run that merely acts in
+ * that tab (its results were once read out in a session that had asked nothing).
+ */
+const voiceChatOfTab = (tab: number | null): string | null =>
+  tab === null ? (focused?.sessionId ?? pending?.sessionId ?? null) : ownChatOfTab(tab, state ?? {}, { pending });
 
 /**
  * Hands-free voice sends what was said to its chat, whichever tab is shown: the chat by its id (it stays in the tab
  * it lives in), or a new chat in the session's tab.
  */
-async function sendSpoken(text: string, target: { tabId: number | null; sessionId: string | null }, { cid, context }: SendExtra = {}): Promise<string> {
+async function sendSpoken(text: string, target: { tabId: number | null; sessionId: string | null }, { cid, context, heard }: SendExtra = {}): Promise<string> {
   const { tabId: tab, sessionId } = target;
   // A new chat carries the choice of memory made for its tab (the composer's menu).
   const where = sessionId ? { sessionId } : { ...(tab === null ? {} : { tabId: tab }), ...composer.memory.forNewChat(tab) };
-  const r = await uiRequest({ type: "run.message", ...where, text, voice: true, ...(cid ? { cid } : {}), ...(context ? { context } : {}) });
+  const r = await uiRequest({ type: "run.message", ...where, text, voice: true, ...(heard?.length ? { heard: [...heard] } : {}), ...(cid ? { cid } : {}), ...(context ? { context } : {}) });
   if (sessionId) return r.sessionId;
   if (tab === null || tab === activeTab) startedHere(r.sessionId);
   else {
@@ -221,7 +229,7 @@ const handsFree = initHandsFree({
   activeTab: () => activeTab,
   homeTab: ownTab,
   visible: () => document.visibilityState === "visible",
-  chatOf: chatOfTab,
+  chatOf: voiceChatOfTab,
   tabsOf: (sessionId) => {
     const home = state ? tabOfSession(sessionId, state) : null;
     return [...(home === null ? [] : [home]), ...(state?.runningTabs?.[sessionId] ?? [])];
@@ -235,15 +243,16 @@ const handsFree = initHandsFree({
   onSpeaking: (line) => chat.setSpeaking(line),
   keepSpoken: (sessionId, text) =>
     void uiRequest({ type: "voice.spoken", sessionId, text }).catch((err: unknown) => console.warn(`[browsertodo] keeping a spoken line failed: ${errorMessage(err)}`)),
-  keepHeard: (sessionId, text, sent, early) =>
-    void uiRequest({ type: "voice.heard", sessionId, text, ...(sent ? { sent } : {}), ...(early ? { early } : {}) }).catch((err: unknown) =>
+  keepHeard: (sessionId, text) =>
+    void uiRequest({ type: "voice.heard", sessionId, text }).catch((err: unknown) =>
       console.warn(`[browsertodo] keeping what was said failed: ${errorMessage(err)}`),
     ),
   settings: () => state?.settings ?? null,
   account: () => state?.account,
   engines: loadVoiceModels,
   saveSettings: async (patch) => applyState(await uiRequest({ type: "settings.save", settings: patch })),
-  createEngine: (id, events) => {
+  openVoiceSettings: () => void openSettings("ai"),
+  createEngine: (id, events, opts) => {
     // Standard chosen in Settings skips the engine list: its model (for the trace) is asked for here.
     if (id === "standard" && !voiceModels.standard && state?.account?.signedIn) void loadVoiceModels();
     return id === "realtime"
@@ -257,8 +266,11 @@ const handsFree = initHandsFree({
           createSource: () => new MicSource(undefined, REALTIME_SAMPLE_RATE),
           events,
           ...(state ? { voice: { voice: state.settings.realtimeVoice, speed: state.settings.realtimeSpeed } } : {}),
+          // The browser's languages (Chrome's settings): the transcription's hint, and what counts as the user's.
+          languages: voiceLanguages(navigator.languages),
           log: (m) => console.info(`[browsertodo] ${m}`),
           trace: panelTrace,
+          ...(opts?.takeover ? { takeover: true } : {}),
         })
       : new StandardEngine({
           createSource: () => new MicSource(),
@@ -283,7 +295,10 @@ const handsFree = initHandsFree({
   trace: panelTrace,
   log: (m) => console.info(`[browsertodo] ${m}`),
 });
+// The new chat offers the recent chats to go on with; See all is History.
+const recent = initRecentChats({ onOpen: (s) => void openHere(s), onSeeAll: () => tabs.show("history") });
 const chat = initChat({
+  recent,
   // Continue in an end card: go on now (with the note typed in the box, if any).
   onContinue: (sessionId) => void composer.continueNow(sessionId),
   onFocus: (s) => {
@@ -431,6 +446,7 @@ function applyState(s: UiState): void {
     voice.shortcut();
   }
   chat.setRunning(s.runningSessions);
+  recent.setRunning(s.runningSessions);
   composer.setRunning(s.runningSessions);
   handsFree.setRunning(s.runningSessions.map((r) => r.sessionId));
   composer.setState(s);
@@ -461,6 +477,7 @@ function onPush(msg: UiPush): void {
     case "session":
       chat.onSession(msg.session);
       history.onSession(msg.session);
+      recent.onSession(msg.session);
       if (focused?.sessionId === msg.session.sessionId) composer.setConversation(msg.session);
       if (msg.session.endedAt && msg.session.source === "local") void tasks.refresh();
       break;

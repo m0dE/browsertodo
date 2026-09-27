@@ -11,7 +11,7 @@ describe("NarratorFeed: the chat's events as short notes for the realtime narrat
     const feed = new NarratorFeed();
     feed.request(0);
     expect(feed.push({ type: "user_message", text: "Check my inbox.", voice: true }, 10)).toEqual([]);
-    expect(feed.push({ type: "heard", text: "Check my inbox.", sent: "Check my inbox." }, 20)).toEqual([]);
+    expect(feed.push({ type: "heard", text: "Check my inbox." }, 20)).toEqual([]);
     expect(feed.push({ type: "assistant_text", text: "I'll open your Gmail inbox and summarize the important emails." }, 30)).toEqual([]);
     expect(feed.push(call("navigate", { url: "https://mail.google.com/" }), 40)).toEqual([]);
     for (const [i, name] of ["read_page", "screenshot", "click", "act", "scroll", "type"].entries()) expect(feed.push(call(name), GAP * (i + 2))).toEqual([]);

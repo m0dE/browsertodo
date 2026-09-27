@@ -194,3 +194,21 @@ describe("linkParts", () => {
     expect(linkParts("")).toEqual([]);
   });
 });
+
+describe("previous runs", () => {
+  const kept = (i: number, extra: Record<string, unknown> = {}) =>
+    ({ id: `r${i}`, kind: "task", subject: "Run note", text: `Posted ${i}`, scope: "task", taskKey: "s1", source: { kind: "task" }, learnedAt: `2026-09-2${i}T09:00:00.000Z`, updatedAt: `2026-09-2${i}T09:00:00.000Z`, ...extra }) as never;
+
+  it("lists the task's runs newest first with date, output line, output and note; the older runs' summary apart", () => {
+    const long = `Shipped: ${"scheduled tasks that remember ".repeat(6)}`;
+    const m = detailsModel({ task: task(), listSource: "account", runs: [kept(3, { output: long }), kept(2, { text: "(no note)", output: "Only an output" }), kept(1), kept(0, { subject: "Earlier runs", text: "9 earlier runs, 2026-09-01 to 2026-09-19." })] }, NOW, WHEN);
+    expect(m.previousRuns).toEqual([
+      { when: "Sep 23, 2026, 9:00 AM", line: expect.stringMatching(/^Shipped: scheduled tasks .*…$/), output: long, note: "Posted 3" },
+      { when: "Sep 22, 2026, 9:00 AM", line: "Only an output", output: "Only an output" },
+      { when: "Sep 21, 2026, 9:00 AM", line: "Posted 1", note: "Posted 1" },
+    ]);
+    expect(m.previousRuns![0]!.line.length).toBeLessThanOrEqual(90);
+    expect(m.earlierRuns).toBe("9 earlier runs, 2026-09-01 to 2026-09-19.");
+    expect(detailsModel({ task: task() }, NOW, WHEN).previousRuns).toBeUndefined();
+  });
+});

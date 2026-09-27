@@ -51,6 +51,8 @@ export class ClaudeStreamTimer {
   /** When the last input reached Claude Code (a message on stdin, or a tool result). */
   private lastInputAt: number | null = null;
   private call: Call | null = null;
+  /** Why the brain stopped the last request (interrupted); the next result is that stop's. */
+  private stoppedWhy: string | null = null;
 
   constructor(
     private readonly out: (e: TraceDraft) => void,
@@ -64,6 +66,16 @@ export class ClaudeStreamTimer {
   /** The process was just spawned; with prewarmedMs, one started that long ago (ClaudeCodeBrain.warm) was just taken. */
   spawned(warm?: { prewarmedMs: number }): void {
     this.spawnedAt = { t: this.now(), at: this.clock(), ...(warm ? { prewarmedMs: warm.prewarmedMs } : {}) };
+  }
+
+  /**
+   * The brain stopped the running request (why): its model.call row is written now, marked `interrupted`, and
+   * the result that follows is the stop's, not an error.
+   */
+  interrupted(why: string): void {
+    this.stoppedWhy = why;
+    const call = this.call;
+    if (call) this.endCall(call, this.clock(), why);
   }
 
   /** A user message was written to Claude Code's stdin. */
@@ -157,9 +169,10 @@ export class ClaudeStreamTimer {
     }
   }
 
-  private endCall(call: Call, at: number): void {
+  private endCall(call: Call, at: number, interrupted?: string): void {
     this.call = null;
     const data: NonNullable<TraceDraft["data"]> = { deltas: call.deltas, toolUses: call.tools };
+    if (interrupted) data.interrupted = interrupted;
     if (call.model) data.model = call.model;
     for (const k of ["sinceInputMs", "responseMs", "firstTokenMs", "firstTextMs", "firstToolMs", "lastTextMs"] as const) {
       const v = call[k];
@@ -181,7 +194,10 @@ export class ClaudeStreamTimer {
     const cost = num(ev.total_cost_usd);
     if (cost !== undefined) data.costUsd = Math.round(cost * 1e6) / 1e6;
     Object.assign(data, usageOf(obj(ev.usage) ?? undefined));
-    if (ev.is_error === true || (typeof ev.subtype === "string" && ev.subtype !== "success")) data.error = str(ev.subtype) ?? true;
+    const failed = ev.is_error === true || (typeof ev.subtype === "string" && ev.subtype !== "success");
+    if (failed && this.stoppedWhy) data.interrupted = this.stoppedWhy;
+    else if (failed) data.error = str(ev.subtype) ?? true;
+    this.stoppedWhy = null;
     this.out({ t: this.now(), cat: "brain", name: "claude.result", data });
   }
 }

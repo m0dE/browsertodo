@@ -1,28 +1,39 @@
 /**
  * Which memory the agent is given at the start of a turn, and what recall
  * finds. Deterministic and cheap (no model call; the only outside input is
- * the account's semantic scores, when there are any): this task's records
- * whose key the turn names (the request, the user's tab), within their own
- * MEMORY_RECORD_TOKEN_BUDGET, then the entries the user pinned, then the
- * task's newest run notes, then entries for the sites the turn involves (the
- * user's tab, sites named in the request), then what the hybrid search finds
- * for the request (search.ts: words, entities, meaning, time), until
- * MEMORY_TOKEN_BUDGET is spent. Nothing else: a turn memory has nothing
- * relevant for gets no memory at all. Pure.
+ * the account's semantic scores, when there are any).
+ *
+ * A repeating task's own history comes first, within its own
+ * MEMORY_TASK_HISTORY_TOKEN_BUDGET: its profile, the notes remembered for it,
+ * its newest runs in full (note and output), its earlier-runs summary, then
+ * one short line (date and output) per earlier run, up to
+ * MAX_INJECTED_TASK_RUNS. Then, within MEMORY_TOKEN_BUDGET: this task's
+ * records whose key the turn names (the request, the user's tab), within their
+ * own MEMORY_RECORD_TOKEN_BUDGET, the entries the user pinned, entries for the
+ * sites the turn involves (the user's tab, sites named in the request), then
+ * what the hybrid search finds for the request (search.ts: words, entities,
+ * meaning, time). Nothing else: a turn memory has nothing relevant for gets no
+ * memory at all. Pure.
  */
 import {
+  isEarlierRuns,
   isMemoryRecord,
+  isTaskProfile,
+  isTaskRun,
   keyTokens,
   MAX_INJECTED_TASK_NOTES,
+  MAX_INJECTED_TASK_RUNS,
   MAX_RECALL_RESULTS,
   MEMORY_CHARS_PER_TOKEN,
   MEMORY_KIND_TEXT,
   MEMORY_RECORD_TOKEN_BUDGET,
+  MEMORY_TASK_HISTORY_TOKEN_BUDGET,
   MEMORY_TOKEN_BUDGET,
   memoryDomain,
   memoryLine,
   memoryRecordKey,
   onDomain,
+  taskRunBrief,
   type MemoryEntry,
   type MemoryKind,
 } from "@browsertodo/shared";
@@ -48,6 +59,8 @@ export interface MemoryContext {
 export interface MemorySelection {
   /** In the order the agent reads them. */
   entries: MemoryEntry[];
+  /** Of those, the task's earlier runs given as one short line each (taskRunBrief). */
+  brief?: ReadonlySet<string>;
   /** The block for the prompt; "" when nothing was picked. */
   text: string;
   /** Its estimated cost. */
@@ -111,6 +124,45 @@ function candidates(entries: readonly MemoryEntry[], ctx: MemoryContext, kindsOf
   return entries.filter((e) => !kindsOff.has(e.kind) && (e.scope !== "task" || (!!ctx.taskKey && e.taskKey === ctx.taskKey)));
 }
 
+/** The block's line under the task's history when some of its runs are left out. */
+const olderRunsLine = (n: number) => `- (${n} older runs are kept: check_similar compares a draft with all of them; recall finds them)`;
+
+/** This task's own history (not its records): its runs, their summary, and what was remembered for it (its profile first). */
+const isTaskHistory = (e: MemoryEntry) => e.kind === "task" && e.scope === "task" && !isMemoryRecord(e);
+
+/**
+ * The task's history the agent is given, in the order it reads it, within MEMORY_TASK_HISTORY_TOKEN_BUDGET: its
+ * profile and remembered notes, its newest MAX_INJECTED_TASK_NOTES runs in full, its earlier-runs summary, then one
+ * short line per earlier run (brief), up to MAX_INJECTED_TASK_RUNS runs in all. `older`: its runs kept but not given.
+ */
+function taskHistory(pool: readonly MemoryEntry[], lineOpts: { history?: boolean }): { entries: MemoryEntry[]; brief: Set<string>; older: number; tokens: number } {
+  const history = pool.filter(isTaskHistory);
+  const newestFirst = (a: MemoryEntry, b: MemoryEntry) => b.learnedAt.localeCompare(a.learnedAt);
+  const runs = history.filter(isTaskRun).sort(newestFirst);
+  const noted = history.filter((e) => !isTaskRun(e) && !isEarlierRuns(e)).sort((a, b) => Number(isTaskProfile(b)) - Number(isTaskProfile(a)) || newestFirst(a, b));
+  const full = runs.slice(0, MAX_INJECTED_TASK_NOTES);
+  const brief = runs.slice(MAX_INJECTED_TASK_NOTES, MAX_INJECTED_TASK_RUNS);
+  const order = [...noted, ...full, ...history.filter(isEarlierRuns), ...brief];
+  const briefIds = new Set(brief.map((e) => e.id));
+  const out: MemoryEntry[] = [];
+  // The heading, and the line that says how many older runs are kept (when some are left out).
+  let tokens = history.length ? tokensOf(MEMORY_KIND_TEXT.task.label) + 1 : 0;
+  if (runs.length) tokens += tokensOf(olderRunsLine(runs.length)) + 1;
+  for (const e of order) {
+    const cost = tokensOf(briefIds.has(e.id) ? taskRunBrief(e) : memoryLine(e, lineOpts)) + 1;
+    // The runs are newest first: once one does not fit, the older ones are left to recall and check_similar.
+    if (tokens + cost > MEMORY_TASK_HISTORY_TOKEN_BUDGET) {
+      if (isTaskRun(e)) break;
+      continue;
+    }
+    tokens += cost;
+    out.push(e);
+  }
+  const givenRuns = out.filter(isTaskRun).length;
+  const kept = new Set(out.map((e) => e.id));
+  return { entries: out, brief: new Set([...briefIds].filter((id) => kept.has(id))), older: runs.length - givenRuns, tokens };
+}
+
 /** The entries to give the agent, most relevant first, within `budget` tokens, and the block that says them. */
 export function selectMemory(
   entries: readonly MemoryEntry[],
@@ -122,23 +174,21 @@ export function selectMemory(
 
   const named = recordsNamedIn(pool.filter(isMemoryRecord).sort(taskRecordsFirst), `${ctx.text}\n${ctx.pageText ?? ""}`);
   const pinned = pool.filter((e) => e.pinned).sort(newestUse);
-  const notes = pool
-    .filter((e) => e.kind === "task" && e.scope === "task" && !isMemoryRecord(e))
-    .sort((a, b) => b.learnedAt.localeCompare(a.learnedAt))
-    .slice(0, MAX_INJECTED_TASK_NOTES);
   const onSite = pool.filter((e) => e.scope === "domain" && hosts.some((h) => onDomain(h, e.domain!))).sort(newestUse);
   const found = searchMemory(pool, ctx.text, searchOptions(ctx));
   const matched = found.hits.map((h) => h.entry);
   // Asked what something was before: the facts' earlier values are part of the answer.
   const lineOpts = { history: found.time.past };
+  // The task's own history has its own budget; the rest of memory is not spent on it.
+  const history = taskHistory(pool, lineOpts);
 
   const budget = opts.budget ?? MEMORY_TOKEN_BUDGET;
   let spent = tokensOf(MEMORY_HEADER);
   let spentOnRecords = 0;
-  const picked = new Map<string, MemoryEntry>();
+  const picked = new Map<string, MemoryEntry>(history.entries.map((e) => [e.id, e]));
   const groups = new Set<string>();
-  for (const e of [...named, ...pinned, ...notes, ...onSite, ...matched]) {
-    if (picked.has(e.id)) continue;
+  for (const e of [...named, ...pinned, ...onSite, ...matched]) {
+    if (picked.has(e.id) || isTaskHistory(e)) continue;
     const group = groupOf(e);
     const cost = tokensOf(memoryLine(e, lineOpts)) + 1 + (groups.has(group) ? 0 : tokensOf(group) + 1);
     if (spent + cost > budget) continue;
@@ -150,8 +200,8 @@ export function selectMemory(
   }
   if (!picked.size) return { entries: [], text: "", tokens: 0 };
   const chosen = [...picked.values()];
-  const text = memoryBlock(chosen, lineOpts);
-  return { entries: chosen, text, tokens: tokensOf(text) };
+  const text = memoryBlock(chosen, { ...lineOpts, brief: history.brief, olderRuns: history.older });
+  return { entries: chosen, text, tokens: tokensOf(text), ...(history.brief.size ? { brief: history.brief } : {}) };
 }
 
 const searchOptions = (ctx: Pick<MemoryContext, "now" | "offsetMinutes" | "taskKey" | "semantic">) => ({
@@ -166,14 +216,17 @@ const groupOf = (e: MemoryEntry): string => (isMemoryRecord(e) ? RECORDS_LABEL :
 
 /**
  * The block the agent reads: the header, then the entries under their heading (task records, task history,
- * episodes, playbooks, accounts, people, preferences). history: facts say their earlier values too.
+ * episodes, playbooks, accounts, people, preferences). history: facts say their earlier values too. brief: the task's
+ * runs said in one short line each (taskRunBrief); olderRuns: how many of its runs are kept but not given.
  */
-export function memoryBlock(entries: readonly MemoryEntry[], opts: { history?: boolean } = {}): string {
+export function memoryBlock(entries: readonly MemoryEntry[], opts: { history?: boolean; brief?: ReadonlySet<string>; olderRuns?: number } = {}): string {
   const lines = [MEMORY_HEADER];
   const order = [RECORDS_LABEL, ...(Object.keys(MEMORY_KIND_TEXT) as MemoryKind[]).map((k) => MEMORY_KIND_TEXT[k].label)];
   for (const group of order) {
     const of = entries.filter((e) => groupOf(e) === group);
-    if (of.length) lines.push(`${group}:`, ...of.map((e) => `- ${memoryLine(e, opts)}`));
+    if (!of.length) continue;
+    lines.push(`${group}:`, ...of.map((e) => `- ${opts.brief?.has(e.id) ? taskRunBrief(e) : memoryLine(e, opts)}`));
+    if (group === MEMORY_KIND_TEXT.task.label && opts.olderRuns) lines.push(olderRunsLine(opts.olderRuns));
   }
   return lines.join("\n");
 }

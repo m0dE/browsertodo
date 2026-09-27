@@ -10,7 +10,18 @@ import {
   UPDATE_SCHEDULED_TASK_DESCRIPTION,
   UpdateScheduledTaskArgs,
 } from "./schedule-task.js";
-import { FORGET_DESCRIPTION, ForgetArgs, MAX_MEMORY_NOTE_CHARS, RECALL_DESCRIPTION, RecallArgs, REMEMBER_DESCRIPTION, RememberArgs } from "./memory.js";
+import {
+  CHECK_SIMILAR_DESCRIPTION,
+  CheckSimilarArgs,
+  FORGET_DESCRIPTION,
+  ForgetArgs,
+  MAX_MEMORY_NOTE_CHARS,
+  MAX_RUN_OUTPUT_CHARS,
+  RECALL_DESCRIPTION,
+  RecallArgs,
+  REMEMBER_DESCRIPTION,
+  RememberArgs,
+} from "./memory.js";
 import { WAIT_FOR_DESCRIPTION, WaitForArgs } from "./wait.js";
 import { SEARCH_HISTORY_DESCRIPTION, SearchHistoryArgs } from "./history-search.js";
 
@@ -134,6 +145,7 @@ export const ToolArgs = {
   recall: RecallArgs,
   forget: ForgetArgs,
   search_history: SearchHistoryArgs,
+  check_similar: CheckSimilarArgs,
   task_complete: z.object({
     summary: z
       .string()
@@ -149,6 +161,14 @@ export const ToolArgs = {
       .optional()
       .describe(
         "Repeating TODO tasks only: a short note for this task's next run: what this run did (the topic posted, who was answered) and what is still pending, so the next run goes on instead of repeating. Never page content, passwords or codes.",
+      ),
+    output: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        `Repeating TODO tasks that produce content only: exactly what this run published or sent (the text of the post, message or reply as it went out; several, one after another), at most ${MAX_RUN_OUTPUT_CHARS} characters (longer is cut). Kept in the task's history, so later runs do not repeat it. Never passwords or codes.`,
       ),
   }),
   task_fail: z.object({ reason: z.string(), suggestion: suggestionArg, spoken: spokenArg }),
@@ -187,6 +207,7 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   recall: RECALL_DESCRIPTION,
   forget: FORGET_DESCRIPTION,
   search_history: SEARCH_HISTORY_DESCRIPTION,
+  check_similar: CHECK_SIMILAR_DESCRIPTION,
   task_complete:
     "Finish the task successfully. Call exactly once when the task is fully done. For questions and information tasks, write the full answer to the user as normal message text first (Markdown is rendered), then call this with a one-line summary; never put the answer or long text in the summary. Add a suggestion only when a next step is clearly likely.",
   task_fail: "Finish the task as failed when it cannot be done. Add a suggestion only when a next request would clearly help (e.g. 'Try again after I sign in').",
@@ -257,10 +278,10 @@ export const TODO_TOOLS = ["schedule_task", "list_scheduled_tasks", "update_sche
 export type TodoToolName = (typeof TODO_TOOLS)[number];
 
 /** Tools that need a browsertodo conversation: the TODO tools work on its user's TODO list; memory and history are the user's, kept by the extension. */
-export const CONVERSATION_TOOLS: readonly ToolName[] = [...TODO_TOOLS, "remember", "recall", "forget", "search_history"];
+export const CONVERSATION_TOOLS: readonly ToolName[] = [...TODO_TOOLS, "remember", "recall", "forget", "search_history", "check_similar"];
 
 /** The memory tools (memory.ts, history-search.ts): answered by the extension's memory for the conversation. */
-export const MEMORY_TOOLS = ["remember", "recall", "forget", "search_history"] as const satisfies readonly ToolName[];
+export const MEMORY_TOOLS = ["remember", "recall", "forget", "search_history", "check_similar"] as const satisfies readonly ToolName[];
 export type MemoryToolName = (typeof MEMORY_TOOLS)[number];
 
 /** Tools offered to the user's own Claude Code through mcp-server --attach (no task to end, no conversation). */

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { installChromeFake, type ChromeFake } from "./chrome-fake.js";
+import { DRAWN } from "./driver-harness.js";
 import { AgentSlots } from "../src/agent-slots.js";
 import { Cdp } from "../src/cdp.js";
 import { TAB_GROUP_TITLE } from "../src/chrome-tabs.js";
@@ -17,7 +18,7 @@ beforeEach(async () => {
   userTab = win.tabs[0]!.id;
   chrome.debugger.respond = (method) => {
     const tabId = chrome.debugger.commands.at(-1)!.tabId;
-    if (method === "Runtime.evaluate") return { result: { value: { url: chrome.tabs.byId.get(tabId)!.url, title: "t", text: "", elements: [], truncated: false } } };
+    if (method === "Runtime.evaluate") return { result: { value: { url: chrome.tabs.byId.get(tabId)!.url, title: "t", text: "", elements: DRAWN, truncated: false } } };
     return {};
   };
 });

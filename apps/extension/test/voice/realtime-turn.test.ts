@@ -6,14 +6,22 @@
  */
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { ExtensionSettings, VoiceEngineId, VoiceEnginesResponse } from "@browsertodo/shared";
-import { initHandsFree, MAX_EARLY_WORDS, type HandsFreeDeps } from "../../src/sidepanel/hands-free.js";
+import { initHandsFree, RECONNECT_DELAYS_MS, type HandsFreeDeps } from "../../src/sidepanel/hands-free.js";
 import type { VoiceTip } from "../../src/sidepanel/voice-input.js";
 import type { AudioSource } from "../../src/voice/dictation.js";
 import type { EngineEvents, HandsFreeEngine } from "../../src/voice/engine.js";
 import { HANDS_FREE } from "../../src/voice/hands-free.js";
-import { ackResponse, ACKNOWLEDGE_INSTRUCTIONS, NARRATOR_INSTRUCTIONS, RealtimeClient, type RealtimeHandlers, type RealtimeSocketLike } from "../../src/voice/realtime-client.js";
+import {
+  ackResponse,
+  ACKNOWLEDGE_INSTRUCTIONS,
+  NARRATOR_INSTRUCTIONS,
+  NOT_A_REQUEST_OUTPUT,
+  RealtimeClient,
+  TRANSCRIPTION_PROMPT,
+  type RealtimeHandlers,
+  type RealtimeSocketLike,
+} from "../../src/voice/realtime-client.js";
 import { RealtimeEngine } from "../../src/voice/realtime-engine.js";
-import { RealtimeTurns } from "../../src/voice/realtime-turns.js";
 import { installMiniDom, MiniElement } from "../ui/mini-dom.js";
 
 class FakeSocket implements RealtimeSocketLike {
@@ -71,12 +79,13 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
   it("is told to call send_to_agent before saying anything, and to acknowledge at most once after", () => {
     expect(NARRATOR_INSTRUCTIONS).toContain("When the user asks for something, call send_to_agent immediately, before saying anything. After it returns, say at most one short acknowledgement.");
     const { socket } = client();
-    expect(socket.sent[0]!.session.audio.input.transcription).toEqual({ model: "gpt-transcribe" });
+    expect(socket.sent[0]!.session.audio.input.transcription).toEqual({ model: "gpt-transcribe", prompt: TRANSCRIPTION_PROMPT });
   });
 
   it("a reply that only called send_to_agent is followed by exactly one short acknowledgement", async () => {
     const { socket } = client({ onTool: () => "Sent to the agent. Its updates will follow." });
     userTurn(socket, "in1", "r1");
+    transcribed(socket, "in1", "open gmail");
     callSend(socket, "Open Gmail");
     await flush();
     // Still replying: nothing yet (a second reply would be refused while one is being made).
@@ -93,6 +102,7 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
   it("the acknowledgement is out of the conversation: cut off, nothing of it is truncated (there is no such item)", async () => {
     const { c, socket } = client({ onTool: () => "Sent to the agent. Its updates will follow." });
     userTurn(socket, "in1", "r1");
+    transcribed(socket, "in1", "open gmail");
     callSend(socket, "Open Gmail");
     await flush();
     replyDone(socket, "r1");
@@ -106,8 +116,10 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
     let answer!: (s: string) => void;
     const { socket } = client({ onTool: () => new Promise<string>((r) => (answer = r)) });
     userTurn(socket, "in1", "r1");
+    transcribed(socket, "in1", "open gmail");
     callSend(socket, "Open Gmail");
     replyDone(socket, "r1");
+    await flush();
     answer("Sent to the agent.");
     await flush();
     expect(socket.replies()).toEqual([{ type: "response.create", response: ackResponse("Open Gmail") }]);
@@ -117,6 +129,8 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
     const { socket } = client({ onTool: () => "Sent to the agent." });
     userTurn(socket, "in1", "r1");
     socket.event({ type: "response.output_audio.delta", item_id: "a1", delta: "AAAA" });
+    // Words that let its speech be heard (small talk), then it passes something on too.
+    transcribed(socket, "in1", "okay");
     callSend(socket, "Open Gmail");
     await flush();
     replyDone(socket, "r1");
@@ -126,6 +140,7 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
   it("an agent update asking for a reply meanwhile makes the one reply (no acknowledgement on top)", async () => {
     const { c, socket } = client({ onTool: () => "Sent to the agent." });
     userTurn(socket, "in1", "r1");
+    transcribed(socket, "in1", "open gmail");
     callSend(socket, "Open Gmail");
     await flush();
     c.note("Agent update (problem): the page did not load.", "error");
@@ -136,6 +151,7 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
   it("the user talking again drops the acknowledgement (their turn gets its own reply)", async () => {
     const { socket } = client({ onTool: () => "Sent to the agent." });
     userTurn(socket, "in1", "r1");
+    transcribed(socket, "in1", "open gmail");
     callSend(socket, "Open Gmail");
     await flush();
     socket.event({ type: "input_audio_buffer.speech_started", item_id: "in2" });
@@ -153,9 +169,10 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
     // The user talks on while the call is being written: it is let finish.
     socket.event({ type: "input_audio_buffer.speech_started", item_id: "in2" });
     expect(socket.sent.filter((e) => e.type === "response.cancel")).toEqual([]);
+    transcribed(socket, "in1", "open gmail");
     callSend(socket, "Open Gmail");
     await flush();
-    expect(onTool).toHaveBeenCalledWith("send_to_agent", { text: "Open Gmail" }, "in1");
+    expect(onTool).toHaveBeenCalledWith("send_to_agent", { text: "Open Gmail" }, "in1", ["open gmail"]);
     // Its output goes back, then the rest of the reply (the acknowledgement) is cancelled: the user has the floor.
     const sent = socket.sent.map((e) => e.type);
     expect(sent.indexOf("response.cancel")).toBeGreaterThan(sent.lastIndexOf("conversation.item.create"));
@@ -173,79 +190,37 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
     expect(socket.sent.filter((e) => e.type === "response.cancel")).toHaveLength(1);
   });
 
-  it("names the user's input item: with the tool call, with their words, and when its reply is done", async () => {
+  it("names the user's input item and their words with the tool call, and the input when its reply is done", async () => {
     const onTool = vi.fn(() => "ok");
-    const onUserWords = vi.fn();
+    const onHeard = vi.fn();
     const onTurnDone = vi.fn();
-    const { socket } = client({ onTool, onUserWords, onTurnDone });
+    const { socket } = client({ onTool, onHeard, onTurnDone });
     userTurn(socket, "in1", "r1");
     callSend(socket, "Open Gmail");
     transcribed(socket, "in1", " um, open my gmail ");
     replyDone(socket, "r1");
     socket.event({ type: "conversation.item.input_audio_transcription.failed", item_id: "in2", error: { message: "x" } });
     await flush();
-    expect(onTool).toHaveBeenCalledWith("send_to_agent", { text: "Open Gmail" }, "in1");
-    expect(onUserWords.mock.calls).toEqual([
-      ["in1", "um, open my gmail"],
-      ["in2", ""],
-    ]);
+    expect(onTool).toHaveBeenCalledWith("send_to_agent", { text: "Open Gmail" }, "in1", ["um, open my gmail"]);
+    // Its words went with the request; a failed transcription has none.
+    expect(onHeard).not.toHaveBeenCalled();
     expect(onTurnDone.mock.calls).toEqual([["in1"]]);
-    // A reply we asked for (the acknowledgement) answers no input item.
+    // A reply we asked for (an update's) answers no input item: with no new words of the user's since the last
+    // request, what it passes on is not the user's (it is refused, and the narrator is told so).
     socket.event({ type: "response.created", response: { id: "r2" } });
     callSend(socket, "And archive it", "c2");
     replyDone(socket, "r2");
     await flush();
-    expect(onTool).toHaveBeenLastCalledWith("send_to_agent", { text: "And archive it" }, null);
+    expect(onTool).toHaveBeenCalledTimes(1);
+    expect(socket.sent.at(-1)).toMatchObject({ type: "conversation.item.create", item: { type: "function_call_output", call_id: "c2", output: NOT_A_REQUEST_OUTPUT.not_user } });
+    // New words of the user's first (a turn whose reply went elsewhere): the same call goes out, as answering no input item.
+    transcribed(socket, "in3", "and archive it");
+    socket.event({ type: "response.created", response: { id: "r3" } });
+    callSend(socket, "And archive it", "c3");
+    replyDone(socket, "r3");
+    await flush();
+    expect(onTool).toHaveBeenLastCalledWith("send_to_agent", { text: "And archive it" }, null, ["and archive it"]);
     expect(onTurnDone).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("RealtimeTurns: the user's words with the request sent for them, in either order", () => {
-  const turns = () => {
-    const out: [string, string | null][] = [];
-    return { out, t: new RealtimeTurns((w, s) => void out.push([w, s])) };
-  };
-
-  it("the request first, then the words; or the words first, then the request", () => {
-    const a = turns();
-    a.t.sent("in1", "Open Gmail");
-    expect(a.out).toEqual([]);
-    a.t.words("in1", "could you open gmail");
-    a.t.replied("in1");
-    expect(a.out).toEqual([["could you open gmail", "Open Gmail"]]);
-    const b = turns();
-    b.t.words("in1", "could you open gmail");
-    expect(b.out).toEqual([]);
-    b.t.sent("in1", "Open Gmail");
-    expect(b.out).toEqual([["could you open gmail", "Open Gmail"]]);
-  });
-
-  it("a turn without a request is known once its reply is done, before or after the words", () => {
-    const a = turns();
-    a.t.words("in1", "what is it doing?");
-    a.t.replied("in1");
-    const b = turns();
-    b.t.replied("in1");
-    b.t.words("in1", "what is it doing?");
-    expect(a.out).toEqual([["what is it doing?", null]]);
-    expect(b.out).toEqual([["what is it doing?", null]]);
-  });
-
-  it("turns do not mix; words that could not be transcribed, and late events of a settled turn, give nothing", () => {
-    const { out, t } = turns();
-    t.sent("in2", "Archive it");
-    t.words("in1", "hello");
-    t.replied("in1");
-    t.words("in2", "and archive it");
-    t.words("in3", "");
-    t.replied("in3");
-    t.sent("in2", "late");
-    t.replied("in2");
-    t.sent(null, "not for a turn");
-    expect(out).toEqual([
-      ["hello", null],
-      ["and archive it", "Archive it"],
-    ]);
   });
 });
 
@@ -269,14 +244,22 @@ function engineEvents(log: string[]): EngineEvents {
     narrating: () => {},
     said: () => {},
     narratorText: () => {},
-    forward: (t) => void log.push(`forward:${t}`),
-    userWords: (w, s) => void log.push(`words:${w}|${s}`),
+    forward: (t, heard) => void log.push(`forward:${t}${heard?.length ? ` [${heard.join(" | ")}]` : ""}`),
+    userWords: (w) => void log.push(`words:${w.join(" | ")}`),
     stopTask: async () => (log.push("stopTask"), "Stopped the task."),
     answerApproval: async () => "Nothing is waiting for the user's OK.",
     endVoice: () => {},
     useThisTab: async () => "The user is already looking at the tab you work in.",
     failed: (f) => void log.push(`failed:${(f as { kind: string }).kind}`),
   };
+}
+
+/** The user said `words` in a turn of their own (its reply done): a later tool call is theirs to make. */
+function userSaid(s: { event(e: Record<string, unknown>): void }, words: string, id = "said1"): void {
+  s.event({ type: "input_audio_buffer.committed", item_id: id });
+  s.event({ type: "response.created", response: { id: `r_${id}` } });
+  s.event({ type: "conversation.item.input_audio_transcription.completed", item_id: id, transcript: words });
+  s.event({ type: "response.done", response: { id: `r_${id}`, status: "completed" } });
 }
 
 describe("RealtimeEngine: a turn, and stopping while it starts", () => {
@@ -289,7 +272,7 @@ describe("RealtimeEngine: a turn, and stopping while it starts", () => {
     return { e, log, sockets, mic };
   }
 
-  it("send_to_agent goes to the panel at once; the user's words follow with it, whichever came first", async () => {
+  it("send_to_agent goes to the panel with the user's words for it; words that led to no request are passed on once their reply is done", async () => {
     const t = engine();
     const start = t.e.start();
     await flush();
@@ -302,13 +285,15 @@ describe("RealtimeEngine: a turn, and stopping while it starts", () => {
     expect(t.log).toEqual(["speech"]);
     callSend(socket, "Open Gmail and read the newest email from Sarah");
     await flush();
-    expect(t.log).toEqual(["speech", "forward:Open Gmail and read the newest email from Sarah", "words:could you check what Sarah wrote me|Open Gmail and read the newest email from Sarah"]);
+    expect(t.log).toEqual(["speech", "forward:Open Gmail and read the newest email from Sarah [could you check what Sarah wrote me]"]);
     expect(socket.sent.find((x) => x.item?.type === "function_call_output")!.item.output).toBe("Sent to the agent. Its updates will follow.");
-    // A turn with no request: its words once its reply is done.
+    // A turn with no request, answered aloud: its words once its reply is done.
     userTurn(socket, "in2", "r2");
-    replyDone(socket, "r2");
     transcribed(socket, "in2", "thanks");
-    expect(t.log.at(-1)).toBe("words:thanks|null");
+    socket.event({ type: "response.output_audio.delta", item_id: "a2", delta: "AAAA" });
+    replyDone(socket, "r2");
+    await flush();
+    expect(t.log.at(-1)).toBe("words:thanks");
   });
 
   it("cancel_request stops the task: the request already went out", async () => {
@@ -318,6 +303,7 @@ describe("RealtimeEngine: a turn, and stopping while it starts", () => {
     t.sockets[0]!.open();
     t.sockets[0]!.event({ type: "session.created", session: {} });
     await start;
+    userSaid(t.sockets[0]!, "never mind");
     t.sockets[0]!.event({ type: "response.function_call_arguments.done", call_id: "c9", name: "cancel_request", arguments: "{}" });
     await flush();
     expect(t.log).toEqual(["stopTask"]);
@@ -351,7 +337,7 @@ describe("RealtimeEngine: a turn, and stopping while it starts", () => {
   });
 });
 
-/** An engine the panel drives; `hold`: its start waits until it is stopped (or opened). */
+/** An engine the panel drives; `hold`: its start waits until it is stopped (or opened); `failure`: its start rejects with it. */
 class FakeEngine implements HandsFreeEngine {
   readonly halfDuplex: boolean;
   ticks = 0;
@@ -362,10 +348,13 @@ class FakeEngine implements HandsFreeEngine {
     readonly id: VoiceEngineId,
     readonly events: EngineEvents,
     private readonly hold: boolean,
+    private readonly failure: unknown = null,
+    readonly takeover = false,
   ) {
     this.halfDuplex = id === "standard";
   }
   start(): Promise<void> {
+    if (this.failure) return Promise.reject(this.failure);
     if (!this.hold) this.release();
     return this.ready;
   }
@@ -398,8 +387,12 @@ const ENGINES: VoiceEnginesResponse = {
 describe("the side panel's hands-free session on Realtime", () => {
   beforeAll(installMiniDom);
 
-  function panel(opts: { costNoticed?: boolean; holdRealtime?: boolean; patch?: Partial<HandsFreeDeps> } = {}) {
+  function panel(opts: { costNoticed?: boolean; holdRealtime?: boolean; patch?: Partial<HandsFreeDeps>; failStarts?: unknown[]; traced?: boolean } = {}) {
     const engines: FakeEngine[] = [];
+    /** How the next engines' starts fail, in order (then they start). */
+    const failures = [...(opts.failStarts ?? [])];
+    const saved: Partial<ExtensionSettings>[] = [];
+    const trace: { name: string; data?: Record<string, unknown> }[] = [];
     const tips: (VoiceTip & { key?: string })[] = [];
     const box = { draft: vi.fn(() => "half-typed note"), setDraft: vi.fn() };
     let finishSend!: (id: string) => void;
@@ -420,12 +413,24 @@ describe("the side panel's hands-free session on Realtime", () => {
       settings: () => ({ voiceEngine: "realtime", realtimeCostNoticed: opts.costNoticed ?? true }) as ExtensionSettings,
       account: () => undefined,
       engines: async () => ENGINES,
-      saveSettings: async () => {},
-      createEngine: (id, events) => {
-        const e = new FakeEngine(id, events, id === "realtime" && !!opts.holdRealtime);
+      saveSettings: async (patch) => void saved.push(patch),
+      openVoiceSettings: () => {},
+      createEngine: (id, events, o) => {
+        const e = new FakeEngine(id, events, id === "realtime" && !!opts.holdRealtime, failures.shift(), o?.takeover ?? false);
         engines.push(e);
         return e;
       },
+      ...(opts.traced
+        ? {
+            trace: {
+              record: (e) => void trace.push({ name: e.name, ...(e.data ? { data: e.data as Record<string, unknown> } : {}) }),
+              utterance: () => "u1",
+              endUtterance: () => {},
+              bind: () => {},
+              target: () => null,
+            },
+          }
+        : {}),
       stopTask: async () => "Stopped the task.",
       answerApproval: async () => true,
       openBilling: () => {},
@@ -437,10 +442,10 @@ describe("the side panel's hands-free session on Realtime", () => {
       ...opts.patch,
     };
     const hf = initHandsFree(deps);
-    return { hf, deps, engines, tips, box, finish: (id: string) => finishSend(id) };
+    return { hf, deps, engines, tips, box, saved, trace, finish: (id: string) => finishSend(id) };
   }
 
-  it("a request goes to the chat at once, the box untouched; the user's words are kept with it in the chat it started", async () => {
+  it("a request goes to the chat at once with the user's words for it, the box untouched; words that led to no request are kept for the record", async () => {
     vi.useFakeTimers();
     try {
       const t = panel();
@@ -449,21 +454,17 @@ describe("the side panel's hands-free session on Realtime", () => {
       const rt = t.engines[0]!;
       expect(rt.id).toBe("realtime");
       expect(t.hf.phase).toBe("listening");
-      rt.events.forward("Open Gmail and read the newest email from Sarah");
-      // No sending window: out before any tick.
-      expect(t.deps.send).toHaveBeenCalledWith("Open Gmail and read the newest email from Sarah", { tabId: 1, sessionId: null });
+      rt.events.forward("Open Gmail and read the newest email from Sarah", ["could you check what Sarah wrote me"]);
+      // No sending window: out before any tick, the words with it.
+      expect(t.deps.send).toHaveBeenCalledWith("Open Gmail and read the newest email from Sarah", { tabId: 1, sessionId: null }, { heard: ["could you check what Sarah wrote me"] });
       expect(t.hf.phase).toBe("listening");
-      rt.events.userWords("could you check what Sarah wrote me", "Open Gmail and read the newest email from Sarah");
-      await vi.advanceTimersByTimeAsync(0);
-      // The words wait for the chat their request is starting.
-      expect(t.deps.keepHeard).not.toHaveBeenCalled();
       t.finish("s-new");
       await vi.advanceTimersByTimeAsync(0);
-      expect(t.deps.keepHeard).toHaveBeenCalledWith("s-new", "could you check what Sarah wrote me", "Open Gmail and read the newest email from Sarah");
-      // Words with no request go to the session's chat.
-      rt.events.userWords("thanks", null);
+      // Words with no request go to the session's chat, for the record.
+      rt.events.userWords(["thanks"]);
       await vi.advanceTimersByTimeAsync(HANDS_FREE.sendDelayMs * 2);
-      expect(t.deps.keepHeard).toHaveBeenLastCalledWith("s-new", "thanks", null);
+      expect(t.deps.keepHeard).toHaveBeenCalledTimes(1);
+      expect(t.deps.keepHeard).toHaveBeenLastCalledWith("s-new", "thanks");
       expect(t.deps.send).toHaveBeenCalledTimes(1);
       expect(t.box.setDraft).not.toHaveBeenCalled();
       t.hf.toggle("button");
@@ -473,48 +474,15 @@ describe("the side panel's hands-free session on Realtime", () => {
     }
   });
 
-  it("words passed on to no one before the chat exists are kept (bounded) for the chat a request starts, before its words", async () => {
+  it("words that led to no request before the chat exists are let go (nothing to keep them in)", async () => {
     vi.useFakeTimers();
     try {
       const t = panel();
       t.hf.toggle("button");
       await vi.advanceTimersByTimeAsync(0);
-      const rt = t.engines[0]!;
-      const early = Array.from({ length: MAX_EARLY_WORDS + 2 }, (_, i) => `hmm ${i}`);
-      for (const words of early) rt.events.userWords(words, null);
+      t.engines[0]!.events.userWords(["hmm"]);
       await vi.advanceTimersByTimeAsync(0);
-      // No chat: nothing kept yet.
-      expect(t.deps.keepHeard).not.toHaveBeenCalled();
-      rt.events.forward("Open Gmail");
-      rt.events.userWords("open my email", "Open Gmail");
-      // Said while the chat is starting: it goes in that chat after it, not as early words.
-      rt.events.userWords("one sec", null);
-      t.finish("s-new");
-      await vi.advanceTimersByTimeAsync(0);
-      const calls = (t.deps.keepHeard as ReturnType<typeof vi.fn>).mock.calls;
-      expect(calls).toEqual([
-        ...early.slice(-MAX_EARLY_WORDS).map((words) => ["s-new", words, null, true]),
-        ["s-new", "open my email", "Open Gmail"],
-        ["s-new", "one sec", null],
-      ]);
-      t.hf.toggle("button");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("words kept for a chat to come are let go when the session ends", async () => {
-    vi.useFakeTimers();
-    try {
-      const t = panel();
-      t.hf.toggle("button");
-      await vi.advanceTimersByTimeAsync(0);
-      t.engines[0]!.events.userWords("hmm", null);
-      await vi.advanceTimersByTimeAsync(0);
-      t.hf.toggle("button");
-      t.hf.toggle("button");
-      await vi.advanceTimersByTimeAsync(0);
-      t.engines[1]!.events.forward("Open Gmail");
+      t.engines[0]!.events.forward("Open Gmail", ["open gmail"]);
       t.finish("s-new");
       await vi.advanceTimersByTimeAsync(0);
       expect(t.deps.keepHeard).not.toHaveBeenCalled();
@@ -551,22 +519,142 @@ describe("the side panel's hands-free session on Realtime", () => {
     }
   });
 
-  it("an engine replaced while it started (the cost notice's Use Standard) gets the clock: the session goes on", async () => {
+  it("the cost notice points to Settings; it never changes the engine itself", async () => {
     vi.useFakeTimers();
     try {
-      const t = panel({ costNoticed: false, holdRealtime: true });
+      const t = panel({ costNoticed: false });
       t.hf.toggle("shortcut");
       await vi.advanceTimersByTimeAsync(0);
-      const notice = t.tips.find((x) => x.action?.label === "Use Standard")!;
-      notice.action!.run();
-      await vi.advanceTimersByTimeAsync(HANDS_FREE.tickMs * 3);
-      const [rt, std] = t.engines;
-      expect(rt!.stopped).toBe(true);
-      expect(std!.id).toBe("standard");
-      expect(t.hf.phase).toBe("listening");
-      expect(std!.ticks).toBeGreaterThanOrEqual(3);
+      const notice = t.tips.find((x) => /Realtime voice uses/.test(x.text))!;
+      expect(notice.actions?.map((a) => a.label)).toEqual(["Voice settings"]);
+      expect(t.saved).toEqual([{ realtimeCostNoticed: true }]);
+      expect(t.engines.map((e) => e.id)).toEqual(["realtime"]);
       t.hf.toggle("shortcut");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a Realtime connection that drops is made again (taking the place of the old one), the session and its chat going on", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = panel({ traced: true });
+      t.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(0);
+      const first = t.engines[0]!;
+      first.events.forward("Post gm on X");
+      t.finish("s-voice");
+      await vi.advanceTimersByTimeAsync(0);
+      first.events.failed({ kind: "upstream", transient: true, message: "Voice disconnected." });
+      expect(first.stopped).toBe(true);
+      await vi.advanceTimersByTimeAsync(0);
+      const second = t.engines[1]!;
+      expect([second.id, second.takeover]).toEqual(["realtime", true]);
+      expect(t.hf.active).toBe(true);
+      expect(t.hf.phase).toBe("listening");
+      expect(t.hf.chat()).toBe("s-voice");
+      expect(t.tips.filter((x) => x.level === "error")).toEqual([]);
+      expect(t.trace.find((e) => e.name === "voice.reconnect")?.data).toEqual({ reason: "upstream", attempt: 0 });
+      // The clock drives the new engine.
+      await vi.advanceTimersByTimeAsync(HANDS_FREE.tickMs * 2);
+      expect(second.ticks).toBeGreaterThanOrEqual(2);
+      expect(t.saved).toEqual([]);
+      t.hf.toggle("button");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a connection that cannot be made again: tried RECONNECT_DELAYS_MS times, then it stops with Try again; Settings untouched, never Standard", async () => {
+    vi.useFakeTimers();
+    try {
+      const drop = { kind: "network", transient: true, message: "Voice disconnected." };
+      const t = panel({ failStarts: [null, drop, drop, drop, drop], traced: true });
+      t.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(0);
+      t.engines[0]!.events.failed({ kind: "upstream", transient: true, message: "Voice disconnected." });
+      for (const ms of RECONNECT_DELAYS_MS) await vi.advanceTimersByTimeAsync(ms);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.engines.map((e) => e.id)).toEqual(["realtime", "realtime", "realtime", "realtime", "realtime"]);
       expect(t.hf.active).toBe(false);
+      const tip = t.tips.at(-1)!;
+      expect(tip.text).toBe("Voice disconnected.");
+      expect(tip.actions?.map((a) => a.label)).toEqual(["Try again", "Use Standard voice"]);
+      expect(t.saved).toEqual([]);
+      expect(t.trace.filter((e) => e.name === "voice.reconnect").map((e) => e.data?.attempt)).toEqual([0, 1, 2, 3]);
+      expect(t.trace.at(-1)).toMatchObject({ name: "voice.end", data: { why: "error" } });
+      // Try again: Realtime again, as picked.
+      tip.actions![0]!.run();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.engines.at(-1)!.id).toBe("realtime");
+      expect(t.hf.active).toBe(true);
+      t.hf.toggle("button");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the user's previous session still closing on the server (busy while connecting) is waited out; still busy: Take over here, never Standard", async () => {
+    vi.useFakeTimers();
+    try {
+      const busy = { kind: "busy", transient: true, message: "Realtime voice is on in another window or on another device." };
+      const waited = panel({ failStarts: [busy] });
+      waited.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(RECONNECT_DELAYS_MS[0]);
+      expect(waited.hf.phase).toBe("listening");
+      expect(waited.engines.map((e) => e.id)).toEqual(["realtime", "realtime"]);
+      waited.hf.toggle("button");
+
+      const t = panel({ failStarts: [busy, busy, busy, busy] });
+      t.hf.toggle("button");
+      for (const ms of RECONNECT_DELAYS_MS) await vi.advanceTimersByTimeAsync(ms);
+      expect(t.hf.active).toBe(false);
+      const tip = t.tips.at(-1)!;
+      expect(tip).toMatchObject({ text: busy.message, level: "error" });
+      expect(tip.actions?.map((a) => a.label)).toEqual(["Take over here"]);
+      expect(t.engines.every((e) => e.id === "realtime" && !e.takeover)).toBe(true);
+      tip.actions![0]!.run();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.engines.at(-1)).toMatchObject({ id: "realtime", takeover: true });
+      expect(t.hf.phase).toBe("listening");
+      t.hf.toggle("button");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Realtime the server cannot run: nothing starts; the notice offers Standard for this once (Settings untouched)", async () => {
+    vi.useFakeTimers();
+    try {
+      const off: VoiceEnginesResponse = { default: "standard", engines: ENGINES.engines.map((e) => (e.id === "realtime" ? { ...e, available: false } : e)) };
+      const t = panel({ patch: { engines: async () => off } });
+      t.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.engines).toEqual([]);
+      expect(t.hf.active).toBe(false);
+      const tip = t.tips.at(-1)!;
+      expect(tip).toMatchObject({ text: "Realtime voice is unavailable on the server right now.", level: "error" });
+      tip.actions![0]!.run();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.engines.map((e) => e.id)).toEqual(["standard"]);
+      expect(t.saved).toEqual([]);
+      t.hf.toggle("button");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("taken over by another window (replaced): it stops, saying so, with Take over here; no reconnect", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = panel();
+      t.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(0);
+      t.engines[0]!.events.failed({ kind: "replaced", transient: false, message: "Voice was turned on in another window, so it stopped here." });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(t.engines).toHaveLength(1);
+      expect(t.hf.active).toBe(false);
+      expect(t.tips.at(-1)!.actions?.map((a) => a.label)).toEqual(["Take over here"]);
     } finally {
       vi.useRealTimers();
     }
@@ -589,7 +677,7 @@ describe("the side panel's hands-free session on Realtime", () => {
     }
   });
 
-  it("the voice bar shows while it is on (Hearing you… with a voice on the microphone); the tab goes to the background; a sound marks the microphone going live and off", async () => {
+  it("the voice strip shows while it is on (Hearing you with a voice on the microphone); the tab goes to the background; a sound marks the microphone going live and off", async () => {
     vi.useFakeTimers();
     try {
       const played: string[] = [];
@@ -602,13 +690,15 @@ describe("the side panel's hands-free session on Realtime", () => {
       await vi.advanceTimersByTimeAsync(0);
       // Reported when it starts, and again with its engine once that is open.
       expect([bar.dataset.state, played, active, t.hf.tab]).toEqual(["listening", ["start"], [[true, 1, null], [true, 1, "realtime"]], 1]);
-      expect(bar.textContent).toContain("Realtime · 0:00");
+      expect(bar.textContent).toContain("Voice onListening");
+      expect(bar.textContent).toContain("0:00");
+      expect(bar.title).toMatch(/^Realtime voice · /);
       t.engines[0]!.events.level(0.9);
       expect(bar.dataset.state).toBe("hearing");
-      expect(bar.textContent).toContain("Hearing you…");
+      expect(bar.textContent).toContain("Hearing you");
       await vi.advanceTimersByTimeAsync(2_000);
       expect(bar.dataset.state).toBe("listening");
-      expect(bar.textContent).toContain("Realtime · 0:02");
+      expect(bar.textContent).toContain("0:02");
       t.hf.toggle("button");
       expect([bar.hidden, played, active.at(-1), t.hf.tab]).toEqual([true, ["start", "stop"], [false, null, null], null]);
     } finally {

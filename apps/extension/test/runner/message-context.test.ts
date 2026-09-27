@@ -29,7 +29,8 @@ describe("Runner: a message's context", () => {
     expect(h.brain.starts[0]!.task.instructions).toBe(withContext("What is on this page?", NOTE));
     const s = (await h.sessions.get(sessionId))!;
     expect(s.instructions).toBe("What is on this page?");
-    expect(s.title).toBe("What is on this page?");
+    // The title is the request, cleaned (chat-title.ts): no trailing punctuation.
+    expect(s.title).toBe("What is on this page");
   });
 
   it("a message into the running turn: the agent gets it with the context, the chat keeps the words once", async () => {

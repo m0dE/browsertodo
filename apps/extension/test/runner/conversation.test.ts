@@ -159,6 +159,26 @@ describe("Runner: conversations", () => {
     expect((await h.sessions.get(typed.sessionId))?.voice).toBeUndefined();
   });
 
+  it("a spoken message's words, word for word, go with it: on the session for the first, on the user_message after (never to the agent)", async () => {
+    const h = harness();
+    h.brain.script = () => "hang";
+    const { sessionId } = await h.runner.message(undefined, "Read my newest email", { voice: true, heard: ["uh, read my", "newest email"] });
+    await vi.waitFor(() => expect(h.brain.starts).toHaveLength(1));
+    expect((await h.sessions.get(sessionId))?.heard).toEqual(["uh, read my", "newest email"]);
+    // Into the running turn.
+    await h.runner.message(sessionId, "and reply to it", { voice: true, heard: ["and, um, reply"] });
+    h.brain.ctls[0]!.resolve({ outcome: "done" });
+    await settle(h);
+    h.brain.continueScript = () => ({ outcome: "done" });
+    // The next turn.
+    await h.runner.message(sessionId, "thanks, now archive it", { voice: true, heard: ["thanks", "now archive it"] });
+    await settle(h);
+    const users = (await h.sessions.eventsOf(sessionId)).filter((e) => e.type === "user_message");
+    expect(users.map((e) => (e as { heard?: string[] }).heard)).toEqual([["and, um, reply"], ["thanks", "now archive it"]]);
+    // The agent gets the requests only.
+    expect(JSON.stringify(h.brain.starts)).not.toContain("uh, read my");
+  });
+
   it("the turn's follow-up suggestion is kept with the session (a reopened panel offers it) until the next message", async () => {
     const h = harness();
     const suggestion = "Reply to Jordan and say I'll sign by Thursday";

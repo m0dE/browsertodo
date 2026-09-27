@@ -4,7 +4,7 @@
  * (checks, recording, cleanup) and give back what it held. A new session runs
  * its first turn (runFirst); an ended conversation its next turn (runTurn).
  */
-import { errorMessage, isXTask, MAX_INSTRUCTIONS_CHARS, type ExtensionSettings, type SessionInfo, type TaskOutcome, type TaskRunResult } from "@browsertodo/shared";
+import { errorMessage, fallbackChatTitle, isXTask, MAX_INSTRUCTIONS_CHARS, type ExtensionSettings, type SessionInfo, type TaskOutcome, type TaskRunResult } from "@browsertodo/shared";
 import { lastTurnEvents } from "../../continue.js";
 import type { BrainStatus } from "../../ui-protocol.js";
 import type { Brain } from "../brains.js";
@@ -15,6 +15,7 @@ import { runNextTurn } from "./conversation.js";
 import { openTask, startHeartbeat, withContext, type FirstJob, type Job, type TurnJob } from "./jobs.js";
 import type { ResultRecorder } from "./record.js";
 import { episodeTrigger, type EpisodeWriter } from "../../memory/episodes.js";
+import type { ChatTitler } from "../chat-titles.js";
 import { X_WAIT_STATUS } from "./scheduling.js";
 import { modelOf, runCleanups, typedTextsOf, type ActiveSession, type Cleanup, type QueuedMessage, type TurnRunner } from "./turn.js";
 
@@ -52,9 +53,11 @@ export interface LifecycleDeps {
   nextTurn?(sessionId: string, messages: QueuedMessage[]): void;
   /** The background memory writer: each turn's end queues the conversation's episode (absent: none). */
   episodes?: Pick<EpisodeWriter, "ended">;
+  /** Chat titles: each turn's end has the model name the chat (absent: it keeps its cleaned request). */
+  titles?: Pick<ChatTitler, "ended">;
 }
 
-/** A session title: the instructions on one line, at most this many characters. */
+/** A TODO run's title: its task's instructions on one line, at most this many characters (a turn after it reads them there). */
 const MAX_TITLE_CHARS = 80;
 
 /** One launch: how its session opens (registering it with activate()), and how its brain runs. */
@@ -88,7 +91,8 @@ export class Lifecycle {
         const info: SessionInfo = {
           sessionId,
           source: job.source,
-          title: titleOf(task.instructions),
+          // A chat: its request, cleaned, until the title model names the job (chat-titles.ts).
+          title: job.source === "adhoc" ? fallbackChatTitle(task.instructions) : titleOf(task.instructions),
           brain: brain.kind,
           jev: status.jevActive,
           startedAt: this.deps.now().toISOString(),
@@ -96,11 +100,14 @@ export class Lifecycle {
         const model = modelOf(settings);
         if (model) info.model = model;
         if (taskId) info.taskId = taskId;
+        // Its memory is kept under its series: a later turn of this conversation finds it there.
+        if (opened.seriesId) info.seriesId = opened.seriesId;
         if (job.source === "adhoc") {
           // Kept so the conversation can go on in a fresh session with its full instructions.
           info.instructions = task.instructions.slice(0, MAX_INSTRUCTIONS_CHARS);
           if (task.account) info.account = task.account;
           if (job.input.voice) info.voice = true;
+          if (job.input.voice && job.input.heard?.length) info.heard = job.input.heard;
           if (job.input.memoryOff) info.memoryOff = true;
           // The agent gets the instructions with their context; the title and first message are the user's words.
           if (job.input.context) opened = { ...opened, task: { ...task, instructions: withContext(task.instructions, job.input.context) } };
@@ -147,7 +154,7 @@ export class Lifecycle {
         // Sent from a tab: the conversation goes on there (bound before the turn looks up its tab).
         if (job.tabId !== undefined) await this.deps.turns.bindChat(job.tabId, sessionId);
         // The user's message opens the turn in the thread.
-        this.deps.turns.emit(active, { type: "user_message", text, ...(job.voice ? { voice: true as const } : {}) });
+        this.deps.turns.emit(active, { type: "user_message", text, ...(job.voice ? { voice: true as const } : {}), ...(job.heard ? { heard: job.heard } : {}) });
         return active;
       },
       drive: (active, cleanups) => runNextTurn(this.deps.turns, this.deps.localStore, active, job, brain, events, settings, cleanups),
@@ -205,6 +212,7 @@ export class Lifecycle {
     }
     // Written in the background: soon for a task run, once a chat has gone idle.
     void this.deps.episodes?.ended(sessionId, episodeTrigger(job));
+    this.deps.titles?.ended(sessionId);
     if (!keepTabs && active.session.taskId) await this.endEarlierRuns(active.session.taskId, sessionId);
     this.deps.log(`session ${sessionId} ${result.outcome}${result.reason ? `: ${result.reason}` : ""}`);
     return { result, stop };
@@ -251,7 +259,7 @@ export class Lifecycle {
  */
 function keepsTabs(job: Job, outcome: TaskOutcome, stop: ForcedStop | null): boolean {
   if (job.source === "adhoc" || job.source === "turn") return true;
-  return outcome === "paused" && (stop === null || stop.kind === "pause-url");
+  return outcome === "paused" && (stop === null || stop.kind === "pause-url" || stop.kind === "needs-approval");
 }
 
 function titleOf(instructions: string): string {

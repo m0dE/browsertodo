@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { memoryTaskKey, type ExtensionSettings, type MemoryKind, type SessionInfo } from "@browsertodo/shared";
 import { SessionStore } from "../../src/engine/sessions.js";
-import { MemoryService, isMemoryRequest } from "../../src/memory/service.js";
+import { MEMORY_SEARCH_FOLLOW_UP_TIMEOUT_MS, MemoryService, isMemoryRequest } from "../../src/memory/service.js";
 import { RECORDS_LABEL } from "../../src/memory/select.js";
 import { MemoryStore } from "../../src/memory/store.js";
 import { MemoryKvDb } from "../memory-kv.js";
@@ -152,6 +152,104 @@ describe("a repeating task's memory", () => {
   });
 });
 
+describe("a task series' memory (seriesId)", () => {
+  const EDITED = { instructions: "Post one grounded tip about Mecha Royale on X. No price talk.", account: "@mecharoyalecom" };
+  const run = async (id: string, task: { instructions: string; account: string | null; seriesId?: string }) => {
+    await sessions.create(session(id, { source: "local", title: task.instructions }));
+    return memory.begin(id, { task, title: task.instructions, request: task.instructions });
+  };
+
+  it("keeps runs (note and output) under the series: an edited task still gets them; outputs are cut, secrets left out", async () => {
+    await run("r1", { ...DAILY, seriesId: "S1" });
+    await memory.runNote("r1", "Posted about the arena map.", { output: "The new arena map is live: three lanes, one boss. " + "More lanes soon. ".repeat(120) });
+    const [kept] = await store.list();
+    expect(kept).toMatchObject({ taskKey: "sS1", subject: "Run note", text: "Posted about the arena map." });
+    expect(kept!.output).toHaveLength(1000);
+    // The task was edited (new instructions, same series): its history comes with it.
+    const given = await run("r2", { ...EDITED, seriesId: "S1" });
+    expect(given?.text).toMatch(/Run note: Posted about the arena map\. · output: "The new arena map is live: three lanes, one boss\./);
+    // An output only (no note) is kept; one holding a secret is left out and the chat says so.
+    await memory.runNote("r2", undefined, { output: "Ranked season starts Friday." });
+    await memory.runNote("r2", "Posted.", { output: "use the code 482913 to log in" });
+    const runs = (await store.list()).filter((e) => e.subject === "Run note");
+    expect(runs.map((e) => [e.text, e.output])).toEqual([
+      ["Posted about the arena map.", expect.any(String)],
+      ["(no note)", "Ranked season starts Friday."],
+      ["Posted.", undefined],
+    ]);
+    expect((await events("r2")).some((e) => e.type === "status" && /output was not kept/.test(e.text))).toBe(true);
+  });
+
+  it("adopts what was kept under the instructions of every row of the series (before series existed), once", async () => {
+    // Before the update: two instruction texts (the task was edited once), each with its own hash key.
+    await run("old1", DAILY);
+    await memory.runNote("old1", "Old run under the first instructions.");
+    await memory.tool("old1", "remember", { kind: "task", key: "#48213", text: "Asked for a refund." });
+    await run("old2", EDITED);
+    await memory.runNote("old2", "Old run under the edited instructions.");
+    let asked = 0;
+    memory = new MemoryService({
+      store,
+      sessions,
+      settings: async () => settings,
+      seriesTasks: async (seriesId) => {
+        asked++;
+        expect(seriesId).toBe("S9");
+        return [DAILY, EDITED];
+      },
+    });
+    const given = await run("new1", { ...EDITED, seriesId: "S9" });
+    expect(given?.text).toContain("Old run under the first instructions.");
+    expect(given?.text).toContain("Old run under the edited instructions.");
+    expect((await store.list()).every((e) => e.taskKey === "sS9")).toBe(true);
+    await run("new2", { ...EDITED, seriesId: "S9" });
+    expect(asked).toBe(1);
+    // Records follow: recall by key finds the adopted record.
+    expect((await memory.tool("new2", "recall", { key: "48213" })).text).toMatch(/Asked for a refund\./);
+  });
+
+  it("when the series' rows cannot be read, adopts the current instructions and tries again next turn", async () => {
+    await run("old", DAILY);
+    await memory.runNote("old", "Old run.");
+    let calls = 0;
+    memory = new MemoryService({ store, sessions, settings: async () => settings, seriesTasks: async () => { calls++; throw new Error("offline"); } });
+    expect((await run("n1", { ...DAILY, seriesId: "S2" }))?.text).toContain("Old run.");
+    await run("n2", { ...DAILY, seriesId: "S2" });
+    expect(calls).toBe(2);
+  });
+
+  it("an edit (update_scheduled_task) moves the old instructions' memory to the series", async () => {
+    await run("old", DAILY);
+    await memory.runNote("old", "Posted under the old text.");
+    await memory.taskEdited({ ...DAILY, seriesId: "S3" }, { ...EDITED, seriesId: "S3" });
+    expect((await store.list())[0]).toMatchObject({ taskKey: "sS3" });
+  });
+
+  it("check_similar flags a near-duplicate of an earlier output and passes a new draft", async () => {
+    await run("c1", { ...DAILY, seriesId: "S4" });
+    const none = await memory.tool("c1", "check_similar", { draft: "Anything" });
+    expect(none.text).toMatch(/^This task has no earlier outputs kept yet/);
+    await memory.runNote("c1", "Posted the arena tip.", { output: "Arena tip: rotate through the middle lane early and take the boss before the second wave." });
+    await run("c2", { ...DAILY, seriesId: "S4" });
+    const dup = await memory.tool("c2", "check_similar", { draft: "Arena tip: rotate through the middle lane early, then take the boss before the second wave!" });
+    expect(dup.text).toMatch(/TOO SIMILAR: [01]\.\d\d to the output of 2026-09-26/);
+    const fresh = await memory.tool("c2", "check_similar", { draft: "Patch 1.4 is out: ranked matchmaking now weighs recent games more." });
+    expect(fresh.text).toMatch(/Not too similar by words/);
+    expect((await memory.tool("c2", "check_similar", {})).isError).toBe(true);
+  });
+
+  it("memory.taskRuns: a task's runs for its details, newest first, also those not adopted yet", async () => {
+    await run("t1", DAILY);
+    await memory.runNote("t1", "Old.");
+    await run("t2", { ...DAILY, seriesId: "S5" });
+    await memory.runNote("t2", "New.", { output: "New post" });
+    // t2's begin adopted "Old." already; a task not run since the update shows its hash's runs too.
+    const { runs } = await memory.handle({ type: "memory.taskRuns", task: { ...DAILY, seriesId: "S5" } });
+    expect(runs.map((e) => e.text).sort()).toEqual(["New.", "Old."]);
+    expect(isMemoryRequest({ type: "memory.taskRuns" })).toBe(true);
+  });
+});
+
 describe("begin", () => {
   it("gives what applies to the turn and marks it used; nothing when paused or off in the chat", async () => {
     await memory.tool("chat", "remember", { kind: "playbook", subject: "Work inbox", text: "Open /mail/u/2/ directly", domain: "mail.google.com" });
@@ -293,6 +391,34 @@ describe("the account's semantic search", () => {
     ]);
     await semantic.begin("run1", { task: DAILY, title: DAILY.instructions, request: DAILY.instructions });
     expect(asked.at(-1)!.taskKey).toBe(memoryTaskKey(DAILY.instructions, DAILY.account));
+  });
+
+  it("the next turn of an open session waits at most MEMORY_SEARCH_FOLLOW_UP_TIMEOUT_MS for the search (it has earlier memory and recall); a first turn waits for it", async () => {
+    const slowMs = MEMORY_SEARCH_FOLLOW_UP_TIMEOUT_MS + 250;
+    const slow = new MemoryService({
+      store,
+      sessions,
+      settings: async () => settings,
+      semantic: async () => {
+        await new Promise((r) => setTimeout(r, slowMs));
+        const [paul] = await store.list();
+        return new Map([[paul!.id, 0.8]]);
+      },
+    });
+    await store.put(paulFact, { kind: "user" });
+    const first = await slow.begin("chat", { title: "tax", request: "Who is my tax guy?" });
+    expect(first?.text).toContain("Paul Lee");
+    expect(first?.search?.ms).toBeGreaterThanOrEqual(slowMs - 20);
+    expect(first?.search?.late).toBeUndefined();
+    // A later turn of another open session: the search is too slow, so it goes on with words, entities and time.
+    const started = Date.now();
+    expect(await slow.begin("chat2", { title: "tax", request: "Who is my tax guy?", continued: true })).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(slowMs);
+    // A fast search still counts on a follow-up.
+    const fast = new MemoryService({ store, sessions, settings: async () => settings, semantic: async () => new Map([[(await store.list())[0]!.id, 0.8]]) });
+    const follow = await fast.begin("chat3", { title: "tax", request: "Who is my tax guy?", continued: true });
+    expect(follow?.text).toContain("Paul Lee");
+    expect(follow?.search?.late).toBeUndefined();
   });
 
   it("a failed search never stops a turn: words, entities and time go on alone", async () => {

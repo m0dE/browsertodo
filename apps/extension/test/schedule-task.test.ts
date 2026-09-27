@@ -71,7 +71,7 @@ function memoryTodo(opts: { failAdd?: Error } = {}) {
   return { source, tasks, added, patches, own };
 }
 
-async function setup(opts: { access?: TodoAccess; failAdd?: Error; approve?: TaskSchedulerDeps["approve"] } = {}) {
+async function setup(opts: { access?: TodoAccess; failAdd?: Error; approve?: TaskSchedulerDeps["approve"]; onEdited?: TaskSchedulerDeps["onEdited"] } = {}) {
   const sessions = new SessionStore(new MemoryKvDb(), { now: () => NOW });
   await sessions.create(SESSION);
   const todo = memoryTodo(opts);
@@ -85,6 +85,7 @@ async function setup(opts: { access?: TodoAccess; failAdd?: Error; approve?: Tas
     hour12: true,
     newId: () => `c${++changes}`,
     ...(opts.approve ? { approve: opts.approve } : {}),
+    ...(opts.onEdited ? { onEdited: opts.onEdited } : {}),
   });
   const events = async () => (await sessions.eventsOf("s1")).map(({ ts: _ts, sessionId: _s, ...e }) => e);
   return { scheduler, sessions, todo, events };
@@ -201,6 +202,17 @@ describe("TaskScheduler.tool", () => {
 });
 
 describe("TaskScheduler.update", () => {
+  it("tells memory what the task was and is (its history follows the series); a failure there never fails the change", async () => {
+    const seen: [string, string][] = [];
+    const t = await setup({ onEdited: async (before, after) => void seen.push([before.instructions, after.instructions]) });
+    t.todo.own({ id: "u9", instructions: "Post a tip", seriesId: "S1" } as never);
+    await t.scheduler.tool("s1", "update_scheduled_task", { task_id: "u9", task: "Post a grounded tip. No price talk." });
+    expect(seen).toEqual([["Post a tip", "Post a grounded tip. No price talk."]]);
+    const failing = await setup({ onEdited: async () => { throw new Error("memory down"); } });
+    failing.todo.own({ id: "u8", instructions: "Post a tip" });
+    expect((await failing.scheduler.tool("s1", "update_scheduled_task", { task_id: "u8", task: "Post another tip" })).isError).toBeUndefined();
+  });
+
   it("a task this chat scheduled moves without asking; the chat gets a Changed card with what it was", async () => {
     const approve = vi.fn(async () => {});
     const t = await setup({ approve });

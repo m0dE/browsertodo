@@ -79,7 +79,7 @@ try {
       const x = await panelView();
       return x.empty && x.chips.length === 1 ? x : null;
     }, "tab B's empty chat");
-    assert.deepEqual(v.chips, ["task A"]);
+    assert.deepEqual(v.chips, ["Task A"]);
     return JSON.stringify(v);
   });
 
@@ -87,7 +87,7 @@ try {
     b = await ui({ type: "run.adhoc", instructions: "task B", tabId: tabB });
     await waitFor(async () => (await panelView()).title === "task B", "the panel showing task B");
     const running = await ui({ type: "state.get" });
-    assert.deepEqual(running.runningSessions.map((s) => s.title).sort(), ["task A", "task B"]);
+    assert.deepEqual(running.runningSessions.map((s) => s.title).sort(), ["Task A", "Task B"]);
     assert.deepEqual(running.runningTabs[a.sessionId], [tabA]);
     assert.deepEqual(running.runningTabs[b.sessionId], [tabB]);
     // The user is on tab B; A's agent still acts on tab A.

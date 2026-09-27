@@ -72,11 +72,11 @@ const VOICE_LOOK = `(() => {
   const vis = (el) => !!el && !el.hidden && getComputedStyle(el).display !== "none";
   return {
     bar: { shown: !bar.hidden, state: bar.hidden ? null : bar.dataset.state ?? null, phase: bar.dataset.phase ?? null,
-      title: bar.querySelector(".vb-title")?.textContent ?? "", detail: bar.querySelector(".vb-detail")?.textContent ?? "",
+      title: bar.querySelector(".vb-label")?.textContent ?? "", status: bar.querySelector(".vb-status")?.textContent ?? "", detail: bar.title,
       go: vis(bar.querySelector(".vb-go")) && !bar.querySelector(".vb-links").hidden,
       use: vis(bar.querySelector(".vb-use")) && !bar.querySelector(".vb-links").hidden,
       useText: bar.querySelector(".vb-use")?.textContent ?? "",
-      stop: vis(bar.querySelector(".vb-stop")), meter: vis(bar.querySelector(".vb-meter")) },
+      stop: vis(bar.querySelector(".vb-off")) && !bar.querySelector(".vb-links").hidden, meter: vis(bar.querySelector(".vb-meter")) },
     mic: { state: mic?.dataset.state ?? null, pressed: mic?.getAttribute("aria-pressed") ?? null, title: mic?.title ?? "" },
     box: { placeholder: box?.placeholder ?? "", classes: box?.className ?? "" },
     voiceLive: document.body.classList.contains("voice-live"),
@@ -210,7 +210,7 @@ try {
   });
 
   let panelB;
-  await step("the user switches to tab B and opens its panel: B says voice is on in tab A (Go to tab, Use voice here, Stop), nothing live", async () => {
+  await step("the user switches to tab B and opens its panel: B says voice is on in tab A (Go to tab, Use voice here, Turn off), nothing live", async () => {
     await activate(ids.b);
     panelB = await openPanel(opener, ids.b);
     // B's panel has had time to learn about A's session.
@@ -244,10 +244,10 @@ try {
     return JSON.stringify({ a: await panelA.evaluate(VOICE_LOOK), b: await panelB.evaluate(VOICE_LOOK) });
   });
 
-  await step("Stop in A's notice ends the session in B: both quiet, no badge", async () => {
+  await step("Turn off in A's notice ends the session in B: both quiet, no badge", async () => {
     await activate(ids.a);
     await waitFor(() => panelA.evaluate(`document.getElementById("voice-bar").dataset.state === "elsewhere"`), "A's notice");
-    await panelA.evaluate(`document.querySelector("#voice-bar .vb-stop").click()`);
+    await panelA.evaluate(`document.querySelector("#voice-bar .vb-off").click()`);
     await waitFor(async () => !(await panelB.evaluate(VOICE_LOOK)).bar.shown && !(await panelA.evaluate(VOICE_LOOK)).bar.shown, "both bars gone");
     await waitFor(async () => (await badgeOf(ids.b)) === "" && (await badgeOf(ids.a)) === "", "no badge");
     return "ended";
@@ -268,7 +268,8 @@ try {
     const session = await sw.evaluate(() => globalThis.__browsertodo.voiceSessions.view());
     assert.equal(session.tabId, ids.b, JSON.stringify(session));
     assert.equal(session.host, ids.b, JSON.stringify(session));
-    await panelB.evaluate(`document.querySelector("#voice-bar .vb-stop").click()`);
+    // The mic in B's composer ends it (B runs it).
+    await panelB.evaluate(`document.querySelector("#now-actions .voice-mic").click()`);
     await waitFor(async () => (await badgeOf(ids.b)) === "", "stopped");
     return JSON.stringify({ session, a });
   });
@@ -277,13 +278,13 @@ try {
     await activate(ids.a);
     await panelA.evaluate(`window.__pushToPanel({ type: "panel.voice" })`);
     await waitFor(() => panelA.evaluate(`document.getElementById("voice-bar").dataset.phase === "listening"`), "A listening", { timeout: 10_000 });
-    await panelA.evaluate(`document.querySelector("#voice-bar .vb-mute").click()`);
+    await panelA.evaluate(`document.querySelector("#now-actions .voice-mute").click()`);
     await waitFor(async () => (await badgeLook(ids.a)) === "MUTE:elsewhere", "the grey MUTE badge on A");
     const a = await panelA.evaluate(VOICE_LOOK);
     assert.ok(a.bar.state === "muted" && !a.voiceLive && !a.bar.meter, JSON.stringify(a));
     await activate(ids.b);
     await waitFor(async () => (await badgeLook(ids.b)) === "MUTE:elsewhere", "the grey MUTE badge on B");
-    await waitFor(() => panelB.evaluate(`/Muted/.test(document.querySelector("#voice-bar .vb-detail").textContent)`), "B's notice to say it is muted");
+    await waitFor(() => panelB.evaluate(`document.querySelector("#voice-bar .vb-status").textContent === "Muted"`), "B's notice to say it is muted");
     const bNotice = await panelB.evaluate(VOICE_LOOK);
     await panelB.evaluate(`document.querySelector("#voice-bar .vb-use").click()`);
     await waitFor(() => panelB.evaluate(`document.getElementById("voice-bar").dataset.state === "muted"`), "B to run the session, muted", { timeout: 10_000 });
@@ -295,11 +296,11 @@ try {
     assert.equal(session.muted, true, JSON.stringify(session));
     await panelB.screenshot(join(shots, "hands-free-tabs-B-muted.png"));
     // Unmuted there, the badge is the live MIC again.
-    await panelB.evaluate(`document.querySelector("#voice-bar .vb-mute").click()`);
+    await panelB.evaluate(`document.querySelector("#now-actions .voice-mute").click()`);
     await waitFor(async () => (await badgeLook(ids.b)) === "MIC:live", "MIC on B once unmuted");
-    await panelB.evaluate(`document.querySelector("#voice-bar .vb-stop").click()`);
+    await panelB.evaluate(`document.querySelector("#now-actions .voice-mic").click()`);
     await waitFor(async () => (await badgeOf(ids.b)) === "", "stopped");
-    return JSON.stringify({ aMuted: a.bar, bNotice: bNotice.bar.detail, bMuted: b.bar, session });
+    return JSON.stringify({ aMuted: a.bar, bNotice: bNotice.bar.status, bMuted: b.bar, session });
   });
 } finally {
   for (const p of opened) p.close();

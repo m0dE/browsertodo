@@ -307,4 +307,58 @@ export const TODO_CASES = [
       await p.close();
     },
   },
+  // A repeating task's details: its previous runs (date and the start of each output), opening to the whole output
+  // and note, "Show all" for the rest, and the summary of older runs; nothing overflows the sheet.
+  {
+    names: ["panel-todo-runs"],
+    async run({ ctx, size, scheme, label, fail, openPanel, shoot, reportErrors }) {
+      const outputs = [
+        "We just shipped scheduled tasks that remember every earlier run, so a daily post never repeats itself. Set it once, it keeps going.",
+        "Roadmap: shared TODO lists for teams are next. Everyone sees what the agent did and what it will do tomorrow.",
+        "New: the agent reads your account's profile before it writes, so every post sounds like you and says something true.",
+      ];
+      const runs = Array.from({ length: 14 }, (_, i) => ({
+        id: `r${i}`,
+        kind: "task",
+        subject: "Run note",
+        text: i === 1 ? "(no note)" : `Posted about ${["scheduled tasks", "the roadmap", "grounded posts"][i % 3]}. Next: a customer story.`,
+        ...(i === 13 ? {} : { output: outputs[i % 3] }),
+        scope: "task",
+        taskKey: "s01SERIES",
+        source: { kind: "task" },
+        learnedAt: new Date(Date.UTC(2026, 8, 26, 18 - i)).toISOString(),
+        updatedAt: new Date(Date.UTC(2026, 8, 26, 18 - i)).toISOString(),
+      }));
+      const summary = { id: "rs", kind: "task", subject: "Earlier runs", text: "57 earlier runs, 2026-07-01 to 2026-09-20. Frequent words (runs): ship (31), roadmap (12), agent (9)", scope: "task", taskKey: "s01SERIES", source: { kind: "task" }, learnedAt: "2026-07-01T09:00:00.000Z", updatedAt: "2026-09-20T09:00:00.000Z" };
+      const edit = (d) => Object.assign(d, { taskRuns: [...runs, summary], taskRunsFor: "Reply to new mentions" });
+      const p = await openPanel(ctx, "ok", ".ev-tool", { edit });
+      await p.click("#tab-btn-todo");
+      await p.waitForSelector(".task");
+      await p.locator("#task-list > li", { hasText: "Reply to new mentions" }).locator(".task-title").click();
+      await p.waitForSelector("dialog.sheet[open] .sheet-runs");
+      const head = await p.locator("dialog.sheet[open] .sheet-runs > summary").textContent();
+      if (head !== "Previous runs · 14") fail(`runs heading "${head}"`);
+      await p.locator("dialog.sheet[open] .sheet-runs > summary").click();
+      const shown = await p.locator("dialog.sheet[open] .sheet-runs .run").count();
+      if (shown !== 10) fail(`${shown} runs listed before Show all`);
+      await p.locator("dialog.sheet[open] .sheet-runs .run > summary").first().click();
+      const first = await p.locator("dialog.sheet[open] .sheet-runs .run[open]").innerText();
+      if (!first.includes(outputs[0]) || !first.includes("Note: Posted about scheduled tasks")) fail(`first run opened to "${first}"`);
+      await p.locator("dialog.sheet[open] .sheet-runs .run > summary").nth(1).click();
+      const outputOnly = await p.locator("dialog.sheet[open] .sheet-runs .run[open]").nth(1).innerText();
+      if (outputOnly.includes("(no note)")) fail("an output-only run shows its placeholder note");
+      await p.getByRole("button", { name: "Show all 14" }).click();
+      if ((await p.locator("dialog.sheet[open] .sheet-runs .run").count()) !== 14) fail("Show all did not list every run");
+      const older = await p.locator("dialog.sheet[open] .sheet-runs .sheet-note").textContent();
+      if (!older?.startsWith("Older: 57 earlier runs")) fail(`older runs note "${older}"`);
+      const overflow = await p.evaluate(() => {
+        const body = document.querySelector("dialog.sheet[open] .sheet-body");
+        return body.scrollWidth - body.clientWidth;
+      });
+      if (overflow > 1) fail(`the sheet scrolls sideways by ${overflow}px`);
+      await shoot(p, "panel-todo-runs", size, scheme);
+      reportErrors(p, `todo runs ${label}`);
+      await p.close();
+    },
+  },
 ];

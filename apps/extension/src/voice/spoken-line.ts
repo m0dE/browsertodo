@@ -4,7 +4,7 @@
  * the error card's plain words; the agent's opening plan when it is short.
  * Long answers are never read out. Pure.
  */
-import { MAX_SPOKEN_CHARS, type AgentEvent } from "@browsertodo/shared";
+import { MAX_SPOKEN_CHARS, type AgentEvent, USER_STOP_REASON } from "@browsertodo/shared";
 import { errorHelp } from "../sidepanel/error-help.js";
 
 /** The opening plan is said only when its first sentence is at most this long. */
@@ -46,12 +46,17 @@ export function errorLine(text: string): string {
 
 type TaskEnd = Extract<AgentEvent, { type: "task_end" }>;
 
+/** What is said when the user stopped the task. */
+export const STOPPED_LINE = "Stopped.";
+
 /** What is said when a turn ends. */
 export function endLine(ev: TaskEnd): string {
   const own = ev.spoken?.trim();
   if (own) return clip(own, MAX_SPOKEN_CHARS);
   if (ev.outcome === "done") return speakable(ev.summary ?? "") || "Done.";
   const reason = ev.reason?.trim() ?? "";
+  // The user stopped it: one clear line, not a question.
+  if (ev.outcome === "paused" && reason === USER_STOP_REASON) return STOPPED_LINE;
   const help = reason ? errorHelp(reason) : null;
   if (help?.known) return help.message;
   // A paused turn's reason is what the agent needs from the user: said as it is.

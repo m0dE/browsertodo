@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installChromeFake, type ChromeFake } from "./chrome-fake.js";
+import { DRAWN } from "./driver-harness.js";
 import { AgentSlots } from "../src/agent-slots.js";
 import { Cdp } from "../src/cdp.js";
 import { stopOf } from "../src/engine/run/active.js";
@@ -74,7 +75,7 @@ describe("AgentSlots: a run acts in the tab it belongs to", () => {
     tabB = (await chrome.tabs.create({ windowId, url: "https://b.test/", active: false })).id;
     chrome.debugger.respond = (method) => {
       const tabId = chrome.debugger.commands.at(-1)!.tabId;
-      if (method === "Runtime.evaluate") return { result: { value: { url: chrome.tabs.byId.get(tabId)!.url, title: "t", text: "", elements: [], truncated: false } } };
+      if (method === "Runtime.evaluate") return { result: { value: { url: chrome.tabs.byId.get(tabId)!.url, title: "t", text: "", elements: DRAWN, truncated: false } } };
       return {};
     };
   });

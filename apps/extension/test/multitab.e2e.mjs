@@ -18,6 +18,10 @@ const PAGES = 5;
 /** Server latency per page, like a real site (Gmail takes far longer). */
 const PAGE_DELAY_MS = 400;
 
+/** The web-app pages: server latency, then the time the page's script takes to draw its content. */
+const APP_SERVER_MS = 1000;
+const APP_DRAW_MS = 1200;
+
 /** Forms submitted on the page a button opens in a new tab (like X's "Generate with Grok"). */
 const submitted = [];
 const site = await serveHtml(async (path) => {
@@ -31,6 +35,17 @@ const site = await serveHtml(async (path) => {
   if (path.startsWith("/generate")) {
     return `<!doctype html><title>Generate image</title><h1>Generate an image</h1><form action="/generated" method="get"><label>Prompt <input name="prompt"></label><button>Generate</button></form>`;
   }
+  // A web app like X: the server answers late (the tab is loading), then the page draws its content later still.
+  const app = /^\/app\/(\d+)/.exec(path);
+  if (app) {
+    await sleep(APP_SERVER_MS);
+    const n = app[1];
+    return `<!doctype html><title></title><div id="root"><svg width="40" height="40"></svg></div><script>
+      setTimeout(() => { document.title = "Profile ${n}"; document.getElementById("root").innerHTML = '<h1>Profile ${n}</h1><p>Posts of account ${n}: 1,234 posts, joined 2019.</p><a href="#posts">Posts</a><a href="#replies">Replies</a><button>Follow</button>'; }, ${APP_DRAW_MS});
+    </script>`;
+  }
+  // A web app that never draws (its content never comes).
+  if (path === "/stuck-app") return `<!doctype html><title></title><div id="root"><svg width="40" height="40"></svg></div>`;
   const m = /^\/mail\/(\d+)/.exec(path);
   if (!m) {
     const links = Array.from({ length: PAGES }, (_, i) => `<li><a href="/mail/${i + 1}">Message ${i + 1}</a></li>`).join("");
@@ -189,6 +204,29 @@ try {
     // A tab the page opened stays when the run ends (it may hold what the user wanted).
     assert.equal(await tabCount(), before + 1);
     return `${id} joined the run; form filled and sent there; screenshot ${shot.base64.length} chars`;
+  });
+
+  await step("read_page on tabs still loading or drawing waits for their content (never reads an empty page); a page that never draws says it is still loading", async () => {
+    // Tabs opened without waiting for them, as when a message from the user cut open_tabs short.
+    const apps = [1, 2, 3, 4].map((n) => `${base}/app/${n}`);
+    const t0 = Date.now();
+    const created = await evalSw((u) => globalThis.__browsertodo.agentTab.open(u, { current: false }), apps);
+    const snaps = await evalSw((ids) => Promise.all(ids.map((tab) => globalThis.__browsertodo.driver.readPage({ tab }))), created.map((t) => t.id));
+    const ms = Date.now() - t0;
+    snaps.forEach((snap, i) => {
+      assert.match(snap.text, new RegExp(`Posts of account ${i + 1}`), JSON.stringify(snap).slice(0, 300));
+      assert.ok(snap.elements.length >= 3, `tab ${created[i].id}: ${snap.elements.length} elements`);
+      assert.equal(snap.note, undefined);
+    });
+    assert.ok(ms >= APP_SERVER_MS + APP_DRAW_MS - 200, `${ms} ms`);
+    const stuck = await evalSw((u) => globalThis.__browsertodo.agentTab.open([u], { current: false }), `${base}/stuck-app`);
+    const s0 = Date.now();
+    const empty = await evalSw((tab) => globalThis.__browsertodo.driver.readPage({ tab }), stuck[0].id);
+    const gaveUpMs = Date.now() - s0;
+    assert.match(empty.note ?? "", /Page still loading: after \d+(\.\d)? s it still shows next to nothing \(0 elements/, JSON.stringify(empty).slice(0, 300));
+    assert.ok(gaveUpMs < 10_000, `${gaveUpMs} ms`);
+    await evalSw(() => globalThis.__browsertodo.driver.closeOpenedTabs());
+    return `4 tabs read with content after ${ms} ms (server ${APP_SERVER_MS} ms + drawing ${APP_DRAW_MS} ms); the stuck app said "still loading" after ${gaveUpMs} ms`;
   });
 
   console.log(

@@ -10,8 +10,8 @@
  * one speaker talks at a time: the user first, then the narrator's reply to
  * them, then any news. Pure.
  */
-import type { AgentEvent } from "@browsertodo/shared";
-import { sharedWordShare } from "../text.js";
+import { USER_STOP_REASON, type AgentEvent } from "@browsertodo/shared";
+import { containedWordShare, sharedWordShare } from "../text.js";
 import { milestoneOf, siteName } from "./milestones.js";
 import { endLine, errorLine } from "./spoken-line.js";
 
@@ -76,8 +76,8 @@ export function narrationOf(ev: AgentEvent, memory: NarrationMemory, now: number
   switch (ev.type) {
     case "task_end": {
       const line = endLine(ev);
-      // A reason without a spoken line is the agent's question as it wrote it.
-      const kind = ev.outcome === "paused" && !ev.spoken && ev.reason ? "question" : "result";
+      // A reason without a spoken line is the agent's question as it wrote it (not when the user stopped it).
+      const kind = ev.outcome === "paused" && !ev.spoken && ev.reason && ev.reason.trim() !== USER_STOP_REASON ? "question" : "result";
       return news(line, memory, now) ? { kind, line } : null;
     }
     case "error": {
@@ -147,6 +147,25 @@ export function repeatsRequest(text: string, inputId: string | null, last: Forwa
   return sharedWordShare(text, last.text) >= REPEATED_REQUEST_OVERLAP_MIN;
 }
 
+/** How the narrator's updates begin (realtime-feed.ts) and how it words passing one on ("Tell the user the result: ..."). */
+const UPDATE_WORDING = /^\s*(?:agent update|tell the user)\b/i;
+/** A request with at least this share of its words in an update the narrator was given passes that update on. */
+export const UPDATE_ECHO_MIN = 0.8;
+/** ...unless at least this share of its words are the user's own words of the turn. */
+export const OWN_WORDS_MIN = 0.5;
+
+/**
+ * A send_to_agent that passes on an update the narrator was given, not the user's request (a real trace: the narrator
+ * sent the agent "Tell the user the result: Done. Mecha Royale, ... will each post three times a day", its own result
+ * line, which cost a whole agent turn). `userWords`: the user's words of the turn it answers (null: none known); a
+ * request made of them ("post it", to the agent's "Should I post it?") is theirs even when the update has the words.
+ */
+export function echoesUpdate(request: string, updates: readonly string[], userWords: string | null): boolean {
+  if (UPDATE_WORDING.test(request)) return true;
+  if (userWords !== null && containedWordShare(request, userWords) >= OWN_WORDS_MIN) return false;
+  return updates.some((u) => containedWordShare(request, u) >= UPDATE_ECHO_MIN);
+}
+
 /**
  * What a user's turn is, by its words: small talk the narrator may answer by itself (a greeting, "can you hear me",
  * thanks, a filler, what the agent is doing now), or a request, which must go through one of its tools. Anything about
@@ -167,19 +186,66 @@ const SMALL_TALK = new RegExp(
       "testing(?: testing)*(?: one two(?: three)?)?|is (?:this|it) (?:working|on)",
       "(?:thanks|thank you)(?: (?:so|very) much| a lot)?|(?:ok|okay|cool|great|nice|perfect|awesome|alright|all right|good|sure|fine)(?: thanks| thank you)?|got it|sounds good",
       "um+|uh+|hmm+|wait|hold on|one sec(?:ond)?|just a sec(?:ond)?|let me think",
-      "what are you (?:doing|working on)(?: (?:right )?now)?|how(?:'s| is) it going",
+      // What the agent is doing now, or whether the assistant is there: answered from the latest update, never a new request.
+      "what (?:are|r) (?:you|u|we|they|it) (?:doing|up to|working on)(?: (?:right )?now)?|what(?:'s| is) (?:it|the agent) doing(?: (?:right )?now)?",
+      "what(?:'s| is) (?:going on|happening|the status|taking so long)(?: (?:right )?now)?|how(?:'s| is) it going|(?:are|r) you (?:done|busy|working|alive)(?: yet)?",
+      "(?:i'm|i am|im) asking you(?: a question| something)?|answer me",
       "안녕(?:하세요)?|여보세요|(?:제 말 )?들려(?:요)?|들리(?:세요|나요|니)|고마워(?:요)?|감사합니다|알았어(?:요)?|알겠(?:어|어요|습니다)|오케이|좋아(?:요)?|잠깐(?:만)?(?:요)?",
     ].join("|") +
     ")$",
   "u",
 );
 
+/** Words that change nothing of what a clause asks: address, fillers, swearing ("what are you doing bro"). */
+const FILLERS = /\b(?:bro|bruh|dude|man|buddy|mate|guys?|the (?:fuck|hell|heck)|fuck(?:ing)?|freaking|damn|like|you know|so|just|please|um+|uh+|yo|hey|come on)\b/gu;
+/** "I'm asking you what are you doing": the question is what follows. */
+const ASKING = /^(?:(?:i'm|i am|im) asking(?: you)?|i said|i asked(?: you)?|tell me) (?=\S)/u;
+
+/**
+ * A clause is small talk as said, without its fillers ("what are you doing bro"), or as the question after "I'm
+ * asking you" ("I'm asking you what the fuck are you doing").
+ */
+function smallTalkClause(clause: string): boolean {
+  const plain = clause.replace(/[^\p{L}\p{N}' ]+/gu, " ").replace(/\s+/g, " ").trim();
+  if (!plain) return true;
+  const lean = plain.replace(FILLERS, " ").replace(/\s+/g, " ").trim();
+  return [plain, lean, lean.replace(ASKING, "")].some((c) => SMALL_TALK.test(c));
+}
+
 export function speechTurnOf(words: string): SpeechTurn {
-  const clauses = words
-    .toLowerCase()
-    .replace(/[’`]/g, "'")
-    .split(/[.,!?;:…]+/u)
-    .map((c) => c.replace(/[^\p{L}\p{N}' ]+/gu, " ").replace(/\s+/g, " ").trim())
-    .filter(Boolean);
-  return clauses.every((c) => SMALL_TALK.test(c)) ? "small_talk" : "request";
+  const clauses = words.toLowerCase().replace(/[’`]/g, "'").split(/[.,!?;:…]+/u);
+  return clauses.every(smallTalkClause) ? "small_talk" : "request";
+}
+
+/** A transcript heard this soon after a line was said aloud may be that line, picked up by the microphone. */
+export const ECHO_WINDOW_MS = 10_000;
+/** A transcript with at least this share of its words in what was just said aloud is that line again (echo). */
+export const ECHO_OVERLAP_MIN = 0.75;
+/** Shorter transcripts are never taken for echo ("okay" after the narrator said "Okay, on it" is the user's). */
+const ECHO_MIN_WORDS = 2;
+
+/** Words as compared for echo: lower case, simple endings off ("Opening" and "open" are one word). */
+function stems(text: string): string[] {
+  return (text.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? []).map((w) => w.replace(/'s$/, "").replace(/(?<=\p{L}{3})(?:ing|ed|es|s)$/u, ""));
+}
+
+/**
+ * The microphone heard the assistant's own voice (the narrator's line, a result said aloud) and not the user: most
+ * of the transcript's words are in what was said aloud lately (`said`). A real trace: "opening the home timeline" was
+ * sent to the agent right after the narrator said "Opening the home timeline now."
+ */
+export function echoesSpoken(transcript: string, said: readonly string[]): boolean {
+  const heard = stems(transcript);
+  if (heard.length < ECHO_MIN_WORDS || !said.length) return false;
+  const left = new Map<string, number>();
+  for (const w of said.flatMap(stems)) left.set(w, (left.get(w) ?? 0) + 1);
+  let found = 0;
+  for (const w of heard) {
+    const n = left.get(w) ?? 0;
+    if (n > 0) {
+      found++;
+      left.set(w, n - 1);
+    }
+  }
+  return found / heard.length >= ECHO_OVERLAP_MIN;
 }

@@ -22,13 +22,13 @@ export interface EngineEvents {
   said(): void;
   /** What the narrator is saying so far (Realtime). */
   narratorText(text: string): void;
-  /** A request for the agent from the narrator (Realtime send_to_agent): it goes out at once. */
-  forward(text: string): void;
   /**
-   * What the user said in a turn, word for word (Realtime input transcription), with what the narrator
-   * sent the agent for that turn (null: nothing was sent); after that request's forward().
+   * A request for the agent from the narrator (Realtime send_to_agent), as it understood it: it goes out at once.
+   * heard: the user's words for it, word for word (each part of their speech, in order), shown folded under it.
    */
-  userWords(words: string, sent: string | null): void;
+  forward(text: string, heard?: readonly string[]): void;
+  /** What the user said that led to no request (Realtime), word for word: kept for the record, not shown. */
+  userWords(words: readonly string[]): void;
   /** The narrator asks to stop the running task (stop_task, cancel_request); the answer goes back to it. */
   stopTask(): Promise<string>;
   /** The user's answer to the approval the chat waits on (Realtime answer_approval); what happened goes back to the narrator. */
@@ -59,6 +59,8 @@ export interface HandsFreeEngine {
    * unmuting is instant); lines are still said. May be called before start().
    */
   setMuted(muted: boolean): void;
+  /** The agent started or stopped working on a task of the session's chat (Realtime: small talk then gets a short reply). */
+  setAgentWorking?(working: boolean): void;
   /** An event of the chat the session follows (Realtime tells the narrator). */
   agentEvent(ev: AgentEvent, now: number): void;
   /** Something the narrator should know, not say (Realtime: which tab the user looks at). */

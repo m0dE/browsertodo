@@ -19,6 +19,7 @@ import {
   cleanTime,
   migrateStoredTask,
   nextOccurrenceTask,
+  withSeries,
   type StoredLocalTask,
 } from "./local-task-rules.js";
 
@@ -98,8 +99,11 @@ export class LocalStore {
     if (uploads.length > MAX_MEDIA_PER_TASK) throw new Error(`At most ${MAX_MEDIA_PER_TASK} files per task`);
     const mediaIds = await this.putMedia(uploads);
     const now = this.now().toISOString();
+    const id = this.newId();
     const task: StoredLocalTask = {
-      id: this.newId(),
+      id,
+      // A new task starts its own series; its repeats carry it.
+      seriesId: id,
       instructions,
       account,
       mediaIds,
@@ -267,7 +271,7 @@ export class LocalStore {
   private async read(): Promise<StoredLocalTask[]> {
     const got = await this.storage().get(LOCAL_TASKS_KEY);
     const v = got[LOCAL_TASKS_KEY];
-    return Array.isArray(v) ? (v as StoredLocalTask[]).map(migrateStoredTask) : [];
+    return Array.isArray(v) ? withSeries((v as StoredLocalTask[]).map(migrateStoredTask)) : [];
   }
 
   private updateOne(id: string, fn: (t: StoredLocalTask) => StoredLocalTask): Promise<StoredLocalTask> {

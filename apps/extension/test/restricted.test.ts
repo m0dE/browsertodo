@@ -1,7 +1,7 @@
 /** Pages Chrome keeps extensions out of: URL checks, Chrome's errors, and what the driver's tools answer there. */
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ChromeFake } from "./chrome-fake.js";
-import { driverHarness, runInUserTab } from "./driver-harness.js";
+import { DRAWN, driverHarness, runInUserTab } from "./driver-harness.js";
 import type { Driver } from "../src/driver.js";
 import { isRestrictedError, isRestrictedUrl, restrictedToolError } from "../src/restricted.js";
 
@@ -65,7 +65,7 @@ describe("Driver on such a page", () => {
     await expect(driver.ready()).rejects.toThrow(/cannot be scripted/);
     const opened = await driver.openTabs({ urls: ["https://mail.test/"] });
     chrome.debugger.respond = (method) =>
-      method === "Runtime.evaluate" ? { result: { value: { url: "https://mail.test/", title: "Mail", text: "", elements: [], truncated: false } } } : {};
+      method === "Runtime.evaluate" ? { result: { value: { url: "https://mail.test/", title: "Mail", text: "", elements: DRAWN, truncated: false } } } : {};
     const snap = await driver.readPage({ tab: opened.tabs[0]!.id });
     expect(snap.url).toBe("https://mail.test/");
     await expect(driver.switchTab({ tab: "t1" })).rejects.toThrow(restrictedToolError(STORE));

@@ -1,15 +1,15 @@
 /**
  * The notices above the input box (notices.ts draws them): one at a time,
- * the most important first (an error, then a fallback, then info), the
+ * the most important first (an error, then info), the
  * others waiting their turn in the order they came. A notice has a key (who
  * shows it, e.g. "voice"): showing another with the same key replaces it
  * where it stands, and clearing the key takes it away. Pure.
  */
 
-/** error: something failed; fallback: it works, but differently than asked; info: everything else. */
-export type NoticeLevel = "error" | "fallback" | "info";
+/** error: something failed; info: everything else. */
+export type NoticeLevel = "error" | "info";
 
-const RANK: Record<NoticeLevel, number> = { error: 0, fallback: 1, info: 2 };
+const RANK: Record<NoticeLevel, number> = { error: 0, info: 1 };
 
 /** Notices that hide by themselves stay this long (longer while the pointer or focus is on them). */
 export const NOTICE_HIDE_MS = 6_000;
@@ -18,14 +18,14 @@ export interface QueuedNotice {
   key: string;
   level: NoticeLevel;
   /** A button that does something about it: the notice waits for the user. */
-  action?: unknown;
+  actions?: readonly unknown[];
   /** Stays until its key is cleared or it is dismissed (e.g. "Sending…" while a request is out). */
   sticky?: boolean;
 }
 
 /** How long `n` stays before hiding by itself; null: until dismissed or cleared (errors, and notices with a button). */
 export function autoHideMs(n: QueuedNotice): number | null {
-  return n.level === "error" || n.action || n.sticky ? null : NOTICE_HIDE_MS;
+  return n.level === "error" || n.actions?.length || n.sticky ? null : NOTICE_HIDE_MS;
 }
 
 export class NoticeQueue<N extends QueuedNotice> {

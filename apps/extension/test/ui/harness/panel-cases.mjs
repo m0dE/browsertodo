@@ -113,6 +113,27 @@ export const PANEL_CASES = [
         await chip.click();
         await p.waitForSelector("#model-menu:not([hidden])");
         await checkLayout(p, `model-menu ${label}`);
+        // Each model says how fast and how costly it is, from the shared catalog (modelHint).
+        const hints = await p.evaluate(() => [...document.querySelectorAll(".mm-item[role=menuitemradio]")].map((b) => [b.querySelector(".mm-label")?.textContent, b.querySelector(".mm-hint")?.textContent]));
+        const wanted = [
+          ["Sonnet 5", "Faster · default price"],
+          ["Opus 5.5", "Thinks first, slower · 2× price"],
+          ["Fable 5.1", "Thinks first, slower · 5× price"],
+          ["Haiku 4.5", "Faster · ½ price"],
+        ];
+        if (JSON.stringify(hints) !== JSON.stringify(wanted)) fail(`model menu hints ${JSON.stringify(hints)}`);
+        // Each hint stays inside the menu and clear of the check mark.
+        const spill = await p.evaluate(() => {
+          const menu = document.getElementById("model-menu").getBoundingClientRect();
+          return [...document.querySelectorAll(".mm-item[role=menuitemradio] .mm-hint")]
+            .filter((el) => {
+              const r = el.getBoundingClientRect();
+              const mark = el.closest(".mm-item").querySelector(".mm-check")?.getBoundingClientRect();
+              return r.right > menu.right - 4 || el.scrollWidth > el.clientWidth || (mark && r.right > mark.left);
+            })
+            .map((el) => el.textContent);
+        });
+        if (spill.length) fail(`model menu hints spill over: ${JSON.stringify(spill)}`);
         await shoot(p, "panel-model-menu", size, scheme);
         // Keyboard: Escape closes and returns focus to the chip.
         await p.keyboard.press("Escape");
@@ -1708,7 +1729,7 @@ export const PANEL_CASES = [
         await p.click(mic);
         await waitPill(p, "listening");
         await waitVoice(p, "handsfree");
-        if (!/^Stop hands-free \((Listening|Hearing you…)\) · /.test(await p.getAttribute(mic, "title")) || !(await p.getAttribute(mic, "title")).endsWith(VOICE_SHORTCUT_LABEL)) fail(`mic tooltip while on "${await p.getAttribute(mic, "title")}"`);
+        if ((await p.getAttribute(mic, "title")) !== `End voice · ${VOICE_SHORTCUT_LABEL}`) fail(`mic tooltip while on "${await p.getAttribute(mic, "title")}"`);
         if ((await listeningReported(p)) !== true) fail("the mic's hands-free not reported to the background");
         if (await p.evaluate(() => window.__requests.some((r) => r.type === "voice.realtime"))) fail("Standard asked for the realtime relay");
         const problems = await orbCheck(p);
@@ -1775,10 +1796,10 @@ export const PANEL_CASES = [
       }
     },
   },
-  // The voice bar (voice-bar.ts) while the fake microphone hears a voice: "Hearing you…", the engine and the time on,
-  // Stop with the voice shortcut; the mic filled in the live colour, the box glowing with "Listening… just talk"; the
-  // background told the tab (its toolbar badge) and, on Stop by keyboard, that it ended (the badge goes). With reduced
-  // motion nothing pulses: still rings and a fixed meter.
+  // The voice strip (voice-bar.ts) while the fake microphone hears a voice: one line, "Voice on" and "Hearing you", the
+  // time on, a small meter, no buttons; the controls in the composer row (the mic, filled in the live colour, ends voice;
+  // Mute next to it); the box glowing with "Listening… just talk"; the background told the tab (its toolbar badge) and,
+  // when the mic ends it by keyboard, that it ended (the badge goes). With reduced motion nothing pulses.
   {
     names: ["panel-voicebar-hearing", "panel-voicebar-reduced"],
     async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors, base, want }) {
@@ -1795,61 +1816,69 @@ export const PANEL_CASES = [
         const look = await p.evaluate(() => {
           const bar = document.getElementById("voice-bar");
           const mic = document.querySelector("#now-actions .voice-mic");
+          const mute = document.querySelector("#now-actions .voice-mute");
           const anim = (el, pseudo) => getComputedStyle(el, pseudo).animationName;
           return {
-            title: bar.querySelector(".vb-title").textContent,
-            detail: bar.querySelector(".vb-detail").textContent,
+            label: bar.querySelector(".vb-label").textContent,
+            status: bar.querySelector(".vb-status").textContent,
+            time: bar.querySelector(".vb-time").textContent,
+            hint: bar.title,
             live: bar.querySelector("[aria-live=polite]").textContent,
             region: [bar.getAttribute("role"), bar.getAttribute("aria-label")],
-            key: bar.querySelector(".vb-key").textContent,
+            buttons: [...bar.querySelectorAll("button")].filter((b) => b.offsetParent).length,
+            height: bar.getBoundingClientRect().height,
             meter: !bar.querySelector(".vb-meter").hidden,
             placeholder: document.getElementById("now-text").placeholder,
             glow: document.body.classList.contains("voice-live") && getComputedStyle(document.querySelector(".now")).boxShadow !== "none",
             micTitle: mic.title,
+            micPressed: mic.getAttribute("aria-pressed"),
             micFill: getComputedStyle(mic).backgroundColor,
-            barInk: getComputedStyle(bar.querySelector(".vb-stop")).backgroundColor,
-            live2: getComputedStyle(document.documentElement).getPropertyValue("--live").trim(),
-            anims: [anim(bar.querySelector(".vb-icon"), "::after"), anim(mic, "::before"), anim(document.querySelector(".now"))],
+            mute: mute && !mute.hidden ? [mute.getAttribute("aria-pressed"), mute.getAttribute("aria-label")] : null,
+            anims: [anim(bar.querySelector(".vb-dot")), anim(mic, "::before"), anim(document.querySelector(".now"))],
             reported: window.__portSent.filter((m) => m.type === "panel.listening").at(-1),
           };
         });
         const want2 = (ok, what) => ok || fail(`${name} ${label}: ${what} ${JSON.stringify(look)}`);
-        want2(look.title === "Hearing you…" && look.live === "Hands-free: Listening", "state word / announcement");
-        want2(/^Standard · 0:0\d · Just talk · say “stop” to end$/.test(look.detail), "detail line");
-        want2(look.region[0] === "region" && look.region[1] === "Hands-free voice", "bar region");
-        want2(look.key === VOICE_SHORTCUT_LABEL, "shortcut by Stop");
+        want2(look.label === "Voice on" && look.status === "Hearing you" && look.live === "Voice on: Listening", "state word / announcement");
+        want2(/^0:0\d$/.test(look.time), "time on");
+        want2(look.hint === "Standard voice · Just talk · say “stop” to end", "tooltip");
+        want2(look.region[0] === "region" && look.region[1] === "Voice status", "strip region");
+        want2(look.buttons === 0 && look.height <= 30, "a slim strip without buttons");
         want2(look.meter, "meter");
         want2(look.placeholder === "Listening… just talk" && look.glow, "listening box");
-        want2(/^Stop hands-free \((Listening|Hearing you…)\) · /.test(look.micTitle), "mic tooltip");
-        want2(look.micFill !== "rgba(0, 0, 0, 0)" && look.micFill !== look.barInk, "mic filled");
+        want2(look.micTitle === `End voice · ${VOICE_SHORTCUT_LABEL}` && look.micPressed === "true", "mic ends voice");
+        want2(look.micFill !== "rgba(0, 0, 0, 0)", "mic filled");
+        want2(JSON.stringify(look.mute) === JSON.stringify(["false", "Mute the microphone · Alt+M"]), "Mute in the composer");
         want2(look.reported?.listening === true && look.reported?.tabId === 1, "listening reported with the tab (badge)");
         const still = look.anims.every((a) => a === "none");
-        want2(reduced ? still : look.anims.join() === "vb-ring,vb-mic-ring,vb-glow", reduced ? "something pulses with reduced motion" : "no pulse");
+        want2(reduced ? still : look.anims.join() === "vb-breathe,vb-mic-ring,vb-glow", reduced ? "something pulses with reduced motion" : "no pulse");
         await checkLayout(p, `${name} ${label}`);
         await shoot(p, name, size, scheme);
-        // Stop by keyboard: the session ends, the background hears it (the badge goes), the box is as before.
-        await p.focus("#voice-bar .vb-stop");
+        // The mic by keyboard ends it: the background hears it (the badge goes), the box is as before.
+        await p.focus("#now-actions .voice-mic");
         await p.keyboard.press("Enter");
-        await p.waitForFunction(() => document.getElementById("voice-bar").hidden, null, { timeout: 5000 }).catch(() => fail(`${name} ${label}: Enter on Stop did not end it`));
+        await p.waitForFunction(() => document.getElementById("voice-bar").hidden, null, { timeout: 5000 }).catch(() => fail(`${name} ${label}: Enter on the mic did not end it`));
         const after = await p.evaluate(() => ({
           reported: window.__portSent.filter((m) => m.type === "panel.listening").at(-1),
           mic: document.querySelector("#now-actions .voice-mic").dataset.state,
+          mute: !document.querySelector("#now-actions .voice-mute").hidden,
           placeholder: document.getElementById("now-text").placeholder,
           glow: document.body.classList.contains("voice-live"),
         }));
-        if (after.reported?.listening !== false || after.reported?.tabId !== undefined || after.mic !== "idle" || after.placeholder === "Listening… just talk" || after.glow)
-          fail(`${name} ${label}: after Stop ${JSON.stringify(after)}`);
+        if (after.reported?.listening !== false || after.reported?.tabId !== undefined || after.mic !== "idle" || after.mute || after.placeholder === "Listening… just talk" || after.glow)
+          fail(`${name} ${label}: after the mic ended it ${JSON.stringify(after)}`);
         reportErrors(p, `${name} ${label}`);
         await p.close();
       }
     },
   },
-  // Hands-free voice (the voice shortcut): the orb and the voice bar while listening, "Sending…" with the utterance in
-  // the box (Standard), the bar while the agent works, a spoken line with its caption; Realtime's one-time cost notice,
-  // the narrator speaking, its send_to_agent starting a task at once with one acknowledgement, and the user's own
-  // words in the chat with "Sent to agent: …" under them; what was said but passed on to no one as muted lines (one
-  // said before the chat existed, above its first message); the fallback note when Realtime is unavailable; on
-  // another tab, the note goes with the message as its context, never into the chat.
+  // Hands-free voice (the voice shortcut): the orb and the status strip while listening, "Sending…" with the utterance
+  // in the box (Standard), the strip while the agent works (the task's Stop and the voice controls apart in the
+  // composer row), a spoken line with Interrupt in the composer; Realtime's one-time cost notice, the narrator
+  // speaking, its send_to_agent starting a task with one acknowledgement, and one message per request: what the
+  // narrator understood, with the user's words for it folded under it ("Word for word"); what was said but led to no
+  // request is not shown; Realtime unavailable says so and offers Standard (it never switches by itself); a dropped
+  // connection shows "Reconnecting…"; on another tab, the note goes with the message as its context.
   {
     names: [
       "panel-handsfree-listening",
@@ -1859,8 +1888,8 @@ export const PANEL_CASES = [
       "panel-handsfree-cost",
       "panel-handsfree-narrator",
       "panel-handsfree-heard",
-      "panel-handsfree-aside",
-      "panel-handsfree-fallback",
+      "panel-handsfree-unavailable",
+      "panel-handsfree-reconnecting",
       "panel-handsfree-elsewhere",
       "panel-handsfree-elsewhere-heard",
     ],
@@ -1873,37 +1902,42 @@ export const PANEL_CASES = [
           const seen = await p.evaluate(() => ({
             phase: document.querySelector("#voice-bar")?.dataset.phase,
             hidden: document.querySelector("#voice-bar")?.hidden,
-            bar: document.querySelector("#voice-bar .vb-title")?.textContent,
+            bar: document.querySelector("#voice-bar .vb-status")?.textContent,
             tip: document.querySelector("#now-notice:not([hidden])")?.textContent,
           }));
           throw new Error(`waiting for hands-free "${wanted}": ${JSON.stringify(seen)} (${err.message.split("\n")[0]})`);
         });
-      const barTitle = (p) => p.textContent("#voice-bar .vb-title");
-      /** The state word, allowing for the fake microphone's voice ("Hearing you…" while listening or working). */
+      const barTitle = (p) => p.textContent("#voice-bar .vb-status");
+      /** The state word, allowing for the fake microphone's voice ("Hearing you" while listening or working). */
       const barSays = async (p, ...words) => words.includes(await barTitle(p));
       /**
-       * The voice bar: full width right under the tabs, above the orb's veil, in one row; Stop in view and reachable
-       * by keyboard, with the voice shortcut by it; a polite live line saying the state.
+       * The strip: full width right under the tabs, above the orb's veil, one slim line, its words not cut, no buttons
+       * (on its own tab); a polite live line saying the state. The composer row: every voice control and the task's
+       * Stop in view, none overlapping, none cut, each with a name.
        */
       const barCheck = (p) =>
         p.evaluate(() => {
           const bar = document.getElementById("voice-bar");
           const r = bar.getBoundingClientRect();
           const top = document.querySelector("header.top").getBoundingClientRect();
-          const stop = bar.querySelector(".vb-stop");
-          const s = stop.getBoundingClientRect();
           const out = [];
           if (bar.hidden) out.push("bar hidden");
           if (Math.abs(r.top - top.bottom) > 1) out.push(`bar not right under the tabs (${Math.round(r.top)} vs ${Math.round(top.bottom)})`);
           if (r.left !== 0 || Math.abs(r.width - window.innerWidth) > 1) out.push("bar not full width");
-          if (r.height > 64) out.push(`bar too tall (${Math.round(r.height)})`);
-          if (s.right > window.innerWidth || s.left < r.left || s.width < 60) out.push("Stop clipped or small");
-          if (stop.tabIndex < 0 || stop.disabled) out.push("Stop not reachable by keyboard");
-          if (!/^Stop hands-free/.test(stop.getAttribute("aria-label") ?? "")) out.push(`Stop label "${stop.getAttribute("aria-label")}"`);
-          const live = bar.querySelector("[aria-live=polite]");
-          if (!live?.textContent) out.push("no live line");
-          if (document.elementFromPoint(s.left + s.width / 2, s.top + s.height / 2)?.closest(".vb-stop") !== stop) out.push("Stop covered");
-          for (const el of bar.querySelectorAll(".vb-title, .vb-detail")) if (el.getBoundingClientRect().right > s.left + 0.5) out.push(`${el.className} runs under Stop`);
+          if (r.height > 30) out.push(`bar not one slim line (${Math.round(r.height)})`);
+          if ([...bar.querySelectorAll("button")].some((b) => b.offsetParent)) out.push("buttons in the strip");
+          const text = bar.querySelector(".vb-text");
+          if (text.scrollWidth > text.clientWidth + 1) out.push("the strip's words are cut");
+          if (!bar.querySelector("[aria-live=polite]")?.textContent) out.push("no live line");
+          const row = document.querySelector(".now-bar").getBoundingClientRect();
+          const tools = [...document.querySelectorAll(".now-bar button, .now-bar [role=button]")].filter((b) => b.offsetParent);
+          const boxes = tools.map((b) => [b, b.getBoundingClientRect()]);
+          for (const [b, x] of boxes) {
+            const name = b.id || b.className;
+            if (x.left < row.left - 5 || x.right > row.right + 0.5) out.push(`${name} cut`);
+            if (!(b.getAttribute("aria-label") || b.textContent.trim())) out.push(`${name} has no name`);
+          }
+          for (let i = 1; i < boxes.length; i++) if (boxes[i][1].left < boxes[i - 1][1].right - 0.5) out.push(`${boxes[i][0].className} overlaps ${boxes[i - 1][0].className}`);
           return out;
         });
       /** The background's state with `session` running in tab 1 (pushed as the runner would). */
@@ -1921,7 +1955,7 @@ export const PANEL_CASES = [
         await p.evaluate(() => (window.__ttsHold = true));
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
-        if (!(await barSays(p, "Listening", "Hearing you…"))) fail(`listening bar "${await barTitle(p)}"`);
+        if (!(await barSays(p, "Listening", "Hearing you"))) fail(`listening bar "${await barTitle(p)}"`);
         if (!(await p.evaluate(() => !document.querySelector(".voice-orb").hidden))) fail("no orb while hands-free listens");
         if ((await p.getAttribute("#now-actions .voice-mic", "data-state")) !== "handsfree") fail("the mic does not show hands-free");
         if (!(await p.evaluate(() => window.__portSent.some((m) => m.type === "panel.listening" && m.listening === true)))) fail("hands-free not reported to the background");
@@ -1954,13 +1988,22 @@ export const PANEL_CASES = [
         if (playing.join(" | ") !== "I'll open Gmail and read your newest email.") fail(`playing in the chat: ${JSON.stringify(playing)}`);
         if (await p.evaluate(() => document.querySelector(".hf-caption, .voice-tip"))) fail("a floating caption or tip is still drawn");
         if ((await barTitle(p)) !== "Speaking") fail(`speaking bar "${await barTitle(p)}"`);
-        if (await p.evaluate(() => document.querySelector("#voice-bar .vb-interrupt").hidden)) fail("no Interrupt while speaking");
+        if (await p.evaluate(() => document.querySelector("#now-actions .voice-interrupt").hidden)) fail("no Interrupt in the composer while speaking");
+        const sl = await barCheck(p);
+        if (sl.length) fail(`speaking: ${sl.join("; ")}`);
         if (!(await p.evaluate(() => document.querySelector(".voice-orb").hidden))) fail("the orb still covers the chat after sending");
         await checkLayout(p, `handsfree-speaking ${label}`);
         await shoot(p, "panel-handsfree-speaking", size, scheme);
         await p.evaluate(() => window.__ttsRelease());
         await waitPhase(p, "working");
-        if (!(await barSays(p, "Agent working", "Hearing you…"))) fail(`working bar "${await barTitle(p)}"`);
+        if (!(await barSays(p, "Agent working", "Hearing you"))) fail(`working bar "${await barTitle(p)}"`);
+        // The task's Stop and the mic that ends voice: two different buttons, named apart.
+        const stops = await p.evaluate(() => ({
+          task: [!document.getElementById("now-stop").hidden, document.getElementById("now-stop").title, !!document.querySelector("#now-stop svg")],
+          voice: document.querySelector("#now-actions .voice-mic").title,
+          interrupt: !document.querySelector("#now-actions .voice-interrupt").hidden,
+        }));
+        if (JSON.stringify(stops.task) !== JSON.stringify([true, "Stop the task", true]) || !/^End voice/.test(stops.voice) || stops.interrupt) fail(`the two stops ${JSON.stringify(stops)}`);
         // Said: the line is kept in its chat (compact: the agent's text above starts with it), no longer playing.
         await p.waitForFunction(() => document.querySelector("#chat-log .ev-spoken:not(.live)"));
         const kept = await p.evaluate(() => ({
@@ -1998,7 +2041,7 @@ export const PANEL_CASES = [
         if (await p.evaluate(() => window.__requests.some((r) => r.type === "voice.spoken" && /^Opening/.test(r.text)))) fail("a milestone was kept in the chat");
         if (await p.evaluate(() => window.__spoken.some((l) => /\*\*/.test(l)))) fail("a Markdown answer was read out");
 
-        // The shortcut again ends it: the bar goes, the background hears the mic is off.
+        // The shortcut again ends it: the strip goes, the background hears the mic is off.
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await p.waitForFunction(() => document.querySelector("#voice-bar").hidden);
         if ((await p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.listening").at(-1)?.listening)) !== false) fail("hands-free end not reported to the background");
@@ -2008,13 +2051,13 @@ export const PANEL_CASES = [
       }
 
       // Realtime: the cost notice the first time, the narrator talking (caption), and its send_to_agent starting a task.
-      if (["cost", "narrator", "heard", "aside", "elsewhere-heard"].some((n) => want(`panel-handsfree-${n}`, size, scheme))) {
+      if (["cost", "narrator", "heard", "elsewhere-heard"].some((n) => want(`panel-handsfree-${n}`, size, scheme))) {
         const p = await openPanel(ctx, "account", ".chat-empty", { edit: (d) => (d.state.settings.realtimeCostNoticed = false), init: [installVoiceFakes] });
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
         await p.waitForSelector("#now-notice:not([hidden])");
         const tip = await p.textContent("#now-notice:not([hidden])");
-        if (!/^Realtime voice uses about 6¢ of usage credit a minute\. Standard costs much less\.Use Standard×$/.test(tip)) fail(`cost notice "${tip}"`);
+        if (!/^Realtime voice uses about 6¢ of usage credit a minute\. Standard costs much less\.Voice settings×$/.test(tip)) fail(`cost notice "${tip}"`);
         if (!(await p.evaluate(() => window.__requests.some((r) => r.type === "settings.save" && r.settings.realtimeCostNoticed === true)))) fail("the cost notice is not remembered");
         const rt = await p.evaluate(() => ({ protocols: window.__rt.protocols, sent: window.__rt.sent.map((e) => e.type), first: window.__rt.sent[0] }));
         if (JSON.stringify(rt.protocols) !== JSON.stringify(["browsertodo", "bt.tok"])) fail(`subprotocols ${JSON.stringify(rt.protocols)}`);
@@ -2035,38 +2078,49 @@ export const PANEL_CASES = [
         if ((await p.textContent(".voice-caption")) !== "Hi! What should I do?") fail(`narrator caption "${await p.textContent(".voice-caption")}"`);
         await shoot(p, "panel-handsfree-narrator", size, scheme);
 
-        /** A turn of the user's (input item `id`) that the narrator answers without passing anything on. */
-        const aside = (id, words) =>
+        /**
+         * A turn of the user's (input item `id`): its words, then the narrator's reply, which says `reply` aloud (it
+         * answered) or nothing (the words are part of what comes next).
+         */
+        const turn = (id, words, reply) =>
           p.evaluate(
-            ([id, words]) => {
+            ([id, words, reply]) => {
               window.__rt.emit({ type: "input_audio_buffer.speech_started", item_id: id });
               window.__rt.emit({ type: "input_audio_buffer.speech_stopped", item_id: id });
               window.__rt.emit({ type: "input_audio_buffer.committed", item_id: id, previous_item_id: null });
               window.__rt.emit({ type: "response.created", response: { id: `r_${id}` } });
-              window.__rt.emit({ type: "response.done", response: { id: `r_${id}`, status: "completed", output: [] } });
               window.__rt.emit({ type: "conversation.item.input_audio_transcription.completed", item_id: id, content_index: 0, transcript: words });
+              if (reply) {
+                window.__rt.emit({ type: "response.output_audio_transcript.delta", item_id: `a_${id}`, delta: reply });
+                window.__rt.emit({ type: "response.output_audio.delta", item_id: `a_${id}`, response_id: `r_${id}`, delta: btoa(String.fromCharCode(...new Uint8Array(4800))) });
+              }
+              window.__rt.emit({ type: "response.done", response: { id: `r_${id}`, status: "completed", output: [] } });
             },
-            [id, words],
+            [id, words, reply ?? null],
           );
-        // Thinking aloud before asking (input item in0): there is no chat yet, and nothing goes out for it.
+        // Thinking aloud before asking (input item in0, a silent reply): there is no chat yet, and nothing goes out.
         await p.evaluate(() => window.__rt.emit({ type: "response.done", response: { id: "r1", status: "completed", output: [] } }));
         const early = "Hmm, one sec, let me think.";
-        await aside("in0", early);
+        await turn("in0", early, null);
         await p.waitForTimeout(50);
-        if (await p.evaluate(() => window.__requests.some((r) => r.type === "voice.heard" || r.type === "run.message"))) fail("words passed on to no one went out before any chat existed");
+        if (await p.evaluate(() => window.__requests.some((r) => r.type === "voice.heard" || r.type === "run.message"))) fail("words went out before any request");
 
-        // The user asks (their turn is input item in1); the narrator calls send_to_agent before saying anything, and
-        // the request goes out at once as a new task: no sending window, nothing written into the box.
-        await p.evaluate(() => {
+        // The user asks (input item in1): their words, then the narrator calls send_to_agent before saying anything, and
+        // the request goes out at once as a new task with every part of their speech since (word for word): no sending
+        // window, nothing written into the box.
+        const heardText = "Could you check what Sarah wrote me?";
+        await p.evaluate((t) => {
           window.__rt.emit({ type: "input_audio_buffer.speech_started", item_id: "in1" });
           window.__rt.emit({ type: "input_audio_buffer.speech_stopped", item_id: "in1" });
           window.__rt.emit({ type: "input_audio_buffer.committed", item_id: "in1", previous_item_id: null });
           window.__rt.emit({ type: "response.created", response: { id: "r2" } });
+          window.__rt.emit({ type: "conversation.item.input_audio_transcription.completed", item_id: "in1", content_index: 0, transcript: t });
           window.__rt.emit({ type: "response.function_call_arguments.done", call_id: "c1", name: "send_to_agent", arguments: JSON.stringify({ text: "Open Gmail and read my newest email" }) });
-        });
+        }, heardText);
         await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.message"), null, { timeout: 500 }).catch(() => fail("send_to_agent was not sent at once"));
         const req = await p.evaluate(() => window.__requests.find((r) => r.type === "run.message"));
-        if (req.text !== "Open Gmail and read my newest email" || req.voice !== true || req.tabId !== 1) fail(`send_to_agent sent ${JSON.stringify(req)}`);
+        if (req.text !== "Open Gmail and read my newest email" || req.voice !== true || req.tabId !== 1 || JSON.stringify(req.heard) !== JSON.stringify([early, heardText]))
+          fail(`send_to_agent sent ${JSON.stringify(req)}`);
         if ((await phase(p)) === "sending") fail("a Realtime request waited in a sending window");
         const sent = req.text;
         await p.waitForFunction(() => window.__rt.sent.some((e) => e.item?.type === "function_call_output"));
@@ -2088,52 +2142,42 @@ export const PANEL_CASES = [
         });
         if ((await p.inputValue("#now-text")) !== "") fail(`Realtime wrote "${await p.inputValue("#now-text")}" into the box`);
 
-        // The user's own words arrive (after the request went out): kept in the new chat, shown as their message with
-        // what the narrator sent under it, since it says something else.
-        await pushRunning(p, { ...newSession(sent), voice: true });
-        const heardText = "Could you check what Sarah wrote me?";
-        await p.evaluate((t) => window.__rt.emit({ type: "conversation.item.input_audio_transcription.completed", item_id: "in1", content_index: 0, transcript: t }), heardText);
-        await p.waitForFunction(() => window.__requests.some((r) => r.type === "voice.heard" && r.sent));
-        const kept = await p.evaluate(() => window.__requests.filter((r) => r.type === "voice.heard"));
-        // The words said before the chat existed went in it first (early), then this request's.
-        const [keptEarly, keptSent] = kept;
-        if (kept.length !== 2 || keptEarly.sessionId !== "s-new" || keptEarly.text !== early || keptEarly.early !== true || keptEarly.sent !== undefined)
-          fail(`kept early words ${JSON.stringify(kept)}`);
-        if (keptSent?.sessionId !== "s-new" || keptSent.text !== heardText || keptSent.sent !== sent) fail(`kept words ${JSON.stringify(kept)}`);
-        await p.waitForFunction((t) => document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent === t, heardText, { timeout: 5000 }).catch(() => undefined);
+        // The chat: one message, the request as understood; the words folded under it ("Word for word"), both parts.
+        await pushRunning(p, { ...newSession(sent), voice: true, heard: [early, heardText] });
+        await p.waitForFunction((t) => document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent === t, sent, { timeout: 5000 }).catch(() => undefined);
+        await p.click("#chat-log .ev-opening .ev-words > summary").catch(() => fail("no Word for word under the first message"));
         const bubble = await p.evaluate(() => ({
           first: document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent,
           voice: !!document.querySelector("#chat-log .ev-first .ev-voice"),
-          sentLine: document.querySelector("#chat-log .ev-opening .ev-sent")?.textContent,
+          words: document.querySelector("#chat-log .ev-opening .ev-words-text")?.textContent,
+          open: document.querySelector("#chat-log .ev-opening .ev-words")?.open,
           users: document.querySelectorAll("#chat-log .ev-user").length,
+          heardLines: document.querySelectorAll("#chat-log .ev-heard").length,
         }));
-        if (bubble.first !== heardText || !bubble.voice || bubble.sentLine !== `Sent to agent: ${sent}` || bubble.users !== 1) fail(`the user's words in the chat ${JSON.stringify(bubble)}`);
-        // The early words: a muted line above the first message, not a bubble.
-        await p.waitForSelector("#chat-log > .ev-heard", { timeout: 5000 }).catch(() => undefined);
-        const before = await p.evaluate(() => {
-          const line = document.querySelector("#chat-log > .ev-heard");
-          const opening = document.querySelector("#chat-log > .ev-opening");
-          return { text: line?.textContent, above: !!line && !!opening && !!(line.compareDocumentPosition(opening) & Node.DOCUMENT_POSITION_FOLLOWING) };
-        });
-        if (before.text !== early || !before.above) fail(`words said before the chat ${JSON.stringify(before)}`);
+        if (bubble.first !== sent || !bubble.voice || bubble.words !== `${early} · ${heardText}` || !bubble.open || bubble.users !== 1 || bubble.heardLines) fail(`the request in the chat ${JSON.stringify(bubble)}`);
         await checkLayout(p, `handsfree-heard ${label}`);
         await shoot(p, "panel-handsfree-heard", size, scheme);
         if ((await replies()).length !== 1) fail(`more than one reply for the turn: ${JSON.stringify(await replies())}`);
 
-        // Said while the agent works, passed on to no one: muted lines, never bubbles; two in a row are one line.
-        const asides = ["Okay.", "Let me see what it finds."];
-        await aside("in2", asides[0]);
-        await aside("in3", asides[1]);
-        await p.waitForFunction(() => document.querySelectorAll("#chat-log > .ev-heard .ev-heard-text").length === 3, null, { timeout: 5000 }).catch(() => undefined);
-        const muted = await p.evaluate(() => ({
-          lines: [...document.querySelectorAll("#chat-log > .ev-heard")].map((l) => [...l.querySelectorAll(".ev-heard-text")].map((t) => t.textContent)),
+        // Small talk while the agent works, answered aloud (short, capped) and passed on to no one: kept for the record
+        // (voice.heard), never shown in the chat, no message.
+        await turn("in2", "Okay, thanks.", "Sure! I'm here whenever you need me, just tell me what else to do.");
+        // While the agent works, that long reply is never heard: it is made again, capped, and that one is said.
+        await p.waitForFunction(() => window.__rt.sent.some((e) => e.type === "response.create" && e.response?.max_output_tokens === 80), null, { timeout: 5000 }).catch(() => fail("small talk while working was not made short"));
+        await p.evaluate(() => {
+          window.__rt.emit({ type: "response.created", response: { id: "r_short" } });
+          window.__rt.emit({ type: "response.output_audio_transcript.delta", item_id: "a_short", delta: "Sure." });
+          window.__rt.emit({ type: "response.output_audio.delta", item_id: "a_short", response_id: "r_short", delta: btoa(String.fromCharCode(...new Uint8Array(4800))) });
+          window.__rt.emit({ type: "response.done", response: { id: "r_short", status: "completed", output: [] } });
+        });
+        await p.waitForFunction(() => window.__requests.some((r) => r.type === "voice.heard"), null, { timeout: 5000 }).catch(() => fail("words that led to no request were not kept"));
+        const aside = await p.evaluate(() => ({
+          kept: window.__requests.filter((r) => r.type === "voice.heard").map((r) => [r.sessionId, r.text]),
           users: document.querySelectorAll("#chat-log .ev-user").length,
+          heardLines: document.querySelectorAll("#chat-log .ev-heard").length,
           sent: window.__requests.filter((r) => r.type === "run.message").length,
         }));
-        if (JSON.stringify(muted.lines) !== JSON.stringify([[early], asides]) || muted.users !== 1 || muted.sent !== 1) fail(`words passed on to no one ${JSON.stringify(muted)}`);
-        if ((await replies()).length !== 1) fail(`a reply was asked for words passed on to no one: ${JSON.stringify(await replies())}`);
-        await checkLayout(p, `handsfree-aside ${label}`);
-        await shoot(p, "panel-handsfree-aside", size, scheme);
+        if (JSON.stringify(aside.kept) !== JSON.stringify([["s-new", "Okay, thanks."]]) || aside.users !== 1 || aside.heardLines || aside.sent !== 1) fail(`small talk ${JSON.stringify(aside)}`);
 
         // The user looks at another tab and asks (the report on 81df820): the request goes out with the note naming
         // both tabs as its context; the chat shows their words once with the request under them, never the note, and
@@ -2149,26 +2193,28 @@ export const PANEL_CASES = [
           window.__rt.emit({ type: "response.created", response: { id: "r_in4" } });
           window.__rt.emit({ type: "response.function_call_arguments.done", call_id: "c4", name: "send_to_agent", arguments: JSON.stringify({ text: a.request }) });
           window.__rt.emit({ type: "response.done", response: { id: "r_in4", status: "completed", output: [] } });
+          // The words after the call (it waits for them).
           window.__rt.emit({ type: "conversation.item.input_audio_transcription.completed", item_id: "in4", content_index: 0, transcript: a.words });
         }, away);
         await p.waitForFunction(() => window.__requests.filter((r) => r.type === "run.message").length === 2, null, { timeout: 5000 }).catch(() => undefined);
         const awayReq = await p.evaluate(() => window.__requests.filter((r) => r.type === "run.message")[1]);
-        if (awayReq?.text !== away.request || awayReq.sessionId !== "s-new" || !/^The user is looking at another tab: .+\. You work in .+\.$/.test(awayReq.context ?? ""))
+        if (awayReq?.text !== away.request || awayReq.sessionId !== "s-new" || JSON.stringify(awayReq.heard) !== JSON.stringify([away.words]) || !/^The user is looking at another tab: .+\. You work in .+\.$/.test(awayReq.context ?? ""))
           fail(`asked on another tab, sent ${JSON.stringify(awayReq)}`);
-        // Back on the session's tab. The background keeps the message as the words it was sent with (user_message), and
-        // the heard event pairs with it.
+        // Back on the session's tab. The background keeps the message as it was sent (user_message) with its words: one
+        // bubble, the request, its words folded under it; never the note, never two bubbles.
         await p.evaluate(() => window.__activateTab(1));
         await p.waitForFunction(() => document.getElementById("voice-bar").dataset.state !== "elsewhere" && !!document.querySelector("#chat-log .ev-first"), null, { timeout: 5000 }).catch(() => undefined);
-        await p.evaluate((text) => window.__push({ type: "event", event: { type: "user_message", text, voice: true, ts: new Date().toISOString(), sessionId: "s-new" } }), awayReq.text);
-        await p.waitForFunction((t) => [...document.querySelectorAll("#chat-log .ev-said .ev-user-text")].some((e) => e.textContent === t), away.words, { timeout: 5000 }).catch(() => undefined);
+        await p.evaluate((r) => window.__push({ type: "event", event: { type: "user_message", text: r.text, voice: true, heard: r.heard, ts: new Date().toISOString(), sessionId: "s-new" } }), awayReq);
+        await p.waitForFunction((t) => [...document.querySelectorAll("#chat-log .ev-said .ev-user-text")].some((e) => e.textContent === t), away.request, { timeout: 5000 }).catch(() => undefined);
         const awayChat = await p.evaluate(() => ({
           bubbles: [...document.querySelectorAll("#chat-log .ev-user")].map((e) => e.textContent),
-          sentLines: [...document.querySelectorAll("#chat-log .ev-said .ev-sent")].map((e) => e.textContent),
+          words: [...document.querySelectorAll("#chat-log .ev-said .ev-words-text")].map((e) => e.textContent),
         }));
-        const awayBubbles = awayChat.bubbles.filter((t) => t !== heardText);
-        if (JSON.stringify(awayBubbles) !== JSON.stringify([away.words]) || JSON.stringify(awayChat.sentLines) !== JSON.stringify([`Sent to agent: ${away.request}`]) || awayChat.bubbles.some((t) => t.includes("looking at another tab")))
+        const awayBubbles = awayChat.bubbles.filter((t) => t !== sent);
+        if (JSON.stringify(awayBubbles) !== JSON.stringify([away.request]) || JSON.stringify(awayChat.words) !== JSON.stringify([away.words]) || awayChat.bubbles.some((t) => t.includes("looking at another tab")))
           fail(`asked on another tab, the chat shows ${JSON.stringify(awayChat)}`);
-        if ((await replies()).length !== 2) fail(`not one acknowledgement for the request asked on another tab: ${JSON.stringify(await replies())}`);
+        const acks = (await replies()).filter((r) => /acknowledgement/.test(r.response?.instructions ?? ""));
+        if (acks.length !== 2) fail(`not one acknowledgement for the request asked on another tab: ${JSON.stringify(acks)}`);
         await checkLayout(p, `handsfree-elsewhere-heard ${label}`);
         await shoot(p, "panel-handsfree-elsewhere-heard", size, scheme);
 
@@ -2219,15 +2265,17 @@ export const PANEL_CASES = [
         await p.evaluate((st) => window.__push({ type: "state", state: st }), home);
         // The user switches to tab 2 (this panel would be hidden there): it knows.
         await session({ viewing: 2 });
-        await p.waitForFunction(() => document.querySelector("#voice-bar[data-state=elsewhere] .vb-title")?.textContent.startsWith("Voice is on in Inbox (1)"));
+        await p.waitForFunction(() => document.querySelector("#voice-bar[data-state=elsewhere] .vb-label")?.textContent.startsWith("Voice is on in Inbox (1)"));
         const away = await p.evaluate(() => ({
-          label: document.querySelector("#voice-bar .vb-title").textContent,
+          label: document.querySelector("#voice-bar .vb-label").textContent,
+          off: !!document.querySelector("#voice-bar .vb-off").offsetParent,
+          mute: !document.querySelector("#now-actions .voice-mute").hidden,
           go: !!document.querySelector("#voice-bar .vb-go").offsetParent,
           use: !!document.querySelector("#voice-bar .vb-use").offsetParent,
           orb: !document.querySelector(".voice-orb").hidden,
           live: document.body.classList.contains("voice-live"),
         }));
-        if (away.label !== "Voice is on in Inbox (1) - ada.lovelace@ex…" || !away.go || !away.use || away.orb || away.live) fail(`bar on another tab ${JSON.stringify(away)}`);
+        if (away.label !== "Voice is on in Inbox (1) - ada.lovelace@ex…" || !away.go || !away.use || away.off || !away.mute || away.orb || away.live) fail(`bar on another tab ${JSON.stringify(away)}`);
         await checkLayout(p, `handsfree-elsewhere ${label}`);
         await shoot(p, "panel-handsfree-elsewhere", size, scheme);
         // Said while tab 2 is in front: it goes to tab 1's chat as said, with the note naming both tabs as its context
@@ -2272,24 +2320,24 @@ export const PANEL_CASES = [
 
         // Another tab's session (tab 5's panel runs it): this panel shows where, with nothing live.
         await session({ tabId: 5, host: 5, viewing: 1 });
-        await p.waitForFunction(() => document.querySelector("#voice-bar[data-state=elsewhere] .vb-title")?.textContent === "Voice is on in Tab 5");
+        await p.waitForFunction(() => document.querySelector("#voice-bar[data-state=elsewhere] .vb-label")?.textContent === "Voice is on in Tab 5");
         const remote = await p.evaluate(() => ({
-          detail: document.querySelector("#voice-bar .vb-detail").textContent,
+          detail: document.getElementById("voice-bar").title,
           meter: !!document.querySelector("#voice-bar .vb-meter").offsetParent,
           go: !!document.querySelector("#voice-bar .vb-go").offsetParent,
           use: !!document.querySelector("#voice-bar .vb-use").offsetParent,
-          stop: !!document.querySelector("#voice-bar .vb-stop").offsetParent,
+          stop: !!document.querySelector("#voice-bar .vb-off").offsetParent,
           mic: document.querySelector("#now-actions .voice-mic").dataset.state,
           live: document.body.classList.contains("voice-live"),
           placeholder: document.getElementById("now-text").placeholder,
         }));
-        if (remote.detail !== "Standard · Not listening in this tab" || remote.meter || !remote.go || !remote.use || !remote.stop || remote.mic !== "idle" || remote.live || /Listening/i.test(remote.placeholder))
+        if (remote.detail !== "Standard voice · Not listening in this tab" || remote.meter || !remote.go || !remote.use || !remote.stop || remote.mic !== "idle" || remote.live || /Listening/i.test(remote.placeholder))
           fail(`another tab's session ${JSON.stringify(remote)}`);
         await checkLayout(p, `handsfree-remote ${label}`);
         await shoot(p, "panel-handsfree-remote", size, scheme);
         const voiceStops = () => p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.voiceStop").length);
-        await p.click("#voice-bar .vb-stop");
-        if ((await voiceStops()) !== 1) fail("Stop did not ask the background to end it");
+        await p.click("#voice-bar .vb-off");
+        if ((await voiceStops()) !== 1) fail("Turn off did not ask the background to end it");
         // Use voice here: ends it there, and starts here only once it ended.
         await p.click("#voice-bar .vb-use");
         if ((await voiceStops()) !== 2) fail("Use voice here did not ask the background to end it");
@@ -2306,32 +2354,72 @@ export const PANEL_CASES = [
         await p.close();
       }
 
-      // Realtime unavailable on the server: one line, and Standard takes over.
-      if (want("panel-handsfree-fallback", size, scheme)) {
+      // Realtime unavailable on the server: nothing starts (never Standard by itself); the notice says why and offers
+      // Standard for this once.
+      if (want("panel-handsfree-unavailable", size, scheme)) {
         const p = await openPanel(ctx, "account", ".chat-empty", { init: [installVoiceFakes, () => (window.__rtMode = "unavailable")] });
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
-        await waitPhase(p, "listening");
         await p.waitForSelector("#now-notice:not([hidden])");
-        const note = await p.evaluate(() => ({ text: document.querySelector("#now-notice .notice-text")?.textContent, level: document.getElementById("now-notice").dataset.level }));
-        if (note.text !== "Realtime voice is unavailable. Using Standard." || note.level !== "fallback") fail(`fallback note ${JSON.stringify(note)}`);
-        // The note stays in the row above the box; the bar is at the top.
-        await checkLayout(p, `handsfree-fallback ${label}`);
-        await shoot(p, "panel-handsfree-fallback", size, scheme);
-        // Standard is listening: the utterance goes through the server's transcription (voice.transcribe).
-        await p.waitForFunction(() => window.__requests.some((r) => r.type === "voice.transcribe"), null, { timeout: 15_000 });
-        if ((await phase(p)) === "off") fail("hands-free ended instead of falling back");
-        // A fallback note hides by itself after a few seconds.
-        await p.waitForFunction(() => document.getElementById("now-notice").hidden, null, { timeout: 12_000 }).catch(() => fail("the fallback note did not hide by itself"));
-        reportErrors(p, `handsfree-fallback ${label}`);
+        await p.waitForFunction(() => document.querySelector("#voice-bar").hidden, null, { timeout: 5000 }).catch(() => fail("voice went on without Realtime"));
+        const note = await p.evaluate(() => ({
+          text: document.querySelector("#now-notice .notice-text")?.textContent,
+          level: document.getElementById("now-notice").dataset.level,
+          actions: [...document.querySelectorAll("#now-notice .notice-action")].map((b) => b.textContent),
+          transcribed: window.__requests.some((r) => r.type === "voice.transcribe"),
+          saved: window.__requests.some((r) => r.type === "settings.save" && "voiceEngine" in r.settings),
+        }));
+        if (note.text !== "Realtime voice is unavailable on the server right now." || note.level !== "error" || JSON.stringify(note.actions) !== JSON.stringify(["Use Standard voice"]) || note.transcribed || note.saved)
+          fail(`unavailable note ${JSON.stringify(note)}`);
+        await checkLayout(p, `handsfree-unavailable ${label}`);
+        await shoot(p, "panel-handsfree-unavailable", size, scheme);
+        // The user's choice: Standard, this once (Settings unchanged).
+        await p.click("#now-notice .notice-action");
+        await waitPhase(p, "listening");
+        if (await p.evaluate(() => window.__requests.some((r) => r.type === "settings.save" && "voiceEngine" in r.settings))) fail("Use Standard voice changed Settings");
+        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await p.waitForFunction(() => document.querySelector("#voice-bar").hidden);
+        reportErrors(p, `handsfree-unavailable ${label}`);
+        await p.close();
+      }
+
+      // The Realtime connection drops mid-session: the strip says "Reconnecting…" while a new one is made, taking the
+      // place of the old one on the server (takeover); the chat and the session go on.
+      if (want("panel-handsfree-reconnecting", size, scheme)) {
+        const p = await openPanel(ctx, "account", ".chat-empty", { init: [installVoiceFakes] });
+        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await waitPhase(p, "listening");
+        // The next connection opens but is not ready yet (so the strip can be seen), then the relay drops this one.
+        await p.evaluate(() => {
+          window.__rtMode = "hold";
+          window.__rt.drop(1011);
+        });
+        await p.waitForFunction(() => document.getElementById("voice-bar").dataset.state === "reconnecting", null, { timeout: 5000 }).catch(() => fail("no Reconnecting… in the strip"));
+        const rc = await p.evaluate(() => ({
+          status: document.querySelector("#voice-bar .vb-status").textContent,
+          url: window.__rt.url,
+          notice: document.querySelector("#now-notice:not([hidden])")?.textContent ?? null,
+          mic: document.querySelector("#now-actions .voice-mic").dataset.state,
+        }));
+        if (rc.status !== "Reconnecting…" || !/[?&]takeover=1/.test(rc.url) || rc.notice || rc.mic !== "handsfree") fail(`reconnecting ${JSON.stringify(rc)}`);
+        const rl = await barCheck(p);
+        if (rl.length) fail(`reconnecting: ${rl.join("; ")}`);
+        await checkLayout(p, `handsfree-reconnecting ${label}`);
+        await shoot(p, "panel-handsfree-reconnecting", size, scheme);
+        // Ready: the session goes on.
+        await p.evaluate(() => window.__rt.emit({ type: "session.created", event_id: "ev2", session: { type: "realtime", model: "gpt-realtime-2.1" } }));
+        await p.waitForFunction(() => document.getElementById("voice-bar").dataset.state !== "reconnecting", null, { timeout: 5000 }).catch(() => fail("still reconnecting once ready"));
+        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await p.waitForFunction(() => document.querySelector("#voice-bar").hidden);
+        reportErrors(p, `handsfree-reconnecting ${label}`);
         await p.close();
       }
     },
   },
-  // Hands-free muted (the bar's Mute, Alt+M): the bar in grey with "Muted" and the mic-off icon, no meter, Mute pressed;
-  // the box without the glow and "Listening…"; the mic still, in grey; the background told (the MUTE badge). Realtime
-  // stops streaming the microphone (no input_audio_buffer.append: no input audio billed) and clears the server's buffer;
-  // the narrator is told, and still speaks (Interrupt, Mute and Stop in one row, narrow too). While the agent works the
-  // hint says updates are still said. Alt+M unmutes: the stream starts again.
+  // Hands-free muted (the composer's Mute, Alt+M): the strip in grey with "Muted", no meter; Mute pressed; the box
+  // without the glow and "Listening…"; the mic still, in grey; the background told (the MUTE badge). Realtime stops
+  // streaming the microphone (no input_audio_buffer.append: no input audio billed) and clears the server's buffer; the
+  // narrator is told, and still speaks (Interrupt, Mute, the mic and Send in one row, narrow too). While the agent works
+  // the hint says updates are still said. Alt+M unmutes: the stream starts again.
   {
     names: ["panel-handsfree-muted", "panel-handsfree-muted-speaking", "panel-handsfree-muted-working"],
     async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors, base }) {
@@ -2342,35 +2430,30 @@ export const PANEL_CASES = [
       await p.waitForFunction(() => document.querySelector("#voice-bar:not([hidden])")?.dataset.phase === "listening", null, { timeout: 20_000 });
       // The fake microphone streams to the narrator.
       await p.waitForFunction(() => window.__rt.sent.some((e) => e.type === "input_audio_buffer.append"), null, { timeout: 10_000 });
-      await p.click("#voice-bar .vb-mute");
+      await p.click("#now-actions .voice-mute");
       const look = () =>
         p.evaluate(() => {
           const bar = document.getElementById("voice-bar");
-          const mute = bar.querySelector(".vb-mute");
+          const mute = document.querySelector("#now-actions .voice-mute");
           const mic = document.querySelector("#now-actions .voice-mic");
-          const r = bar.getBoundingClientRect();
-          const m = mute.getBoundingClientRect();
-          const s = bar.querySelector(".vb-stop").getBoundingClientRect();
-          const inside = (x) => x.left >= r.left && x.right <= r.right + 0.5 && x.width > 0;
+          const row = document.querySelector(".now-bar").getBoundingClientRect();
           const out = [];
-          if (!inside(m) || !inside(s)) out.push("Mute or Stop clipped");
-          if (m.right > s.left + 0.5) out.push("Mute overlaps Stop");
-          const i = bar.querySelector(".vb-interrupt");
-          if (!i.hidden && i.getBoundingClientRect().right > m.left + 0.5) out.push("Interrupt overlaps Mute");
-          for (const el of bar.querySelectorAll(".vb-title, .vb-detail")) if (el.getBoundingClientRect().right > m.left + 0.5 && !el.hidden) out.push(`${el.className} runs under Mute`);
-          if (r.height > 64) out.push(`bar too tall (${Math.round(r.height)})`);
+          const shown = [...document.querySelectorAll(".now-bar button")].filter((b) => b.offsetParent).map((b) => [b.className, b.getBoundingClientRect()]);
+          for (const [name, x] of shown) if (x.left < row.left - 5 || x.right > row.right + 0.5) out.push(`${name} cut`);
+          for (let i = 1; i < shown.length; i++) if (shown[i][1].left < shown[i - 1][1].right - 0.5) out.push(`${shown[i][0]} overlaps ${shown[i - 1][0]}`);
+          if (bar.getBoundingClientRect().height > 30) out.push(`strip not one line (${Math.round(bar.getBoundingClientRect().height)})`);
           return {
             state: bar.dataset.state,
             muted: bar.dataset.muted ?? null,
-            title: bar.querySelector(".vb-title").textContent,
-            detail: bar.querySelector(".vb-detail").textContent,
+            title: bar.querySelector(".vb-status").textContent,
+            detail: bar.title,
             meter: !bar.querySelector(".vb-meter").hidden,
             pressed: mute.getAttribute("aria-pressed"),
             label: mute.getAttribute("aria-label"),
             tooltip: mute.title,
             live: bar.querySelector("[aria-live=polite]").textContent,
-            barBg: getComputedStyle(bar).backgroundImage,
-            ring: getComputedStyle(bar.querySelector(".vb-icon"), "::after").animationName,
+            barBg: getComputedStyle(bar).backgroundColor,
+            ring: getComputedStyle(bar.querySelector(".vb-dot")).animationName,
             placeholder: document.getElementById("now-text").placeholder,
             glow: document.body.classList.contains("voice-live"),
             micMuted: mic.dataset.muted ?? null,
@@ -2382,8 +2465,8 @@ export const PANEL_CASES = [
         });
       const want = (ok, what, seen) => ok || fail(`muted ${label}: ${what} ${JSON.stringify(seen)}`);
       const muted = await look();
-      want(muted.state === "muted" && muted.muted === "true" && muted.title === "Muted" && muted.live === "Hands-free: Muted", "state", muted);
-      want(/^Realtime · \d:\d\d · Microphone off · Unmute to talk$/.test(muted.detail), "detail", muted);
+      want(muted.state === "muted" && muted.muted === "true" && muted.title === "Muted" && muted.live === "Voice on: Muted", "state", muted);
+      want(muted.detail === "Realtime voice · Microphone off · Unmute to talk", "tooltip", muted);
       want(!muted.meter && muted.ring === "none", "meter or ring", muted);
       want(muted.pressed === "true" && muted.label === "Unmute the microphone · Alt+M" && muted.tooltip === muted.label, "Mute button", muted);
       want(!/200, 35, 63|196, 42, 68/.test(muted.barBg), "the bar is still red", muted);
@@ -2403,7 +2486,7 @@ export const PANEL_CASES = [
       await checkLayout(p, `handsfree-muted ${label}`);
       await shoot(p, "panel-handsfree-muted", size, scheme);
 
-      // The narrator still speaks: Speaking, with Interrupt, Mute (still pressed) and Stop in one row.
+      // The narrator still speaks: Speaking, with Interrupt, Mute (still pressed), the mic and Send in one row.
       await p.evaluate(() => {
         // 3 s of audio, in two deltas (one big spread would overflow the call stack).
         const pcm = btoa(String.fromCharCode(...new Uint8Array(24_000 * 2 * 1.5)));
@@ -2413,11 +2496,12 @@ export const PANEL_CASES = [
       });
       await p.waitForFunction(() => document.getElementById("voice-bar").dataset.state === "speaking", null, { timeout: 5000 });
       const speaking = await look();
-      want(speaking.muted === "true" && speaking.pressed === "true" && /Tap Interrupt · microphone muted$/.test(speaking.detail), "speaking while muted", speaking);
+      want(speaking.muted === "true" && speaking.pressed === "true" && /Esc or Interrupt stops it · microphone muted$/.test(speaking.detail), "speaking while muted", speaking);
+      want(await p.evaluate(() => !document.querySelector("#now-actions .voice-interrupt").hidden), "no Interrupt in the composer", speaking);
       want(!speaking.layout.length, "speaking layout", speaking);
       await checkLayout(p, `handsfree-muted-speaking ${label}`);
       await shoot(p, "panel-handsfree-muted-speaking", size, scheme);
-      await p.click("#voice-bar .vb-interrupt");
+      await p.click("#now-actions .voice-interrupt");
       await p.waitForFunction(() => document.getElementById("voice-bar").dataset.state === "muted", null, { timeout: 5000 });
 
       // A task runs: the hint says its updates are still said.
@@ -2429,10 +2513,11 @@ export const PANEL_CASES = [
       await p.waitForFunction(() => document.getElementById("voice-bar").dataset.phase === "working", null, { timeout: 5000 });
       const working = await look();
       want(working.state === "muted" && /Agent working · updates are still said$/.test(working.detail), "working while muted", working);
+      want(await p.evaluate(() => !document.getElementById("now-stop").hidden), "no task Stop while it works", working);
       await checkLayout(p, `handsfree-muted-working ${label}`);
       await shoot(p, "panel-handsfree-muted-working", size, scheme);
 
-      // Alt+M unmutes: the bar is live again and the microphone streams.
+      // Alt+M unmutes: the strip is live again and the microphone streams.
       await p.keyboard.press("Alt+KeyM");
       const unmuted = await look();
       want(unmuted.muted === null && unmuted.pressed === "false" && unmuted.state !== "muted" && unmuted.reported?.muted === undefined, "Alt+M did not unmute", unmuted);

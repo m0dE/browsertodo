@@ -1,9 +1,13 @@
-import type { ApprovalOutcome, ApprovalRequest } from "./automation.js";
+import type { ApprovalAnsweredBy, ApprovalOutcome, ApprovalRequest } from "./automation.js";
+import type { TitleBy } from "./chat-title.js";
 import type { MemoryEntry } from "./memory.js";
 import type { TaskOutcome, TaskSource } from "./task.js";
 import type { ScheduleInput } from "./schedule.js";
 import type { TodoChange, TodoTaskFields } from "./schedule-task.js";
 import type { TraceEvent } from "./trace.js";
+
+/** The reason of a turn the user stopped (task_end paused): not a question for the user. */
+export const USER_STOP_REASON = "Stopped by the user";
 
 /**
  * Everything an agent run emits, in order. Both brains produce these, the
@@ -52,8 +56,12 @@ export type AgentEvent =
       executed: boolean;
       ms: number;
     }
-  /** A message the human sent in the conversation (voice: it was spoken, in hands-free voice). */
-  | { type: "user_message"; text: string; voice?: true }
+  /**
+   * A message the human sent in the conversation (voice: it was spoken, in hands-free voice). heard: with Realtime
+   * voice, the text is the request as the narrator understood it; these are the user's words for it, word for word
+   * (the input transcription of each part of their speech that led to it, in order), shown folded under it.
+   */
+  | { type: "user_message"; text: string; voice?: true; heard?: string[] }
   /**
    * suggestion: the agent's proposed next request (TaskRunResult.suggestion);
    * spoken: the outcome as one or two sentences hands-free voice reads aloud (TaskRunResult.spoken).
@@ -67,17 +75,12 @@ export type AgentEvent =
    */
   | { type: "spoken"; text: string }
   /**
-   * What the user said in a Realtime hands-free turn, word for word (the
-   * narrator's input transcription), kept in the thread as their voice
-   * message. sent: what the narrator passed to the agent for it (that
-   * request's own voice message then shows these words instead). Without
-   * sent, nothing went to the agent (thinking aloud, "one sec"): the chat
-   * shows it as a muted line, not a message. early: said in the hands-free
-   * session before this conversation existed, kept when a request started it
-   * (shown above its first message). Written by the side panel, never by a
-   * brain.
+   * What the user said in a Realtime hands-free turn, word for word, that led
+   * to no request (small talk the narrator answered, "one sec"): kept for the
+   * record (Raw), not shown in the chat. Words that led to a request go with
+   * its user_message (heard). Written by the side panel, never by a brain.
    */
-  | { type: "heard"; text: string; sent?: string; early?: true }
+  | { type: "heard"; text: string }
   /**
    * The agent put a task in the user's TODO list from the chat
    * (schedule_task): the chat shows it as a card with View in TODO and Undo.
@@ -103,8 +106,8 @@ export type AgentEvent =
    * Deny. Written by the extension, never by a brain.
    */
   | { type: "approval_request"; request: ApprovalRequest }
-  /** How that approval request ended (by: answered by voice). Written by the extension. */
-  | { type: "approval_resolved"; id: string; outcome: ApprovalOutcome; by?: "voice" }
+  /** How that approval request ended (by: where the user answered it). Written by the extension. */
+  | { type: "approval_resolved"; id: string; outcome: ApprovalOutcome; by?: ApprovalAnsweredBy }
   /**
    * The agent's memory changed from this conversation (remember, forget, a task's run note): the chat shows
    * "Remembered: ..." with Undo. before / after: the entry before and after the change (null: it did not exist /
@@ -151,6 +154,8 @@ export interface SessionInfo {
   source: TaskSource;
   /** Local or cloud task id; absent for adhoc runs. */
   taskId?: string;
+  /** The task's series (Task.seriesId), which its memory is kept under; absent for adhoc runs and older sessions. */
+  seriesId?: string;
   title: string;
   brain: BrainKind;
   jev: boolean;
@@ -170,6 +175,8 @@ export interface SessionInfo {
   account?: string;
   /** The first message was spoken (hands-free voice), not typed. */
   voice?: true;
+  /** The user's words for the first message, word for word (see the user_message event's heard). */
+  heard?: string[];
   /** Set when this run continues an earlier stopped one ("Continue"). */
   continuedFrom?: string;
   /** Turns in this conversation so far (absent: 1). */
@@ -182,6 +189,10 @@ export interface SessionInfo {
   logPath?: string;
   /** The user turned memory off for this conversation: the agent is given none and saves none in it. */
   memoryOff?: true;
+  /** Who wrote `title` (chat-title.ts): the title model, or the user (never replaced). Absent: the first request, cleaned. */
+  titleBy?: TitleBy;
+  /** The turn after which the title model wrote `title`. */
+  titledTurn?: number;
 }
 
 /** Streamed text deltas are sent at most this often per stream (ms). */

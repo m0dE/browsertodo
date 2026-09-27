@@ -11,7 +11,7 @@ import type { LocalStore } from "../local-store.js";
 import type { MaterializedMedia, MediaSource } from "../media-files.js";
 import type { SessionStore } from "../sessions.js";
 import type { TabChatsLike } from "../../tab-chats.js";
-import { isRestrictedUrl, RESTRICTED_STATUS } from "../../restricted.js";
+import { asksAboutThePage, isRestrictedUrl, RESTRICTED_STATUS } from "../../restricted.js";
 import type { ForcedStop } from "./active.js";
 import { timeLimitReached } from "@browsertodo/core";
 import { ABORT_GRACE_MS, ActiveClock, safetyTimeoutMinutes } from "./deadline.js";
@@ -49,18 +49,25 @@ export interface ActiveSession {
   instructions?: string;
   /** When the turn's wall-time ceiling ends it (epoch ms, TURN_WALL_MINUTES): an approval waits at most until shortly before. */
   turnEndsAt?: number;
+  /**
+   * Ends the approvals waiting now (approval/gate.ts GateContext.interrupt): aborted with "stop" when the session
+   * is stopped, with "message" when the user writes to the agent (then replaced, for the approvals after it).
+   */
+  approvals: AbortController;
 }
 
 /** A message waiting for the next turn; voice: it was spoken; context: told to the agent with it (see withContext). */
 export interface QueuedMessage {
   text: string;
   voice: boolean;
+  /** Spoken: the user's words for it, word for word (the user_message event's heard). */
+  heard?: string[];
   context?: string;
 }
 
-/** The automation level's line for the agent's prompt this turn (automation.ts); undefined at full autonomy. */
-export function approvalsLine(settings: ExtensionSettings, scheduled: boolean): string | undefined {
-  return automationPromptLine(effectiveLevel(settings, scheduled)) || undefined;
+/** The automation level's line for the agent's prompt this turn (automation.ts). */
+export function approvalsLine(settings: ExtensionSettings, scheduled: boolean): string {
+  return automationPromptLine(effectiveLevel(settings, scheduled));
 }
 
 export type Cleanup = () => void | Promise<void>;
@@ -168,7 +175,7 @@ export class TurnRunner {
     active: ActiveSession,
     job: FirstJob,
     brain: Brain,
-    opened: { task: AgentTask; isRetry: boolean },
+    opened: { task: AgentTask; seriesId?: string; isRetry: boolean },
     settings: ExtensionSettings,
     cleanups: Cleanup[],
   ): Promise<TaskRunResult> {
@@ -178,10 +185,12 @@ export class TurnRunner {
     // extensions out of: the run still starts, in a tab next to it.
     const page = adhoc ? await this.pageOf(origin) : null;
     const restricted = !!page && isRestrictedUrl(page.url);
+    // Said in the chat only when the request is about that page (the agent is told either way).
+    const sayRestricted = restricted && asksAboutThePage(opened.task.instructions, adhoc && !!job.input.screen);
     // What memory gives the turn is picked while its tab and files are made ready (it may wait on the account's search).
     // A TODO or cloud task keeps its run notes in memory; a one-off chat has none.
     const memoryReady = this.memoryFor(active, {
-      ...(adhoc ? {} : { task: { instructions: opened.task.instructions, account: opened.task.account } }),
+      ...(adhoc ? {} : { task: { instructions: opened.task.instructions, account: opened.task.account, seriesId: opened.seriesId } }),
       title: active.session.title,
       request: opened.task.instructions,
       ...(page ? { tabUrl: page.url, tabTitle: page.title } : {}),
@@ -192,11 +201,11 @@ export class TurnRunner {
     let picked: number;
     if (origin === undefined) {
       picked = await this.prepareTab(active, { mode: adhoc ? "current-tab" : "own-tab" });
-      if (restricted) this.emit(active, { type: "status", text: RESTRICTED_STATUS });
+      if (sayRestricted) this.emit(active, { type: "status", text: RESTRICTED_STATUS });
     } else {
       // Not brought to the front: the user may have moved on to another tab already.
       picked = await this.prepareTab(active, { mode: "current-tab", tabId: origin });
-      await this.follow(active, origin, picked, restricted);
+      await this.follow(active, origin, picked, restricted, sayRestricted);
     }
     // The agent is told which page the user is looking at (buildTaskPrompt); scheduled and TODO tasks have none.
     const task: AgentTask = page ? { ...opened.task, userTab: userTabOf(page, picked) } : opened.task;
@@ -220,7 +229,9 @@ export class TurnRunner {
     try {
       const picked = await this.timed(active, "memory.inject", () => this.deps.memory!.begin(active.session.sessionId, run));
       if (picked) {
-        const data = { entries: picked.entries.length, tokens: picked.tokens, continued: !!run.continued };
+        // The account's search: how long the turn waited for it, and whether it went on without it.
+        const search = picked.search ? { searchMs: picked.search.ms, ...(picked.search.late ? { searchLate: true } : {}) } : {};
+        const data = { entries: picked.entries.length, tokens: picked.tokens, continued: !!run.continued, ...search };
         this.emit(active, { type: "trace", trace: { t: Date.now(), cat: "turn", name: "memory.given", src: "engine", data } });
       }
       return picked?.text || undefined;
@@ -243,11 +254,12 @@ export class TurnRunner {
   /**
    * The conversation's run went to another tab than its own (e.g. its tab
    * shows a chrome:// page): it now belongs there. restricted: the reason was
-   * a page Chrome keeps extensions out of (said in a quiet line).
+   * a page Chrome keeps extensions out of; say: say so in a quiet line (the
+   * request is about that page, asksAboutThePage).
    */
-  async follow(active: ActiveSession, origin: number, picked: number, restricted = false): Promise<void> {
+  async follow(active: ActiveSession, origin: number, picked: number, restricted = false, say = restricted): Promise<void> {
     if (picked === origin) return;
-    if (restricted) this.emit(active, { type: "status", text: RESTRICTED_STATUS });
+    if (restricted && say) this.emit(active, { type: "status", text: RESTRICTED_STATUS });
     if (!this.deps.tabChats) return;
     if (!restricted) this.emit(active, { type: "status", text: MOVED_TAB_STATUS });
     await this.bindChat(picked, active.session.sessionId);

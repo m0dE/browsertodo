@@ -266,6 +266,31 @@ describe("startApiAgent", () => {
     finishLoad({ url: "https://slow.test/a", title: "A" });
   });
 
+  it("a user message while act's first read waits for a page still loading ends that wait: nothing was run, the message follows", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    let session!: ReturnType<typeof start>["session"];
+    let reads = 0;
+    const browser: BrowserCaller = {
+      call: async (method, params) => {
+        if (method === "browser.readPage" && reads++ === 0) {
+          // The extension waits for the page to draw (readWhenDrawn); the user speaks meanwhile.
+          setTimeout(() => session.sendUserMessage("use the other account"), 5);
+          return new Promise(() => {}) as never;
+        }
+        return x.caller().call(method, params);
+      },
+    };
+    const jev = fakeJev([]);
+    const r = start(x, [msg(tool("act", { steps: [{ goal: "click Post" }, { goal: "type the post", text: "gm" }] })), msg(tool("task_complete", { summary: "switched" }))], { browser, jev });
+    session = r.session;
+    expect(await session.done).toEqual({ outcome: "done", summary: "switched" });
+    const [result, said] = lastUser(r.server.requests[1]!).content;
+    expect(result.content[0].text).toBe("Stopped before step 1: the page was still loading when the user sent you a message (it follows). Steps 1-2 were not run.");
+    expect(said.text).toContain('The user just said: "use the other account"');
+    // Jev was never asked: no step ran.
+    expect(jev.goals).toEqual([]);
+  });
+
   describe("a user message while the model is still writing", () => {
     /**
      * A Messages endpoint whose first reply streams `first` and then stalls (until it is aborted, or `release()`),
@@ -525,6 +550,14 @@ describe("startApiAgent", () => {
 });
 
 describe("startApiAgent: conversation (continueWith)", () => {
+  it("sends no request after the turn's task_complete: nothing more is asked of the model until the next message", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    const { session, server } = start(x, [msg(tool("read_page")), msg(tool("task_complete", { summary: "done" })), msg(text("Anything else?"))]);
+    expect(await session.done).toEqual({ outcome: "done", summary: "done" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(server.requests).toHaveLength(2);
+  });
+
   it("a follow-up message continues the same history after task_complete", async () => {
     const x = new FakeX({ url: "https://x.com/home" });
     const { session, server, events } = start(x, [

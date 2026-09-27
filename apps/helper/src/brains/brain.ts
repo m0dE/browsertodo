@@ -94,6 +94,12 @@ export interface BrainContext {
   interjections: Interjections;
   /** Persistent brains: the agent is waiting for input (its turn ended). Ends a turn that has no result yet. */
   idle?: () => void;
+  /**
+   * True once the running turn has its task_* result (or no turn runs): a model request that starts now can
+   * only write text nobody reads, so the brain stops it (Claude Code asks the model once more after the
+   * task_* tool's result).
+   */
+  turnOver?: () => boolean;
   /** How much the model thinks (the Reasoning setting, raised while a Fast run is stuck). Absent: the brain's own default. */
   reasoning?: ReasoningChannel;
   /** An agent process started ahead for this session (Brain.warm): taken when its settings are the session's, else stopped. */

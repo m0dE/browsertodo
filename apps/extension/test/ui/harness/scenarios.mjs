@@ -620,6 +620,45 @@ export function scenario(kind) {
     lisbon.instructions = "Find the cheapest flight to Lisbon next weekend.\nLeave Friday after 17:00, back Sunday night.\nCompare https://www.google.com/travel/flights and https://www.skyscanner.net/transport/flights/ber/lis/ before picking.";
     lisbon.model = "claude-sonnet-5";
   }
+  if (kind === "recent" || kind === "recent-empty") {
+    // Tab 1 has no chat: the new chat offers the recent ones (a chat runs in tab 2), titled by the title model; a TODO
+    // run is not offered. Made-up content.
+    const chat = (id, title, minutes, extra = {}) => ({
+      sessionId: id, source: "adhoc", title, instructions: title, titleBy: "model", titledTurn: 1, brain: "claude-code", jev: true,
+      startedAt: iso(minutes - 3), endedAt: iso(minutes), outcome: "done", ...extra,
+    });
+    const live = { ...chat("s-r1", "Schedule 3x daily X posts", 0), startedAt: iso(-1) };
+    delete live.endedAt;
+    delete live.outcome;
+    const recent = [
+      live,
+      chat("s-r2", "Check Chrome Web Store emails", -12, { instructions: "yo sup how you doin. can you check my chrome web store emails", url: "https://mail.google.com/mail/u/0/#inbox", summary: "2 new emails from the review team", turns: 2 }),
+      { sessionId: "s-r5", source: "local", taskId: "t6", title: "Post 'good morning' on X", brain: "claude-code", jev: false, startedAt: iso(-62), endedAt: iso(-60), outcome: "done" },
+      chat("s-r3", "Find cheap flights to Lisbon", -190, { outcome: "paused", reason: "Needs you to pick dates", url: "https://www.google.com/travel/flights" }),
+      chat("s-r4", "Download the September invoice", -26 * 60, { outcome: "failed", reason: "The site asked for a one-time code", url: "https://billing.example.com/invoices" }),
+      chat("s-r6", "Reply to Jordan about the lease", -2 * 24 * 60, { url: "https://mail.google.com/mail/u/0/#sent" }),
+      chat("s-r7", "Summarize this pull request and post the summary as a comment on GitHub", -5 * 24 * 60, { titleBy: undefined, titledTurn: undefined, url: "https://github.com/runhq/api/pull/412" }),
+      chat("s-r8", "Compare three standing desks", -8 * 24 * 60, { url: "https://www.example-desks.com/compare" }),
+    ];
+    const rev = (minutes, e) => ({ ...e, ts: iso(minutes), sessionId: "s-r2" });
+    eventsBySession["s-r2"] = [
+      rev(-15, { type: "assistant_text", text: "I'll open the Chrome Web Store developer inbox." }),
+      rev(-15, { type: "tool_call", id: "1", name: "navigate", args: { url: "https://mail.google.com/mail/u/0/#inbox" } }),
+      rev(-15, { type: "tool_result", id: "1", name: "navigate", text: "Opened https://mail.google.com/mail/u/0/#inbox (title: Inbox (2))" }),
+      rev(-12, { type: "assistant_text", text: "Two new emails from the Chrome Web Store review team: your item passed review, and a policy reminder about permissions." }),
+      rev(-12, { type: "task_end", outcome: "done", summary: "2 new emails from the review team" }),
+    ];
+    state.running = null;
+    state.runningSessions = [live];
+    state.runningTabs = { "s-r1": [2] };
+    state.tabChats = { "2": "s-r1" };
+    sessions.splice(0, sessions.length, ...(kind === "recent" ? recent : []));
+    if (kind === "recent-empty") {
+      state.runningSessions = [];
+      state.runningTabs = {};
+      state.tabChats = {};
+    }
+  }
   // Nothing runs in tab 1 when the default run is not running.
   if (state.running?.sessionId !== "s-live") delete state.runningTabs["s-live"];
   // Other extensions took the keys: Chrome assigned none.

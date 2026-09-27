@@ -2,7 +2,7 @@
  * Background side of ui-protocol.ts: answers every UiRequest. The pushes to
  * the side panel are in ui-hub.ts.
  */
-import { ApprovalAnswer, errorMessage, IssuableKeyRole, MAX_TRACE_TEXT, redactSettings, type ExtensionSettings, type HelperInfo, type HelperMethods, type TraceCategory, type TraceEvent, type TraceValue } from "@browsertodo/shared";
+import { ApprovalAnswer, type ApprovalAnsweredBy, cleanUserTitle, errorMessage, isChatSession, IssuableKeyRole, MAX_TRACE_TEXT, redactSettings, secretProblem, type ExtensionSettings, type HelperInfo, type HelperMethods, type LocalTask, type TraceCategory, type TraceEvent, type TraceValue } from "@browsertodo/shared";
 import type { AccountService } from "../account/account.js";
 import { LocalTodo, type TodoSource } from "../account/todo-source.js";
 import { HELPER_CALL_TIMEOUT_MS } from "../helper-link.js";
@@ -15,7 +15,8 @@ import { todoAllowed } from "../account/types.js";
 import { uploadToBlob } from "./local-store.js";
 import type { AdhocInput } from "./run/jobs.js";
 import type { Runner } from "./runner.js";
-import type { SessionStore } from "./sessions.js";
+import { MAX_SESSIONS, type SessionStore } from "./sessions.js";
+import type { ChatTitler } from "./chat-titles.js";
 import type { TestResult } from "./settings-tests.js";
 import { WrongPassphraseError, type Vault } from "../vault.js";
 import { isMemoryRequest, type MemoryService } from "../memory/service.js";
@@ -77,18 +78,22 @@ export interface UiRouterDeps {
   /** Where conversations run (extension, browser, OS, helper), for the Raw view's export. */
   traceEnv?(): Promise<TraceEnv>;
   /** Approval requests waiting for the user (approval/broker.ts). Absent: nothing waits, and answers are refused. */
-  approvals?: { answer(sessionId: string, id: string, answer: ApprovalAnswer, by?: "voice"): boolean };
+  approvals?: { answer(sessionId: string, id: string, answer: ApprovalAnswer, by?: ApprovalAnsweredBy): boolean };
   /**
    * The user's OK for a TODO task the agent changes or cancels (engine/schedule-task.ts), at the session's
    * automation level (AgentSlots.confirm); throws the refusal. Absent: nothing waits.
    */
   approveTodoChange?(sessionId: string, ask: TodoApprovalAsk): Promise<void>;
+  /** A TODO task the agent changed (update_scheduled_task): its memory follows it. */
+  onTodoEdited?(before: LocalTask, after: LocalTask): Promise<void>;
   /** The agent's memory: Settings > Memory, Undo on the chat's notes, memory off for a chat. Absent: refused. */
   memory?: Pick<MemoryService, "handle">;
   /** "Add this computer's memory to <account>?" while it waits for the user (UiState.memoryQuestion); null: nothing to ask. */
   memoryQuestion?(): Promise<{ account: string } | null>;
   /** How far summarizing past chats is (UiState.memoryBackfill); null: none under way. */
   memoryBackfill?(): Promise<{ done: number; total: number } | null>;
+  /** Chat titles: chats a list shows that are still titled with their request get one (absent: they keep it). */
+  titles?: Pick<ChatTitler, "shown">;
 }
 
 /** The helper log's last lines for helper.getLog: by default, and at most. */
@@ -111,6 +116,7 @@ export class UiRouter {
       access: () => this.todoAccess(),
       sessions: deps.sessions,
       ...(deps.approveTodoChange ? { approve: deps.approveTodoChange } : {}),
+      ...(deps.onTodoEdited ? { onEdited: deps.onTodoEdited } : {}),
     });
   }
 
@@ -235,6 +241,7 @@ export class UiRouter {
         const tab = optTab(msg.tabId);
         const screen = msg.screen === true;
         const voice = msg.voice === true;
+        const heard = voice ? heardWords(msg.heard) : [];
         const cid = optCid(msg.cid);
         const context = typeof msg.context === "string" ? msg.context.trim() : "";
         // Sent from a tab: the runner binds the conversation to it once the message is taken.
@@ -242,6 +249,7 @@ export class UiRouter {
           ...(tab === undefined ? {} : { tabId: tab }),
           ...(screen ? { screen } : {}),
           ...(voice ? { voice } : {}),
+          ...(heard.length ? { heard } : {}),
           ...(cid ? { cid } : {}),
           ...(msg.memoryOff === true ? { memoryOff: true } : {}),
           ...(context ? { context } : {}),
@@ -286,7 +294,8 @@ export class UiRouter {
         const id = optId(msg.id);
         const answer = ApprovalAnswer.safeParse(msg.answer);
         if (!sessionId || !id || !answer.success) throw new Error("sessionId, id and answer are required");
-        const ok = d.approvals?.answer(sessionId, id, answer.data, msg.by === "voice" ? "voice" : undefined) ?? false;
+        const by = msg.by === "voice" || msg.by === "keyboard" ? msg.by : "card";
+        const ok = d.approvals?.answer(sessionId, id, answer.data, by) ?? false;
         return { ok } satisfies UiResults["approval.answer"];
       }
       case "run.due":
@@ -357,8 +366,23 @@ export class UiRouter {
       case "account.keys.revoke":
         await this.account().revokeKey(String(msg.id ?? ""));
         return { ok: true } satisfies UiResults["account.keys.revoke"];
-      case "sessions.list":
-        return { sessions: await d.sessions.list(msg.limit ?? 50, msg.taskId) } satisfies UiResults["sessions.list"];
+      case "sessions.list": {
+        const sessions = msg.chats ? (await d.sessions.list(MAX_SESSIONS)).filter(isChatSession).slice(0, msg.limit ?? 50) : await d.sessions.list(msg.limit ?? 50, msg.taskId);
+        d.titles?.shown(sessions);
+        return { sessions } satisfies UiResults["sessions.list"];
+      }
+      case "session.rename": {
+        const session = await d.sessions.get(msg.sessionId);
+        if (!session) throw new Error(`No session ${msg.sessionId}`);
+        // A TODO run's title is its task's instructions (a later turn reads them there).
+        if (session.source !== "adhoc") throw new Error("Only chats can be renamed: a TODO run is named by its task");
+        const title = cleanUserTitle(String(msg.title ?? ""));
+        if (!title) throw new Error("Give the chat a name");
+        if (secretProblem(title)) throw new Error("A chat's name can't hold a password, code or key");
+        const renamed = await d.sessions.retitle(msg.sessionId, title, "user");
+        if (!renamed) throw new Error(`No session ${msg.sessionId}`);
+        return { session: renamed } satisfies UiResults["session.rename"];
+      }
       case "sessions.events": {
         const session = await d.sessions.get(msg.sessionId);
         if (!session) throw new Error(`No session ${msg.sessionId}`);
@@ -408,13 +432,9 @@ export class UiRouter {
       }
       case "voice.heard": {
         const text = typeof msg.text === "string" ? msg.text.trim() : "";
-        const sent = typeof msg.sent === "string" ? msg.sent.trim() : "";
         const sessionId = optId(msg.sessionId);
         if (!sessionId || !text) throw new Error("sessionId and text are required");
-        // Early words (said before the chat existed) are never a request's.
-        const early = !sent && msg.early === true;
-        const heard = { type: "heard" as const, text, ...(sent ? { sent } : {}), ...(early ? { early: true as const } : {}) };
-        return { ok: !!(await d.sessions.note(sessionId, heard)) } satisfies UiResults["voice.heard"];
+        return { ok: !!(await d.sessions.note(sessionId, { type: "heard", text })) } satisfies UiResults["voice.heard"];
       }
       case "trace.add": {
         const sessionId = optId(msg.sessionId);
@@ -460,6 +480,17 @@ function panelTraceEvent(v: unknown): TraceEvent | null {
 /** A correlation id from a UI message, or undefined. */
 function optCid(v: unknown): string | undefined {
   return typeof v === "string" && /^[\w-]{1,64}$/.test(v) ? v : undefined;
+}
+
+/** A spoken message's words, word for word (run.message heard): strings only, at most MAX_HEARD_PARTS of them. */
+const MAX_HEARD_PARTS = 24;
+function heardWords(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((w): w is string => typeof w === "string")
+    .map((w) => w.trim())
+    .filter(Boolean)
+    .slice(-MAX_HEARD_PARTS);
 }
 
 /** The account's Realtime voice side, when it has one. */

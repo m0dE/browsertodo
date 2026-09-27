@@ -3,7 +3,7 @@ import { installChromeFake, type ChromeFake } from "./chrome-fake.js";
 import { MemoryKvDb } from "./memory-kv.js";
 import { LOCAL_TASKS_KEY, LocalStore } from "../src/engine/local-store.js";
 import { localTimeZone } from "@browsertodo/shared";
-import { cleanRepeat, MAX_LOCAL_ATTEMPTS, migrateStoredTask, nextOccurrenceTask, type StoredLocalTask } from "../src/engine/local-task-rules.js";
+import { cleanRepeat, MAX_LOCAL_ATTEMPTS, migrateStoredTask, nextOccurrenceTask, withSeries, type StoredLocalTask } from "../src/engine/local-task-rules.js";
 
 /** Local wall-clock date, so the tests pass in any time zone. */
 const local = (y: number, mo: number, d: number, h = 0, mi = 0) => new Date(y, mo - 1, d, h, mi, 0, 0);
@@ -236,5 +236,28 @@ describe("LocalStore", () => {
     await Promise.all([store.add({ instructions: "a" }), store.add({ instructions: "b" }), store.add({ instructions: "c" })]);
     expect((await store.list()).length).toBe(3);
     expect(changes).toBe(3);
+  });
+});
+
+describe("task series (seriesId)", () => {
+  it("a new task is its own series; its repeats carry it, also after an edit", async () => {
+    const t = await store.add({ instructions: "post a tip", repeat: daily("09:00") });
+    expect(t.seriesId).toBe(t.id);
+    await store.markStarted(t.id);
+    const { next } = await store.finish(t.id, { outcome: "done", summary: "ok" }, { retryAfterMinutes: 15 });
+    expect(next?.seriesId).toBe(t.id);
+    const edited = await store.update(next!.id, { instructions: "post a grounded tip", repeat: daily("08:00") });
+    expect(edited.seriesId).toBe(t.id);
+    await store.markStarted(edited.id);
+    const third = (await store.finish(edited.id, { outcome: "done" }, { retryAfterMinutes: 15 })).next;
+    expect(third?.seriesId).toBe(t.id);
+  });
+
+  it("tasks stored before series get the first row of their repeat chain as they are read", async () => {
+    const row = (id: string, nextId: string | null) => ({ id, instructions: "x", nextId, repeat: null }) as unknown as StoredLocalTask;
+    const chained = withSeries([row("c", null), row("a", "b"), row("b", "c"), row("z", null)]);
+    expect(Object.fromEntries(chained.map((t) => [t.id, t.seriesId]))).toEqual({ a: "a", b: "a", c: "a", z: "z" });
+    await chrome.storage.local.set({ [LOCAL_TASKS_KEY]: [row("a", "b"), row("b", null)] });
+    expect((await store.list()).map((t) => t.seriesId)).toEqual(["a", "a"]);
   });
 });

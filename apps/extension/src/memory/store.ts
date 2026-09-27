@@ -8,20 +8,26 @@
  * Records (putRecord) are filed by a key in a space, a repeating task's or
  * (from a chat) the user's: saving the same key again adds a dated note to
  * the record. Records are capped per space (MAX_TASK_RECORDS), apart from the rest of memory
- * (MAX_MEMORY_ENTRIES), so neither pushes the other out; so are episodes (MAX_EPISODES), one per conversation.
+ * (MAX_MEMORY_ENTRIES), so neither pushes the other out; so are episodes (MAX_EPISODES), one per conversation, and task
+ * history (MAX_TASK_HISTORY_ENTRIES). A task keeps its newest MAX_TASK_RUNS runs (note and output) one by one; older
+ * ones are folded into its earlier-runs summary (runs.ts). A task's memory moves to its series' key (rekeyTask).
  * A fact replaced (the same slot again, or an entry named by `replaces`) keeps its earlier value as history, so
  * "what was it before" can still be answered while the newest value is what the agent is given.
  * Each change is returned as before / after (and the entry it replaced), which is what Undo puts back.
  */
 import {
   condenseRecord,
+  EARLIER_RUNS_SUBJECT,
+  isEarlierRuns,
   isMemoryRecord,
+  isTaskRun,
   MAX_EPISODES,
   MAX_MEMORY_ENTRIES,
   MAX_MEMORY_ENTITIES,
   MAX_MEMORY_HISTORY,
-  MAX_TASK_NOTES,
+  MAX_TASK_HISTORY_ENTRIES,
   MAX_TASK_RECORDS,
+  MAX_TASK_RUNS,
   MemoryEntrySchema,
   memoryDate,
   memoryWriteProblem,
@@ -34,8 +40,13 @@ import {
 } from "@browsertodo/shared";
 import { Listeners } from "../listeners.js";
 import type { StorageLike } from "../engine/kv.js";
+import { earlierRunsText } from "./runs.js";
 
 export const MEMORY_STORAGE_KEY = "memory";
+/** The task series whose older memory keys were already moved to theirs (MemoryService adopts them once). */
+export const MEMORY_ADOPTED_KEY = "memoryAdoptedSeries";
+/** Series remembered as adopted (past it the oldest are forgotten: adopting again is harmless). */
+const MAX_ADOPTED = 2000;
 
 /** A fact to keep, as the service settled it (scope and its place checked). */
 export interface NewMemory {
@@ -46,6 +57,8 @@ export interface NewMemory {
   domain?: string;
   taskKey?: string;
   taskTitle?: string;
+  /** A task run (with the note option): what it produced (task_complete `output`). */
+  output?: string;
 }
 
 /** A dated summary of one conversation (a chat or a task run), as the background writer settled it. */
@@ -112,8 +125,9 @@ export function sameSlot(e: MemoryEntry, m: NewMemory): boolean {
 /** A fact: a preference, an account, a person or a playbook (not a record, a run note nor an episode). */
 const isFact = (e: MemoryEntry): boolean => !isMemoryRecord(e) && e.kind !== "task" && e.kind !== "episode" && e.kind !== "record";
 
-/** The group episodes are capped in (capped). */
+/** The groups episodes and task history are capped in (capped). */
 const EPISODES = "episodes";
+const TASK_HISTORY = "task history";
 
 /** When an entry last mattered: used, else changed. */
 const lastTouched = (e: MemoryEntry) => e.lastUsedAt ?? e.updatedAt;
@@ -182,8 +196,9 @@ export class MemoryStore {
   }
 
   /**
-   * Keeps a fact: replaces the entry in the same slot (sameSlot), else adds one. `note`: a task's run note, always
-   * added (the task's oldest notes go past MAX_TASK_NOTES). Throws MemoryRefusal when it must not be kept.
+   * Keeps a fact: replaces the entry in the same slot (sameSlot), else adds one. `note`: a task's run (its note and
+   * output), always added (past MAX_TASK_RUNS the task's oldest runs are folded into its earlier-runs summary). Throws
+   * MemoryRefusal when it must not be kept.
    */
   async put(m: NewMemory, source: MemorySource, opts: { note?: boolean; replaces?: string } = {}): Promise<MemoryChange> {
     return this.mutate((entries) => {
@@ -201,13 +216,14 @@ export class MemoryStore {
         ...(m.domain ? { domain: m.domain } : {}),
         ...(m.taskKey ? { taskKey: m.taskKey } : {}),
         ...(m.taskTitle ? { taskTitle: m.taskTitle } : {}),
+        ...(m.output ? { output: m.output } : {}),
         ...(history.length ? { history } : {}),
         source,
         updatedAt: at,
       });
       let next = before ? entries.map((e) => (e.id === before.id ? after : e)) : [...entries, after];
       if (replaced) next = next.filter((e) => e.id !== replaced.id);
-      if (opts.note && m.taskKey) next = dropOldestNotes(next, m.taskKey);
+      if (opts.note && m.taskKey) next = this.foldOldRuns(next, m.taskKey, at);
       return { entries: capped(next), result: { before, after, ...(replaced ? { replaced } : {}) } };
     });
   }
@@ -290,6 +306,79 @@ export class MemoryStore {
       const next = before ? entries.map((e) => (e.id === before.id ? after : e)) : [...entries, after];
       return { entries: capped(next), result: { before, after } };
     });
+  }
+
+  /**
+   * Moves what was kept under the `from` keys (runs, notes, records, episodes) to `to`: MemoryService adopts the keys a
+   * task had before it had a series (its instructions' hash). A record whose key `to` already has is folded into that
+   * record (its text and notes as dated notes). Returns how many entries moved.
+   */
+  async rekeyTask(from: readonly string[], to: string): Promise<number> {
+    const moving = new Set(from.filter((k) => k !== to));
+    if (!moving.size) return 0;
+    return this.mutate((entries) => {
+      const at = this.now().toISOString();
+      const records = new Map(entries.filter((e) => isMemoryRecord(e) && e.taskKey === to).map((e) => [e.key!, e]));
+      const merged = new Map<string, MemoryEntry>();
+      let next: MemoryEntry[] = [];
+      let moved = 0;
+      for (const e of entries) {
+        if (!e.taskKey || !moving.has(e.taskKey)) {
+          next.push(e);
+          continue;
+        }
+        moved++;
+        const same = isMemoryRecord(e) ? records.get(e.key!) : undefined;
+        if (!same) {
+          next.push(this.checked({ ...e, taskKey: to, updatedAt: at }));
+          continue;
+        }
+        const { notes: had, ...base } = merged.get(same.id) ?? same;
+        const notes = [...(had ?? []), { at: e.learnedAt, text: e.text }, ...(e.notes ?? [])].sort((a, b) => a.at.localeCompare(b.at));
+        const body = condenseRecord(base.text, notes);
+        merged.set(same.id, this.checked({ ...base, text: body.text, ...(body.notes.length ? { notes: body.notes } : {}), updatedAt: at }));
+      }
+      if (merged.size) next = next.map((e) => merged.get(e.id) ?? e);
+      next = this.foldOldRuns(next, to, at);
+      return { entries: capped(next), result: moved };
+    });
+  }
+
+  /** Whether the older keys of the series whose key is `taskKey` were adopted already (rekeyTask). */
+  async adopted(taskKey: string): Promise<boolean> {
+    const got = (await this.storage().get(MEMORY_ADOPTED_KEY))[MEMORY_ADOPTED_KEY];
+    return Array.isArray(got) && got.includes(taskKey);
+  }
+
+  async markAdopted(taskKey: string): Promise<void> {
+    const got = (await this.storage().get(MEMORY_ADOPTED_KEY))[MEMORY_ADOPTED_KEY];
+    const keys = Array.isArray(got) ? got.filter((k): k is string => typeof k === "string" && k !== taskKey) : [];
+    await this.storage().set({ [MEMORY_ADOPTED_KEY]: [...keys, taskKey].slice(-MAX_ADOPTED) });
+  }
+
+  /**
+   * A task's runs past MAX_TASK_RUNS, the oldest first, folded into its earlier-runs summary (made when it has none):
+   * the summary is dated from the oldest run it tells.
+   */
+  private foldOldRuns(entries: MemoryEntry[], taskKey: string, at: string): MemoryEntry[] {
+    const runs = entries.filter((e) => e.taskKey === taskKey && isTaskRun(e)).sort((a, b) => a.learnedAt.localeCompare(b.learnedAt));
+    const folded = runs.slice(0, Math.max(0, runs.length - MAX_TASK_RUNS));
+    if (!folded.length) return entries;
+    const gone = new Set(folded.map((e) => e.id));
+    const before = entries.find((e) => e.taskKey === taskKey && isEarlierRuns(e)) ?? null;
+    const oldest = folded[0]!;
+    const summary = this.checked({
+      ...(before ?? { id: this.uniqueId(entries), source: oldest.source, ...(oldest.taskTitle ? { taskTitle: oldest.taskTitle } : {}) }),
+      kind: "task",
+      scope: "task",
+      taskKey,
+      subject: EARLIER_RUNS_SUBJECT,
+      text: earlierRunsText(before?.text ?? null, folded),
+      learnedAt: before && before.learnedAt < oldest.learnedAt ? before.learnedAt : oldest.learnedAt,
+      updatedAt: at,
+    });
+    const rest = entries.filter((e) => !gone.has(e.id));
+    return before ? rest.map((e) => (e.id === before.id ? summary : e)) : [...rest, summary];
   }
 
   /** Forgets everything one repeating task keeps (its run notes and records); returns how many entries went. */
@@ -411,13 +500,6 @@ function diff(before: readonly MemoryEntry[], after: readonly MemoryEntry[], at:
   };
 }
 
-/** A task's run notes beyond MAX_TASK_NOTES, oldest first, are dropped. */
-function dropOldestNotes(entries: MemoryEntry[], taskKey: string): MemoryEntry[] {
-  const notes = entries.filter((e) => e.kind === "task" && e.taskKey === taskKey && !isMemoryRecord(e)).sort((a, b) => a.learnedAt.localeCompare(b.learnedAt));
-  const drop = new Set(notes.slice(0, Math.max(0, notes.length - MAX_TASK_NOTES)).map((e) => e.id));
-  return drop.size ? entries.filter((e) => !drop.has(e.id)) : entries;
-}
-
 /**
  * The earlier values an entry keeps: those of the entries it replaces (the slot's old value when it changed, an
  * entry named by `replaces`) and their own history, newest first, at most MAX_MEMORY_HISTORY.
@@ -433,21 +515,21 @@ function pastValues(olds: readonly (MemoryEntry | null | undefined)[], next: { s
 }
 
 /**
- * Memory within its limits, each counted apart: past MAX_MEMORY_ENTRIES entries that are neither records nor
- * episodes, and past MAX_TASK_RECORDS records of one space (a task's, the user's), the ones used longest ago go; past MAX_EPISODES episodes,
- * the oldest.
+ * Memory within its limits, each counted apart: past MAX_MEMORY_ENTRIES entries that are neither records, episodes nor
+ * task history, past MAX_TASK_HISTORY_ENTRIES task history (every task's runs and notes), and past MAX_TASK_RECORDS
+ * records of one space (a task's, the user's), the ones used longest ago go; past MAX_EPISODES episodes, the oldest.
  */
 function capped(entries: MemoryEntry[]): MemoryEntry[] {
   const groups = new Map<string, MemoryEntry[]>();
   for (const e of entries) {
-    const group = isMemoryRecord(e) ? `r:${e.taskKey ?? ""}` : e.kind === "episode" ? EPISODES : "";
+    const group = isMemoryRecord(e) ? `r:${e.taskKey ?? ""}` : e.kind === "episode" ? EPISODES : e.kind === "task" ? TASK_HISTORY : "";
     const of = groups.get(group);
     if (of) of.push(e);
     else groups.set(group, [e]);
   }
   const drop = new Set<string>();
   for (const [group, of] of groups) {
-    const max = group === EPISODES ? MAX_EPISODES : group ? MAX_TASK_RECORDS : MAX_MEMORY_ENTRIES;
+    const max = group === EPISODES ? MAX_EPISODES : group === TASK_HISTORY ? MAX_TASK_HISTORY_ENTRIES : group ? MAX_TASK_RECORDS : MAX_MEMORY_ENTRIES;
     if (of.length <= max) continue;
     const newestFirst = group === EPISODES ? (a: MemoryEntry, b: MemoryEntry) => memoryDate(b).localeCompare(memoryDate(a)) : (a: MemoryEntry, b: MemoryEntry) => lastTouched(b).localeCompare(lastTouched(a));
     for (const e of of.sort(newestFirst).slice(max)) drop.add(e.id);

@@ -315,7 +315,7 @@ export const NUMBER_FIELDS = [
   "maxConsecutiveFailures",
 ] as const satisfies readonly (keyof ExtensionSettings)[];
 export const TEXT_FIELDS = ["anthropicModel", "apiBase", "accountApiBase"] as const satisfies readonly (keyof ExtensionSettings)[];
-export const BOOL_FIELDS = ["jevEnabled", "cloudEnabled", "reasoningAutoRaise"] as const satisfies readonly (keyof ExtensionSettings)[];
+export const BOOL_FIELDS = ["jevEnabled", "cloudEnabled", "reasoningAutoRaise", "showControlOverlay"] as const satisfies readonly (keyof ExtensionSettings)[];
 export type NumberField = (typeof NUMBER_FIELDS)[number];
 export type TextField = (typeof TEXT_FIELDS)[number];
 export type BoolField = (typeof BOOL_FIELDS)[number];

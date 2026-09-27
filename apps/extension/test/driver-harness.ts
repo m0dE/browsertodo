@@ -32,3 +32,10 @@ export async function runInUserTab(h: DriverHarness, url: string): Promise<{ win
   await h.agent.prepare("current-tab");
   return tab;
 }
+
+/** Elements of a page the fakes show as drawn: more than NEARLY_EMPTY's, so reads never wait for it to draw (readWhenDrawn). */
+export const DRAWN = [
+  { index: 1, role: "link", name: "Home" },
+  { index: 2, role: "link", name: "Inbox" },
+  { index: 3, role: "button", name: "Compose" },
+];

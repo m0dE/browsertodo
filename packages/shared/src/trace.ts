@@ -19,7 +19,7 @@ export type TraceSource = "engine" | "helper" | "panel";
  * What it is about. Model, tool, jev and voice time are summed separately in
  * the Raw view's summary (act and browser are inside tool time).
  */
-export type TraceCategory = "turn" | "user" | "brain" | "model" | "tool" | "act" | "jev" | "browser" | "stream" | "voice" | "error";
+export type TraceCategory = "turn" | "user" | "brain" | "model" | "tool" | "act" | "jev" | "browser" | "approval" | "stream" | "voice" | "error";
 
 export type TraceValue = string | number | boolean | null;
 

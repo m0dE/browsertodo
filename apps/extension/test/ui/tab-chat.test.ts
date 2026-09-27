@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionInfo } from "@browsertodo/shared";
-import { chatForTab, followChat, isBound, otherRunning, tabOfSession } from "../../src/sidepanel/tab-chat.js";
+import { chatForTab, followChat, isBound, otherRunning, ownChatOfTab, tabOfSession } from "../../src/sidepanel/tab-chat.js";
 
 const state = {
   tabChats: { "1": "A", "2": "B" },
@@ -30,6 +30,17 @@ describe("chatForTab: the conversation the panel shows for a tab", () => {
     // Once it is bound somewhere (it moved to a new tab), the pending note no longer applies.
     expect(chatForTab(3, { tabChats: { "8": "N" } }, { pending: { tab: 3, sessionId: "N" } })).toBeNull();
     expect(chatForTab(8, { tabChats: { "8": "N" } }, { pending: { tab: 3, sessionId: "N" } })).toBe("N");
+  });
+});
+
+describe("ownChatOfTab: the chat hands-free voice talks to and narrates", () => {
+  it("the tab's bound or just-started chat, never a scheduled run that only acts in the tab (its results were read out)", () => {
+    expect(ownChatOfTab(1, state)).toBe("A");
+    expect(ownChatOfTab(3, state, { pending: { tab: 3, sessionId: "N" } })).toBe("N");
+    // Tab 9 has no chat; a scheduled run S works in it: the panel shows S there, voice does not follow it.
+    expect(chatForTab(9, state)).toBe("S");
+    expect(ownChatOfTab(9, state)).toBeNull();
+    expect(ownChatOfTab(null, state)).toBeNull();
   });
 });
 

@@ -87,8 +87,9 @@ describe("voicePicker: the voice and speed follow the engine selected", () => {
   });
 
   it("a Realtime test that cannot run says why in a few words", () => {
-    expect(sampleFailureText({ kind: "unavailable", fallback: true, message: "Realtime voice is unavailable. Using Standard." })).toBe("Realtime voice is unavailable right now.");
-    expect(sampleFailureText({ kind: "busy", fallback: true })).toBe("Realtime voice is open in another window. Try again once it ends.");
-    expect(sampleFailureText({ kind: "credit", fallback: false, message: "Out of usage credit: top up to keep using voice." })).toBe("Out of usage credit: top up to keep using voice.");
+    expect(sampleFailureText({ kind: "unavailable", transient: false, message: "Realtime voice is unavailable on the server right now." })).toBe("Realtime voice is unavailable on the server right now.");
+    expect(sampleFailureText({ kind: "network", transient: true, message: "Voice disconnected." })).toBe("Realtime voice could not connect. Try again.");
+    expect(sampleFailureText({ kind: "busy", transient: true })).toBe("Realtime voice is on in another window. Try again once it ends.");
+    expect(sampleFailureText({ kind: "credit", transient: false, message: "Out of usage credit: top up to keep using voice." })).toBe("Out of usage credit: top up to keep using voice.");
   });
 });

@@ -82,6 +82,26 @@ describe("memory tools in the executor", () => {
     await exec.call("task_complete", { summary: "Posted", memory_note: "Posted the tip about lists. Next: bookmarks." });
     expect(ended[0]).toEqual({ outcome: "done", summary: "Posted", memoryNote: "Posted the tip about lists. Next: bookmarks." });
   });
+
+  it("task_complete's output becomes the result's output (dropped when it holds a password the agent was given)", async () => {
+    const { exec, ended } = setup(async () => ({ text: "ok" }));
+    await exec.call("task_complete", { summary: "Posted", memory_note: "Posted about lists.", output: "Short lists get done." });
+    expect(ended[0]).toEqual({ outcome: "done", summary: "Posted", memoryNote: "Posted about lists.", output: "Short lists get done." });
+    const second = setup(async () => ({ text: "ok" }));
+    await second.exec.call("get_credential", { site: "shop.example" });
+    await second.exec.call("task_complete", { summary: "Posted", output: "my login is correcthorse9" });
+    expect(second.ended[0]).toEqual({ outcome: "done", summary: "Posted" });
+  });
+
+  it("check_similar goes to the conversation's memory with the draft", async () => {
+    const calls: [string, unknown][] = [];
+    const { exec } = setup(async (tool, args) => {
+      calls.push([tool, args]);
+      return { text: "Not too similar by words" };
+    });
+    expect(await exec.call("check_similar", { draft: "A new post" })).toMatchObject({ text: "Not too similar by words" });
+    expect(calls).toEqual([["check_similar", { draft: "A new post" }]]);
+  });
 });
 
 describe("memory in the prompts", () => {
@@ -100,6 +120,18 @@ describe("memory in the prompts", () => {
     expect(p).toMatch(/memory_note/);
     expect(p).toMatch(/many separate things .*file what you learn about each under its identifier with remember .*key.*in a chat in the user.s own.*recall its key/);
     expect(buildSystemPrompt({ tools: toolsFor({ interactive: true }), jev: true })).not.toMatch(/Memory: /);
+  });
+
+  it("content in a repeating task: grounded in the task's profile, nothing made up, checked for repeats, output kept", () => {
+    const p = buildSystemPrompt({ tools: toolsFor(), jev: true });
+    expect(p).toMatch(/With no profile .*read the account's own profile or about page .*recent posts, then save the profile with remember \(kind task, subject "Profile"/);
+    expect(p).toMatch(/every rule the task gives/);
+    expect(p).toMatch(/Never make up events, places, times, people, numbers or claims, and never build a post on the words of the account's name/);
+    expect(p).toMatch(/call check_similar with the exact text; when it says too similar/);
+    expect(p).toMatch(/put the exact text that went out in task_complete's output/);
+    expect(toolsFor()).toContain("check_similar");
+    expect(INTERACTIVE_TOOL_NAMES).not.toContain("check_similar");
+    expect(buildSystemPrompt({ tools: toolsFor({ interactive: true }), jev: true })).not.toMatch(/check_similar/);
   });
 
   it("the system prompt says to look up an earlier conversation before saying there is no record of it", () => {

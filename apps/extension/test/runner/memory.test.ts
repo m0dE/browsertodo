@@ -19,28 +19,37 @@ function withMemory(h: Harness) {
 }
 
 describe("Runner: memory", () => {
-  it("a repeating task's run note is kept at its end and given to its next run", async () => {
+  it("a repeating task's run (note and output) is kept at its end and given to its next run, not to another task", async () => {
     const h = harness();
     const { store } = withMemory(h);
-    await h.store.add({ instructions: DAILY, account: "@mecharoyalecom" });
-    h.brain.script = () => ({ outcome: "done", summary: "Posted", memoryNote: "Posted about the arena map. Next: ranked season." });
+    const first = await h.store.add({ instructions: DAILY, account: "@mecharoyalecom", repeat: { cron: "0 9 * * *", tz: "UTC" } });
+    // Due now (its first run would be at its rule's next time).
+    await h.store.retry(first.id);
+    h.brain.script = () => ({ outcome: "done", summary: "Posted", memoryNote: "Posted about the arena map. Next: ranked season.", output: "The arena map is live." });
     await runAll(h);
     expect(h.brain.starts[0]!.task.memory).toBeUndefined();
     const [note] = await store.list();
-    expect(note).toMatchObject({ kind: "task", scope: "task", text: "Posted about the arena map. Next: ranked season." });
+    expect(note).toMatchObject({ kind: "task", scope: "task", taskKey: `s${first.id}`, text: "Posted about the arena map. Next: ranked season.", output: "The arena map is live." });
     // Its chat shows "Remembered" before the end card.
     const [s1] = await h.sessions.list();
     const types = (await h.sessions.eventsOf(s1!.sessionId)).map((e) => e.type);
     expect(types.indexOf("memory")).toBeGreaterThan(-1);
     expect(types.indexOf("memory")).toBeLessThan(types.lastIndexOf("task_end"));
 
-    // The next occurrence: a new row with the same instructions.
+    // Another task with the same words is another task: it is not given this one's history.
     await h.store.add({ instructions: DAILY, account: "@mecharoyalecom" });
     h.brain.script = () => ({ outcome: "done", summary: "Posted" });
     await runAll(h);
-    expect(h.brain.starts[1]!.task.memory).toMatch(/Task history:\n- \[m\w+\] \d{4}-\d\d-\d\d Run note: Posted about the arena map/);
+    expect(h.brain.starts[1]!.task.memory ?? "").not.toMatch(/arena map/);
+
+    // The next occurrence (a new row of the same series), edited first: it is given the run.
+    const next = (await h.store.list()).find((t) => t.seriesId === first.id && t.status === "pending")!;
+    await h.store.update(next.id, { instructions: `${DAILY}. Never talk about price.` });
+    await h.store.retry(next.id);
+    await runAll(h);
+    expect(h.brain.starts[2]!.task.memory).toMatch(/Task history:\n- \[m\w+\] \d{4}-\d\d-\d\d Run note: Posted about the arena map\. Next: ranked season\. · output: "The arena map is live\."/);
     // Where the memory went and what it cost is in the trace.
-    const s2 = (await h.sessions.list()).find((s) => s.sessionId !== s1!.sessionId);
+    const s2 = (await h.sessions.list()).find((s) => s.taskId === next.id);
     const trace = await h.sessions.traceOf(s2!.sessionId);
     expect(trace?.events.find((e) => e.name === "memory.given")?.data).toMatchObject({ entries: 1 });
   });

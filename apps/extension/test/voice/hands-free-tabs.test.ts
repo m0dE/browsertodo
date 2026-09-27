@@ -10,6 +10,7 @@ import type { ExtensionSettings, VoiceEngineId, VoiceEnginesResponse } from "@br
 import { initHandsFree, type HandsFreeDeps } from "../../src/sidepanel/hands-free.js";
 import type { HandsFreeLook } from "../../src/sidepanel/voice-input.js";
 import type { EngineEvents, HandsFreeEngine } from "../../src/voice/engine.js";
+import { HANDS_FREE } from "../../src/voice/hands-free.js";
 import { lookingHomeNote } from "../../src/voice/hands-free-tab.js";
 import type { VoiceSessionView } from "../../src/voice-session.js";
 import { installMiniDom, MiniElement } from "../ui/mini-dom.js";
@@ -24,6 +25,7 @@ class FakeEngine implements HandsFreeEngine {
   constructor(
     readonly id: VoiceEngineId,
     readonly events: EngineEvents,
+    readonly takeover = false,
   ) {
     this.halfDuplex = id === "standard";
   }
@@ -98,8 +100,9 @@ function panel(homeTab: number, opts: { engine?: VoiceEngineId } = {}) {
     account: () => undefined,
     engines: async () => ENGINES,
     saveSettings: async () => {},
-    createEngine: (id, events) => {
-      const e = new FakeEngine(id, events);
+    openVoiceSettings: () => {},
+    createEngine: (id, events, o) => {
+      const e = new FakeEngine(id, events, o?.takeover ?? false);
       engines.push(e);
       return e;
     },
@@ -215,14 +218,15 @@ describe("hands-free voice in the panel that runs it, while the user looks at an
 describe("hands-free voice seen from another tab's panel", () => {
   beforeAll(installMiniDom);
 
-  it("says where voice is on, with Go to tab, Use voice here and Stop, and nothing live", async () => {
+  it("says where voice is on, with Go to tab, Use voice here and Turn off, and nothing live", async () => {
     const t = panel(2);
     t.hf.setSession(inTab1(2));
     await settle();
     expect(t.bar.hidden).toBe(false);
     expect(t.bar.dataset.state).toBe("elsewhere");
-    expect(find(t.bar, "vb-title")!.textContent).toBe("Voice is on in Inbox");
+    expect(find(t.bar, "vb-label")!.textContent).toBe("Voice is on in Inbox");
     expect(find(t.bar, "vb-links")!.hidden).toBe(false);
+    expect(find(t.bar, "vb-off")!.hidden).toBe(false);
     expect(find(t.bar, "vb-meter")!.hidden).toBe(true);
     expect(t.bar.dataset.phase).toBeUndefined();
     expect(t.hf.active).toBe(false);
@@ -232,7 +236,7 @@ describe("hands-free voice seen from another tab's panel", () => {
 
     t.button("vb-go").click();
     expect(t.deps.goToTab).toHaveBeenCalledWith(1);
-    t.button("vb-stop").click();
+    t.button("vb-off").click();
     expect(t.deps.stopRemote).toHaveBeenCalledTimes(1);
     // It ended there: the notice goes.
     t.hf.setSession(null);
@@ -256,6 +260,9 @@ describe("hands-free voice seen from another tab's panel", () => {
     await settle();
     // Settings say Realtime; the session goes on on Standard, as it ran.
     expect(t.engines.map((e) => e.id)).toEqual(["standard"]);
+    // The session the other panel just closed may still be closing on the server: this one takes its place
+    // (the handover once found it open, "busy", and fell back to Standard).
+    expect(t.engines[0]!.takeover).toBe(true);
     expect(t.hf.active).toBe(true);
     expect(t.hf.tab).toBe(2);
     expect(t.reports.at(-1)).toEqual([true, 2, "standard"]);
@@ -276,7 +283,7 @@ describe("hands-free voice seen from another tab's panel", () => {
     expect(t.bar.hidden).toBe(true);
     t.hf.setSession(null);
     await settle();
-    expect(t.engines.map((e) => e.id)).toEqual(["realtime"]);
+    expect(t.engines.map((e) => [e.id, e.takeover])).toEqual([["realtime", true]]);
     expect(t.hf.tab).toBe(2);
   });
 });
@@ -284,24 +291,20 @@ describe("hands-free voice seen from another tab's panel", () => {
 describe("hands-free voice muted", () => {
   beforeAll(installMiniDom);
 
-  it("Mute on the bar: the engine stops taking the microphone, the bar goes 'Muted', the badge is told, a soft sound; Unmute undoes it", async () => {
+  it("Mute (the composer's toggle): the engine stops taking the microphone, the strip goes 'Muted', the badge is told, a soft sound; Unmute undoes it", async () => {
     const t = panel(1);
     t.hf.toggle("button");
     await settle();
     const rt = t.engines[0]!;
-    const mute = t.button("vb-mute");
-    expect(mute.hidden).toBe(false);
-    expect(mute.getAttribute("aria-pressed")).toBe("false");
-    expect(mute.getAttribute("aria-label")).toBe("Mute the microphone · Alt+M");
-    mute.click();
+    expect(t.looks.at(-1)?.mute).toEqual({ pressed: false, label: "Mute the microphone · Alt+M" });
+    t.hf.toggleMute();
     expect(t.hf.muted).toBe(true);
     expect(rt.mutes).toEqual([true]);
     expect(t.bar.dataset.state).toBe("muted");
     expect(t.bar.dataset.muted).toBe("true");
-    expect(find(t.bar, "vb-title")!.textContent).toBe("Muted");
+    expect(find(t.bar, "vb-status")!.textContent).toBe("Muted");
     expect(find(t.bar, "vb-meter")!.hidden).toBe(true);
-    expect(mute.getAttribute("aria-pressed")).toBe("true");
-    expect(mute.getAttribute("aria-label")).toBe("Unmute the microphone · Alt+M");
+    expect(t.looks.at(-1)?.mute).toEqual({ pressed: true, label: "Unmute the microphone · Alt+M" });
     expect(t.reports.at(-1)).toEqual([true, 1, "realtime"]);
     expect(t.mutedReports.at(-1)).toBe(true);
     expect(t.looks.at(-1)).toMatchObject({ muted: true });
@@ -325,9 +328,9 @@ describe("hands-free voice muted", () => {
     t.hf.toggleMute();
     expect(t.hf.muted).toBe(false);
     t.hf.toggle("button");
-    expect(t.button("vb-mute").hidden).toBe(true);
+    expect(t.looks.at(-1)?.mute).toBeNull();
     await settle();
-    expect(t.button("vb-mute").hidden).toBe(false);
+    expect(t.looks.at(-1)?.mute).not.toBeNull();
   });
 
   it("the session ending unmutes: the next one starts with the microphone on", async () => {
@@ -355,9 +358,9 @@ describe("hands-free voice muted", () => {
     t.hf.setSession(inTab1(2, { muted: true }));
     await settle();
     expect(t.bar.dataset.state).toBe("elsewhere");
-    expect(find(t.bar, "vb-detail")!.textContent).toMatch(/ · Muted$/);
+    expect(find(t.bar, "vb-status")!.textContent).toBe("Muted");
     // Mute is still there, looking at another tab.
-    expect(t.button("vb-mute").hidden).toBe(false);
+    expect(t.looks.at(-1)?.mute).toMatchObject({ pressed: true });
     expect(await rt.events.useThisTab()).toMatch(/^Moved/);
     expect(t.hf.tab).toBe(2);
     expect(t.hf.muted).toBe(true);
@@ -368,8 +371,10 @@ describe("hands-free voice muted", () => {
   it("Use voice here in another tab's panel: the session starts there muted, as it was", async () => {
     const t = panel(2);
     t.hf.setSession(inTab1(2, { muted: true }));
-    expect(find(t.bar, "vb-detail")!.textContent).toBe("Realtime · Muted · Not listening in this tab");
-    expect(t.button("vb-mute").hidden).toBe(true);
+    expect(find(t.bar, "vb-status")!.textContent).toBe("Muted");
+    expect(t.bar.title).toBe("Realtime voice · Not listening in this tab");
+    // The mic and Mute stay as they are when voice is off here.
+    expect(t.looks.every((l) => l === null)).toBe(true);
     t.button("vb-use").click();
     t.hf.setSession(null);
     await settle();
@@ -381,17 +386,76 @@ describe("hands-free voice muted", () => {
     expect(t.mutedReports.at(-1)).toBe(true);
   });
 
-  it("Realtime failing over to Standard keeps the microphone muted", async () => {
+  it("Realtime reconnecting after a drop keeps the microphone muted (and the engine)", async () => {
     const t = panel(1);
     t.hf.toggle("button");
     await settle();
     t.hf.toggleMute();
-    t.engines[0]!.events.failed({ kind: "unavailable", fallback: true, message: "Realtime is unavailable; using Standard." });
+    t.engines[0]!.events.failed({ kind: "upstream", transient: true, message: "Voice disconnected." });
     await settle();
     const std = t.engines[1]!;
-    expect(std.id).toBe("standard");
+    expect(std.id).toBe("realtime");
     expect(std.mutes).toEqual([true]);
     expect(t.hf.muted).toBe(true);
     expect(t.bar.dataset.state).toBe("muted");
+  });
+});
+
+describe("hands-free voice narrates its own chat only (the owner's report: TODO runs' results read out in the system voice)", () => {
+  beforeAll(installMiniDom);
+
+  it("a scheduled run's result while voice is on with no request of its own: nothing is said, and it does not keep the session alive", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = panel(1, { engine: "standard" });
+      t.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(0);
+      const std = t.engines[0]!;
+      expect(t.hf.phase).toBe("listening");
+      // A scheduled X run works (its own chat, not the session's): its steps and result come in all along.
+      t.hf.setRunning(["sched-1"]);
+      const at = () => new Date().toISOString();
+      for (let i = 0; i < 6; i++) {
+        t.hf.onEvent({ type: "tool_call", id: `t${i}`, name: "navigate", args: { url: "https://x.com/compose/post" }, ts: at(), sessionId: "sched-1" });
+        t.hf.onEvent({ type: "task_end", outcome: "done", summary: "Posted", spoken: "Made a post for Mecha Royale.", ts: at(), sessionId: "sched-1" });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      expect(std.spoken).toEqual([]);
+      // No speech of the user's for the silence timeout: it ends, whatever other chats did meanwhile.
+      await vi.advanceTimersByTimeAsync(HANDS_FREE.silenceTimeoutMs);
+      expect(t.hf.active).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("Standard: the speaker's own line heard back is not the user (echo)", () => {
+  beforeAll(installMiniDom);
+
+  it("a transcript of the line just said is not sent; the user's own words are", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = panel(1, { engine: "standard" });
+      t.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(0);
+      t.hf.setSession(inTab1(1));
+      const std = t.engines[0]!;
+      // "Use this tab" said on its own tab: the line "I'm already working in this tab." is said.
+      std.events.heard("Use this tab.", true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(std.spoken).toEqual(["I'm already working in this tab."]);
+      std.events.said();
+      // The microphone picks it up.
+      std.events.heard("I'm already working in this tab", true);
+      await vi.advanceTimersByTimeAsync(HANDS_FREE.sendDelayMs * 2);
+      expect(t.deps.send).not.toHaveBeenCalled();
+      std.events.heard("Post gm on X", true);
+      await vi.advanceTimersByTimeAsync(HANDS_FREE.sendDelayMs * 2);
+      expect((t.deps.send as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])).toEqual(["Post gm on X"]);
+      t.hf.toggle("button");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -5,7 +5,7 @@
  * trace: `trace` events go there instead of the event stream, every other
  * event is counted there, and each turn's start is marked (create, reopen).
  */
-import { MAX_ASSISTANT_TEXT, MAX_EVENT_TEXT, clipEventText, type AgentEvent, type SessionInfo, type StampedAgentEvent, type TraceEvent } from "@browsertodo/shared";
+import { MAX_ASSISTANT_TEXT, MAX_EVENT_TEXT, clipEventText, type AgentEvent, type SessionInfo, type StampedAgentEvent, type TitleBy, type TraceEvent } from "@browsertodo/shared";
 import { Listeners } from "../listeners.js";
 import type { KvDb, KvStore } from "./kv.js";
 import type { TraceBook } from "../trace/trace-book.js";
@@ -32,13 +32,14 @@ function clipEvent(e: AgentEvent): AgentEvent {
       return { ...e, text: clipEventText(e.text, MAX_ASSISTANT_TEXT) };
     case "task_end":
       return e.summary && e.summary.length > MAX_ASSISTANT_TEXT ? { ...e, summary: clipEventText(e.summary, MAX_ASSISTANT_TEXT) } : e;
-    case "status":
     case "user_message":
+      return { ...e, text: clipEventText(e.text), ...(e.heard ? { heard: e.heard.map((w) => clipEventText(w)) } : {}) };
+    case "status":
     case "spoken":
     case "error":
       return { ...e, text: clipEventText(e.text) };
     case "heard":
-      return { ...e, text: clipEventText(e.text), ...(e.sent === undefined ? {} : { sent: clipEventText(e.sent) }) };
+      return { ...e, text: clipEventText(e.text) };
     case "task_scheduled":
       return { ...e, instructions: clipEventText(e.instructions) };
     case "task_changed":
@@ -131,6 +132,23 @@ export class SessionStore {
     });
     if (s) this.emitSession(s);
     if (s?.endedAt) this.seq.delete(sessionId);
+    return s;
+  }
+
+  /**
+   * Sets the conversation's title, written by `by` (the title model after `turn`, or the user). A title the user
+   * gave is only ever replaced by the user. Null when unknown or refused.
+   */
+  async retitle(sessionId: string, title: string, by: TitleBy, turn?: number): Promise<SessionInfo | null> {
+    const s = await this.enqueue(async () => {
+      const cur = await this.sessions.get(sessionId);
+      if (!cur || (cur.titleBy === "user" && by !== "user")) return null;
+      const { titledTurn: _t, ...rest } = cur;
+      const next: SessionInfo = { ...rest, title, titleBy: by, ...(turn === undefined ? {} : { titledTurn: turn }) };
+      await this.sessions.put(sessionId, next);
+      return next;
+    });
+    if (s) this.emitSession(s);
     return s;
   }
 

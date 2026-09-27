@@ -94,6 +94,8 @@ export interface TaskRunResult {
   spoken?: string;
   /** A repeating task's note for its next run (task_complete `memory_note`), kept in memory as task history. */
   memoryNote?: string;
+  /** What a repeating task's run published or sent (task_complete `output`), kept in its task history. */
+  output?: string;
   logPath?: string;
 }
 

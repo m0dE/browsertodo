@@ -1,42 +1,48 @@
 /**
- * Which voice engine a hands-free session uses: the one picked in Settings
- * (Realtime by default), unless the server cannot run it or the usage credit
- * is too low for it, then Standard with a one-line note. Costs come from the
+ * Before a hands-free session starts on the engine picked in Settings
+ * (Realtime by default): whether it can, and what is worth knowing. The
+ * engine is always the one picked; when Realtime cannot run (the server does
+ * not offer it) the session does not start, and the panel says why and lets
+ * the user choose (Standard for this once, or Settings). Costs come from the
  * server (GET VOICE_ENGINES_PATH), never from here. Pure.
  */
 import type { VoiceEngineId, VoiceEnginesResponse } from "@browsertodo/shared";
 
-/** Realtime needs credit for at least this many minutes, else Standard is used. */
+/** Credit for fewer minutes of Realtime than this is worth a note (the session still starts). */
 export const LOW_CREDIT_MINUTES = 3;
 
 /** The engines' names (the owner's wording; the server's list gives their prices). */
 export const ENGINE_NAMES: Record<VoiceEngineId, string> = { realtime: "Realtime (OpenAI)", standard: "Standard" };
 
-export interface EngineChoice {
-  engine: VoiceEngineId;
-  /** Why the other engine is used than the one picked (shown once, one line). */
+/** Realtime cannot run on the account server (not offered, or it refused the server's key). */
+export const REALTIME_UNAVAILABLE_TEXT = "Realtime voice is unavailable on the server right now.";
+
+export interface EngineCheck {
+  /** Why the picked engine cannot start (null: it can). */
+  blocked: string | null;
+  /** Worth knowing as it starts, e.g. credit for only a few minutes (null: nothing). */
   note: string | null;
 }
 
-export const REALTIME_NOT_AVAILABLE_NOTE = "Realtime voice is unavailable. Using Standard.";
-export const LOW_CREDIT_NOTE = "Usage credit is low. Using Standard voice (it costs much less).";
+/** "Usage credit is low: about 2 minutes of Realtime voice left." */
+export const lowCreditText = (minutes: number) => `Usage credit is low: about ${minutes} minute${minutes === 1 ? "" : "s"} of Realtime voice left.`;
 
-export function chooseEngine(opts: {
-  preferred: VoiceEngineId;
-  /** The server's engines and its default; null when they could not be loaded. */
+export function checkEngine(opts: {
+  picked: VoiceEngineId;
+  /** The server's engines and its default; null when they could not be loaded (the relay then says if it cannot). */
   engines: VoiceEnginesResponse | null;
   /** Usage credit left, in cents (undefined: not known). */
   creditCents: number | undefined;
-}): EngineChoice {
-  if (opts.preferred === "standard") return { engine: "standard", note: null };
-  if (!opts.engines) return { engine: "realtime", note: null };
+}): EngineCheck {
+  if (opts.picked === "standard" || !opts.engines) return { blocked: null, note: null };
   const realtime = opts.engines.engines.find((e) => e.id === "realtime");
   // The server offers Standard as its default only when it cannot run Realtime.
-  if (!realtime?.available || opts.engines.default === "standard") return { engine: "standard", note: REALTIME_NOT_AVAILABLE_NOTE };
-  if (opts.creditCents !== undefined && opts.creditCents < realtime.approxCentsPerMinute * LOW_CREDIT_MINUTES) {
-    return { engine: "standard", note: LOW_CREDIT_NOTE };
+  if (!realtime?.available || opts.engines.default === "standard") return { blocked: REALTIME_UNAVAILABLE_TEXT, note: null };
+  const perMinute = realtime.approxCentsPerMinute;
+  if (opts.creditCents !== undefined && perMinute > 0 && opts.creditCents < perMinute * LOW_CREDIT_MINUTES) {
+    return { blocked: null, note: lowCreditText(Math.floor(opts.creditCents / perMinute)) };
   }
-  return { engine: "realtime", note: null };
+  return { blocked: null, note: null };
 }
 
 /** "about 30¢ of usage credit a minute", "about $1.25 of usage credit a minute". */

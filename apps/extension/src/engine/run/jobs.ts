@@ -34,6 +34,8 @@ export interface AdhocInput {
   screen?: boolean;
   /** The instructions were spoken (the session's first message is marked). */
   voice?: boolean;
+  /** Spoken: the user's words for them, word for word (SessionInfo.heard). */
+  heard?: string[];
   /** What the agent is told with the instructions, kept out of the chat's title and first message (see withContext). */
   context?: string;
   /** The new chat was started with memory off (SessionInfo.memoryOff). */
@@ -54,14 +56,16 @@ export interface TurnJob {
   screen?: boolean;
   /** The message was spoken (its user_message is marked). */
   voice?: boolean;
+  /** Spoken: the user's words for it, word for word (its user_message's heard). */
+  heard?: string[];
   /** What the agent is told with the message, kept out of its user_message (see withContext). */
   context?: string;
   /** The browser tab the message was sent from: the conversation now belongs to it. */
   tabId?: number;
   /** The conversation's local task, when this turn continues its unfinished work (recorded on the task). */
   task: StoredLocalTask | null;
-  /** The conversation's first request (for the fresh-session summary and the X rule). */
-  first: { instructions: string; account: string | null };
+  /** The conversation's first request (for the fresh-session summary and the X rule), and its task's series (its memory). */
+  first: { instructions: string; account: string | null; seriesId?: string };
 }
 
 /** A job that starts a new session. */
@@ -80,23 +84,27 @@ export async function dueLocal(
   return { startable, blocked: due.length - startable.length };
 }
 
-/** The task a new session runs. Local tasks get their crash marker first, persisted before anything can act. */
+/**
+ * The task a new session runs, and its series (what its memory is kept under; absent: a chat, or a cloud task from a
+ * server without series). Local tasks get their crash marker first, persisted before anything can act.
+ */
 export async function openTask(
   job: FirstJob,
   sessionId: string,
   localStore: LocalStore,
-): Promise<{ task: AgentTask; taskId?: string; isRetry: boolean }> {
+): Promise<{ task: AgentTask; taskId?: string; seriesId?: string; isRetry: boolean }> {
   if (job.source === "local") {
     const marked = await localStore.markStarted(job.task.id);
     return {
       task: { id: marked.id, instructions: marked.instructions, account: marked.account },
       taskId: marked.id,
+      seriesId: marked.seriesId ?? marked.id,
       isRetry: marked.attempts > 1 || !!job.task.crashed,
     };
   }
   if (job.source === "cloud") {
     const t = job.claim.task;
-    return { task: { id: t.id, instructions: t.instructions, account: t.account }, taskId: t.id, isRetry: t.attempts > 1 };
+    return { task: { id: t.id, instructions: t.instructions, account: t.account }, taskId: t.id, ...(t.seriesId ? { seriesId: t.seriesId } : {}), isRetry: t.attempts > 1 };
   }
   const account = job.input.account?.trim() || null;
   if (job.input.screen) return { task: { id: sessionId, instructions: SCREEN_HELP_TEXT, account, screenHelp: true }, isRetry: false };
@@ -119,23 +127,24 @@ export async function turnJob(
   stores: { sessions: SessionStore; localStore: LocalStore },
   sessionId: string,
   text: string,
-  opts: { screen?: boolean; voice?: boolean; context?: string; tabId?: number } = {},
+  opts: { screen?: boolean; voice?: boolean; heard?: string[]; context?: string; tabId?: number } = {},
 ): Promise<TurnJob> {
   const from = await stores.sessions.get(sessionId);
   if (!from) throw new Error(`No session ${sessionId}`);
   if (!from.endedAt) throw new Error("That conversation has not ended yet");
   let task: StoredLocalTask | null = null;
-  let first = { instructions: from.instructions ?? from.title, account: from.account ?? null };
+  let first: TurnJob["first"] = { instructions: from.instructions ?? from.title, account: from.account ?? null, ...(from.seriesId ? { seriesId: from.seriesId } : {}) };
   if (from.source === "local" && from.taskId) {
     const t = await stores.localStore.get(from.taskId);
     if (t?.status === "running") throw new Error("The task is already running");
-    if (t) first = { instructions: t.instructions, account: t.account };
+    if (t) first = { instructions: t.instructions, account: t.account, seriesId: t.seriesId ?? t.id };
     // Only unfinished work is recorded on the task; after it is done, the conversation just goes on.
     if (t && t.status !== "done") task = t;
   }
   const job: TurnJob = { source: "turn", from, text, task, first };
   if (opts.screen) job.screen = true;
   if (opts.voice) job.voice = true;
+  if (opts.voice && opts.heard?.length) job.heard = opts.heard;
   if (opts.context) job.context = opts.context;
   if (opts.tabId !== undefined) job.tabId = opts.tabId;
   return job;

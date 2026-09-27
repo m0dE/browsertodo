@@ -119,6 +119,12 @@ export const Task = z.object({
   schedule: TaskSchedule.nullable().optional(),
   /** Owning user id; null for legacy (admin-owned) cloud tasks. */
   ownerId: z.string().nullable().optional(),
+  /**
+   * The series the task belongs to: the id of its first row. Every repeat of a repeating task carries it, and edits
+   * keep it, so what earlier runs did (memory's task history) stays with the task. A task that does not repeat: its
+   * own id. Optional so older producers still validate (memory then keys the task by its instructions).
+   */
+  seriesId: z.string().min(1).max(64).nullable().optional(),
 });
 export type Task = z.infer<typeof Task>;
 

@@ -128,8 +128,8 @@ export function voicePatch(engine: VoiceEngineId, change: { voice: string } | { 
 
 /** Why Test voice could not say the Realtime sample, in a few words. */
 export function sampleFailureText(err: unknown): string {
-  const f = (err ?? {}) as { kind?: string; fallback?: boolean; message?: string };
-  if (f.kind === "busy") return "Realtime voice is open in another window. Try again once it ends.";
-  if (f.fallback) return "Realtime voice is unavailable right now.";
+  const f = (err ?? {}) as { kind?: string; transient?: boolean; message?: string };
+  if (f.kind === "busy") return "Realtime voice is on in another window. Try again once it ends.";
+  if (f.transient) return "Realtime voice could not connect. Try again.";
   return f.message || String(err);
 }

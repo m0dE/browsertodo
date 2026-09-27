@@ -67,6 +67,27 @@ export function migrateStoredTask(t: StoredLocalTask): StoredLocalTask {
   return legacy.success ? { ...t, repeat: legacyToRepeat(legacy.data, localTimeZone()) } : t;
 }
 
+/**
+ * The tasks with their series (Task.seriesId): one stored before tasks had a series gets the first row of its
+ * repeat chain (a row's nextId is its repeat), else its own id. The store reads every task through this, so the next
+ * write saves them with it.
+ */
+export function withSeries(tasks: StoredLocalTask[]): StoredLocalTask[] {
+  if (tasks.every((t) => t.seriesId)) return tasks;
+  const parentOf = new Map<string, StoredLocalTask>();
+  for (const t of tasks) if (t.nextId) parentOf.set(t.nextId, t);
+  const seriesOf = (t: StoredLocalTask): string => {
+    let first = t;
+    const seen = new Set([t.id]);
+    for (let p = parentOf.get(first.id); !first.seriesId && p && !seen.has(p.id); p = parentOf.get(first.id)) {
+      seen.add(p.id);
+      first = p;
+    }
+    return first.seriesId ?? first.id;
+  };
+  return tasks.map((t) => (t.seriesId ? t : { ...t, seriesId: seriesOf(t) }));
+}
+
 export const byCreated = (a: StoredLocalTask, b: StoredLocalTask) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0);
 
 /**
@@ -106,6 +127,7 @@ export function nextOccurrenceTask(t: StoredLocalTask & { repeat: RepeatSchedule
   return {
     ...t,
     id,
+    seriesId: t.seriesId ?? t.id,
     status: "pending",
     attempts: 0,
     notBefore: next.at.toISOString(),

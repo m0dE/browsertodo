@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { FOREIGN_FRAME_ERROR, type ChromeFake } from "./chrome-fake.js";
-import { driverHarness, runInUserTab } from "./driver-harness.js";
+import { DRAWN, driverHarness, runInUserTab } from "./driver-harness.js";
 import type { AgentTab } from "../src/agent-tab.js";
 import { Cdp } from "../src/cdp.js";
 import { Driver } from "../src/driver.js";
@@ -32,7 +32,7 @@ let windowId: number;
 let probes: number;
 let foreignFrame: boolean;
 
-const snap = { url: "https://mail.test/", title: "Inbox", text: "hi", elements: [], truncated: false };
+const snap = { url: "https://mail.test/", title: "Inbox", text: "hi", elements: DRAWN, truncated: false };
 
 beforeEach(async () => {
   const h = driverHarness();

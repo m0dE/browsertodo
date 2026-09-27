@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { MAX_MEMORY_ENTRIES, MAX_RECORD_NOTES, MAX_TASK_NOTES, MAX_TASK_RECORDS, type MemoryEntry } from "@browsertodo/shared";
+import { EARLIER_RUNS_SUBJECT, isTaskRun, MAX_MEMORY_ENTRIES, MAX_RECORD_NOTES, MAX_TASK_RECORDS, MAX_TASK_RUNS, type MemoryEntry } from "@browsertodo/shared";
 import { MEMORY_STORAGE_KEY, MemoryRefusal, MemoryStore } from "../../src/memory/store.js";
 import { memoryStorage } from "./fakes.js";
 
@@ -50,17 +50,63 @@ describe("MemoryStore", () => {
     await expect(store.put({ kind: "person", subject: "a long name ".repeat(8), text: "t", scope: "global" }, CHAT)).rejects.toThrow(/subject/);
   });
 
-  it("adds every run note, and keeps only a task's newest MAX_TASK_NOTES", async () => {
-    for (let i = 0; i < MAX_TASK_NOTES + 2; i++) {
-      now = new Date(Date.UTC(2026, 8, 1 + i));
-      await store.put({ kind: "task", subject: "Run note", text: `posted topic ${i}`, scope: "task", taskKey: "tA" }, CHAT, { note: true });
+  it("adds every run with its output; past MAX_TASK_RUNS the oldest are folded into the task's earlier-runs summary", async () => {
+    const topics = ["pricing", "roadmap", "pricing"];
+    for (let i = 0; i < MAX_TASK_RUNS + 3; i++) {
+      now = new Date(Date.UTC(2026, 0, 1, 0, 8 * i));
+      const output = i < 3 ? `Our ${topics[i]} update: ${topics[i]} matters for builders` : `Post number ${i}`;
+      await store.put({ kind: "task", subject: "Run note", text: `posted ${i}`, scope: "task", taskKey: "tA", output }, CHAT, { note: true });
     }
     await store.put({ kind: "task", subject: "Run note", text: "other task", scope: "task", taskKey: "tB" }, CHAT, { note: true });
-    const notes = (await store.list()).filter((e) => e.taskKey === "tA");
-    expect(notes).toHaveLength(MAX_TASK_NOTES);
-    expect(notes.map((e) => e.text)).not.toContain("posted topic 0");
-    expect(notes.map((e) => e.text)).toContain(`posted topic ${MAX_TASK_NOTES + 1}`);
+    const mine = (await store.list()).filter((e) => e.taskKey === "tA");
+    const runs = mine.filter(isTaskRun);
+    expect(runs).toHaveLength(MAX_TASK_RUNS);
+    expect(runs.map((e) => e.text)).not.toContain("posted 2");
+    expect(runs.find((e) => e.text === "posted 3")?.output).toBe("Post number 3");
+    const summary = mine.find((e) => e.subject === EARLIER_RUNS_SUBJECT)!;
+    // The 3 oldest, dated from the first; "pricing" (stemmed "price") came in 2 of them.
+    expect(summary).toMatchObject({ kind: "task", scope: "task", learnedAt: "2026-01-01T00:00:00.000Z" });
+    expect(summary.text).toBe("3 earlier runs, 2026-01-01 to 2026-01-01. Frequent words (runs): builder (3), matter (3), updat (3), price (2), roadmap (1)");
+    // Folding more goes on counting in the same summary.
+    now = new Date(Date.UTC(2026, 2, 1));
+    await store.put({ kind: "task", subject: "Run note", text: "posted late", scope: "task", taskKey: "tA", output: "Pricing is not what we post about" }, CHAT, { note: true });
+    const again = (await store.list()).filter((e) => e.taskKey === "tA" && e.subject === EARLIER_RUNS_SUBJECT);
+    expect(again).toHaveLength(1);
+    expect(again[0]!.text).toMatch(/^4 earlier runs, 2026-01-01 to 2026-01-01\. Frequent words \(runs\): builder \(3\), matter \(3\), updat \(3\), price \(2\)/);
     expect((await store.list()).some((e) => e.taskKey === "tB")).toBe(true);
+  });
+
+  it("refuses an output that holds a secret, and an output on anything but a task's run", async () => {
+    await expect(store.put({ kind: "task", subject: "Run note", text: "posted", scope: "task", taskKey: "tA", output: "my password: hunter22" }, CHAT, { note: true })).rejects.toBeInstanceOf(MemoryRefusal);
+    await expect(store.put({ kind: "preference", subject: "Tone", text: "friendly", scope: "global", output: "hello" }, CHAT)).rejects.toThrow(/output/);
+  });
+
+  it("rekeyTask moves a task's runs, notes, records and episodes to its series; a record of the same key is merged", async () => {
+    await store.put({ kind: "task", subject: "Run note", text: "posted about lists", scope: "task", taskKey: "tOLD", output: "Lists: keep them short" }, CHAT, { note: true });
+    await store.putRecord({ taskKey: "tOLD", key: "48213", keyAsWritten: "#48213", text: "Refund asked." }, CHAT);
+    await store.putRecord({ taskKey: "sSERIES", key: "48213", keyAsWritten: "#48213", text: "Opened." }, CHAT);
+    await store.putEpisode({ subject: "Posted", text: "Posted about lists.", at: now.toISOString(), taskKey: "tOLD" }, { kind: "task", sessionId: "run1" });
+    await store.put({ kind: "person", subject: "Paul", text: "accountant", scope: "global" }, CHAT);
+    now = new Date("2026-09-27T10:00:00Z");
+    expect(await store.rekeyTask(["tOLD", "sSERIES"], "sSERIES")).toBe(3);
+    const all = await store.list();
+    expect(all.filter((e) => e.taskKey === "tOLD")).toEqual([]);
+    expect(all.find((e) => isTaskRun(e))).toMatchObject({ taskKey: "sSERIES", output: "Lists: keep them short", updatedAt: now.toISOString() });
+    expect(all.find((e) => e.kind === "episode")?.taskKey).toBe("sSERIES");
+    const records = all.filter((e) => e.key === "48213");
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ taskKey: "sSERIES", text: "Opened.", notes: [{ at: "2026-09-26T10:00:00.000Z", text: "Refund asked." }] });
+    expect(all.find((e) => e.subject === "Paul")?.taskKey).toBeUndefined();
+    expect(await store.rekeyTask(["tOLD"], "sSERIES")).toBe(0);
+  });
+
+  it("remembers which series adopted their older keys", async () => {
+    expect(await store.adopted("sA")).toBe(false);
+    await store.markAdopted("sA");
+    await store.markAdopted("sB");
+    await store.markAdopted("sA");
+    expect(await store.adopted("sA")).toBe(true);
+    expect(await store.adopted("sC")).toBe(false);
   });
 
   it("forget, restore (Undo) and clear", async () => {
@@ -189,11 +235,12 @@ describe("MemoryStore", () => {
       expect((await store.list()).some((e) => e.id === "r1")).toBe(true);
     });
 
-    it("run notes and records are separate: notes past MAX_TASK_NOTES never drop records", async () => {
+    it("run notes and records are separate: runs past MAX_TASK_RUNS never drop records", async () => {
       await rec("48213", "Opened.");
-      for (let i = 0; i < MAX_TASK_NOTES + 1; i++) await store.put({ kind: "task", subject: "Run note", text: `run ${i}`, scope: "task", taskKey: "tA" }, TASK, { note: true });
+      for (let i = 0; i < MAX_TASK_RUNS + 1; i++) await store.put({ kind: "task", subject: "Run note", text: `run ${i}`, scope: "task", taskKey: "tA" }, TASK, { note: true });
       const all = await store.list();
-      expect(all.filter((e) => e.key === undefined)).toHaveLength(MAX_TASK_NOTES);
+      // The runs, and the summary the oldest was folded into.
+      expect(all.filter((e) => e.key === undefined)).toHaveLength(MAX_TASK_RUNS + 1);
       expect(all.filter((e) => e.key === "48213")).toHaveLength(1);
       // A remember with the subject of a record is not merged into it.
       await store.put({ kind: "task", subject: "48213", text: "a plain task fact", scope: "task", taskKey: "tA" }, TASK);

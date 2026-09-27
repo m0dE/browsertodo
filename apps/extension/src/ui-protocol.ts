@@ -7,6 +7,7 @@
  */
 import type {
   ApprovalAnswer,
+  ApprovalAnsweredBy,
   BrainKind,
   ExtensionSettings,
   HelperInfo,
@@ -177,7 +178,19 @@ export type UiRequest =
    * context: what the agent is told with the message but the chat does not show as the user's words (hands-free:
    * the note on the tab the user looks at).
    */
-  | { type: "run.message"; sessionId?: string; text: string; tabId?: number; screen?: boolean; voice?: boolean; cid?: string; memoryOff?: true; context?: string }
+  | {
+      type: "run.message";
+      sessionId?: string;
+      text: string;
+      tabId?: number;
+      screen?: boolean;
+      voice?: boolean;
+      /** Spoken with Realtime: the user's words for the request (text), word for word, each part of their speech in order. */
+      heard?: string[];
+      cid?: string;
+      memoryOff?: true;
+      context?: string;
+    }
   /**
    * The conversation is over: close its kept-open agent session (a running
    * turn keeps running). tabId: that tab has no conversation any more.
@@ -202,12 +215,14 @@ export type UiRequest =
   | { type: "memory.pin"; id: string; pinned: boolean }
   /** Delete everything one repeating task keeps (its run notes and records). */
   | { type: "memory.deleteTask"; taskKey: string }
+  /** A task's details: its previous runs (dates, notes, outputs) as its memory keeps them. */
+  | { type: "memory.taskRuns"; task: { instructions: string; account: string | null; seriesId?: string | null } }
   /** Forget everything. */
   | { type: "memory.clear" }
   /** The answer to "Add this computer's memory to <account>?" (UiState.memoryQuestion): add it, or keep it separate. */
   | { type: "memory.syncChoice"; add: boolean }
   /** The user's answer on an approval card (or by voice): the waiting action runs or is refused. */
-  | { type: "approval.answer"; sessionId: string; id: string; answer: ApprovalAnswer; by?: "voice" }
+  | { type: "approval.answer"; sessionId: string; id: string; answer: ApprovalAnswer; by?: ApprovalAnsweredBy }
   /** Switch to a browser tab (another tab's chat): activates it and focuses its window. */
   | { type: "tab.focus"; tabId: number }
   /** Bring the agent's tab to the front: the session's, or the first agent tab. */
@@ -244,8 +259,13 @@ export type UiRequest =
   | { type: "account.keys.list" }
   | { type: "account.keys.create"; name: string; role: KeyRole }
   | { type: "account.keys.revoke"; id: string }
-  /** Newest first; taskId: only that task's runs. */
-  | { type: "sessions.list"; limit?: number; taskId?: string }
+  /**
+   * Newest first; taskId: only that task's runs; chats: only conversations (one-off chats, and runs the user went on
+   * with), for the new chat's recent chats. Chats still titled with their request get a title in the background.
+   */
+  | { type: "sessions.list"; limit?: number; taskId?: string; chats?: boolean }
+  /** The user's name for a chat (History): kept, never replaced by the title model. */
+  | { type: "session.rename"; sessionId: string; title: string }
   | { type: "sessions.events"; sessionId: string }
   /** Site logins for get_credential (never used for X). Encrypted; unlocked per browser session. */
   | { type: "vault.list" }
@@ -263,11 +283,8 @@ export type UiRequest =
   | { type: "voice.realtime"; sessionId?: string }
   /** Hands-free voice said a line in this conversation: kept in its thread (a "spoken" event). */
   | { type: "voice.spoken"; sessionId: string; text: string }
-  /**
-   * What the user said in Realtime hands-free voice, word for word: kept in its thread (a "heard" event).
-   * sent: the request the narrator passed to the agent for it.
-   */
-  | { type: "voice.heard"; sessionId: string; text: string; sent?: string; early?: true }
+  /** What the user said in Realtime hands-free voice that led to no request, word for word: kept for the record (a "heard" event). */
+  | { type: "voice.heard"; sessionId: string; text: string }
   /** The side panel's timings of a conversation (voice, sending), for its trace. */
   | { type: "trace.add"; sessionId: string; events: TraceEvent[] }
   /** The Raw view: the whole conversation, its timing trace, and what it ran on. */
@@ -311,6 +328,8 @@ export interface UiResults {
   "memory.pin": { entry: MemoryEntry };
   /** How many entries went. */
   "memory.deleteTask": { removed: number };
+  /** Newest first; the task's earlier-runs summary (folded runs) last. */
+  "memory.taskRuns": { runs: MemoryEntry[] };
   /** How many entries were forgotten. */
   "memory.clear": { removed: number };
   /** Whether memory syncs now. */
@@ -341,6 +360,7 @@ export interface UiResults {
   "account.keys.create": CreatedApiKey;
   "account.keys.revoke": { ok: boolean };
   "sessions.list": { sessions: SessionInfo[] };
+  "session.rename": { session: SessionInfo };
   "sessions.events": { session: SessionInfo; events: StampedAgentEvent[] };
   /** exists: a passphrase has been set; false: the next unlock chooses one. Site names are listed even while locked. */
   "vault.list": { exists: boolean; locked: boolean; sites: string[] };

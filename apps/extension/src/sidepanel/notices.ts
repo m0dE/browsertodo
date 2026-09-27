@@ -9,6 +9,11 @@
 import { h } from "../ui/dom.js";
 import { autoHideMs, NoticeQueue, type NoticeLevel } from "./notice-queue.js";
 
+export interface NoticeAction {
+  label: string;
+  run: () => void;
+}
+
 export interface Notice {
   /** Who shows it ("voice", "composer", ...): a new one with the same key replaces it. */
   key: string;
@@ -17,7 +22,8 @@ export interface Notice {
   text?: string;
   /** Or a whole card (an error with its fix buttons, error-view.ts). */
   body?: HTMLElement;
-  action?: { label: string; run: () => void };
+  /** Buttons after the text, the first the main one (a click also dismisses the notice). */
+  actions?: readonly NoticeAction[];
   /** Stays until cleared (progress while a request is out). */
   sticky?: boolean;
 }
@@ -71,8 +77,7 @@ export function initNotices(el: HTMLElement): Notices {
     el.dataset.level = n.level;
     el.dataset.key = n.key;
     el.append(n.body ?? h("span.notice-text", null, n.text ?? ""));
-    if (n.action) {
-      const { label, run } = n.action;
+    for (const { label, run } of n.actions ?? []) {
       el.append(h("button.link.notice-action", { type: "button", onclick: () => (dismiss(n), run()) }, label));
     }
     el.append(h("button.notice-close", { type: "button", "aria-label": "Dismiss", title: "Dismiss", onclick: () => dismiss(n) }, "×"));

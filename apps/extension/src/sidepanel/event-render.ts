@@ -68,10 +68,8 @@ export function renderEvent(v: EventView, onContinue?: () => void, scheduled?: S
       if (v.screen) return renderScreenHelp(v.text);
       if (!v.voice) return h("div.ev-user", null, v.text);
       const bubble = h("div.ev-user.voice", { title: "Sent by voice" }, voiceMark(), h("span.ev-user-text", null, v.text));
-      return v.sent ? h("div.ev-said", null, bubble, renderSent(v.sent)) : bubble;
+      return v.heard ? h("div.ev-said", null, bubble, renderWordForWord(v.heard)) : bubble;
     }
-    case "heard":
-      return renderHeard(v.text);
     case "spoken":
       return renderSpoken(v);
     case "end":
@@ -225,19 +223,17 @@ export function renderSpoken(v: Extract<EventView, { kind: "spoken" }>): HTMLEle
   );
 }
 
-/** Words the user said that went to no one: a muted line with a mic on the user's side, no bubble. */
-function renderHeard(text: string): HTMLElement {
+/**
+ * Under a spoken request (what the voice assistant understood, which the agent got): the user's words for it as
+ * transcribed, each part of their speech in order, folded.
+ */
+function renderWordForWord(heard: readonly string[]): HTMLElement {
   return h(
-    "div.ev-heard",
-    { title: "Heard by hands-free voice, not sent to the agent" },
-    svgIcon(11, MIC_ICON),
-    h("span.ev-heard-words", null, h("span.ev-heard-text", null, text)),
+    "details.ev-words",
+    null,
+    h("summary", { title: "What was heard, as transcribed, before the voice assistant passed it on" }, "Word for word"),
+    h("p.ev-words-text", null, heard.join(" · ")),
   );
-}
-
-/** Under the user's own words: what the Realtime narrator passed to the agent for them (it said something else). */
-function renderSent(text: string): HTMLElement {
-  return h("div.ev-sent", { title: "What the voice assistant passed to the agent" }, h("span.ev-sent-label", null, "Sent to agent: "), text);
 }
 
 /** The mic in a message the user spoke (read out as "Voice"). */
@@ -264,12 +260,6 @@ export const FOLD_STEPS = 3;
  * opened it.
  */
 export function placeEvent(log: HTMLElement, node: HTMLElement, v: EventView): void {
-  // Heard lines in a row are one line: thinking aloud reads as one aside, not a list.
-  const last = log.lastElementChild;
-  if (v.kind === "heard" && last?.classList.contains("ev-heard")) {
-    last.querySelector(":scope > .ev-heard-words")!.append(...node.querySelectorAll(".ev-heard-text"));
-    return;
-  }
   if (!STEP_KINDS.has(v.kind)) {
     log.append(node);
     return;
@@ -351,7 +341,7 @@ export function renderOpening(v: OpeningView, onDetails: (trigger: HTMLElement) 
     onDetails(bubble);
   });
   const started = new Date(v.at);
-  return h("div.ev-opening", null, bubble, v.sent ? renderSent(v.sent) : null, h("time.ev-when", { datetime: v.at, title: `Started ${started.toLocaleString()}` }, v.when));
+  return h("div.ev-opening", null, bubble, v.heard ? renderWordForWord(v.heard) : null, h("time.ev-when", { datetime: v.at, title: `Started ${started.toLocaleString()}` }, v.when));
 }
 
 const CLIP_ICON =

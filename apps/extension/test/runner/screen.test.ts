@@ -7,7 +7,7 @@ import { SCREEN_HELP_TEXT } from "@browsertodo/shared";
 import { buildFollowUpMessage, buildTaskPrompt } from "@browsertodo/core";
 import { Runner } from "../../src/engine/runner.js";
 import { MOVED_TAB_STATUS } from "../../src/engine/run/turn.js";
-import { RESTRICTED_STATUS } from "../../src/restricted.js";
+import { asksAboutThePage, RESTRICTED_STATUS } from "../../src/restricted.js";
 import { TabChats } from "../../src/tab-chats.js";
 import { parallel, setupRunnerTests, withoutClock } from "./harness.js";
 
@@ -147,7 +147,7 @@ describe("Runner: the agent is told which page the chat's tab shows", () => {
 describe("Runner: the user's tab is a page Chrome keeps extensions out of", () => {
   const STORE = { url: "https://chrome.google.com/webstore/devconsole/abc", title: "Chrome Web Store - Developer Dashboard" };
 
-  it("the run starts anyway, in a tab next to it; the agent is told the page; the chat gets a quiet line", async () => {
+  it("the run starts anyway, in a tab next to it; the agent is told the page; the chat gets no line when the request goes elsewhere", async () => {
     const { h, pool, chats } = withChats({ 7: STORE });
     // Like AgentTab.prepare: a page it cannot control gets a new tab next to it.
     pool.pick = (index, opts) => (opts.tabId === 7 ? 50 : 100 + index);
@@ -161,18 +161,33 @@ describe("Runner: the user's tab is a page Chrome keeps extensions out of", () =
     expect(prompt).toMatch(/does not allow extensions to see or control that page/);
     expect((await h.sessions.get(r.sessionId))?.outcome).toBe("done");
     const lines = await statuses(h, r.sessionId);
-    expect(lines).toContain(RESTRICTED_STATUS);
+    expect(lines).not.toContain(RESTRICTED_STATUS);
     expect(lines).not.toContain(MOVED_TAB_STATUS);
     // The conversation follows the tab it works in.
     expect(await chats.get(50)).toBe(r.sessionId);
+  });
+
+  it("a request about that page (or an empty send) gets the quiet line once; one that goes elsewhere does not", async () => {
+    const { h, pool } = withChats({ 7: STORE });
+    pool.pick = (index, opts) => (opts.tabId === 7 ? 50 : 100 + index);
+    h.brain.script = () => ({ outcome: "done" });
+    const about = await h.runner.message(null, "can u verify the email on this page", { tabId: 7 });
+    await h.runner.idle();
+    expect((await statuses(h, about.sessionId)).filter((l) => l === RESTRICTED_STATUS)).toHaveLength(1);
+    expect(asksAboutThePage("what's on screen?")).toBe(true);
+    expect(asksAboutThePage("summarize this article")).toBe(true);
+    expect(asksAboutThePage("", true)).toBe(true);
+    expect(asksAboutThePage("Open x.com and post gm")).toBe(false);
+    expect(asksAboutThePage("check my mail")).toBe(false);
   });
 
   it("an empty message there: the agent works from the title and address, and says it cannot see the page", async () => {
     const { h, pool } = withChats({ 7: { url: "chrome://newtab/", title: "New Tab" } });
     pool.pick = (index, opts) => (opts.tabId === 7 ? 50 : 100 + index);
     h.brain.script = () => ({ outcome: "done" });
-    await h.runner.message(null, "", { tabId: 7, screen: true });
+    const empty = await h.runner.message(null, "", { tabId: 7, screen: true });
     await h.runner.idle();
+    expect(await statuses(h, empty.sessionId)).toContain(RESTRICTED_STATUS);
     const task = h.brain.starts[0]!.task;
     expect(task).toMatchObject({ screenHelp: true, userTab: { url: "chrome://newtab/", title: "New Tab", access: "restricted" } });
     expect(buildTaskPrompt(task, [], { isRetry: false })).toMatch(/cannot see that page/);
@@ -187,9 +202,9 @@ describe("Runner: the user's tab is a page Chrome keeps extensions out of", () =
     await h.runner.idle();
     pages[7] = { url: "chrome://settings/", title: "Settings" };
     h.brain.continueScript = () => ({ outcome: "done" });
-    await h.runner.message(r.sessionId, "and now?", { tabId: 7 });
+    await h.runner.message(r.sessionId, "and now, what's on this page?", { tabId: 7 });
     await h.runner.idle();
-    expect(withoutClock(h.brain.continues[0]!.text)).toBe(buildFollowUpMessage({ text: "and now?", userTab: { ...pages[7]!, access: "restricted" } }));
+    expect(withoutClock(h.brain.continues[0]!.text)).toBe(buildFollowUpMessage({ text: "and now, what's on this page?", userTab: { ...pages[7]!, access: "restricted" } }));
     expect(await statuses(h, r.sessionId)).toContain(RESTRICTED_STATUS);
     // The brain's echo of what it got is not shown twice; the user's words are.
     const users = (await h.sessions.eventsOf(r.sessionId)).filter((e) => e.type === "user_message");

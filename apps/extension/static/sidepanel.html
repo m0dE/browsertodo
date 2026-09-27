@@ -29,8 +29,8 @@
         <button type="button" role="tab" id="tab-btn-history" data-tab="history" aria-controls="tab-history" aria-selected="false">History</button>
       </nav>
     </header>
-    <!-- While hands-free voice is on: the voice bar, full width under the tabs (voice-bar.ts fills it). -->
-    <div id="voice-bar" class="voice-bar" role="region" aria-label="Hands-free voice" hidden></div>
+    <!-- While hands-free voice is on: a one-line status strip under the tabs (voice-bar.ts fills it); its controls are in the composer. -->
+    <div id="voice-bar" class="voice-bar" role="region" aria-label="Voice status" hidden></div>
 
     <main>
       <!-- Chat: the conversation with the agent, live -->
@@ -166,7 +166,8 @@
             <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"><path d="M4.5 2.25h7v11.5L8 11.2l-3.5 2.55z"/><path d="M2.5 2.5l11 11"/></svg>
           </button>
           <span class="spacer"></span>
-          <button id="now-stop" type="button" class="danger small" hidden>Stop</button>
+          <!-- Stops the task this chat runs (a square): voice is ended by the mic, not here. -->
+          <button id="now-stop" type="button" class="danger small" title="Stop the task" hidden><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="currentColor"><rect x="2.5" y="2.5" width="11" height="11" rx="2"/></svg>Stop</button>
           <!-- Controls that go with sending (e.g. a voice toggle) mount here, right left of Send: ComposerView.actionSlot. -->
           <span id="now-actions" class="now-actions"></span>
           <button id="now-submit" type="submit" class="primary small">Send</button>

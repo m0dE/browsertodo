@@ -45,7 +45,8 @@ export const HANDS_FREE = {
 export type HandsFreePhase = "off" | "listening" | "sending" | "working" | "speaking";
 
 /** Why a session ended. */
-export type EndReason = "shortcut" | "button" | "voice" | "escape" | "silence" | "narrator" | "error";
+/** remote: the background asked (Stop, or Use voice here, in another tab's panel). */
+export type EndReason = "shortcut" | "button" | "voice" | "escape" | "silence" | "narrator" | "error" | "remote";
 
 export interface HandsFreeState {
   phase: HandsFreePhase;
@@ -74,8 +75,8 @@ export type HandsFreeEvent =
   | { type: "speech"; now: number }
   /** What the user said. forward: it is a message for the agent (Standard); else it is only checked for stop and cancel words. */
   | { type: "heard"; text: string; forward: boolean; now: number }
-  /** A message for the agent from the Realtime narrator (its send_to_agent tool): sent at once, the narrator talking on. */
-  | { type: "forward"; text: string; now: number }
+  /** A message for the agent from the Realtime narrator (its send_to_agent tool): sent at once, the narrator talking on. heard: the user's words for it. */
+  | { type: "forward"; text: string; heard?: readonly string[]; now: number }
   /** The user muted or unmuted the microphone. */
   | { type: "mute"; muted: boolean; now: number }
   /** Esc. */
@@ -91,7 +92,8 @@ export type HandsFreeEvent =
   | { type: "said"; now: number };
 
 export type HandsFreeEffect =
-  | { type: "send"; text: string }
+  /** heard: the user's words for it, word for word (Realtime). */
+  | { type: "send"; text: string; heard?: readonly string[] }
   | { type: "speak"; text: string }
   /** Stop talking now. */
   | { type: "hush" }
@@ -153,7 +155,7 @@ export function handsFree(s: HandsFreeState, e: HandsFreeEvent): HandsFreeStep {
     case "heard":
       return heard(s, e.text, e.forward, e.now);
     case "forward":
-      return e.text.trim() ? { state: { ...s, lastActivityAt: e.now }, effects: [{ type: "send", text: e.text.trim() }] } : { state: s, effects: [] };
+      return e.text.trim() ? { state: { ...s, lastActivityAt: e.now }, effects: [{ type: "send", text: e.text.trim(), ...(e.heard?.length ? { heard: e.heard } : {}) }] } : { state: s, effects: [] };
     case "cancel":
       if (s.phase === "sending") return cancelPending(s);
       if (s.phase === "speaking") return interrupt(s, e.now);

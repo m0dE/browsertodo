@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { VoiceEngine } from "@browsertodo/shared";
-import { chooseEngine, costPerMinuteText, LOW_CREDIT_MINUTES } from "../../src/voice/engine-choice.js";
+import { checkEngine, costPerMinuteText, LOW_CREDIT_MINUTES, REALTIME_UNAVAILABLE_TEXT } from "../../src/voice/engine-choice.js";
 
 const engine = (id: "realtime" | "standard", cents: number, available = true): VoiceEngine => ({
   id,
@@ -13,29 +13,28 @@ const engine = (id: "realtime" | "standard", cents: number, available = true): V
 const list = (...engines: VoiceEngine[]) => ({ engines, default: "realtime" as const });
 const ENGINES = list(engine("realtime", 30), engine("standard", 0.2));
 
-describe("chooseEngine", () => {
-  it("uses the engine picked in Settings", () => {
-    expect(chooseEngine({ preferred: "realtime", engines: ENGINES, creditCents: 1000 })).toEqual({ engine: "realtime", note: null });
-    expect(chooseEngine({ preferred: "standard", engines: ENGINES, creditCents: 1000 })).toEqual({ engine: "standard", note: null });
+describe("checkEngine: the engine is always the one picked", () => {
+  it("the engine picked in Settings starts", () => {
+    expect(checkEngine({ picked: "realtime", engines: ENGINES, creditCents: 1000 })).toEqual({ blocked: null, note: null });
+    expect(checkEngine({ picked: "standard", engines: ENGINES, creditCents: 1000 })).toEqual({ blocked: null, note: null });
   });
 
-  it("falls back to Standard when the server cannot run Realtime", () => {
-    const r = chooseEngine({ preferred: "realtime", engines: list(engine("realtime", 30, false), engine("standard", 0.2)), creditCents: 1000 });
-    expect(r.engine).toBe("standard");
-    expect(r.note).toBe("Realtime voice is unavailable. Using Standard.");
-    expect(chooseEngine({ preferred: "realtime", engines: list(engine("standard", 0.2)), creditCents: 1000 }).engine).toBe("standard");
+  it("Realtime the server cannot run does not start, and says why (never Standard in its place)", () => {
+    const r = checkEngine({ picked: "realtime", engines: list(engine("realtime", 30, false), engine("standard", 0.2)), creditCents: 1000 });
+    expect(r).toEqual({ blocked: REALTIME_UNAVAILABLE_TEXT, note: null });
+    expect(checkEngine({ picked: "realtime", engines: list(engine("standard", 0.2)), creditCents: 1000 }).blocked).toBe(REALTIME_UNAVAILABLE_TEXT);
     // The server's default says so too.
-    expect(chooseEngine({ preferred: "realtime", engines: { ...ENGINES, default: "standard" }, creditCents: 1000 }).engine).toBe("standard");
+    expect(checkEngine({ picked: "realtime", engines: { ...ENGINES, default: "standard" }, creditCents: 1000 }).blocked).toBe(REALTIME_UNAVAILABLE_TEXT);
   });
 
-  it(`falls back to Standard when the credit left pays for less than ${LOW_CREDIT_MINUTES} minutes of Realtime`, () => {
-    const low = chooseEngine({ preferred: "realtime", engines: ENGINES, creditCents: 30 * LOW_CREDIT_MINUTES - 1 });
-    expect(low).toEqual({ engine: "standard", note: "Usage credit is low. Using Standard voice (it costs much less)." });
-    expect(chooseEngine({ preferred: "realtime", engines: ENGINES, creditCents: 30 * LOW_CREDIT_MINUTES }).engine).toBe("realtime");
+  it(`credit for fewer than ${LOW_CREDIT_MINUTES} minutes of Realtime: it still starts, with a note`, () => {
+    const low = checkEngine({ picked: "realtime", engines: ENGINES, creditCents: 30 * LOW_CREDIT_MINUTES - 1 });
+    expect(low).toEqual({ blocked: null, note: "Usage credit is low: about 2 minutes of Realtime voice left." });
+    expect(checkEngine({ picked: "realtime", engines: ENGINES, creditCents: 30 * LOW_CREDIT_MINUTES })).toEqual({ blocked: null, note: null });
   });
 
   it("without the engine list or the credit, tries Realtime (the relay says if it cannot)", () => {
-    expect(chooseEngine({ preferred: "realtime", engines: null, creditCents: undefined })).toEqual({ engine: "realtime", note: null });
+    expect(checkEngine({ picked: "realtime", engines: null, creditCents: undefined })).toEqual({ blocked: null, note: null });
   });
 });
 

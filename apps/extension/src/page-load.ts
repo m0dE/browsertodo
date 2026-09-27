@@ -83,3 +83,70 @@ export function leavingDocument(from: string | undefined, to: string, doc: numbe
   const strip = (u: string) => u.replace(/#.*$/, "");
   return from && to.includes("#") && strip(from) === strip(to) ? null : doc;
 }
+
+/**
+ * read_page (and act's reads) on a tab that is still loading or still drawing its first screen: a snapshot with
+ * at most this many elements and characters of text is a loading screen, not a page to reason about (measured:
+ * X tabs read right after open_tabs gave 2 elements and 8 characters, X's home right after navigate 0 elements).
+ */
+export const NEARLY_EMPTY = { elements: 2, textChars: 50 } as const;
+/** How long a read waits for a nearly empty tab whose document is still loading (then it reads it as it is). */
+export const READ_LOAD_WAIT_MS = 10_000;
+/** How long a read waits for a loaded document that is still nearly empty (a web app drawing its first screen). */
+export const EMPTY_PAGE_WAIT_MS = 3_000;
+/** How often a loaded but nearly empty page is read again. */
+const EMPTY_PAGE_POLL_MS = 250;
+
+/** The part of a snapshot the wait looks at. */
+export interface ReadSnapshot {
+  url: string;
+  text: string;
+  elements: readonly unknown[];
+}
+
+/**
+ * A web page that shows next to nothing yet. `heading`: the address the tab is on or loading (Chrome's
+ * pendingUrl, else url): a tab opened a moment ago still shows its first, blank document.
+ */
+export function looksUnloaded(snap: ReadSnapshot | undefined, heading?: string): boolean {
+  if (!snap || typeof snap.url !== "string") return false;
+  const web = /^https?:/i.test(snap.url) || /^https?:/i.test(heading ?? "");
+  return web && (snap.elements?.length ?? 0) <= NEARLY_EMPTY.elements && (snap.text ?? "").trim().length <= NEARLY_EMPTY.textChars;
+}
+
+/** The tab as Chrome reports it: where it is heading (pendingUrl, else url) and whether it is loading. */
+export interface TabLoad {
+  heading?: string;
+  loading: boolean;
+}
+
+/** The note a read carries when the page still looked empty after the wait. */
+export function stillLoadingNote(snap: ReadSnapshot, waitedMs: number): string {
+  const seconds = Math.round(waitedMs / 100) / 10;
+  return `Page still loading: after ${seconds} s it still shows next to nothing (${snap.elements.length} elements, ${snap.text.trim().length} characters of text). Read it again in a moment, or use wait_for, before concluding anything from it.`;
+}
+
+/**
+ * Reads the page; when it shows next to nothing yet (looksUnloaded), waits for it: while its document loads, with
+ * waitForUsablePage (at most READ_LOAD_WAIT_MS in all), and once loaded, EMPTY_PAGE_WAIT_MS for it to draw. Resolves
+ * with the first read that shows something, or the last one with `stillLoading` (how long it waited) when it gave up.
+ */
+export async function readWhenDrawn<T extends ReadSnapshot>(
+  read: () => Promise<T>,
+  probe: () => Promise<LoadProbe | null>,
+  opts: { sleep: Sleep; tab?: () => Promise<TabLoad | null> },
+): Promise<{ snap: T; stillLoading?: number }> {
+  const started = Date.now();
+  const tab = () => opts.tab?.().catch(() => null) ?? Promise.resolve(null);
+  let snap = await read();
+  for (let t = await tab(); looksUnloaded(snap, t?.heading); t = await tab()) {
+    const waited = Date.now() - started;
+    const p = await probe().catch(() => null);
+    const loading = !p || p.state !== "complete" || t?.loading === true;
+    if (waited >= READ_LOAD_WAIT_MS || (!loading && waited >= EMPTY_PAGE_WAIT_MS)) return { snap, stillLoading: waited };
+    if (loading) await waitForUsablePage(probe, { sleep: opts.sleep, timeoutMs: READ_LOAD_WAIT_MS - waited });
+    else await opts.sleep(EMPTY_PAGE_POLL_MS);
+    snap = await read();
+  }
+  return { snap };
+}

@@ -1,6 +1,6 @@
 /** Shared fakes for the Runner tests: a scripted brain, a harness around a Runner, agent slots. */
 import { afterEach, beforeEach, expect, vi } from "vitest";
-import { DEFAULT_SETTINGS, type AgentEvent, type ClaimResponse, type ExtensionSettings, type ResultInput, type TaskRunResult } from "@browsertodo/shared";
+import { automationPromptLine, DEFAULT_SETTINGS, type AgentEvent, type ClaimResponse, type ExtensionSettings, type ResultInput, type TaskRunResult } from "@browsertodo/shared";
 import type { BrowserCaller } from "@browsertodo/core";
 import { installChromeFake, type ChromeFake } from "../chrome-fake.js";
 import { MAX_SLOTS, type AgentSlot, type SlotPool } from "../../src/agent-slots.js";
@@ -144,8 +144,10 @@ export const AGENT_TAB = 7;
 
 /** The user's date and time a follow-up starts with (it moves minute by minute). */
 const CLOCK_LINE = /^The user's time: [^\n]*\n\n/;
-/** A follow-up message without its time line, for comparing its text. */
-export const withoutClock = (text: string): string => text.replace(CLOCK_LINE, "");
+/** The line the harness's level (full autonomy) ends every message with. */
+const FULL_AUTONOMY_LINE = `\n\n${automationPromptLine("full")}`;
+/** A follow-up message without its time line and the harness level's line, for comparing its text. */
+export const withoutClock = (text: string): string => text.replace(CLOCK_LINE, "").replace(FULL_AUTONOMY_LINE, "");
 
 /** One agent slot: one session runs at a time, in AGENT_TAB (or the tab it was started from). */
 function oneSlot(h: Harness): SlotPool {

@@ -49,17 +49,46 @@ export const MAX_MEMORY_SUBJECT_CHARS = 80;
 export const MAX_MEMORY_TEXT_CHARS = 400;
 /** Entries kept in all; past it the least recently used go first. */
 export const MAX_MEMORY_ENTRIES = 500;
-/** Run notes kept per repeating task (the oldest go first). */
-export const MAX_TASK_NOTES = 12;
+/**
+ * Runs a repeating task's history keeps one by one (each run's note and output, TASK_RUN_SUBJECT): at 3 runs a day
+ * about two months. Past it the oldest are folded into the task's EARLIER_RUNS_SUBJECT summary.
+ */
+export const MAX_TASK_RUNS = 200;
+/** Task history entries kept in all (every task's runs, summaries and notes), apart from the rest of memory (MAX_MEMORY_ENTRIES). */
+export const MAX_TASK_HISTORY_ENTRIES = 2000;
 /** Longest run note the agent leaves at the end of a task (task_complete `memory_note`). */
 export const MAX_MEMORY_NOTE_CHARS = 300;
+/** Longest output of one run kept (task_complete `output`: the exact text it posted or sent); a longer one is cut. */
+export const MAX_RUN_OUTPUT_CHARS = 1000;
+/** The subject of a run's entry in its task's history (task_complete's memory_note and output). */
+export const TASK_RUN_SUBJECT = "Run note";
+/** The subject of a task's summary of its runs older than MAX_TASK_RUNS. */
+export const EARLIER_RUNS_SUBJECT = "Earlier runs";
+/**
+ * The subject of a repeating task's profile (remember, kind task): what the account or product it works for is, its
+ * voice, topics and the user's rules for it. Given at every run of the task, first.
+ */
+export const TASK_PROFILE_SUBJECT = "Profile";
 
 /** What the memory given to the agent at the start of a turn may cost, at most (tokens, estimated from characters). */
 export const MEMORY_TOKEN_BUDGET = 600;
 /** Characters per token, for estimating what an entry costs in the prompt. */
 export const MEMORY_CHARS_PER_TOKEN = 4;
-/** The newest run notes of the task given to the agent (older ones are left to recall). */
-export const MAX_INJECTED_TASK_NOTES = 5;
+/**
+ * What a repeating task's own history may cost in a turn's prompt (tokens), apart from MEMORY_TOKEN_BUDGET (a chat
+ * never spends it): its profile, its earlier-runs summary, its newest runs in full, then one short line per earlier
+ * run. Measured (memory-select.test.ts): 20 runs with 300-character notes and 280-character outputs, a profile and a
+ * summary cost 773.
+ */
+export const MEMORY_TASK_HISTORY_TOKEN_BUDGET = 800;
+/** The newest runs of the task given in full: their note and the start of their output. */
+export const MAX_INJECTED_TASK_NOTES = 2;
+/** Runs of the task given in all, newest first (past the full ones, one short line each: date and output); the rest: recall, check_similar. */
+export const MAX_INJECTED_TASK_RUNS = 20;
+/** How much of a run's output its full line shows. */
+export const RUN_OUTPUT_FULL_CHARS = 160;
+/** How much of a run's output (or note) its short line shows. */
+export const RUN_OUTPUT_BRIEF_CHARS = 80;
 /** Most entries recall returns. */
 export const MAX_RECALL_RESULTS = 8;
 /** Episodes kept in all, apart from the rest of memory (MAX_MEMORY_ENTRIES); past it the oldest go. */
@@ -132,6 +161,8 @@ export interface MemoryEntry {
   history?: MemoryPastValue[];
   /** The user marked it to be given at the start of every turn (a tiny always-on core). */
   pinned?: true;
+  /** A task run (TASK_RUN_SUBJECT): what it produced, e.g. the exact text it posted or sent (task_complete `output`). */
+  output?: string;
 }
 
 /** An earlier value of an entry: what it said, and from when until when. */
@@ -185,7 +216,11 @@ export const MemoryEntrySchema = z.object({
   entities: z.array(z.string().min(1).max(MAX_MEMORY_ENTITY_CHARS)).max(MAX_MEMORY_ENTITIES).optional(),
   history: z.array(PastValueSchema).max(MAX_MEMORY_HISTORY).optional(),
   pinned: z.literal(true).optional(),
+  output: z.string().min(1).max(MAX_RUN_OUTPUT_CHARS).optional(),
 }).superRefine((e, ctx) => {
+  if (e.output !== undefined && !(e.kind === "task" && e.scope === "task" && !!e.taskKey && e.key === undefined)) {
+    ctx.addIssue({ code: "custom", path: ["output"], message: "only a repeating task's run has an output" });
+  }
   if (e.kind === "record" && e.key === undefined) ctx.addIssue({ code: "custom", path: ["key"], message: "a record has a key" });
   if (e.kind === "episode" && (e.key !== undefined || e.scope !== "global")) ctx.addIssue({ code: "custom", path: ["kind"], message: "an episode is global and has no key" });
   if (e.key === undefined && e.notes === undefined) return;
@@ -270,7 +305,7 @@ export type MemorySearchResponse = z.infer<typeof MemorySearchResponse>;
 
 export const RememberArgs = z.object({
   kind: RememberKind.describe(
-    "preference: how the user wants things done. account: which account is which (an address, a /u/N index, a handle), never a password. person: who someone is to the user. playbook: how to get something done on one site (give domain). task: a note for the next run of this repeating task. record: a fact about one thing filed under its key (give key; with key the kind is settled for you)",
+    "preference: how the user wants things done. account: which account is which (an address, a /u/N index, a handle), never a password. person: who someone is to the user. playbook: how to get something done on one site (give domain). task: a note for the next run of this repeating task (subject Profile: the task's profile, what the account or product it works for is, its voice, topics and the user's rules; given at every run). record: a fact about one thing filed under its key (give key; with key the kind is settled for you)",
   ),
   subject: z
     .string()
@@ -320,13 +355,29 @@ export const ForgetArgs = z.object({
 });
 export type ForgetArgs = z.infer<typeof ForgetArgs>;
 
+/** Longest draft check_similar compares (characters). */
+export const MAX_SIMILAR_DRAFT_CHARS = 4000;
+
+export const CheckSimilarArgs = z.object({
+  draft: z
+    .string()
+    .trim()
+    .min(1)
+    .max(MAX_SIMILAR_DRAFT_CHARS)
+    .describe("The exact text you are about to publish or send: the whole post, message, reply or article, as it will go out"),
+});
+export type CheckSimilarArgs = z.infer<typeof CheckSimilarArgs>;
+
+export const CHECK_SIMILAR_DESCRIPTION =
+  "Compare a draft with what earlier runs of this repeating task (and the user's other repeating tasks) produced: answers the closest earlier outputs with their dates and similarity, and whether the draft is too similar. In a repeating task that publishes or sends content, call it with the exact text before it goes out; when it says too similar, or an earlier output says the same thing in other words, change the draft (another topic, angle or wording) and check again.";
+
 export const REMEMBER_DESCRIPTION =
   "Save a durable fact for later chats and runs: a preference, which account is which, who someone is, how a site works (playbook), or a note for this repeating task. Only facts that stay true and save time later; never page content, passwords, codes or keys. The user sees each saved fact with Undo.";
 export const RECALL_DESCRIPTION =
   "Search your memory for facts not given at the start of the turn (older task notes, dated episodes of past chats and runs, another site's playbook, a person, what a fact was before it changed), or get the record for an identifier (key). Give query or key.";
 export const FORGET_DESCRIPTION = "Delete a memory entry that turned out wrong or out of date (by its id). To correct one, remember it again with the same kind and subject.";
 
-/** RPC the helper calls on the extension for the memory tools (MEMORY_TOOLS: remember, recall, forget, search_history; Claude Code brain), with the task session's id. */
+/** RPC the helper calls on the extension for the memory tools (MEMORY_TOOLS: remember, recall, forget, search_history, check_similar; Claude Code brain), with the task session's id. */
 export type MemoryMethods = {
   "memory.call": { params: { sessionId: string; tool: MemoryToolName; args: unknown }; result: { text: string; isError?: boolean } };
 };
@@ -341,9 +392,18 @@ export function memoryWriteProblem(e: {
   notes?: readonly RecordNote[] | undefined;
   entities?: readonly string[] | undefined;
   history?: readonly MemoryPastValue[] | undefined;
+  output?: string | undefined;
 }): string | null {
   let why: string | null = null;
-  const parts = [e.subject, e.text, e.key ?? "", ...(e.notes ?? []).map((n) => n.text), ...(e.entities ?? []), ...(e.history ?? []).flatMap((h) => [h.subject, h.text])];
+  const parts = [
+    e.subject,
+    e.text,
+    e.key ?? "",
+    e.output ?? "",
+    ...(e.notes ?? []).map((n) => n.text),
+    ...(e.entities ?? []),
+    ...(e.history ?? []).flatMap((h) => [h.subject, h.text]),
+  ];
   for (const part of parts) if ((why = secretProblem(part))) break;
   return why ? `Not saved: ${why}. Memory never keeps passwords, codes, keys or card numbers; describe it without the value (e.g. "the login is in Site logins").` : null;
 }
@@ -362,9 +422,29 @@ export function onDomain(host: string, domain: string): boolean {
   return host === domain || host.endsWith(`.${domain}`);
 }
 
+/** A task as its memory knows it: its series (Task.seriesId) when it has one, else its instructions and account. */
+export interface MemoryTaskRef {
+  instructions: string;
+  account: string | null | undefined;
+  seriesId?: string | null | undefined;
+}
+
 /**
- * The key a repeating task's memory is kept under: the same for every run of the task (each repeat is a new
- * task row with a new id, the instructions stay), different when its instructions or account change. FNV-1a.
+ * The key a task's memory (its runs, records and episodes) is kept under: its series ("s" + Task.seriesId), the same
+ * for every repeat and through edits of its instructions, schedule or account. A task without a series (from an
+ * older server) is keyed by its instructions and account (memoryTaskKey).
+ */
+export function memoryKeyOfTask(t: MemoryTaskRef): string {
+  return t.seriesId ? seriesTaskKey(t.seriesId) : memoryTaskKey(t.instructions, t.account);
+}
+
+/** The memory key of a task series. */
+export const seriesTaskKey = (seriesId: string): string => `s${seriesId}`.slice(0, 64);
+
+/**
+ * The key a task's memory was kept under before tasks had a series (and still is for one without): the same for
+ * every run with the same instructions and account, different when either changes. FNV-1a. Memory kept under it
+ * moves to the series' key (MemoryService adopts it).
  */
 export function memoryTaskKey(instructions: string, account: string | null | undefined): string {
   const text = `${instructions.replace(/\s+/g, " ").trim().toLowerCase()}\n${(account ?? "").trim().toLowerCase()}`;
@@ -383,7 +463,7 @@ export function memoryTaskKey(instructions: string, account: string | null | und
  * "[m7q2] key 48213: summary · 2026-09-24: newer note".
  */
 export function memoryLine(
-  e: Pick<MemoryEntry, "id" | "kind" | "subject" | "text" | "domain" | "learnedAt" | "key" | "notes" | "at" | "history">,
+  e: Pick<MemoryEntry, "id" | "kind" | "subject" | "text" | "domain" | "learnedAt" | "key" | "notes" | "at" | "history"> & { output?: string | undefined },
   opts: { history?: boolean } = {},
 ): string {
   if (e.key !== undefined) {
@@ -394,7 +474,27 @@ export function memoryLine(
   const where = e.domain ? ` (${e.domain})` : "";
   const when = e.kind === "task" || e.kind === "episode" ? `${memoryDate(e).slice(0, 10)} ` : "";
   const before = opts.history ? (e.history ?? []).map((h) => ` · until ${h.until.slice(0, 10)}: ${sameSubject(h.subject, e.subject) ? "" : `${h.subject}: `}${h.text}`).join("") : "";
-  return `[${e.id}] ${when}${e.subject}${where}: ${e.text}${before}`;
+  const output = e.output ? ` · output: "${clipLine(e.output, RUN_OUTPUT_FULL_CHARS)}"` : "";
+  return `[${e.id}] ${when}${e.subject}${where}: ${e.text}${output}${before}`;
+}
+
+/** A task run in one short line: its date and the start of its output (else its note): 2026-09-25 "Three ways to …". */
+export function taskRunBrief(e: Pick<MemoryEntry, "learnedAt" | "at" | "text" | "output">): string {
+  return `${memoryDate(e).slice(0, 10)} "${clipLine(e.output ?? e.text, RUN_OUTPUT_BRIEF_CHARS)}"`;
+}
+
+/** A run of a repeating task (task_complete's memory_note and output): not its summary, nor a fact remembered for it. */
+export const isTaskRun = (e: Pick<MemoryEntry, "kind" | "subject" | "key">): boolean => e.kind === "task" && e.key === undefined && e.subject === TASK_RUN_SUBJECT;
+/** A repeating task's summary of its runs older than MAX_TASK_RUNS. */
+export const isEarlierRuns = (e: Pick<MemoryEntry, "kind" | "subject" | "key">): boolean => e.kind === "task" && e.key === undefined && e.subject === EARLIER_RUNS_SUBJECT;
+/** A repeating task's profile (TASK_PROFILE_SUBJECT). */
+export const isTaskProfile = (e: Pick<MemoryEntry, "kind" | "subject" | "key">): boolean =>
+  e.kind === "task" && e.key === undefined && e.subject.trim().toLowerCase() === TASK_PROFILE_SUBJECT.toLowerCase();
+
+/** Text on one line, at most `max` characters (cut with …). */
+export function clipLine(text: string, max: number): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length <= max ? line : `${line.slice(0, max - 1).trimEnd()}…`;
 }
 
 const sameSubject = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
@@ -403,11 +503,12 @@ const sameSubject = (a: string, b: string) => a.trim().toLowerCase() === b.trim(
  * What of an entry is embedded for semantic search (the server's vectors, routes/memory.ts): its kind, subject,
  * site, key, text, notes, entities and earlier values, in plain words.
  */
-export function memoryEmbeddingText(e: Pick<MemoryEntry, "kind" | "subject" | "text" | "domain" | "key" | "notes" | "entities" | "history" | "taskTitle">): string {
+export function memoryEmbeddingText(e: Pick<MemoryEntry, "kind" | "subject" | "text" | "domain" | "key" | "notes" | "entities" | "history" | "taskTitle" | "output">): string {
   return [
     `${MEMORY_KIND_TEXT[e.kind].label}: ${e.subject}${e.domain ? ` (${e.domain})` : ""}${e.key ? ` [${e.key}]` : ""}`,
     e.taskTitle ? `Task: ${e.taskTitle}` : "",
     e.text,
+    e.output ? `Output: ${e.output}` : "",
     ...(e.notes ?? []).map((n) => n.text),
     e.entities?.length ? `Involves: ${e.entities.join(", ")}` : "",
     ...(e.history ?? []).map((h) => `Before: ${h.subject}: ${h.text}`),

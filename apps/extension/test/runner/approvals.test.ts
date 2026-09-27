@@ -33,12 +33,12 @@ describe("Runner: approvals", () => {
     expect(ctx).toMatchObject({ level: "full_within_task", instructions: "Post hello" });
   });
 
-  it("full autonomy: no approvals line; a level changed between turns is in the next message", async () => {
+  it("full autonomy: its own line (nothing waits, act on a clear request); a level changed between turns is in the next message", async () => {
     const h = harness({ automationLevel: "full" });
     h.brain.script = () => ({ outcome: "done", summary: "ok" });
     const { sessionId } = await h.runner.runAdhoc({ instructions: "Post 'hi' on X" });
     await h.runner.idle();
-    expect(h.brain.starts[0]!.task.approvals).toBeUndefined();
+    expect(h.brain.starts[0]!.task.approvals).toBe(automationPromptLine("full"));
     h.settings = { ...h.settings, automationLevel: "ask_all" };
     await h.runner.message(sessionId, "now reply to Maya");
     await h.runner.idle();

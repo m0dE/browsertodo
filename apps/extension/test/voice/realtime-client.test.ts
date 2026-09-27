@@ -10,6 +10,8 @@ import {
   RealtimeClient,
   realtimeFailure,
   realtimeUrl,
+  takeoverUrl,
+  TRANSCRIPTION_PROMPT,
   type RealtimeHandlers,
   type RealtimeSocketLike,
 } from "../../src/voice/realtime-client.js";
@@ -51,7 +53,7 @@ class FakeSocket implements RealtimeSocketLike {
   }
 }
 
-function setup(handlers: RealtimeHandlers = {}) {
+function setup(handlers: RealtimeHandlers = {}, languages?: string[]) {
   let socket!: FakeSocket;
   const client = new RealtimeClient({
     url: "wss://api.example.com/v1/ai/realtime",
@@ -59,6 +61,7 @@ function setup(handlers: RealtimeHandlers = {}) {
     instructions: "Be brief.",
     open: (url, protocols) => (socket = new FakeSocket(url, protocols)),
     handlers,
+    ...(languages ? { languages } : {}),
   });
   client.connect();
   return { client, socket: () => socket };
@@ -72,6 +75,14 @@ describe("realtimeUrl", () => {
     expect(realtimeUrl("http://127.0.0.1:8787/", "s-1")).toBe("ws://127.0.0.1:8787/v1/ai/realtime?session=s-1");
   });
 });
+
+/** The user said `words` in a turn of their own (its reply done): a later tool call is theirs to make. */
+function userSaid(s: { event(e: Record<string, unknown>): void }, words: string, id = "said1"): void {
+  s.event({ type: "input_audio_buffer.committed", item_id: id });
+  s.event({ type: "response.created", response: { id: `r_${id}` } });
+  s.event({ type: "conversation.item.input_audio_transcription.completed", item_id: id, transcript: words });
+  s.event({ type: "response.done", response: { id: `r_${id}`, status: "completed" } });
+}
 
 describe("RealtimeClient: connecting", () => {
   it("offers the browsertodo subprotocol with the session token, then configures the narrator", () => {
@@ -87,10 +98,17 @@ describe("RealtimeClient: connecting", () => {
     expect(update.session.audio.output.format).toEqual({ type: "audio/pcm", rate: REALTIME_SAMPLE_RATE });
     expect(update.session.audio.input.turn_detection).toMatchObject({ type: "server_vad", create_response: true, interrupt_response: false });
     // The user's own words for the chat (the server's price includes them).
-    expect(update.session.audio.input.transcription).toEqual({ model: "gpt-transcribe" });
+    expect(update.session.audio.input.transcription).toEqual({ model: "gpt-transcribe", prompt: TRANSCRIPTION_PROMPT });
     expect(update.session.tools.map((t: { name: string }) => t.name)).toEqual(["send_to_agent", "cancel_request", "stop_task", "answer_approval", "use_this_tab", "end_voice"]);
     expect(update.session.tools.every((t: { type: string }) => t.type === "function")).toBe(true);
     expect(NARRATOR_TOOLS).toHaveLength(6);
+  });
+
+  it("tells the transcription the languages the user speaks (gpt-transcribe's `languages`, ISO 639-1)", () => {
+    const { socket } = setup({}, ["en", "ko"]);
+    socket().open();
+    const [update] = socket().sent as [{ session: Record<string, any> }];
+    expect(update.session.audio.input.transcription).toEqual({ model: "gpt-transcribe", languages: ["en", "ko"], prompt: TRANSCRIPTION_PROMPT });
   });
 
   it("speaks in the default voice at normal speed, or the voice and speed from Settings (kept in OpenAI's range)", () => {
@@ -178,9 +196,10 @@ describe("RealtimeClient: the feed, the narrator's replies and its tools", () =>
     const { socket } = ready({ onTool });
     socket().event({ type: "input_audio_buffer.committed", item_id: "in1", previous_item_id: null });
     socket().event({ type: "response.created", response: { id: "r1" } });
+    socket().event({ type: "conversation.item.input_audio_transcription.completed", item_id: "in1", transcript: "post gm on x" });
     socket().event({ type: "response.function_call_arguments.done", call_id: "c1", name: "send_to_agent", arguments: '{"text":"Post gm on X"}', item_id: "f1" });
     await flush();
-    expect(onTool).toHaveBeenCalledWith("send_to_agent", { text: "Post gm on X" }, "in1");
+    expect(onTool).toHaveBeenCalledWith("send_to_agent", { text: "Post gm on X" }, "in1", ["post gm on x"]);
     expect(socket().sent.at(-1)).toEqual({ type: "conversation.item.create", item: { type: "function_call_output", call_id: "c1", output: "Sent to the agent." } });
     socket().event({ type: "response.done", response: { id: "r1", status: "completed", output: [] } });
     expect(socket().sent.at(-1)).toEqual({ type: "response.create", response: ackResponse("Post gm on X") });
@@ -188,6 +207,7 @@ describe("RealtimeClient: the feed, the narrator's replies and its tools", () =>
 
   it("other tools ask for a plain reply after their output (the narrator says what happened)", async () => {
     const { socket } = ready({ onTool: async () => "Stopped the task." });
+    userSaid(socket(), "stop the task");
     socket().event({ type: "response.function_call_arguments.done", call_id: "c1", name: "stop_task", arguments: "{}" });
     await flush();
     expect(socket().sent.at(-1)).toEqual({ type: "response.create" });
@@ -198,6 +218,7 @@ describe("RealtimeClient: the feed, the narrator's replies and its tools", () =>
       throw new Error("No chat to stop");
     });
     const { socket } = ready({ onTool });
+    userSaid(socket(), "stop the task");
     socket().event({ type: "response.function_call_arguments.done", call_id: "c1", name: "stop_task", arguments: "{}" });
     socket().event({ type: "response.function_call_arguments.done", call_id: "c2", name: "rm_rf", arguments: "{}" });
     socket().event({ type: "response.function_call_arguments.done", call_id: "c3", name: "send_to_agent", arguments: "{not json" });
@@ -241,7 +262,16 @@ describe("RealtimeClient: how a session ends", () => {
     socket().open();
     socket().event({ type: "browsertodo.error", error: "session_open", message: "Another realtime session is open" });
     socket().serverClose(REALTIME_CLOSE.concurrent, "session_open");
-    expect(onClose.mock.calls[0]![0]).toMatchObject({ kind: "busy", fallback: true });
+    expect(onClose.mock.calls[0]![0]).toMatchObject({ kind: "busy", transient: true });
+  });
+
+  it("taken over by a new session of the user (session_replaced): it ends for good, saying where voice went", () => {
+    const onClose = vi.fn();
+    const { socket } = setup({ onClose });
+    socket().open();
+    socket().event({ type: "browsertodo.error", error: "session_replaced", message: "Voice was turned on in another window, so it stopped here." });
+    socket().serverClose(REALTIME_CLOSE.concurrent, "taken over");
+    expect(onClose.mock.calls[0]![0]).toEqual({ kind: "replaced", transient: false, message: "Voice was turned on in another window, so it stopped here." });
   });
 
   it("a 'denied' event is only logged (the session goes on); OpenAI's own error events too", () => {
@@ -255,12 +285,12 @@ describe("RealtimeClient: how a session ends", () => {
     expect(log.mock.calls.map((c) => c[0])).toEqual(["realtime denied: session.tracing is not allowed", "realtime error: invalid_value: bad voice"]);
   });
 
-  it("a socket that never opened (no relay, no network) falls back to Standard", () => {
+  it("a socket that never opened (no relay, no network) is a transient failure: the panel tries again, never another engine", () => {
     const onClose = vi.fn();
     const { socket } = setup({ onClose });
     socket().onerror?.({});
     socket().serverClose(1006);
-    expect(onClose.mock.calls[0]![0]).toMatchObject({ kind: "network", fallback: true });
+    expect(onClose.mock.calls[0]![0]).toEqual({ kind: "network", transient: true, message: "Voice disconnected." });
   });
 });
 
@@ -268,33 +298,40 @@ describe("realtimeFailure: close codes and server errors -> what the panel says 
   const fixes = (code: number) => errorHelp(realtimeFailure({ closeCode: code, opened: true }).message).fixes.map((f) => f.kind);
 
   it("auth, credit and plan end the session with the error card's fix (Log in, Top up, Choose a plan)", () => {
-    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.auth, opened: true })).toMatchObject({ kind: "auth", fallback: false });
+    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.auth, opened: true })).toMatchObject({ kind: "auth", transient: false });
     expect(fixes(REALTIME_CLOSE.auth)).toEqual(["login"]);
-    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.credit, opened: true })).toMatchObject({ kind: "credit", fallback: false });
+    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.credit, opened: true })).toMatchObject({ kind: "credit", transient: false });
     expect(fixes(REALTIME_CLOSE.credit)).toContain("topup");
-    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.plan, opened: true })).toMatchObject({ kind: "plan", fallback: false });
+    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.plan, opened: true })).toMatchObject({ kind: "plan", transient: false });
     expect(fixes(REALTIME_CLOSE.plan)).toEqual(["plans"]);
   });
 
-  it("another session open, Realtime unavailable, upstream and protocol trouble fall back to Standard", () => {
-    for (const code of [REALTIME_CLOSE.concurrent, REALTIME_CLOSE.unavailable, REALTIME_CLOSE.upstream, REALTIME_CLOSE.tooBig]) {
+  it("upstream and protocol trouble, and another session still open, may pass (tried again); none names another engine", () => {
+    for (const code of [REALTIME_CLOSE.concurrent, REALTIME_CLOSE.upstream, REALTIME_CLOSE.tooBig, 1006, 1011]) {
       const f = realtimeFailure({ closeCode: code, opened: true });
-      expect(f.fallback, `close ${code}`).toBe(true);
-      expect(f.message).toMatch(/Using Standard\.$/);
+      expect(f.transient, `close ${code}`).toBe(true);
+      expect(f.message).not.toMatch(/Standard/);
     }
-    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.concurrent, opened: true }).message).toBe("Realtime voice is open in another window. Using Standard.");
+    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.upstream, opened: true }).message).toBe("Voice disconnected.");
+    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.concurrent, opened: true }).message).toBe("Realtime voice is on in another window or on another device.");
+    // Realtime not set up on the server does not pass by trying again.
+    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.unavailable, opened: false })).toMatchObject({ kind: "unavailable", transient: false });
   });
 
   it("idle and the session limit end quietly with a note, without switching engines", () => {
-    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.idle, opened: true })).toMatchObject({ kind: "idle", fallback: false });
-    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.sessionLimit, opened: true })).toMatchObject({ kind: "limit", fallback: false });
+    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.idle, opened: true })).toMatchObject({ kind: "idle", transient: false });
+    expect(realtimeFailure({ closeCode: REALTIME_CLOSE.sessionLimit, opened: true })).toMatchObject({ kind: "limit", transient: false });
     expect(realtimeFailure({ closeCode: REALTIME_CLOSE.sessionLimit, opened: true }).message).toBe("Hands-free stopped: a Realtime session lasts up to 30 minutes.");
   });
 
-  it("the server's error code wins over the close code; an unknown close after opening falls back", () => {
+  it("the server's error code wins over the close code; an unknown close is a dropped connection", () => {
     expect(realtimeFailure({ closeCode: 1011, error: "out_of_credit", opened: true }).kind).toBe("credit");
-    expect(realtimeFailure({ closeCode: 1011, opened: true })).toMatchObject({ kind: "upstream", fallback: true });
-    expect(realtimeFailure({ closeCode: 1006, opened: false })).toMatchObject({ kind: "network", fallback: true });
+    expect(realtimeFailure({ closeCode: 1011, opened: true })).toMatchObject({ kind: "upstream", transient: true });
+    expect(realtimeFailure({ closeCode: 1006, opened: false })).toMatchObject({ kind: "network", transient: true });
+  });
+
+  it("takeoverUrl asks the relay to end the user's open session and take its place", () => {
+    expect(takeoverUrl("wss://api.test/v1/ai/realtime?session=s1")).toBe("wss://api.test/v1/ai/realtime?session=s1&takeover=1");
   });
 });
 

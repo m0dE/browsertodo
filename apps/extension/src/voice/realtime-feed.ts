@@ -9,7 +9,7 @@
  * (spoken-line.ts) are passed on: never what the agent types or what pages
  * say. Pure.
  */
-import type { AgentEvent } from "@browsertodo/shared";
+import { USER_STOP_REASON, type AgentEvent } from "@browsertodo/shared";
 import { freshMemory, narrationOf, type NarrationMemory, type SpokenKind } from "./narrator-policy.js";
 import { approvalLine } from "./approval-voice.js";
 
@@ -67,7 +67,14 @@ export class NarratorFeed {
         if (spoken.kind === "question") {
           return [{ text: `Agent update (needs the user): The agent asks: "${spoken.line}" Ask the user, and pass their answer on with send_to_agent.`, speak: "question" }];
         }
-        const what = ev.outcome === "done" ? "The task is done." : ev.outcome === "paused" ? "The task is waiting for the user." : "The task did not work.";
+        const what =
+          ev.outcome === "done"
+            ? "The task is done."
+            : ev.outcome === "paused" && ev.reason?.trim() === USER_STOP_REASON
+              ? "The user stopped the task."
+              : ev.outcome === "paused"
+                ? "The task is waiting for the user."
+                : "The task did not work.";
         return [{ text: `Agent update (finished): ${what} Tell the user in one to three short sentences: "${spoken.line}"`, speak: "result" }];
       }
       default:

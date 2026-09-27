@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MEMORY_WRITER_MODEL, SESSION_HEADER } from "@browsertodo/shared";
+import { MEMORY_WRITER_MAX_TOKENS, MEMORY_WRITER_MODEL, SESSION_HEADER } from "@browsertodo/shared";
 import { memorySummarizer, type SummarizerDeps } from "../../src/memory/summarizers.js";
 
 type Call = { url: string; headers: Record<string, string>; body: Record<string, unknown> };
@@ -66,6 +66,14 @@ describe("memorySummarizer", () => {
     const d = deps(OK);
     expect(await memorySummarizer("claude-code", d.deps)!(req)).toEqual({ text: "{}", costUsd: 0.002 });
     expect(d.helperCalls).toEqual([{ method: "memory.summarize", params: { system: "SYS", prompt: "PROMPT" }, opts: { timeoutMs: expect.any(Number) }, connected: true }]);
+  });
+
+  it("a shorter answer when asked (chat titles), on both Messages paths; the writer's limit otherwise", async () => {
+    const d = deps(OK);
+    await memorySummarizer("browsertodo", d.deps)!({ ...req, maxTokens: 40 });
+    await memorySummarizer("claude-api", d.deps)!({ ...req, maxTokens: 40 });
+    await memorySummarizer("claude-api", d.deps)!(req);
+    expect(d.calls.map((c) => c.body.max_tokens)).toEqual([40, 40, MEMORY_WRITER_MAX_TOKENS]);
   });
 
   it("the scripted brain has none", () => {

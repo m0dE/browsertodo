@@ -5,7 +5,8 @@
 // FAKE_CLAUDE_PARTIAL=1: stream the answer first as --include-partial-messages
 // stream_event lines (one text_delta per word, 5 ms apart), like Claude Code 2.1.
 // FAKE_CLAUDE_TOOL=1: the model first calls a tool that runs for FAKE_CLAUDE_SLOW_MS
-// (a tool_use block, then its tool_result), then answers.
+// (a tool_use block, then its tool_result), then answers (FAKE_CLAUDE_ANSWER_MS after
+// that request starts: time for an interrupt to stop it).
 // Like Claude Code: each request starts with a `system/status: requesting` line;
 // with --replay-user-messages every stdin message is echoed (isReplay) when it is
 // read; a message that arrives while a tool runs is read with the tool's result
@@ -83,6 +84,7 @@ async function answer(content) {
       text += ` (and: ${merged})`;
     }
     out({ type: "system", subtype: "status", status: "requesting" });
+    await sleep(Number(process.env.FAKE_CLAUDE_ANSWER_MS || 0));
   } else if (slow) await sleep(slow);
   if (request.interrupted) {
     out({ type: "user", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] } });

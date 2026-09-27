@@ -22,8 +22,12 @@ import {
 } from "@browsertodo/shared";
 import { HOSTED_LABEL } from "../engine/brain-resolver.js";
 
-/** One writer call: the system prompt and the prompt, for the conversation `sessionId`. */
-export type Summarize = (req: { system: string; prompt: string; sessionId: string }) => Promise<HelperMethods["memory.summarize"]["result"]>;
+/**
+ * One call of the writer's model: the system prompt and the prompt, for the conversation `sessionId`, answered in at
+ * most `maxTokens` (default MEMORY_WRITER_MAX_TOKENS; Claude Code has no such limit). The memory writer's, and the
+ * chat titles' (engine/chat-titles.ts).
+ */
+export type Summarize = (req: { system: string; prompt: string; sessionId: string; maxTokens?: number }) => Promise<HelperMethods["memory.summarize"]["result"]>;
 
 /** How much longer than the helper's own limit the extension waits for its answer (the helper reports the timeout). */
 const HELPER_ANSWER_MARGIN_MS = 15_000;
@@ -44,17 +48,17 @@ export interface SummarizerDeps {
 export function memorySummarizer(brain: BrainKind, deps: SummarizerDeps): Summarize | null {
   switch (brain) {
     case "browsertodo":
-      return async ({ system, prompt, sessionId }) => {
+      return async ({ system, prompt, sessionId, maxTokens }) => {
         const s = deps.hosted();
         if (!s) throw new Error(`Not signed in: ${HOSTED_LABEL} cannot write memory`);
         const transport: MessagesTransport = { url: `${s.apiBase.replace(/\/+$/, "")}/v1/ai/messages`, auth: "bearer", headers: { [SESSION_HEADER]: sessionId }, label: HOSTED_LABEL };
-        return messagesCall(deps, s.token, system, prompt, transport);
+        return messagesCall(deps, s.token, system, prompt, transport, maxTokens);
       };
     case "claude-api":
-      return async ({ system, prompt }) => {
+      return async ({ system, prompt, maxTokens }) => {
         const key = (await deps.settings()).anthropicApiKey.trim();
         if (!key) throw new Error("No Anthropic API key in Settings");
-        return messagesCall(deps, key, system, prompt, {});
+        return messagesCall(deps, key, system, prompt, {}, maxTokens);
       };
     case "claude-code":
       return async ({ system, prompt }) => {
@@ -66,10 +70,10 @@ export function memorySummarizer(brain: BrainKind, deps: SummarizerDeps): Summar
   }
 }
 
-async function messagesCall(deps: SummarizerDeps, key: string, system: string, prompt: string, transport: MessagesTransport): Promise<{ text: string }> {
+async function messagesCall(deps: SummarizerDeps, key: string, system: string, prompt: string, transport: MessagesTransport, maxTokens = MEMORY_WRITER_MAX_TOKENS): Promise<{ text: string }> {
   const body: MessagesRequest = {
     model: MEMORY_WRITER_MODEL,
-    max_tokens: MEMORY_WRITER_MAX_TOKENS,
+    max_tokens: maxTokens,
     system: [{ type: "text", text: system }],
     tools: [],
     messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],

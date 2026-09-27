@@ -156,7 +156,8 @@ try {
     assert.equal(out.tab.index, out.activeIndex + 1, "right after the active tab");
     assert.equal(out.tab.active, true);
     assert.equal(out.group?.title, "BrowserTODO");
-    assert.equal(out.group?.color, "blue");
+    // Nothing runs (prepare called directly): the idle look (control-indicator.ts).
+    assert.equal(out.group?.color, "grey");
     assert.equal(after.windows, before.windows, "no new window");
     assert.equal(after.tabs, before.tabs + 1);
     return `tab ${out.tab.id} at index ${out.tab.index} in group "${out.group.title}"`;

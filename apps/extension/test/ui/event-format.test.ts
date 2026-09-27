@@ -2,18 +2,14 @@ import { describe, expect, it } from "vitest";
 import { SCREEN_HELP_TEXT, type AgentEvent, type SessionInfo } from "@browsertodo/shared";
 import {
   describeEvent,
-  handoffDiffers,
-  HANDOFF_OVERLAP_MIN,
   isBrainStartLine,
-  isEarlyHeard,
   isNearBottom,
-  openingText,
   openingTurn,
-  pairHeard,
   sameWords,
   scheduledView,
   spokenEchoes,
   turnPicks,
+  wordForWord,
 } from "../../src/sidepanel/event-format.js";
 import { shortUrl, toolArgsSummary } from "../../src/text.js";
 
@@ -225,52 +221,33 @@ describe("voice in the chat: spoken messages and lines said aloud", () => {
   });
 });
 
-describe("Realtime voice in the chat: the user's own words, and the request sent for them", () => {
-  const said = "could you check what Sarah wrote me";
-  const sent = "Open Gmail and read the newest email from Sarah";
+describe("Realtime voice in the chat: one message per request, the user's words for it folded under it", () => {
+  // The owner's report: server VAD split one request into three turns; two showed as muted heard lines, the bubble as
+  // the last part only, and "Sent to agent" as the whole, clean request.
+  const parts = [
+    "You, like, you barely.",
+    "Skim through my, you know, previous posts. You know, you should be, like, going through pages and pages just so you get a better understanding of.",
+    "You know, how, like, how my mind works.",
+  ];
+  const request = "Skim through pages and pages of my previous posts to get a better understanding of how my mind works.";
 
-  it("the request shows under the words only when it says something else", () => {
-    expect(HANDOFF_OVERLAP_MIN).toBeGreaterThan(0);
-    expect(handoffDiffers(said, sent)).toBe(true);
-    expect(handoffDiffers("uh can you open gmail and read my newest email", "Open Gmail and read my newest email")).toBe(false);
-    expect(handoffDiffers("Post gm on X.", "post GM on x")).toBe(false);
-    expect(describeEvent({ type: "heard", text: said, sent })).toEqual({ kind: "user", text: said, voice: true, sent });
-    expect(describeEvent({ type: "heard", text: "open gmail please", sent: "Open Gmail" })).toEqual({ kind: "user", text: "open gmail please", voice: true });
+  it("the bubble is the request as understood; the words, every part in order, fold under it", () => {
+    expect(describeEvent({ type: "user_message", text: request, voice: true, heard: parts })).toEqual({ kind: "user", text: request, voice: true, heard: parts });
+    // Words that are the request (Standard sends them as said): no second copy.
+    expect(describeEvent({ type: "user_message", text: "Post gm on X.", voice: true, heard: ["post GM on x"] })).toEqual({ kind: "user", text: "Post gm on X.", voice: true });
+    expect(wordForWord("Open Gmail", undefined)).toEqual({});
+    // A typed message never has any.
+    expect(describeEvent({ type: "user_message", text: request })).toEqual({ kind: "user", text: request });
   });
 
-  it("words passed on to no one (thinking aloud, 'one sec') are a muted heard line, never a message", () => {
-    expect(describeEvent({ type: "heard", text: "thanks" })).toEqual({ kind: "heard", text: "thanks" });
-    expect(describeEvent({ type: "heard", text: "one sec", early: true })).toEqual({ kind: "heard", text: "one sec" });
-    // Said before the conversation existed: shown above its first message.
-    expect(isEarlyHeard({ type: "heard", text: "one sec", early: true })).toBe(true);
-    expect(isEarlyHeard({ type: "heard", text: "one sec" })).toBe(false);
-    expect(isEarlyHeard({ type: "heard", text: said, sent, early: true })).toBe(false);
-    expect(isEarlyHeard({ type: "user_message", text: "one sec" })).toBe(false);
+  it("words that led to no request (small talk, one sec) are kept for the record, not shown in the chat", () => {
+    expect(describeEvent({ type: "heard", text: "thanks" })).toEqual({ kind: "status", text: "" });
   });
 
-  it("the words take the place of the voice message their request became, kept before or after it", () => {
-    const after: AgentEvent[] = [
-      { type: "user_message", text: sent, voice: true },
-      { type: "tool_call", id: "1", name: "navigate", args: {} },
-      { type: "heard", text: said, sent },
-    ];
-    expect(pairHeard(after, null)).toEqual({ messages: new Map([[0, 2]]), placed: new Set([2]) });
-    const before: AgentEvent[] = [{ type: "heard", text: said, sent }, { type: "user_message", text: sent, voice: true }];
-    expect(pairHeard(before, null)).toEqual({ messages: new Map([[1, 0]]), placed: new Set([0]) });
-    // A typed message with the same words, or words without a request, stay as they are.
-    const typed: AgentEvent[] = [{ type: "user_message", text: sent }, { type: "heard", text: said, sent }, { type: "heard", text: "thanks" }];
-    expect(pairHeard(typed, null)).toEqual({ messages: new Map(), placed: new Set() });
-  });
-
-  it("the first message of a voice chat shows the words, and the request when it differs", () => {
-    const s: SessionInfo = { sessionId: "s", source: "adhoc", title: sent, instructions: sent, brain: "claude-api", jev: false, startedAt: "2026-09-24T10:00:00Z", voice: true };
-    const events: AgentEvent[] = [{ type: "status", text: "x" }, { type: "heard", text: said, sent }];
-    expect(openingText(s)).toBe(sent);
-    expect(openingText({ ...s, voice: undefined } as SessionInfo)).toBeNull();
-    const pairs = pairHeard(events, openingText(s));
-    expect(pairs).toEqual({ opening: 1, messages: new Map(), placed: new Set([1]) });
-    expect(openingTurn(s, events, undefined, { type: "heard", text: said, sent })).toMatchObject({ text: said, voice: true, sent });
-    expect(openingTurn(s, events, undefined, { type: "heard", text: "open gmail and read the newest email from sarah please", sent })).not.toHaveProperty("sent");
+  it("the first message of a voice chat: the request as understood, the words folded under it", () => {
+    const s: SessionInfo = { sessionId: "s", source: "adhoc", title: request, instructions: request, brain: "claude-api", jev: false, startedAt: "2026-09-24T10:00:00Z", voice: true, heard: parts };
+    expect(openingTurn(s, [])).toMatchObject({ text: request, voice: true, heard: parts });
+    expect(openingTurn({ ...s, heard: undefined } as SessionInfo, [])).not.toHaveProperty("heard");
   });
 });
 

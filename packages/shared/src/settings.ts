@@ -90,6 +90,8 @@ export const ExtensionSettings = z.object({
   realtimeCostNoticed: z.boolean().default(false),
   /** Hands-free voice makes a short soft sound when the microphone goes live and when it stops. */
   voiceSounds: z.boolean().default(true),
+  /** A tab the agent controls shows it on the page: a glow and a "BrowserTODO is working" pill with Stop (Settings > Tasks). */
+  showControlOverlay: z.boolean().default(true),
   /** How much the chat agent does without asking (automation.ts); enforced before each browser action. */
   automationLevel: AutomationLevel.default(DEFAULT_AUTOMATION_LEVEL),
   /** The same for scheduled runs of the TODO list (automation.ts). */

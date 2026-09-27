@@ -89,6 +89,22 @@ export function isLongSummary(text: string): boolean {
 /** Lower-case words (letters and digits). */
 const wordsOf = (text: string): string[] => text.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? [];
 
+/** The share of `part`'s words that are also in `whole` (each counted as often as `whole` has it). 0 when `part` has none. */
+export function containedWordShare(part: string, whole: string): number {
+  const left = new Map<string, number>();
+  for (const w of wordsOf(whole)) left.set(w, (left.get(w) ?? 0) + 1);
+  const words = wordsOf(part);
+  let found = 0;
+  for (const w of words) {
+    const n = left.get(w) ?? 0;
+    if (n > 0) {
+      found++;
+      left.set(w, n - 1);
+    }
+  }
+  return words.length ? found / words.length : 0;
+}
+
 /**
  * The share of words two texts have in common: the words they share (each counted as often as both have it) over
  * the word count of the longer one. 1 when neither has words.

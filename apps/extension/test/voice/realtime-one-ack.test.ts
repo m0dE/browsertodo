@@ -101,6 +101,7 @@ async function panel() {
     account: () => undefined,
     engines: async () => ENGINES,
     saveSettings: async () => {},
+    openVoiceSettings: () => {},
     createEngine: (_id, events) =>
       new RealtimeEngine({
         ticket: async () => ({ url: "wss://x/v1/ai/realtime", token: "t" }),

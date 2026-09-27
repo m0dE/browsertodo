@@ -1,3 +1,4 @@
+import { USER_STOP_REASON } from "@browsertodo/shared";
 /**
  * The sessions running right now and what each one holds while it runs: its
  * agent slot (tab), the X turn, its local task.
@@ -11,13 +12,13 @@ import type { ActiveSession } from "./turn.js";
 
 /** The runner's own reasons to stop a session, with the outcome each ends it with and its reason in words (chat, notifications, a continuing agent). */
 const STOPS = {
-  "user-stop": { outcome: "paused", reason: "Stopped by the user" },
+  "user-stop": { outcome: "paused", reason: USER_STOP_REASON },
   "tab-closed": { outcome: "paused", reason: "The tab was closed" },
   "debugger-canceled": { outcome: "failed", reason: DEBUGGER_CANCELED },
 } as const satisfies Record<string, { outcome: AbortOutcome; reason: string }>;
 
 /** Why the runner stopped a session (rather than the brain ending it). */
-export type StopKind = keyof typeof STOPS | "pause-url";
+export type StopKind = keyof typeof STOPS | "pause-url" | "needs-approval";
 
 export interface ForcedStop {
   kind: StopKind;
@@ -32,6 +33,11 @@ export function stopOf(kind: keyof typeof STOPS): ForcedStop {
 /** The agent's tab reached a page that needs the user; reason: what it needs (pauseReasonForUrl). */
 export function pauseUrlStop(reason: string): ForcedStop {
   return { kind: "pause-url", outcome: "paused", reason };
+}
+
+/** Nobody was there to approve an action (an unattended scheduled run); reason: what needs the user's OK (approvalPauseReason). */
+export function approvalStop(reason: string): ForcedStop {
+  return { kind: "needs-approval", outcome: "paused", reason };
 }
 
 export class ActiveSessions {
@@ -76,7 +82,7 @@ export class ActiveSessions {
     this.slots.bind(slotIndex, sessionId);
     if (localTaskId) this.localRunning.add(localTaskId);
     const slot = this.pool.take(slotIndex, sessionId);
-    const active: ActiveSession = { session, slot, run: null, forced: null, said: [], waiting: [], runOver: false, nextTurn: [], typed: [], x, scheduled, localTaskId };
+    const active: ActiveSession = { session, slot, run: null, forced: null, said: [], waiting: [], runOver: false, nextTurn: [], typed: [], x, scheduled, localTaskId, approvals: new AbortController() };
     this.byId.set(sessionId, active);
     return active;
   }
@@ -108,10 +114,14 @@ export class ActiveSessions {
     this.ended.notify();
   }
 
-  /** Stops a session (the brain is asked to stop; an X wait ends). The first stop wins. */
+  /**
+   * Stops a session (the brain is asked to stop; an X wait ends). The first stop wins. Its waiting approvals end
+   * at once as not done: a brain's run cannot end while an action of it waits in the approval gate.
+   */
   force(a: ActiveSession, stop: ForcedStop): void {
     if (a.forced) return;
     a.forced = stop;
+    a.approvals.abort("stop");
     a.run?.abort(stop.reason, stop.outcome);
     this.xTurn.wake();
   }

@@ -572,23 +572,22 @@ describe("UiRouter: a chat per browser tab", () => {
     expect(await t.router.handle({ type: "trace.get", sessionId: "nope" })).toEqual({ ok: false, error: "No session nope" });
   });
 
-  it("voice.heard keeps the user's own words in their conversation, with the request sent for them", async () => {
+  it("voice.heard keeps words that led to no request in their conversation, for the record", async () => {
     const t = setup();
     await t.sessions.create({ sessionId: "s1", source: "adhoc", title: "t", brain: "claude-api", jev: false, startedAt: "2026-09-24T10:00:00Z" });
-    expect(await t.req({ type: "voice.heard", sessionId: "s1", text: " uh, open gmail please ", sent: " Open Gmail " })).toEqual({ ok: true });
-    expect(await t.req({ type: "voice.heard", sessionId: "s1", text: "what is it doing?" })).toEqual({ ok: true });
-    // Said before the chat existed (early); a request's words never are.
-    expect(await t.req({ type: "voice.heard", sessionId: "s1", text: "one sec", early: true })).toEqual({ ok: true });
-    expect(await t.req({ type: "voice.heard", sessionId: "s1", text: "open it", sent: "Open it", early: true })).toEqual({ ok: true });
-    const kept = (await t.sessions.eventsOf("s1")).map(({ type, text, sent, early }: { type: string; text?: string; sent?: string; early?: true }) => ({ type, text, sent, early }));
-    expect(kept).toEqual([
-      { type: "heard", text: "uh, open gmail please", sent: "Open Gmail", early: undefined },
-      { type: "heard", text: "what is it doing?", sent: undefined, early: undefined },
-      { type: "heard", text: "one sec", sent: undefined, early: true },
-      { type: "heard", text: "open it", sent: "Open it", early: undefined },
-    ]);
+    expect(await t.req({ type: "voice.heard", sessionId: "s1", text: " what is it doing? " })).toEqual({ ok: true });
+    expect(await t.sessions.eventsOf("s1")).toMatchObject([{ type: "heard", text: "what is it doing?" }]);
     expect(await t.req({ type: "voice.heard", sessionId: "nope", text: "x" })).toEqual({ ok: false });
     expect(await t.router.handle({ type: "voice.heard", sessionId: "s1", text: "" })).toEqual({ ok: false, error: "sessionId and text are required" });
+  });
+
+  it("a spoken run.message carries the user's words for it, word for word, to the runner (strings only, bounded)", async () => {
+    const t = await withTabs();
+    await t.req({ type: "run.message", sessionId: "S1", text: "Open Gmail", voice: true, heard: [" could you, um, ", "open gmail", 3 as unknown as string, ""] });
+    expect(t.runner.message).toHaveBeenLastCalledWith("S1", "Open Gmail", { voice: true, heard: ["could you, um,", "open gmail"] });
+    // Typed: no words.
+    await t.req({ type: "run.message", sessionId: "S1", text: "Open Gmail", heard: ["x"] });
+    expect(t.runner.message).toHaveBeenLastCalledWith("S1", "Open Gmail", {});
   });
 
   it("a message or Continue to a conversation passes the tab it was sent from to the runner (which binds it once taken)", async () => {

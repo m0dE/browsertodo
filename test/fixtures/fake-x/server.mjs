@@ -16,7 +16,13 @@ import { selfSignedCert } from "../tls.mjs";
 export const ACCOUNTS = [
   { handle: "@alpha", name: "Alpha" },
   { handle: "@beta", name: "Beta" },
-  { handle: "@gamma", name: "Gamma" },
+  // A profile that says what the account is (its bio and site), for tasks that must write in its voice about real facts.
+  {
+    handle: "@gamma",
+    name: "Gamma",
+    bio: "Gamma is the spreadsheet add-on that fixes broken formulas: it watches your team's sheets, flags errors like #REF! and explains each fix in plain English. Works with Google Sheets and Excel.",
+    site: "https://gamma.test",
+  },
   { handle: "@locked", name: "Locked" },
 ];
 
@@ -226,7 +232,9 @@ document.getElementById("grok").addEventListener("click", () => { menu.hidden = 
       const posts = (feed[handle] ?? []).slice().reverse()
         .map((p) => `<article data-testid="tweet"><p>${esc(p.text)}</p><a href="/${profile[1]}/status/${p.id}"><time datetime="${p.at}">${p.at}</time></a></article>`)
         .join("");
-      return send(200, page(`${handle} / X`, `${nav(acct)}<main><h1>${esc(handle)}</h1>${posts || "<p>No posts yet</p>"}</main>`));
+      const who = ACCOUNTS.find((a) => a.handle === handle);
+      const bio = who.bio ? `<p data-testid="UserDescription">${esc(who.bio)}</p>${who.site ? `<a data-testid="UserUrl" href="${esc(who.site)}">${esc(who.site.replace(/^https?:\/\//, ""))}</a>` : ""}` : "";
+      return send(200, page(`${handle} / X`, `${nav(acct)}<main><h1>${esc(handle)}</h1>${who.bio ? `<p>${esc(who.name)}</p>` : ""}${bio}${posts || "<p>No posts yet</p>"}</main>`));
     }
     const status = /^\/([A-Za-z0-9_]+)\/status\/(\d+)$/.exec(url.pathname);
     if (req.method === "GET" && status) {
@@ -260,6 +268,10 @@ document.getElementById("grok").addEventListener("click", () => { menu.hidden = 
     listen: (port = 443, host = "127.0.0.1") => new Promise((resolve) => server.listen(port, host, () => resolve(server.address().port))),
     close: () => new Promise((resolve) => server.close(() => resolve())),
     feed: () => feed,
+    /** Earlier posts of an account, as if it had posted them (its profile lists them). */
+    seed: (handle, texts) => {
+      for (const text of texts) (feed[handle] ??= []).push({ id: nextId++, account: handle, text, media: [], at: new Date().toISOString() });
+    },
     notes: () => notes,
     images: () => images,
   };

@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SPOKEN_CHARS, OUT_OF_CREDIT } from "@browsertodo/shared";
-import { endLine, errorLine, planLine, speakable } from "../../src/voice/spoken-line.js";
+import { MAX_SPOKEN_CHARS, OUT_OF_CREDIT, USER_STOP_REASON } from "@browsertodo/shared";
+import { endLine, errorLine, planLine, speakable, STOPPED_LINE } from "../../src/voice/spoken-line.js";
+import { freshMemory, narrationOf } from "../../src/voice/narrator-policy.js";
+import { NarratorFeed } from "../../src/voice/realtime-feed.js";
+
+describe("a task the user stopped (the owner's trace: 'I need a quick response from you... Did you stop the task?')", () => {
+  it("is one clear line, a result, never a question for the user", () => {
+    const stopped = { type: "task_end", outcome: "paused", reason: USER_STOP_REASON } as const;
+    expect(endLine(stopped)).toBe(STOPPED_LINE);
+    expect(narrationOf(stopped, freshMemory(), 0)).toEqual({ kind: "result", line: "Stopped." });
+    const feed = new NarratorFeed();
+    expect(feed.push(stopped, 0)).toEqual([{ text: 'Agent update (finished): The user stopped the task. Tell the user in one to three short sentences: "Stopped."', speak: "result" }]);
+  });
+});
 
 describe("speakable", () => {
   it("takes the first sentence, without Markdown or links", () => {

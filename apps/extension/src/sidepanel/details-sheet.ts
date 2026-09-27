@@ -7,7 +7,43 @@
 import type { SessionInfo } from "@browsertodo/shared";
 import { uiRequest } from "../ui-protocol.js";
 import { copyText, h } from "../ui/dom.js";
-import { detailsModel, linkParts, type DetailsInput, type DetailsModel, type DetailsTask } from "./task-details.js";
+import { detailsModel, linkParts, type DetailsInput, type DetailsModel, type DetailsTask, type PreviousRun } from "./task-details.js";
+
+/** Previous runs listed at first; "Show all" lists the rest. */
+export const RUNS_SHOWN = 10;
+
+/**
+ * A task's previous runs: a collapsed section ("Previous runs · 12"), each run one line (its date and the start of
+ * what it produced) that opens to the whole output and the run's note.
+ */
+export function renderPreviousRuns(runs: readonly PreviousRun[], earlier?: string): HTMLElement {
+  const item = (r: PreviousRun) =>
+    h(
+      "li",
+      null,
+      h(
+        "details.run",
+        null,
+        h("summary", null, h("span.run-when", null, r.when), h("span.run-line", null, r.line)),
+        r.output ? renderText(r.output) : null,
+        r.note ? h("p.run-note", null, r.output ? `Note: ${r.note}` : r.note) : null,
+      ),
+    );
+  const list = h("ol.runs", null, ...runs.slice(0, RUNS_SHOWN).map(item));
+  const more = runs.length > RUNS_SHOWN ? h("button.ghost.small", { type: "button" }, `Show all ${runs.length}`) : null;
+  more?.addEventListener("click", () => {
+    list.append(...runs.slice(RUNS_SHOWN).map(item));
+    more.remove();
+  });
+  return h(
+    "details.sheet-runs",
+    null,
+    h("summary.sheet-label", null, `Previous runs · ${runs.length}`),
+    list,
+    more,
+    earlier ? h("p.sheet-note", null, `Older: ${earlier}`) : null,
+  );
+}
 
 export interface SheetOptions {
   /** "Open in TODO" (shown when the model has a TODO entry). */
@@ -64,6 +100,7 @@ export function openDetails(model: DetailsModel, trigger: HTMLElement | null, op
         model.text ? renderText(model.text) : h("p.sheet-note", null, model.emptyText),
         model.textNote ? h("p.sheet-note", null, model.textNote) : null,
         rows.length ? h("dl.sheet-fields", null, ...rows) : null,
+        model.previousRuns?.length || model.earlierRuns ? renderPreviousRuns(model.previousRuns ?? [], model.earlierRuns) : null,
         model.files.length
           ? h(
               "div.sheet-files",
@@ -112,18 +149,30 @@ export async function runsOfTask(taskId: string): Promise<SessionInfo[]> {
   return (await uiRequest({ type: "sessions.list", taskId })).sessions;
 }
 
+/** What the task's memory keeps of its earlier runs (none when memory cannot say). */
+async function keptRuns(task: Pick<DetailsTask, "instructions" | "account" | "seriesId">): Promise<Pick<DetailsInput, "runs">> {
+  try {
+    const { runs } = await uiRequest({ type: "memory.taskRuns", task: { instructions: task.instructions, account: task.account, seriesId: task.seriesId ?? null } });
+    return runs.length ? { runs } : {};
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Everything known about a run's task (its TODO entry, when the list has it)
- * or a TODO entry's runs (the latest one), for the sheet. Lookups are best
- * effort: what could not be loaded is left out.
+ * or a TODO entry's runs (the latest one, and what its memory keeps of the
+ * earlier ones), for the sheet. Lookups are best effort: what could not be
+ * loaded is left out.
  */
 export async function gatherDetails(from: { session: SessionInfo } | { task: DetailsTask; listSource: "local" | "account" }): Promise<DetailsInput> {
   if ("task" in from) {
+    const kept = keptRuns(from.task);
     try {
       const [latest] = await runsOfTask(from.task.id);
-      return { ...from, session: latest ?? null };
+      return { ...from, session: latest ?? null, ...(await kept) };
     } catch {
-      return from;
+      return { ...from, ...(await kept) };
     }
   }
   const s = from.session;
@@ -131,7 +180,7 @@ export async function gatherDetails(from: { session: SessionInfo } | { task: Det
   try {
     const list = await uiRequest({ type: "tasks.list" });
     const task = list.tasks.find((t) => t.id === s.taskId) ?? null;
-    return { session: s, task, listSource: list.source ?? "local" };
+    return { session: s, task, listSource: list.source ?? "local", ...(task ? await keptRuns(task) : {}) };
   } catch {
     return { session: s };
   }

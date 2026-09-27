@@ -48,7 +48,8 @@ describe("AgentTab", () => {
     expect(await agent.isAgentTab(999)).toBe(false);
     expect(await agent.windowId()).toBe(windowId);
     const group = chrome.tabGroups.byId.get(chrome.tabs.byId.get(tabId)!.groupId)!;
-    expect(group).toMatchObject({ windowId, title: "BrowserTODO", color: "blue" });
+    // Grey while nothing runs; the control indicator colours it while the agent acts (control-indicator.ts).
+    expect(group).toMatchObject({ windowId, title: "BrowserTODO", color: "grey" });
   });
 
   it.each([
@@ -97,7 +98,7 @@ describe("AgentTab", () => {
   it("the driver's next result tells the agent about a tab the page opened", async () => {
     const { windowId, tabId } = await userWindow("https://x.test/compose");
     await agent.prepare("current-tab");
-    evalResults.push(["snapshotPage", { url: "https://x.test/compose", title: "X", text: "", elements: [], truncated: false }]);
+    evalResults.push(["snapshotPage", { url: "https://x.test/compose", title: "X", text: "What is happening?! Post your reply", elements: [{}, {}, {}], truncated: false }]);
     const popup = await chrome.tabs.create({ windowId, url: "https://x.test/grok", active: false });
     await agent.adopt(popup.id!, tabId);
     const snap = await driver.readPage();
@@ -484,6 +485,45 @@ describe("Driver", () => {
     expect(await driver.readPage()).toEqual(snap);
     const cmd = chrome.debugger.commands.find((c) => c.method === "Runtime.evaluate");
     expect(cmd?.params).toMatchObject({ expression: snapshotExpression(), returnByValue: true });
+  });
+
+  it("readPage waits for a tab still loading (read_page never reasons over an empty page), and says when it gave up", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const h = driverHarness(async (ms) => void vi.setSystemTime(Date.now() + ms));
+      const loadingScreen = { url: "https://x.com/jack", title: "", text: "X", elements: [], truncated: false };
+      const profile = { ...loadingScreen, title: "Jack (@jack) / X", text: "Jack @jack 2,000 posts", elements: Array(30).fill({ index: 1, role: "link", name: "Posts" }) };
+      let loaded = false;
+      let reads = 0;
+      h.chrome.debugger.respond = (method, params) => {
+        if (method !== "Runtime.evaluate") return {};
+        const expr = String((params as { expression: string }).expression);
+        if (expr.includes("timeOrigin")) {
+          // Still loading for 2 s, then usable.
+          if (Date.now() - start >= 2000) loaded = true;
+          return { result: { value: { doc: 1, state: loaded ? "complete" : "loading", controls: loaded ? 30 : 0, text: 0, foreignFrame: false } } };
+        }
+        reads++;
+        return { result: { value: loaded ? profile : loadingScreen } };
+      };
+      const start = Date.now();
+      expect(await h.driver.readPage()).toEqual(profile);
+      expect(reads).toBe(2);
+      expect(Date.now() - start).toBeGreaterThanOrEqual(2000);
+
+      // A page that never draws: the read gives up and the note says it is still loading.
+      loaded = false;
+      h.chrome.debugger.respond = (method, params) => {
+        const expr = String((params as { expression: string }).expression ?? "");
+        if (method !== "Runtime.evaluate") return {};
+        if (expr.includes("timeOrigin")) return { result: { value: { doc: 1, state: "loading", controls: 0, text: 0, foreignFrame: false } } };
+        return { result: { value: loadingScreen } };
+      };
+      const gaveUp = await h.driver.readPage();
+      expect(gaveUp).toMatchObject({ text: "X", note: expect.stringMatching(/^Page still loading: after 10(\.\d)? s it still shows next to nothing \(0 elements, 1 characters of text\)/) });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("surfaces page exceptions", async () => {

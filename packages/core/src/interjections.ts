@@ -143,3 +143,17 @@ export class Interjections {
     }
   }
 }
+
+/**
+ * The work's result, or `instead()` as soon as the model has a message from the user it has not read (`spoken`,
+ * see Interjections.spoken): a wait for a page is not worth more than what the user just said. The work goes on
+ * and is let go (a later failure is no unhandled rejection).
+ */
+export async function untilUserSpeaks<T>(work: Promise<T>, spoken: ReturnType<Interjections["spoken"]>, instead: () => T): Promise<T> {
+  try {
+    return await Promise.race([work, spoken.when.then(instead)]);
+  } finally {
+    spoken.cancel();
+    work.catch(() => undefined);
+  }
+}

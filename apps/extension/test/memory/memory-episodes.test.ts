@@ -369,8 +369,11 @@ describe("transcriptLines and episodeTrigger", () => {
   });
 
   it("a task's first run is written soon; chat turns once idle, naming the task they continue", () => {
+    // A local task names its series (its own id when stored before series).
     const task = { id: "t", instructions: "Post", account: "@a" } as never;
-    expect(episodeTrigger({ source: "local", task })).toEqual({ soon: true, task: { instructions: "Post", account: "@a" } });
+    expect(episodeTrigger({ source: "local", task })).toEqual({ soon: true, task: { instructions: "Post", account: "@a", seriesId: "t" } });
+    const repeat = { id: "t2", seriesId: "t", instructions: "Post", account: "@a" } as never;
+    expect(episodeTrigger({ source: "local", task: repeat }).task?.seriesId).toBe("t");
     expect(episodeTrigger({ source: "adhoc", input: { instructions: "x" } })).toEqual({ soon: false });
     const first = { instructions: "Post", account: null };
     expect(episodeTrigger({ source: "turn", from: { source: "local" } as SessionInfo, text: "go", task: null, first })).toEqual({ soon: false, task: first });

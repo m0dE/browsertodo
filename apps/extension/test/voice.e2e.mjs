@@ -289,12 +289,14 @@ const { step, finish } = createSuite("voice");
       // The voice shortcut, as the background delivers it to the panel (panel-command.ts).
       await panel.evaluate(() => window.__pushToPanel({ type: "panel.voice" }));
       await waitFor(() => panel.evaluate(() => window.__phases.includes("listening")), "hands-free listening", { timeout: 10_000 });
-      // The voice bar at the top says so, and the toolbar button of the session's tab has the badge (the background's).
+      // The strip at the top says so (no buttons: the mic in the composer ends voice), and the toolbar button of the
+      // session's tab has the badge (the background's).
       const bar = await panel.evaluate(() => {
         const b = document.getElementById("voice-bar");
-        return { shown: !b.hidden, title: b.querySelector(".vb-title").textContent, tab: Number(b.dataset.tabs.split(",")[0]), stop: b.querySelector(".vb-stop").getAttribute("aria-label") };
+        const mic = document.querySelector("#now-actions .voice-mic");
+        return { shown: !b.hidden, label: b.querySelector(".vb-label").textContent, title: b.querySelector(".vb-status").textContent, tab: Number(b.dataset.tabs.split(",")[0]), buttons: [...b.querySelectorAll("button")].filter((x) => x.offsetParent).length, stop: mic.getAttribute("aria-label") };
       });
-      assert.ok(bar.shown && /^(Listening|Hearing you…)$/.test(bar.title) && /^Stop hands-free/.test(bar.stop), `voice bar ${JSON.stringify(bar)}`);
+      assert.ok(bar.shown && bar.label === "Voice on" && /^(Listening|Hearing you)$/.test(bar.title) && bar.buttons === 0 && /^End voice/.test(bar.stop), `voice strip ${JSON.stringify(bar)}`);
       const badgeOf = (tabId) => sw.evaluate(async (t) => chrome.action.getBadgeText({ tabId: t }), tabId);
       assert.equal(await waitFor(async () => (await badgeOf(bar.tab)) || null, "the voice badge on the session's tab"), "MIC");
       assert.equal(await sw.evaluate(async () => chrome.action.getBadgeText({})), "", "the badge is only on the session's tab");
@@ -318,14 +320,14 @@ const { step, finish } = createSuite("voice");
       return `badge MIC on tab ${bar.tab}, then cleared; phases ${JSON.stringify(await panel.evaluate(() => window.__phases))}; sent ${JSON.stringify(sent)}; said ${JSON.stringify(said)}`;
     });
 
-    await step("hands-free mute (the bar's Mute, then Alt+M): nothing is transcribed or sent while muted, the bar and the badge say MUTE; unmuted it listens again", async () => {
+    await step("hands-free mute (the composer's Mute, then Alt+M): nothing is transcribed or sent while muted, the strip and the badge say MUTE; unmuted it listens again", async () => {
       const badgeOf = (tabId) => sw.evaluate(async (t) => chrome.action.getBadgeText({ tabId: t }), tabId);
       const transcribes = () => panel.evaluate(() => window.__transcribes ?? 0);
       const barLook = () =>
         panel.evaluate(() => {
           const b = document.getElementById("voice-bar");
-          const m = b.querySelector(".vb-mute");
-          return { state: b.dataset.state, muted: b.dataset.muted ?? null, title: b.querySelector(".vb-title").textContent, pressed: m.getAttribute("aria-pressed"), label: m.getAttribute("aria-label"), meter: !b.querySelector(".vb-meter").hidden, placeholder: document.getElementById("now-text").placeholder, tab: Number(b.dataset.tabs.split(",")[0]) };
+          const m = document.querySelector("#now-actions .voice-mute");
+          return { state: b.dataset.state, muted: b.dataset.muted ?? null, title: b.querySelector(".vb-status").textContent, pressed: m.getAttribute("aria-pressed"), label: m.getAttribute("aria-label"), meter: !b.querySelector(".vb-meter").hidden, placeholder: document.getElementById("now-text").placeholder, tab: Number(b.dataset.tabs.split(",")[0]) };
         });
       await panel.evaluate(() => {
         window.__adhoc = [];
@@ -335,7 +337,7 @@ const { step, finish } = createSuite("voice");
       await waitFor(() => panel.evaluate(() => window.__phases.includes("listening")), "hands-free listening", { timeout: 10_000 });
       // The fake microphone's speech is being transcribed (what muting must stop).
       const before = await waitFor(async () => ((await transcribes()) > 0 ? transcribes() : null), "transcription requests while listening", { timeout: 20_000 });
-      await panel.evaluate(() => document.querySelector("#voice-bar .vb-mute").click());
+      await panel.evaluate(() => document.querySelector("#now-actions .voice-mute").click());
       const muted = await barLook();
       assert.deepEqual(
         [muted.state, muted.muted, muted.title, muted.pressed, muted.meter],

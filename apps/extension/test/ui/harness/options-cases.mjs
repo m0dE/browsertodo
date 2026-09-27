@@ -477,7 +477,7 @@ export const OPTION_FLOWS = [
       // The server cannot run Realtime: said in a few words.
       await p.evaluate(() => (window.__rtMode = "unavailable"));
       await p.click("#speech-test");
-      check("unavailable said", await eventually(async () => (await p.textContent("#speech-test-msg")) === "Realtime voice is unavailable right now.", 5000));
+      check("unavailable said", await eventually(async () => (await p.textContent("#speech-test-msg")) === "Realtime voice is unavailable on the server right now.", 5000));
       await optChecks(p, "voice test realtime", checks);
       await p.ctx.close();
     },

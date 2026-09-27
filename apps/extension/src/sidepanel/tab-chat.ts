@@ -27,14 +27,24 @@ export interface TabChatLocal {
  * agent's extra tab). Null: an empty new chat.
  */
 export function chatForTab(tab: number | null, s: TabChatState, local: TabChatLocal = {}): string | null {
+  const own = ownChatOfTab(tab, s, local);
+  if (own || tab === null) return own;
+  for (const [sessionId, tabs] of Object.entries(s.runningTabs ?? {})) {
+    if (tabs.includes(tab) && local.left?.get(tab) !== sessionId && !isBound(sessionId, s)) return sessionId;
+  }
+  return null;
+}
+
+/**
+ * The conversation that is the tab's own: bound to it, or just started there. Never a running session that only
+ * acts in the tab (a scheduled run, another chat's extra tab): hands-free voice talks to and narrates this one only.
+ */
+export function ownChatOfTab(tab: number | null, s: TabChatState, local: TabChatLocal = {}): string | null {
   if (tab === null) return null;
   const bound = s.tabChats?.[String(tab)];
   if (bound) return bound;
   const p = local.pending;
   if (p && p.tab === tab && !isBound(p.sessionId, s)) return p.sessionId;
-  for (const [sessionId, tabs] of Object.entries(s.runningTabs ?? {})) {
-    if (tabs.includes(tab) && local.left?.get(tab) !== sessionId && !isBound(sessionId, s)) return sessionId;
-  }
   return null;
 }
 

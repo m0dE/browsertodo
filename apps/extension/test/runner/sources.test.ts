@@ -173,7 +173,7 @@ describe("Runner: adhoc sessions", () => {
     expect(events.filter((e) => e.type === "user_message")).toHaveLength(1);
     expect(events.at(-1)).toMatchObject({ type: "task_end", outcome: "done", summary: "did it" });
     // The agent is told the user's time in the browser's zone (schedule_task).
-    expect(h.brain.starts[0]!.task).toEqual({ id: sessionId, instructions: "Like the top post", account: "@me", timeZone: localTimeZone() });
+    expect(h.brain.starts[0]!.task).toEqual({ id: sessionId, instructions: "Like the top post", account: "@me", timeZone: localTimeZone(), approvals: automationPromptLine("full") });
     expect(h.brain.starts[0]!.mediaPaths).toEqual(["C:\\dl\\x.png"]);
     // One-off runs act on the tab the user is looking at.
     expect(h.prepared).toEqual([{ mode: "current-tab" }]);

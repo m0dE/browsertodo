@@ -11,8 +11,16 @@ describe("approvals in the prompts", () => {
     const p = buildTaskPrompt({ ...task, approvals: line }, [], { isRetry: false });
     expect(p.indexOf(line)).toBeGreaterThan(p.indexOf(">>>"));
     expect(line).toMatch(/Prepare everything first/);
-    expect(automationPromptLine("full")).toBe("");
     expect(buildTaskPrompt(task, [], { isRetry: false })).not.toContain("Approvals:");
+  });
+
+  it("full autonomy tells the agent nothing waits: it acts on a clear request instead of asking to confirm a plan", () => {
+    const line = automationPromptLine("full");
+    expect(line).toMatch(/^Approvals: the user chose full autonomy/);
+    expect(line).toMatch(/never stop to propose a plan or to ask them to confirm one/);
+    // No approval card is coming, so the card's note is not said.
+    expect(line).not.toMatch(/approval card/);
+    expect(buildTaskPrompt({ ...task, approvals: line }, [], { isRetry: false })).toContain(line);
   });
 
   it("each level says what waits", () => {

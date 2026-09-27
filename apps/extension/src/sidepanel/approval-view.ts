@@ -3,7 +3,7 @@
  * (approval_request), and, once it ended (approval_resolved, or the turn
  * ended without one), how. Plus the card's keyboard shortcuts. Pure.
  */
-import { APPROVAL_OUTCOME_TEXT, type AgentEvent, type ApprovalAnswer, type ApprovalOutcome } from "@browsertodo/shared";
+import { APPROVAL_OUTCOME_TEXT, type AgentEvent, type ApprovalAnswer, type ApprovalAnsweredBy, type ApprovalOutcome } from "@browsertodo/shared";
 
 export interface ApprovalView {
   kind: "approval";
@@ -25,7 +25,7 @@ export interface ApprovalView {
   byVoice?: true;
 }
 
-export function approvalView(ev: Extract<AgentEvent, { type: "approval_request" }>, ended?: { outcome: ApprovalOutcome; by?: "voice" }): ApprovalView {
+export function approvalView(ev: Extract<AgentEvent, { type: "approval_request" }>, ended?: { outcome: ApprovalOutcome; by?: ApprovalAnsweredBy }): ApprovalView {
   const r = ev.request;
   const v: ApprovalView = { kind: "approval", id: r.id, action: r.action, site: r.site, why: r.why, expiresAt: r.expiresAt, state: ended?.outcome ?? "pending" };
   if (r.text) v.text = r.text;
@@ -39,7 +39,7 @@ export function approvalView(ev: Extract<AgentEvent, { type: "approval_request" 
  * when its turn ended without one (the extension restarted while it waited);
  * undefined while it still waits.
  */
-export function approvalEnding(events: readonly AgentEvent[], id: string): { outcome: ApprovalOutcome; by?: "voice" } | undefined {
+export function approvalEnding(events: readonly AgentEvent[], id: string): { outcome: ApprovalOutcome; by?: ApprovalAnsweredBy } | undefined {
   const at = events.findIndex((e) => e.type === "approval_request" && e.request.id === id);
   if (at < 0) return undefined;
   for (const e of events.slice(at + 1)) {

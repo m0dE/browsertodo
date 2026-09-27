@@ -217,7 +217,7 @@ try {
     return `verified=${state.verified}, opened the mail=${opened}, ${tools.length} tool calls, ${s.outcome}`;
   });
 
-  await step("a chat on a page Chrome keeps extensions out of (chrome://version) still runs, in other tabs, with a quiet line", async () => {
+  await step("a chat on a page Chrome keeps extensions out of (chrome://version) still runs, in other tabs; the request goes elsewhere, so no line about the page", async () => {
     const restricted = await context.newPage();
     await restricted.goto("chrome://version");
     const tabId = await bt(async (w) => {
@@ -234,7 +234,7 @@ try {
     const s = await runEnded(sessionId);
     const events = await eventsOf(sessionId);
     const lines = events.filter((e) => e.type === "status").map((e) => e.text);
-    assert.ok(lines.includes(RESTRICTED_STATUS), `status lines: ${JSON.stringify(lines)}`);
+    assert.ok(!lines.includes(RESTRICTED_STATUS), `status lines: ${JSON.stringify(lines)}`);
     assert.ok(!events.some((e) => e.type === "error"), "no error lines");
     if (!claude) {
       const run = await lastRun();

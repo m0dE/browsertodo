@@ -12,7 +12,13 @@
  *   from a chat the user's); recall with a key returns it (in a task its own
  *   first). Turn start and recall add the account's semantic scores when
  *   memory syncs (deps.semantic, at most MEMORY_SEARCH_TIMEOUT_MS).
- * - runNote(): a repeating task's note for its next run (task_complete `memory_note`).
+ * - runNote(): a repeating task's run for its next runs (task_complete `memory_note` and `output`).
+ * - check_similar (a tool): a draft against what earlier runs put out (runs.ts).
+ *
+ * A task's memory is kept under its series (memoryKeyOfTask), the same through every repeat and edit. What was kept
+ * under the key it had before it had a series (its instructions' hash, memoryTaskKey) is adopted by the series at its
+ * first turn: the hashes of every row of the series (deps.seriesTasks: their instructions as they were at each run)
+ * move to the series' key, once. An edit of a task's instructions moves the old hash too (taskEdited).
  * - handle(): Settings > Memory and the chat (list, edit, delete, delete a
  *   task's memory, forget everything, Undo on a "Remembered" note, memory off
  *   for one chat, and whether this computer's memory goes to a newly signed-in
@@ -22,28 +28,39 @@
  * the chat's "Remembered: ..." note, whose Undo puts the entry back as it was.
  */
 import {
+  CheckSimilarArgs,
+
   errorMessage,
   ForgetArgs,
+  isEarlierRuns,
+  isTaskRun,
   MAX_MEMORY_NOTE_CHARS,
+  MAX_RUN_OUTPUT_CHARS,
   MEMORY_KIND_TEXT,
   memoryDomain,
+  memoryKeyOfTask,
   memoryLine,
   memoryRecordKey,
   memoryTaskKey,
   MAX_MEMORY_SUBJECT_CHARS,
   RecallArgs,
   RememberArgs,
+  secretProblem,
+  seriesTaskKey,
+  TASK_RUN_SUBJECT,
   type ExtensionSettings,
   type MemoryEntry,
   type MemoryKind,
   type MemoryScope,
   type MemorySource,
+  type MemoryTaskRef,
   type MemoryToolName,
   type SessionInfo,
 } from "@browsertodo/shared";
 import type { SessionStore } from "../engine/sessions.js";
 import type { UiRequest, UiResults } from "../ui-protocol.js";
 import { searchHistory } from "./history.js";
+import { similarAnswer } from "./runs.js";
 import { recallMemory, recordFor, selectMemory, hostsIn, type MemorySelection } from "./select.js";
 import { MemoryRefusal, type MemoryChange, type MemoryStore, type NewMemory, type NewRecord } from "./store.js";
 import type { MemorySync } from "./sync.js";
@@ -52,8 +69,8 @@ export type MemoryTool = MemoryToolName;
 
 /** What a turn is, for its memory. */
 export interface MemoryRun {
-  /** A TODO-list or cloud task: its run notes are kept under its instructions and account (memoryTaskKey). Absent: a chat. */
-  task?: { instructions: string; account: string | null };
+  /** A TODO-list or cloud task: its runs are kept under its series (memoryKeyOfTask). Absent: a chat. */
+  task?: MemoryTaskRef;
   /** The run's title (the source Settings shows for what it saved). */
   title: string;
   /** The request this turn: the instructions, or the user's message. */
@@ -75,10 +92,13 @@ export interface MemoryToolResult {
 /** The requests of Settings > Memory and of the chat that memory answers (ui-protocol.ts). */
 export type MemoryRequest = Extract<
   UiRequest,
-  { type: "memory.list" | "memory.edit" | "memory.delete" | "memory.pin" | "memory.deleteTask" | "memory.clear" | "memory.undo" | "memory.syncChoice" | "chat.setMemory" }
+  {
+    type: "memory.list" | "memory.edit" | "memory.delete" | "memory.pin" | "memory.deleteTask" | "memory.taskRuns" | "memory.clear" | "memory.undo" | "memory.syncChoice" | "chat.setMemory";
+  }
 >;
 export const MEMORY_REQUESTS: readonly MemoryRequest["type"][] = [
   "memory.list",
+  "memory.taskRuns",
   "memory.edit",
   "memory.delete",
   "memory.pin",
@@ -104,12 +124,27 @@ export interface MemoryServiceDeps {
    * failure: the turn goes on with words, entities and time alone. Given at most MEMORY_SEARCH_TIMEOUT_MS.
    */
   semantic?(query: string, taskKey: string | null): Promise<ReadonlyMap<string, number> | null>;
+  /**
+   * Every row of a task series (a repeating task's runs and its waiting one), for adopting what was kept under their
+   * instructions before tasks had a series. Absent or failing: only the task's own instructions are adopted, and the
+   * series is tried again at its next turn.
+   */
+  seriesTasks?(seriesId: string): Promise<MemoryTaskRef[]>;
   newChangeId?(): string;
   now?(): Date;
 }
 
+/** What a turn is given from memory, and how long it waited for the account's search (late: it went on without it). */
+export type TurnMemory = MemorySelection & { search?: { ms: number; late?: true } };
+
 /** How long a turn waits for the account's semantic search before going on without it. */
 export const MEMORY_SEARCH_TIMEOUT_MS = 1500;
+/**
+ * The same for the next turn of an agent session that is still open: it already has what earlier turns were given
+ * (and recall, which searches by meaning too), so its message goes out without waiting for the round trip (measured
+ * in the user's traces: memory.wait 270-490 ms per follow-up); a search that answers within this still counts.
+ */
+export const MEMORY_SEARCH_FOLLOW_UP_TIMEOUT_MS = 150;
 /** Hits asked of the account's semantic search (the entries a turn could be given are far fewer). */
 export const MEMORY_SEARCH_LIMIT = 50;
 
@@ -123,7 +158,10 @@ const OFF_TEXT = {
 } as const;
 
 /** What a memory tool would have done, for its answer when memory is off. */
-const OFF_DONE: Record<MemoryTool, string> = { remember: "saved", recall: "recalled", forget: "forgotten", search_history: "searched" };
+const OFF_DONE: Record<MemoryTool, string> = { remember: "saved", recall: "recalled", forget: "forgotten", search_history: "searched", check_similar: "checked" };
+
+/** A run's note when it left only an output. */
+const NO_NOTE = "(no note)";
 
 export class MemoryService {
   private readonly runs = new Map<string, { taskKey?: string; taskTitle?: string; source: MemorySource }>();
@@ -136,8 +174,8 @@ export class MemoryService {
    * The start of a turn: what the agent is given from memory (undefined: nothing, memory is off or nothing is
    * relevant), with how much of the budget it took. The turn is remembered for the tools.
    */
-  async begin(sessionId: string, run: MemoryRun): Promise<MemorySelection | undefined> {
-    const taskKey = run.task ? memoryTaskKey(run.task.instructions, run.task.account) : undefined;
+  async begin(sessionId: string, run: MemoryRun): Promise<TurnMemory | undefined> {
+    const taskKey = run.task ? memoryKeyOfTask(run.task) : undefined;
     this.runs.delete(sessionId);
     const given = (run.continued && this.given.get(sessionId)) || new Set<string>();
     this.given.delete(sessionId);
@@ -153,8 +191,12 @@ export class MemoryService {
     // Another browser's new entries come in the background (this turn uses what is here).
     this.deps.sync?.pullSoon();
     const hosts = [...(run.tabUrl ? hostsIn(run.tabUrl) : []), ...hostsIn(run.request)];
-    // The account's search (a network call, the slow part) runs while the entries are read.
-    const [all, semantic] = await Promise.all([this.deps.store.list(), this.semantic(run.request, taskKey ?? null)]);
+    // The account's search (a network call, the slow part) runs while the entries are read (after the task's older
+    // memory moved to its series, the first time).
+    const searchTimeoutMs = run.continued ? MEMORY_SEARCH_FOLLOW_UP_TIMEOUT_MS : MEMORY_SEARCH_TIMEOUT_MS;
+    const entries = (run.task ? this.adopt(run.task) : Promise.resolve()).then(() => this.deps.store.list());
+    const [all, search] = await Promise.all([entries, this.semantic(run.request, taskKey ?? null, searchTimeoutMs)]);
+    const semantic = search?.hits;
     const unseen = all.filter((e) => !given.has(e.id));
     const pageText = [run.tabUrl, run.tabTitle].filter(Boolean).join("\n");
     const ctx = { taskKey: taskKey ?? null, hosts, text: run.request, ...this.clock(), ...(pageText ? { pageText } : {}), ...(semantic ? { semantic } : {}) };
@@ -163,7 +205,7 @@ export class MemoryService {
     for (const e of picked.entries) given.add(e.id);
     // When entries were last used only orders what goes first once memory is full: the turn does not wait for it.
     void this.deps.store.touch(picked.entries.map((e) => e.id)).catch(() => {});
-    return picked;
+    return search ? { ...picked, search: { ms: search.ms, ...(search.hits ? {} : { late: true as const }) } } : picked;
   }
 
   /** remember / recall / forget for the turn of `sessionId`. knownSecret: a secret the agent was handed this run is in the text. */
@@ -175,6 +217,7 @@ export class MemoryService {
       if (name === "search_history") return await searchHistory(sessionId, rawArgs, { sessions: this.deps.sessions, ...this.clock() });
       if (name === "remember") return await this.remember(sessionId, rawArgs, settings.memoryKindsOff, opts.knownSecret);
       if (name === "recall") return await this.recall(sessionId, rawArgs, settings.memoryKindsOff);
+      if (name === "check_similar") return await this.checkSimilar(sessionId, rawArgs, settings.memoryKindsOff);
       return await this.forget(sessionId, rawArgs);
     } catch (err) {
       return fail(err instanceof MemoryRefusal ? err.message : `${name} failed: ${errorMessage(err)}`);
@@ -182,26 +225,74 @@ export class MemoryService {
   }
 
   /**
-   * The note a repeating task's run leaves for its next run (what it posted, what is pending). Nothing when the
-   * run is not a task, memory is off, or task history is turned off; a note that looks like a secret is refused
-   * and the chat says so.
+   * What a repeating task's run leaves for its next runs: its note (what it posted, what is pending) and its output
+   * (exactly what it published or sent; at most MAX_RUN_OUTPUT_CHARS, a longer one is cut). Nothing when the run is
+   * not a task, memory is off, or task history is turned off; a note that looks like a secret is refused, an output
+   * that does is left out, and the chat says so.
    */
-  async runNote(sessionId: string, note: string, opts: { knownSecret?(text: string): boolean } = {}): Promise<void> {
+  async runNote(sessionId: string, note: string | undefined, opts: { output?: string | undefined; knownSecret?(text: string): boolean } = {}): Promise<void> {
     const run = this.runs.get(sessionId);
-    const text = note.trim().slice(0, MAX_MEMORY_NOTE_CHARS);
+    let output = opts.output?.trim().slice(0, MAX_RUN_OUTPUT_CHARS).trim() || undefined;
+    const text = note?.trim().slice(0, MAX_MEMORY_NOTE_CHARS) || (output ? NO_NOTE : "");
     if (!run?.taskKey || !text) return;
     const settings = await this.deps.settings();
     if ((await this.offReason(sessionId, settings)) || settings.memoryKindsOff.includes("task")) return;
     if (opts.knownSecret?.(text)) return void (await this.deps.sessions.note(sessionId, { type: "status", text: "Run note not saved: it held a password the agent was given" }));
+    if (output && (opts.knownSecret?.(output) || secretProblem(output))) {
+      output = undefined;
+      await this.deps.sessions.note(sessionId, { type: "status", text: "The run's output was not kept: it looked like it held a password, code or key" });
+      if (text === NO_NOTE) return;
+    }
     try {
       const change = await this.deps.store.put(
-        { kind: "task", subject: "Run note", text, scope: "task", taskKey: run.taskKey, ...(run.taskTitle ? { taskTitle: run.taskTitle } : {}) },
+        {
+          kind: "task",
+          subject: TASK_RUN_SUBJECT,
+          text,
+          scope: "task",
+          taskKey: run.taskKey,
+          ...(run.taskTitle ? { taskTitle: run.taskTitle } : {}),
+          ...(output ? { output } : {}),
+        },
         run.source,
         { note: true },
       );
       await this.noteChange(sessionId, change);
     } catch (err) {
       await this.deps.sessions.note(sessionId, { type: "status", text: `Run note not saved: ${errorMessage(err)}` });
+    }
+  }
+
+  /**
+   * A task was edited (update_scheduled_task): what was kept under its old instructions' hash (before tasks had a
+   * series) moves to its series, so the edit does not cut it off from its history.
+   */
+  async taskEdited(before: MemoryTaskRef, after: MemoryTaskRef): Promise<void> {
+    if (!after.seriesId) return;
+    await this.deps.store.rekeyTask([memoryTaskKey(before.instructions, before.account)], seriesTaskKey(after.seriesId));
+  }
+
+  /**
+   * The first turn of a task series here: what was kept under the older keys of its rows (their instructions' hash)
+   * moves to the series' key. Marked done only when the series' rows were read (else tried again next turn).
+   */
+  private async adopt(task: MemoryTaskRef): Promise<void> {
+    if (!task.seriesId) return;
+    const to = seriesTaskKey(task.seriesId);
+    try {
+      if (await this.deps.store.adopted(to)) return;
+      let rows: MemoryTaskRef[] = [];
+      let complete = true;
+      try {
+        rows = (await this.deps.seriesTasks?.(task.seriesId)) ?? [];
+      } catch {
+        complete = false;
+      }
+      const from = [...new Set([task, ...rows].map((r) => memoryTaskKey(r.instructions, r.account)))];
+      await this.deps.store.rekeyTask(from, to);
+      if (complete) await this.deps.store.markAdopted(to);
+    } catch {
+      /* the turn goes on with what is kept under the series already */
     }
   }
 
@@ -229,6 +320,8 @@ export class MemoryService {
         return { entry: (await store.setPinned(requireText(msg.id, "id"), msg.pinned === true)).after! };
       case "memory.deleteTask":
         return { removed: await store.forgetTask(requireText(msg.taskKey, "taskKey")) };
+      case "memory.taskRuns":
+        return { runs: await this.taskRuns(msg.task) };
       case "memory.syncChoice": {
         if (!this.deps.sync) throw new Error("Memory does not sync in this build");
         return { sync: await this.deps.sync.choose(msg.add === true) };
@@ -296,6 +389,35 @@ export class MemoryService {
     return { text: `${change.before ? "Updated" : "Remembered"} [${e.id}] ${e.subject}.${replaced} The user sees it in the chat with Undo.` };
   }
 
+  /**
+   * A task's runs as its details show them (Previous runs): newest first, with its earlier-runs summary last. Also
+   * what is still kept under its instructions' hash (not adopted by its series yet).
+   */
+  private async taskRuns(task: MemoryTaskRef): Promise<MemoryEntry[]> {
+    const keys = new Set([memoryKeyOfTask(task), memoryTaskKey(task.instructions, task.account)]);
+    const mine = (await this.deps.store.list()).filter((e) => !!e.taskKey && keys.has(e.taskKey));
+    const runs = mine.filter(isTaskRun).sort((a, b) => b.learnedAt.localeCompare(a.learnedAt));
+    return [...runs, ...mine.filter(isEarlierRuns)];
+  }
+
+  /**
+   * check_similar: the draft against what earlier runs put out, this task's (their outputs, else their notes) and the
+   * user's other repeating tasks' (their outputs), with the account's meaning scores when memory syncs.
+   */
+  private async checkSimilar(sessionId: string, rawArgs: unknown, kindsOff: readonly MemoryKind[]): Promise<MemoryToolResult> {
+    const parsed = CheckSimilarArgs.safeParse(rawArgs);
+    if (!parsed.success) return fail(`check_similar needs draft: the exact text you are about to publish or send (${parsed.error.issues[0]?.message ?? "missing"})`);
+    if (kindsOff.includes("task")) return fail("The user turned off Task history in memory, so there are no earlier outputs to compare with. Go on without it; do not try again.");
+    const taskKey = this.runs.get(sessionId)?.taskKey ?? null;
+    const runs = (await this.deps.store.list()).filter((e) => isTaskRun(e) && (e.taskKey === taskKey || !!e.output));
+    if (!runs.length) {
+      const where = taskKey ? "This task has no earlier outputs kept yet" : "No repeating task has kept an output yet";
+      return { text: `${where}: nothing to compare with. Go ahead, and put the exact text that goes out in task_complete's output.` };
+    }
+    const semantic = (await this.semantic(parsed.data.draft, taskKey, MEMORY_SEARCH_TIMEOUT_MS))?.hits ?? undefined;
+    return { text: similarAnswer(parsed.data.draft, runs, { taskKey, ...(semantic ? { semantic } : {}) }) };
+  }
+
   private async recall(sessionId: string, rawArgs: unknown, kindsOff: readonly MemoryKind[]): Promise<MemoryToolResult> {
     const parsed = RecallArgs.safeParse(rawArgs);
     const { query, key } = parsed.success ? parsed.data : {};
@@ -310,7 +432,7 @@ export class MemoryService {
       await this.deps.store.touch([record.id]);
       return { text: `- ${memoryLine(record)}` };
     }
-    const semantic = await this.semantic(query!, taskKey ?? null);
+    const semantic = (await this.semantic(query!, taskKey ?? null, MEMORY_SEARCH_TIMEOUT_MS))?.hits;
     const found = recallMemory(entries, query!, { kindsOff, taskKey: taskKey ?? null, ...this.clock(), ...(semantic ? { semantic } : {}) });
     if (!found.length) return { text: `Nothing in memory matches "${query}".` };
     await this.deps.store.touch(found.map((e) => e.id));
@@ -335,12 +457,18 @@ export class MemoryService {
   }
 
   /** The account's semantic scores for `query`, or null (none, failed, or later than MEMORY_SEARCH_TIMEOUT_MS). */
-  private async semantic(query: string, taskKey: string | null): Promise<ReadonlyMap<string, number> | null> {
+  /**
+   * The account's semantic search for a turn, given at most timeoutMs: its hits (null when it failed or came too
+   * late) and how long the turn waited for it. Null when memory does not sync.
+   */
+  private async semantic(query: string, taskKey: string | null, timeoutMs: number): Promise<{ hits: ReadonlyMap<string, number> | null; ms: number } | null> {
     if (!this.deps.semantic) return null;
+    const started = Date.now();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const late = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), MEMORY_SEARCH_TIMEOUT_MS)));
+    const late = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), timeoutMs)));
     try {
-      return await Promise.race([this.deps.semantic(query, taskKey).catch(() => null), late]);
+      const hits = await Promise.race([this.deps.semantic(query, taskKey).catch(() => null), late]);
+      return { hits, ms: Date.now() - started };
     } finally {
       clearTimeout(timer);
     }

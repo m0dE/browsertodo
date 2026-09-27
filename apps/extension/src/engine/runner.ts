@@ -27,7 +27,7 @@ import type { StorageLike } from "./kv.js";
 import type { LocalStore } from "./local-store.js";
 import type { MaterializedMedia, MediaSource } from "./media-files.js";
 import type { SessionStore } from "./sessions.js";
-import { ActiveSessions, pauseUrlStop, stopOf } from "./run/active.js";
+import { ActiveSessions, approvalStop, pauseUrlStop, stopOf } from "./run/active.js";
 import { CONTINUE_TEXT, continueRefusal } from "./run/conversation.js";
 import { DueLoop } from "./run/due-loop.js";
 import { FailurePolicy } from "./run/failure-policy.js";
@@ -35,10 +35,11 @@ import { turnJob, withContext, type AdhocInput, type FirstJob, type RunnerApi, t
 import { Lifecycle, type RunBrain } from "./run/lifecycle.js";
 import { ResultRecorder } from "./run/record.js";
 import { KeepAlive, RunnerStateStore, type RunnerState } from "./run/state.js";
-import { TurnRunner, type TabPage } from "./run/turn.js";
+import { TurnRunner, type ActiveSession, type TabPage } from "./run/turn.js";
 import type { GateContext } from "../approval/gate.js";
 import type { MemoryService } from "../memory/service.js";
 import type { EpisodeWriter } from "../memory/episodes.js";
+import type { ChatTitler } from "./chat-titles.js";
 
 export interface ResolvedBrain {
   brain: Brain | null;
@@ -65,6 +66,8 @@ export interface RunnerDeps {
   memory?: Pick<MemoryService, "begin" | "runNote">;
   /** The background memory writer: a conversation's episode and new facts, after it ends or goes idle. */
   episodes?: Pick<EpisodeWriter, "ended">;
+  /** Chat titles: the model names a chat after its turns (chat-titles.ts). */
+  titles?: Pick<ChatTitler, "ended">;
   media: { materialize(sessionId: string, sources: MediaSource[]): Promise<MaterializedMedia> };
   /** Resolves the brain for these settings; may (re)connect the helper. */
   resolveBrain(settings: ExtensionSettings): Promise<ResolvedBrain>;
@@ -77,6 +80,8 @@ export interface RunnerDeps {
    */
   tabChats?: TabChatsLike;
   notify(title: string, message: string): void | Promise<void>;
+  /** Whether the user has this conversation open in a side panel now (a scheduled run's approvals can then be answered). */
+  watching?(sessionId: string): Promise<boolean>;
   /** Called every KEEP_ALIVE_MS while busy (chrome.runtime.getPlatformInfo). */
   keepAlive(): unknown;
   /** Something the UI shows changed (running sessions, pause, errors). */
@@ -138,11 +143,13 @@ export class Runner {
       log,
       changed,
       ...(deps.episodes ? { episodes: deps.episodes } : {}),
+      ...(deps.titles ? { titles: deps.titles } : {}),
       nextTurn: (sessionId, messages) => {
         const text = messages.map((m) => m.text).join("\n\n");
         // The latest context holds (where the user looks now).
         const context = [...messages].reverse().find((m) => m.context)?.context;
-        this.message(sessionId, text, { ...(messages.some((m) => m.voice) ? { voice: true } : {}), ...(context ? { context } : {}) }).catch((err: unknown) =>
+        const heard = messages.flatMap((m) => m.heard ?? []);
+        this.message(sessionId, text, { ...(messages.some((m) => m.voice) ? { voice: true } : {}), ...(heard.length ? { heard } : {}), ...(context ? { context } : {}) }).catch((err: unknown) =>
           this.log(`the next turn of ${sessionId} (messages sent while it closed) did not start: ${errorMessage(err)}`),
         );
       },
@@ -194,15 +201,31 @@ export class Runner {
   /**
    * What the approval gate needs of a running session (approval/gate.ts): its
    * automation level (scheduled runs have their own), the task's instructions,
-   * and when its turn's time limit ends.
+   * when its turn's time limit ends, whether anyone can answer a card now, and
+   * what ends its waiting approvals (Stop, a message from the user) or pauses
+   * it for the user's OK when nobody can.
    */
   async gateContext(sessionId: string): Promise<GateContext> {
     const settings = await this.deps.loadSettings();
     const a = this.live.get(sessionId);
-    return {
+    const base: GateContext = {
       level: effectiveLevel(settings, a?.scheduled ?? false),
       instructions: a?.instructions ?? a?.session.instructions ?? a?.session.title ?? "",
       ...(a?.turnEndsAt ? { endsAt: a.turnEndsAt } : {}),
+    };
+    if (!a) return base;
+    // A scheduled run is attended when the user wrote to it this turn or its conversation is open in a side panel.
+    const attended = !a.scheduled || a.said.length > 0 || !!(await this.deps.watching?.(sessionId).catch(() => false));
+    return {
+      ...base,
+      attended,
+      interrupt: a.approvals.signal,
+      stopped: () => a.forced !== null,
+      pause: (reason) => {
+        if (a.forced || this.live.get(sessionId) !== a) return;
+        this.turns.emit(a, { type: "status", text: `Pausing: ${reason}` });
+        this.live.force(a, approvalStop(reason));
+      },
     };
   }
 
@@ -277,13 +300,15 @@ export class Runner {
   async message(
     sessionId: string | null | undefined,
     text: string,
-    opts: { tabId?: number; screen?: boolean; voice?: boolean; cid?: string; memoryOff?: boolean; context?: string } = {},
+    opts: { tabId?: number; screen?: boolean; voice?: boolean; heard?: string[]; cid?: string; memoryOff?: boolean; context?: string } = {},
   ): Promise<{ sessionId: string; mode: MessageMode }> {
     const screen = !!opts.screen && !text.trim();
     const t = screen ? SCREEN_HELP_TEXT : text.trim();
     if (!t) throw new Error("The message is empty");
     const tab = opts.tabId === undefined ? {} : { tabId: opts.tabId };
     const voice = !screen && !!opts.voice;
+    // A spoken message's words, word for word (shown folded under it).
+    const heard = voice && opts.heard?.length ? { heard: opts.heard } : {};
     const context = screen ? undefined : opts.context?.trim() || undefined;
     if (!sessionId) {
       const input: AdhocInput = {
@@ -291,6 +316,7 @@ export class Runner {
         ...tab,
         ...(screen ? { screen } : {}),
         ...(voice ? { voice } : {}),
+        ...heard,
         ...(context ? { context } : {}),
         ...(opts.memoryOff ? { memoryOff: true } : {}),
       };
@@ -299,7 +325,7 @@ export class Runner {
     if (this.live.has(sessionId)) {
       if (screen) throw new Error("The agent is working on this page already; type a message, or Stop it first");
       if (opts.cid) this.deps.sessions.linkTrace(sessionId, opts.cid);
-      const mode = await this.deliver(t, sessionId, { voice, ...(context ? { context } : {}) });
+      const mode = await this.deliver(t, sessionId, { voice, ...heard, ...(context ? { context } : {}) });
       if (!mode) throw new Error("The agent did not take the message");
       if (opts.tabId !== undefined && mode === "inject") await this.turns.bindChat(opts.tabId, sessionId);
       return { sessionId, mode };
@@ -310,7 +336,7 @@ export class Runner {
       await starting.catch(() => undefined);
       return this.message(sessionId, text, opts);
     }
-    const started = this.startOne(sessionId, () => turnJob(this.deps, sessionId, t, { screen, voice, ...(context ? { context } : {}), ...tab }), opts.cid);
+    const started = this.startOne(sessionId, () => turnJob(this.deps, sessionId, t, { screen, voice, ...heard, ...(context ? { context } : {}), ...tab }), opts.cid);
     this.startingTurns.set(sessionId, started);
     try {
       await started;
@@ -380,25 +406,36 @@ export class Runner {
    * while it starts), or, once the run is over and the session is closing, into its next turn ("turn", which
    * starts when the session has ended). Null: no such session, or the run refused it.
    */
-  private async deliver(text: string, sessionId: string | undefined, opts: { voice?: boolean; context?: string }): Promise<"inject" | "turn" | null> {
+  private async deliver(text: string, sessionId: string | undefined, opts: { voice?: boolean; heard?: string[]; context?: string }): Promise<"inject" | "turn" | null> {
     const a = sessionId ? this.live.get(sessionId) : this.live.last();
     const t = text.trim();
     if (!a || !t) return null;
     const voice = !!opts.voice;
     if (!a.run && a.runOver) {
       // The next turn shows it as its own message.
-      a.nextTurn.push({ text: t, voice, ...(opts.context ? { context: opts.context } : {}) });
+      a.nextTurn.push({ text: t, voice, ...(opts.heard ? { heard: opts.heard } : {}), ...(opts.context ? { context: opts.context } : {}) });
       return "turn";
     }
     // The chat shows the user's words; the agent gets them with their context.
-    this.turns.emit(a, { type: "user_message", text: t, ...(voice ? { voice: true as const } : {}) });
+    this.turns.emit(a, { type: "user_message", text: t, ...(voice ? { voice: true as const } : {}), ...(voice && opts.heard ? { heard: opts.heard } : {}) });
     const told = withContext(t, opts.context);
     if (!a.run) {
       a.waiting.push(told);
+      this.interruptApprovals(a);
       return "inject";
     }
     a.said.push(told);
-    return (await a.run.sendUserMessage(told)) ? "inject" : null;
+    // The message is in the run before the waiting approval ends, so the agent has it when the refusal comes back.
+    const taken = await a.run.sendUserMessage(told);
+    this.interruptApprovals(a);
+    return taken ? "inject" : null;
+  }
+
+  /** The user wrote to the agent: an approval waiting now ends as not done, so the agent reads the message first (it may change the plan). */
+  private interruptApprovals(a: ActiveSession): void {
+    const waiting = a.approvals;
+    a.approvals = new AbortController();
+    waiting.abort("message");
   }
 
   async pauseSchedule(reason?: string): Promise<void> {

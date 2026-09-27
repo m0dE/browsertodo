@@ -12,18 +12,14 @@ describe("NoticeQueue: one notice above the input at a time", () => {
     expect(q.size).toBe(0);
   });
 
-  it("an error goes before a fallback, a fallback before info, whatever the order they came in", () => {
+  it("an error goes before info, whatever the order they came in", () => {
     const q = new NoticeQueue<N>();
     q.put(note("voice", "info", "Microphone allowed. Press the mic to talk."));
     expect(shown(q)).toBe("Microphone allowed. Press the mic to talk.");
-    q.put(note("voice.engine", "fallback", "Realtime voice is unavailable. Using Standard."));
-    expect(shown(q)).toBe("Realtime voice is unavailable. Using Standard.");
     q.put(note("composer", "error", "Out of usage credit"));
     expect(shown(q)).toBe("Out of usage credit");
-    // Dismissed one by one, the others come back in priority order.
+    // Dismissed, the other comes back.
     q.clear("composer");
-    expect(shown(q)).toBe("Realtime voice is unavailable. Using Standard.");
-    q.clear("voice.engine");
     expect(shown(q)).toBe("Microphone allowed. Press the mic to talk.");
     q.clear("voice");
     expect(q.current).toBeNull();
@@ -65,15 +61,14 @@ describe("NoticeQueue: one notice above the input at a time", () => {
 });
 
 describe("autoHideMs: which notices hide by themselves", () => {
-  it("info and fallback notices hide after a few seconds", () => {
+  it("info notices hide after a few seconds", () => {
     expect(autoHideMs(note("voice", "info"))).toBe(NOTICE_HIDE_MS);
-    expect(autoHideMs(note("voice.engine", "fallback"))).toBe(NOTICE_HIDE_MS);
     expect(NOTICE_HIDE_MS).toBeGreaterThanOrEqual(3_000);
   });
 
   it("errors, notices with a button and sticky progress lines stay until dismissed or cleared", () => {
     expect(autoHideMs(note("composer", "error"))).toBeNull();
-    expect(autoHideMs(note("voice", "info", "Voice needs the Plus or Pro plan", { action: { label: "Choose a plan" } }))).toBeNull();
+    expect(autoHideMs(note("voice", "info", "Voice needs the Plus or Pro plan", { actions: [{ label: "Choose a plan" }] }))).toBeNull();
     expect(autoHideMs(note("composer", "info", "Sending…", { sticky: true }))).toBeNull();
   });
 });

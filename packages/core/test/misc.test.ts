@@ -543,9 +543,22 @@ describe("scheduling from the chat (schedule_task)", () => {
     // A task that stands on its own, not a reference to the chat.
     expect(withTool).toMatch(/fresh session with no memory of this chat/);
     expect(withTool).toMatch(/Never write "same as before", "what we just did"/);
-    // Confirmation before risky actions; asking once when unclear.
-    expect(withTool).toMatch(/Never schedule, without the user's plain confirmation in this chat, a task that pays or buys, deletes, sends/);
+    // The request is the confirmation; asking first only for a risky task the agent thought of itself, and once when unclear.
+    expect(withTool).toMatch(/The user's request to schedule something is their confirmation: schedule it at once, and never pause to have them confirm a plan they asked for/);
+    expect(withTool).toMatch(/Ask first \(task_pause\) only before scheduling, on your own idea, a task that pays or buys, deletes, sends/);
     expect(withTool).toMatch(/ask once in one short question/);
+    expect(withTool).toMatch(/Details you can choose sensibly \(the times of "3 posts a day", which topic goes when\) you choose/);
+  });
+
+  it("scheduling does not research, and tasks are short with shared rules remembered once", () => {
+    expect(withTool).toMatch(/Scheduling needs no browsing: the task reads the pages it needs when it runs/);
+    expect(withTool).toMatch(/keep it short: the goal, every URL/);
+    expect(withTool).toMatch(/save them once with remember and have each task name them/);
+  });
+
+  it("a clear request is done, not proposed; research is only what the work needs", () => {
+    expect(withTool).toMatch(/When the request is clear, do it: do not propose a plan and pause to ask whether to go ahead/);
+    expect(withTool).toMatch(/Find out only what the work needs/);
   });
 
   it("relative times and repeats are turned into the schedule with worked examples", () => {

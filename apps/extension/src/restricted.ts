@@ -33,8 +33,20 @@ const WEB_STORE: readonly { host: string; path?: string; why: string }[] = [
   { host: "chrome.google.com", path: "/webstore", why: "the old Web Store address, including the developer dashboard (/webstore/devconsole)" },
 ];
 
-/** The quiet line in the chat when the user's tab is such a page. */
+/**
+ * The quiet line in the chat when the user's tab is such a page and the request is about that page
+ * (asksAboutThePage): a request that goes elsewhere anyway needs no note (the agent is told either way).
+ */
 export const RESTRICTED_STATUS = "Chrome doesn't let extensions see this page; BrowserTODO will work in other tabs";
+
+/** Words that point at the page the user is on ("this page", "the current tab", "here", "what's on screen"). */
+const ABOUT_THE_PAGE =
+  /\b(?:this|that|the current|current|the open|my current)\s+(?:page|tab|site|website|screen|article|post|email|mail|message|video|form|document|doc|product|listing)\b|\bhere\b|\bon (?:it|this|screen)\b|\bwhat(?:'s| is) (?:this|on)\b/i;
+
+/** The request is about the page the user's tab shows: an empty send ("look at the page"), or words that point at it. */
+export function asksAboutThePage(text: string, screen = false): boolean {
+  return screen || ABOUT_THE_PAGE.test(text);
+}
 
 /**
  * True when Chrome keeps extensions out of the page. An empty URL (a tab

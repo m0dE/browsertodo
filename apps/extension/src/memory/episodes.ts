@@ -36,7 +36,7 @@ import {
   MAX_WRITER_EXISTING_ENTRIES,
   MEMORY_WRITER_SYSTEM_PROMPT,
   memoryDomain,
-  memoryTaskKey,
+  memoryKeyOfTask,
   MIN_EPISODE_TRANSCRIPT_CHARS,
   parseMemoryWriterAnswer,
   transcriptChars,
@@ -45,6 +45,7 @@ import {
   type ExtensionSettings,
   type MemoryEntry,
   type MemorySource,
+  type MemoryTaskRef,
   type SessionInfo,
   type StampedAgentEvent,
   type TranscriptLine,
@@ -85,16 +86,16 @@ export interface EpisodeTrigger {
   /** A task run ended: summarize soon. Otherwise a chat turn: once it has been idle. */
   soon: boolean;
   /** The conversation's task (a TODO or cloud task): its episode names it (taskKey, taskTitle). */
-  task?: { instructions: string; account: string | null };
+  task?: MemoryTaskRef;
 }
 
 /** How a run's end triggers the writer (lifecycle.ts): a task's first run soon, every chat turn once idle. */
 export function episodeTrigger(job: Job): EpisodeTrigger {
   switch (job.source) {
     case "local":
-      return { soon: true, task: { instructions: job.task.instructions, account: job.task.account } };
+      return { soon: true, task: { instructions: job.task.instructions, account: job.task.account, seriesId: job.task.seriesId ?? job.task.id } };
     case "cloud":
-      return { soon: true, task: { instructions: job.claim.task.instructions, account: job.claim.task.account } };
+      return { soon: true, task: { instructions: job.claim.task.instructions, account: job.claim.task.account, seriesId: job.claim.task.seriesId } };
     case "adhoc":
       return { soon: false };
     case "turn":
@@ -106,7 +107,7 @@ interface EpisodeJob {
   sessionId: string;
   dueAt: number;
   attempts: number;
-  task?: { instructions: string; account: string | null };
+  task?: MemoryTaskRef;
 }
 
 /** Past conversations still to summarize (newest first), and how many were listed. */
@@ -351,7 +352,7 @@ export class EpisodeWriter {
     const source: MemorySource = { kind: session.source === "adhoc" ? "chat" : "task", sessionId: id, title: session.title };
     let episode = "no episode";
     if (answer.episode) {
-      const task = job.task ? { taskKey: memoryTaskKey(job.task.instructions, job.task.account), taskTitle: firstLine(job.task.instructions) } : {};
+      const task = job.task ? { taskKey: memoryKeyOfTask(job.task), taskTitle: firstLine(job.task.instructions) } : {};
       try {
         const change = await this.deps.store.putEpisode({ ...answer.episode, at: session.firstStartedAt ?? session.startedAt, ...task }, source);
         episode = `episode [${change.after!.id}] ${change.before ? "rewritten" : "written"}`;

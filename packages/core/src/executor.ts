@@ -30,7 +30,7 @@ import {
 } from "@browsertodo/shared";
 import type { BrowserCaller, ToolExecutor, ToolExecutorOptions } from "./types.js";
 import { createActGate, runAct } from "./act.js";
-import { unreadInterjection, type Interjections } from "./interjections.js";
+import { unreadInterjection, untilUserSpeaks } from "./interjections.js";
 import { formatScroll, formatSnapshot, formatTabs, formatTabSnapshots } from "./page-format.js";
 import { mapStrings, SecretRedactor } from "./redact.js";
 import { switchXAccount } from "./x-account.js";
@@ -77,11 +77,15 @@ export function picksEvent(picks: ElementPicks): AgentEvent | null {
 }
 
 /** A task_* result with the agent's follow-up suggestion and spoken line, when it gave them. */
-function withExtras(r: TaskRunResult, extras: { suggestion?: string | undefined; spoken?: string | undefined; memory_note?: string | undefined }): TaskRunResult {
+function withExtras(
+  r: TaskRunResult,
+  extras: { suggestion?: string | undefined; spoken?: string | undefined; memory_note?: string | undefined; output?: string | undefined },
+): TaskRunResult {
   const out = { ...r };
   if (extras.suggestion) out.suggestion = extras.suggestion;
   if (extras.spoken) out.spoken = extras.spoken;
   if (extras.memory_note) out.memoryNote = extras.memory_note;
+  if (extras.output) out.output = extras.output;
   return out;
 }
 
@@ -100,20 +104,6 @@ function toolSpan(span: { t: number; elapsed: () => number }, id: string, name: 
 /** Case- and slash-insensitive path key, for comparing upload paths with mediaPaths. */
 function pathKey(p: string): string {
   return p.trim().replace(/\\/g, "/").replace(/\/+/g, "/").toLowerCase();
-}
-
-/**
- * The tool's result, or `stillLoading` as soon as the model has a message from the user it has not read (the tool's
- * work goes on; how it ends shows in the page the model reads next).
- */
-async function untilUserSpeaks(work: Promise<ToolResult>, spoken: ReturnType<Interjections["spoken"]>, stillLoading: () => string): Promise<ToolResult> {
-  try {
-    return await Promise.race([work, spoken.when.then(() => ({ text: stillLoading() }))]);
-  } finally {
-    spoken.cancel();
-    // Not awaited any more: a later failure must not be an unhandled rejection.
-    work.catch(() => undefined);
-  }
 }
 
 export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
@@ -290,7 +280,7 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
           emit,
           gate,
           ...(trace ? { trace } : {}),
-          ...(opts.interjections ? { interrupted: () => opts.interjections!.unseen } : {}),
+          ...(opts.interjections ? { interrupted: () => opts.interjections!.unseen, userSpeaks: () => opts.interjections!.spoken(true) } : {}),
           // The hosted Jev and the hosted AI share one credit: pause the task, like a 402 from the Messages API does.
           outOfCredit: () => endTask({ outcome: "paused", reason: OUT_OF_CREDIT }, "Task paused: the account is out of usage credit. Stop now."),
         });
@@ -305,7 +295,8 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
       case "remember":
       case "recall":
       case "forget":
-      case "search_history": {
+      case "search_history":
+      case "check_similar": {
         if (!opts.memory) return err(`${name} is not available here: memory belongs to a BrowserTODO chat or task.`);
         // A password get_credential handed out in this run is never kept (the secrets live here, in the executor).
         if (name === "remember" && containsKnownSecret(a)) return err("Not saved: it contains a password you were given. Memory never keeps passwords.");
@@ -316,8 +307,9 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
         const { summary, url, ...extras } = a as ToolArgsOf<"task_complete">;
         const r: TaskRunResult = { outcome: "done", summary };
         if (url) r.url = url;
-        // A run note holding a password the agent was given is dropped (memory never keeps passwords).
+        // A run note or output holding a password the agent was given is dropped (memory never keeps passwords).
         if (extras.memory_note && containsKnownSecret(extras.memory_note)) delete extras.memory_note;
+        if (extras.output && containsKnownSecret(extras.output)) delete extras.output;
         return endTask(withExtras(r, extras), "Task recorded as done. Stop now.");
       }
       case "task_fail": {
@@ -360,7 +352,7 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
             result = err(unreadInterjection(name));
           } else if (WAITS_FOR_LOAD[name] && opts.interjections) {
             const spoken = opts.interjections.spoken(WAITS_FOR_LOAD[name] === "new");
-            result = await untilUserSpeaks(run(name, parsed.data, extra), spoken, () => stillLoadingText(name, parsed.data));
+            result = await untilUserSpeaks(run(name, parsed.data, extra), spoken, () => ({ text: stillLoadingText(name, parsed.data) }));
           } else {
             result = await run(name, parsed.data, extra);
           }

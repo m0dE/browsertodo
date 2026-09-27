@@ -15,6 +15,7 @@ import { errorMessage, isApprovalRefusal, stopwatch, traceStart, traceText, type
 import { OutOfCreditError } from "./api-errors.js";
 import type { JevDecision, JevLike } from "./types.js";
 import { formatCompact, formatElement, formatPageChange, formatSnapshot } from "./page-format.js";
+import { untilUserSpeaks, type Interjections } from "./interjections.js";
 
 /** Marker in act results when a step was not executed. */
 export const NOT_CONFIDENT = "not confident";
@@ -62,7 +63,16 @@ export interface ActContext {
   trace?: (e: TraceDraft) => void;
   /** True when the user sent a message meanwhile: the remaining steps are not run (the message may change them). */
   interrupted?: () => boolean;
+  /**
+   * Resolves when the user sends a message from now on (Interjections.spoken): the first step's read, which may
+   * wait for a page still loading, gives way to it, as read_page does.
+   */
+  userSpeaks?: () => ReturnType<Interjections["spoken"]>;
 }
+
+/** act's answer when a message from the user came while its first read waited for the page: nothing was done. */
+export const ACT_STOPPED_LOADING = (steps: number) =>
+  `Stopped before step 1: the page was still loading when the user sent you a message (it follows). Steps 1-${steps} were not run.`;
 
 /** What one act step spent its time on, and who picked its element. */
 interface StepTiming {
@@ -286,7 +296,10 @@ export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult
         continue;
       }
       if (!jev) return stop(n, `"${step.goal}": the fast model is off, so every step needs an element index`, await readPage());
-      const snap = await readPage();
+      // The first read may wait for a page still loading (read_page's wait); a message from the user ends that wait.
+      const spoken = n === 1 ? ctx.userSpeaks?.() : undefined;
+      const snap = spoken ? await untilUserSpeaks<PageSnapshot | null>(readPage(), spoken, () => null) : await readPage();
+      if (!snap) return { text: ACT_STOPPED_LOADING(steps.length) };
       const started = Date.now();
       let d: JevDecision;
       try {

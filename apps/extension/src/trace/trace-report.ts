@@ -7,7 +7,7 @@
  * with secrets redacted and page content cut short. Pure.
  */
 import { mapStrings, REDACTED } from "@browsertodo/core";
-import { describeSchedule, localTimeZone, redactSecrets, SECRET_SETTING_KEYS, type AgentEvent, type SessionInfo, type StampedAgentEvent, type TraceEvent, type TraceValue } from "@browsertodo/shared";
+import { APPROVAL_OUTCOME_TEXT, describeSchedule, localTimeZone, redactSecrets, SECRET_SETTING_KEYS, type AgentEvent, type ApprovalEndedBy, type SessionInfo, type StampedAgentEvent, type TraceEvent, type TraceValue } from "@browsertodo/shared";
 import { TRACE_CAPS, type TokenTotals, type TraceBook, type TurnTotals } from "./trace-book.js";
 
 /**
@@ -277,7 +277,12 @@ function eventRow(e: StampedAgentEvent, t: number, span: TraceEvent | undefined,
   const base = { t, kind: "event" as const, cat: e.type, name: e.type, slow: false };
   switch (e.type) {
     case "user_message":
-      return { ...base, label: e.voice ? "You (voice)" : "You", text: clip(e.text, TEXT_LIMITS.message) };
+      return {
+        ...base,
+        label: e.voice ? "You (voice)" : "You",
+        text: clip(e.text, TEXT_LIMITS.message),
+        ...(e.heard?.length ? { detail: clip(`word for word: ${e.heard.join(" · ")}`, 200) } : {}),
+      };
     case "assistant_text":
       return { ...base, label: "Claude", text: clip(e.text, TEXT_LIMITS.answer) };
     case "tool_call": {
@@ -318,7 +323,7 @@ function eventRow(e: StampedAgentEvent, t: number, span: TraceEvent | undefined,
     case "spoken":
       return { ...base, label: "Said aloud", text: clip(e.text, TEXT_LIMITS.status) };
     case "heard":
-      return { ...base, label: "Your words (voice, as transcribed)", text: clip(e.text, TEXT_LIMITS.message), ...(e.sent ? { detail: clip(`sent as: ${e.sent}`, 200) } : {}) };
+      return { ...base, label: "Your words (voice, no request)", text: clip(e.text, TEXT_LIMITS.message) };
     case "error":
       return { ...base, label: "Error", text: clip(e.text, TEXT_LIMITS.status), error: true };
     case "task_scheduled":
@@ -346,6 +351,12 @@ function eventRow(e: StampedAgentEvent, t: number, span: TraceEvent | undefined,
     }
     case "memory_undone":
       return { ...base, label: "Memory change undone", text: `change ${e.changeId}` };
+    case "approval_request": {
+      const r = e.request;
+      return { ...base, label: `Approval asked: ${r.action}${r.site ? ` on ${r.site}` : ""}`, detail: join(r.why, `id ${r.id}`, `until ${r.expiresAt}`), ...(r.text ? { text: clip(r.text, TEXT_LIMITS.status) } : {}) };
+    }
+    case "approval_resolved":
+      return { ...base, label: `Approval: ${APPROVAL_OUTCOME_TEXT[e.outcome] ?? e.outcome}${e.by ? ` (${APPROVAL_BY_TEXT[e.by]})` : ""}`, detail: `id ${e.id}` };
     case "task_end": {
       const text = e.summary ?? e.reason ?? "";
       const row: Omit<TraceRow, "rel"> = { ...base, label: `Result: ${e.outcome}`, text: clip(text, TEXT_LIMITS.answer) };
@@ -453,6 +464,7 @@ function traceRow(ev: TraceEvent): Omit<TraceRow, "rel"> {
         num(d.costUsd) !== undefined && `$${num(d.costUsd)!.toFixed(4)}`,
         tokensText(d),
         d.error !== undefined && `error ${s(d.error)}`,
+        d.interrupted !== undefined && `stopped: ${s(d.interrupted)}`,
       );
       break;
     case "model.call":
@@ -469,6 +481,7 @@ function traceRow(ev: TraceEvent): Omit<TraceRow, "rel"> {
         tokensText(d),
         d.stop && `stop ${s(d.stop)}`,
         d.result && d.result !== "ok" && `${s(d.result)}: ${s(d.reason)}`,
+        d.interrupted !== undefined && `stopped: ${s(d.interrupted)}`,
       );
       row.slow = over(SLOW_MS.model);
       if (d.result && d.result !== "ok") row.error = true;
@@ -491,6 +504,21 @@ function traceRow(ev: TraceEvent): Omit<TraceRow, "rel"> {
       row.label = `Tool ${s(d.tool)}`;
       row.detail = join(clip(s(d.args), 200), resultSize(d));
       row.slow = over(SLOW_MS.tool);
+      break;
+    case "approval.judge":
+      // How the gate judged a consequential action; for a scheduled run, the task's words and Jev's own verdict.
+      row.label = `Approval check: ${s(d.action)} · ${d.waits === true ? "waits for the user" : "runs"}`;
+      row.detail = join(
+        s(d.level),
+        `${d.kind === null ? "unknown kind" : s(d.kind)} by ${s(d.by)} (${s(d.reason)})`,
+        d.withinRules !== undefined && `task words: ${d.withinRules === true ? "ask for it" : "do not ask for it"}`,
+        d.withinJev !== undefined && d.withinJev !== null && `Jev: ${s(d.withinJev)}`,
+      );
+      break;
+    case "approval.wait":
+      // How long an approval held the run, and what ended it.
+      row.label = `Approval ${s(d.outcome)} · by ${APPROVAL_BY_TEXT[s(d.by) as ApprovalEndedBy] ?? s(d.by)}`;
+      row.detail = join(s(d.action), d.site ? `on ${s(d.site)}` : "", `waited ${durationText(ms ?? 0)}`, `id ${s(d.id)}`);
       break;
     case "act.step":
       row.label = `act step ${s(d.step)}${d.picker === "jev" ? ` · Jev ${s(d.operation)} ${num(d.confidence)?.toFixed(2) ?? ""}` : d.picker === "claude" ? " · picked by Claude" : ""}${d.ran === false ? " · stopped" : ""}`;
@@ -544,8 +572,15 @@ const VOICE_LABELS: Record<string, string> = {
   "voice.deliver": "Voice: message delivered",
   "voice.cancelled": "Voice: cancelled",
   "voice.tts": "Voice: line said",
-  "voice.ticket": "Voice: relay pre-check",
+  "voice.ticket": "Voice: session token",
   "voice.connect": "Voice: Realtime connected",
+  "voice.start": "Voice: session started",
+  "voice.end": "Voice: session ended",
+  "voice.reconnect": "Voice: reconnecting",
+  "voice.refused_forward": "Voice: narrator's send refused",
+  "voice.unclear": "Voice: your words unclear (not used)",
+  "voice.not_addressed": "Voice: speech not for the assistant (ignored)",
+  "voice.echo": "Voice: the assistant's own voice heard back (ignored)",
   "voice.narrator": "Voice: narrator reply",
   "voice.user_words": "Voice: your words transcribed",
 };
@@ -578,6 +613,15 @@ function voiceRow(row: Omit<TraceRow, "rel">, name: string, d: Record<string, Tr
     case "voice.connect":
       row.detail = join(s(d.model), msPart("socket open", d.openMs), msPart("session ready", d.readyMs));
       break;
+    case "voice.start":
+    case "voice.end":
+    case "voice.reconnect":
+    case "voice.refused_forward":
+    case "voice.unclear":
+    case "voice.not_addressed":
+    case "voice.echo":
+      row.detail = join(s(d.engine), s(d.why), s(d.reason), num(d.attempt) !== undefined && `try ${d.attempt}`, msPart("after", d.delayMs), d.takeover === true && "taking over");
+      break;
     case "voice.narrator":
       row.label = `Voice: narrator reply (${NARRATOR_KIND_LABELS[s(d.kind)] ?? (d.trigger === "speech" ? "to speech" : "to an update")})`;
       row.detail = join(
@@ -593,6 +637,19 @@ function voiceRow(row: Omit<TraceRow, "rel">, name: string, d: Record<string, Tr
       if (num(d.chars) !== undefined) row.detail = `${d.chars} chars`;
   }
 }
+
+/** What ended an approval (approval_resolved by, approval.wait data.by) as the Raw view names it. */
+const APPROVAL_BY_TEXT: Record<ApprovalEndedBy, string> = {
+  card: "the card",
+  keyboard: "the card's key",
+  voice: "voice",
+  stop: "Stop",
+  message: "a message from the user",
+  timeout: "no answer in time",
+  unattended: "nobody watching (the run paused)",
+  turn_end: "the turn ending",
+  not_shown: "the card could not be shown",
+};
 
 /** The narrator reply's kind (voice.narrator data.kind) as the Raw view names it. */
 const NARRATOR_KIND_LABELS: Record<string, string> = {

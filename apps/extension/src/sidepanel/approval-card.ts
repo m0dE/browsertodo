@@ -11,8 +11,8 @@ import { clockLabel } from "./format.js";
 import { APPROVAL_BUTTONS, APPROVAL_KEYS, approvalKeyOf, type ApprovalView } from "./approval-view.js";
 
 export interface ApprovalCardActions {
-  /** Sends the answer; false when the request no longer waits. */
-  answer(id: string, answer: ApprovalAnswer): Promise<boolean>;
+  /** Sends the answer (by: a button, or its key); false when the request no longer waits. */
+  answer(id: string, answer: ApprovalAnswer, by: "card" | "keyboard"): Promise<boolean>;
 }
 
 const SHIELD_ICON =
@@ -51,15 +51,20 @@ export function renderApproval(v: ApprovalView, actions?: ApprovalCardActions): 
   const buttons = APPROVAL_BUTTONS.map(({ answer, label }) => {
     const cls = answer === "allow_once" ? "button.small.primary" : answer === "deny" ? "button.small.danger" : "button.small";
     const b = h(cls as "button", { type: "button", "data-answer": answer, title: `${label} (${APPROVAL_KEYS[answer].label})`, "aria-keyshortcuts": APPROVAL_KEYS[answer].label }, label);
-    b.addEventListener("click", () => void send(answer));
+    b.addEventListener("click", () => {
+      // bindApprovalKeys marks the click it makes for a key press.
+      const by = b.dataset.by === "keyboard" ? "keyboard" : "card";
+      delete b.dataset.by;
+      void send(answer, by);
+    });
     return b;
   });
-  async function send(answer: ApprovalAnswer): Promise<void> {
+  async function send(answer: ApprovalAnswer, by: "card" | "keyboard"): Promise<void> {
     if (buttons.some((b) => b.disabled)) return;
     for (const b of buttons) b.disabled = true;
     let ok = false;
     try {
-      ok = await actions!.answer(v.id, answer);
+      ok = await actions!.answer(v.id, answer, by);
     } catch {
       ok = false;
     }
@@ -85,6 +90,7 @@ export function bindApprovalKeys(root: HTMLElement, doc: Document = document): (
     const button = cards[cards.length - 1]?.querySelector<HTMLButtonElement>(`button[data-answer="${answer}"]`);
     if (!button || button.disabled) return;
     e.preventDefault();
+    button.dataset.by = "keyboard";
     button.click();
   };
   doc.addEventListener("keydown", onKey);

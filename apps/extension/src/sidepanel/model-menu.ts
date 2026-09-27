@@ -4,7 +4,7 @@
  * BrowserTODO AI it offers the hosted models and shows the credit left. Choices are saved with
  * settings.save; the chip then follows the state the background returns.
  */
-import { CLAUDE_MODELS, errorMessage, isClaudeModel, OUT_OF_CREDIT, type ExtensionSettings } from "@browsertodo/shared";
+import { CLAUDE_MODELS, errorMessage, isClaudeModel, modelHint, OUT_OF_CREDIT, type ExtensionSettings } from "@browsertodo/shared";
 import { uiRequest, type UiState } from "../ui-protocol.js";
 import { $, h } from "../ui/dom.js";
 import { modelChip, type ModelChipInfo } from "./format.js";
@@ -88,11 +88,13 @@ export function initModelPicker(opts: {
     const rows: Node[] = [h("div.mm-head", { role: "presentation" }, info.hosted ? "BrowserTODO AI model" : "Model")];
     for (const m of models) {
       const on = m.id === current;
+      // How fast and how costly, from the model catalog (none for an id it does not offer).
+      const hint = modelHint(m.id);
       rows.push(
         h(
           "button.mm-item",
           { type: "button", role: "menuitemradio", "aria-checked": String(on), tabindex: "-1", title: m.id, onclick: () => void (on ? close(true) : save({ anthropicModel: m.id })) },
-          h("span.mm-label", null, m.label),
+          hint ? h("span.mm-text", null, h("span.mm-label", null, m.label), h("span.mm-hint", null, hint)) : h("span.mm-label", null, m.label),
           on ? check() : null,
         ),
       );

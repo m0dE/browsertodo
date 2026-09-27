@@ -250,6 +250,11 @@ export class TaskSession {
     if (this.idleTimer) clearTimeout(this.idleTimer);
   }
 
+  /** The running turn has its task_* result, or no turn runs (see BrainContext.turnOver). */
+  turnOver(): boolean {
+    return !this.turn || this.turn.finish !== null;
+  }
+
   /** Persistent brains: the agent is waiting for input. Ends a turn that has no result yet. */
   onIdle(): void {
     const turn = this.turn;

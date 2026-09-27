@@ -111,6 +111,12 @@ export class AccountApi {
     return out;
   }
 
+  /** The rows of one task series (a repeating task's runs and its waiting one), newest first: one page. */
+  async listSeries(seriesId: string): Promise<Task[]> {
+    const q = new URLSearchParams({ limit: String(TASK_PAGE_SIZE), series: seriesId });
+    return (await this.http.json(TaskListPage, "GET", `/v1/tasks?${q}`)).tasks;
+  }
+
   createTask(input: CreateTaskInput): Promise<Task> {
     return this.http.json(Task, "POST", "/v1/tasks", input);
   }

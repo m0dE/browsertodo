@@ -14,7 +14,8 @@ import { approvalJev } from "./approval/jev-source.js";
 import type { GateContext } from "./approval/gate.js";
 import { ApiClient } from "./api-client.js";
 import { Cdp } from "./cdp.js";
-import { tabUrl } from "./chrome-tabs.js";
+import { agentGroupIds, agentGroupOf, applyGroupLook, tabUrl } from "./chrome-tabs.js";
+import { ControlIndicator } from "./control-indicator.js";
 import { GOOGLE_CLIENT_ID } from "./build-config.js";
 import { ApiBrain } from "./engine/api-brain.js";
 import { hostedBackend } from "./engine/hosted-brain.js";
@@ -34,6 +35,7 @@ import { MemoryStore } from "./memory/store.js";
 import { MemorySync } from "./memory/sync.js";
 import { EPISODE_ALARM, EpisodeWriter } from "./memory/episodes.js";
 import { memorySummarizer } from "./memory/summarizers.js";
+import { ChatTitler } from "./engine/chat-titles.js";
 import { testClaude, testCloud, testJev } from "./engine/settings-tests.js";
 import { UiHub } from "./engine/ui-hub.js";
 import { UiRouter, type ExtraRequest } from "./engine/ui-router.js";
@@ -42,9 +44,11 @@ import { logger } from "./log.js";
 import { notify } from "./notify.js";
 import { PanelCommands } from "./panel-command.js";
 import { openTabPanel, panelTabOf, StoredPanelTabs } from "./panel-tabs.js";
+import { INDICATOR_MESSAGE, isIndicatorMessage, pageIndicators } from "./page-indicator.js";
 import { ALARM_NAME, DUE_ALARM, ensureAlarm, getRunnerId, handleStorageChange, loadSettings, migrateStoredSettings, saveSettings, saveSettingsPatch } from "./settings-store.js";
 import type { UiPush, UiRequest } from "./ui-protocol.js";
 import { VOICE_BADGES, VoiceSessions } from "./voice-session.js";
+import { TabBadges, type BadgeLook } from "./tab-badges.js";
 import { TabChats } from "./tab-chats.js";
 import { Vault } from "./vault.js";
 
@@ -73,15 +77,22 @@ const approvals = new ApprovalBroker({
     if (!(await sessions.note(sessionId, e))) throw new Error(`No conversation ${sessionId}`);
   },
   onRequest: (_sessionId, r) => void notify("needs your OK", `${r.action}${r.site ? ` on ${r.site}` : ""}: ${r.why}. Answer in the side panel.`),
+  // How long each approval waited and what ended it (a card, a key, voice, Stop, a message, no answer), in the Raw view.
+  trace: (sessionId, trace) => void sessions.append(sessionId, { type: "trace", trace }),
 });
 const slots: AgentSlots = new AgentSlots(
   cdp,
   vault,
   async (tabId) => (await tabChats.get(tabId)) !== null,
-  (sessionId, call) => sessions.append(sessionId, { type: "trace", trace: { t: call.t, ms: call.ms, cat: "browser", name: call.method, src: "engine", data: call.data } }),
+  (sessionId, call) => {
+    sessions.append(sessionId, { type: "trace", trace: { t: call.t, ms: call.ms, cat: "browser", name: call.method, src: "engine", data: call.data } });
+    // A browser call may have opened, switched or closed the run's tabs.
+    controlIndicator.refresh();
+  },
   {
     context: (sessionId): Promise<GateContext> => runner.gateContext(sessionId),
     request: (sessionId, ask, opts) => approvals.request(sessionId, ask, opts),
+    trace: (sessionId, trace) => void sessions.append(sessionId, { type: "trace", trace }),
     jev: async (sessionId) =>
       approvalJev({ settings: await loadSettings(), brain: runner.runningSessions.find((s: SessionInfo) => s.sessionId === sessionId)?.brain, hosted: account.session(), sessionId }),
     end: (sessionId) => approvals.end(sessionId),
@@ -116,6 +127,12 @@ const memory = new MemoryService({
   settings: loadSettings,
   sync: memorySync,
   semantic: (query, taskKey) => memorySync.search(query, { taskKey, limit: MEMORY_SEARCH_LIMIT }),
+  // A task series' rows (this browser's, and the account's when signed in): the instructions each run had.
+  seriesTasks: async (seriesId) => {
+    const here = (await localStore.list()).filter((t) => t.seriesId === seriesId);
+    await account.load();
+    return account.session() ? [...here, ...(await (await account.api()).listSeries(seriesId))] : here;
+  },
 });
 // remember / recall / forget (every brain): answered by the memory of that conversation.
 const memoryTool = (sessionId: string, tool: MemoryTool, args: unknown) => memory.tool(sessionId, tool, args);
@@ -244,10 +261,9 @@ const panelTabs = new StoredPanelTabs({ log: logger("panel") });
 // The hands-free session (which tab, which panel runs it, the tab the user looks at): every panel is told, and the
 // toolbar badges show it (see voice-session.ts).
 const DEFAULT_ACTION_TITLE = chrome.runtime.getManifest().action?.default_title ?? "BrowserTODO";
-const voiceSessions = new VoiceSessions({
-  broadcast: (session) => hub.push({ type: "voice.session", session }),
-  badge: (tabId, look) => {
-    const b = look ? VOICE_BADGES[look] : null;
+// The toolbar badge of each tab: voice's, else the agent's while it controls the tab (tab-badges.ts).
+const tabBadges = new TabBadges({
+  paint: (tabId, b: BadgeLook | null) =>
     void Promise.all(
       b
         ? [
@@ -257,8 +273,15 @@ const voiceSessions = new VoiceSessions({
             chrome.action.setTitle({ tabId, title: b.title ?? DEFAULT_ACTION_TITLE }),
           ]
         : [chrome.action.setBadgeText({ tabId, text: "" }), chrome.action.setTitle({ tabId, title: DEFAULT_ACTION_TITLE })],
-    ).catch((err: unknown) => logger("voice")(`badge on tab ${tabId}: ${errorMessage(err)}`));
+    ).catch((err: unknown) => logger("badge")(`badge on tab ${tabId}: ${errorMessage(err)}`)),
+  voiceOf: (tabId) => {
+    const look = voiceSessions.badgeOf(tabId);
+    return look ? VOICE_BADGES[look] : null;
   },
+});
+const voiceSessions = new VoiceSessions({
+  broadcast: (session) => hub.push({ type: "voice.session", session }),
+  badge: (tabId, look) => tabBadges.voice(tabId, look ? VOICE_BADGES[look] : null),
   storage: {
     load: async () => (await chrome.storage.session.get("voiceSession")).voiceSession,
     save: (value) => chrome.storage.session.set({ voiceSession: value }),
@@ -305,6 +328,15 @@ const episodes = new EpisodeWriter({
   log: logger("memory"),
 });
 
+// Chat titles (engine/chat-titles.ts): the same small model names each chat after its turn, on the brain it used.
+const titles = new ChatTitler({
+  sessions,
+  summarizer: (brain) => memorySummarizer(brain, { settings: loadSettings, hosted: () => account.session(), helper }),
+  // Past chats are titled in the background, never while a run is going on.
+  busy: (): boolean => runner.runningSessions.length > 0,
+  log: logger("titles"),
+});
+
 const runner = new Runner({
   loadSettings,
   saveSettings,
@@ -316,14 +348,22 @@ const runner = new Runner({
   pageOf,
   memory,
   episodes,
+  titles,
   media: mediaFiles,
   resolveBrain: resolveForRun,
   core,
   slots,
   tabChats,
   notify,
+  watching: async (sessionId) => {
+    const tabId = await tabChats.tabOf(sessionId);
+    return tabId !== null && panelCommands.hasPanel(tabId);
+  },
   keepAlive: () => chrome.runtime.getPlatformInfo(),
-  onStateChange: () => hub.pushState(),
+  onStateChange: () => {
+    hub.pushState();
+    controlIndicator.refresh();
+  },
   log: logger(),
 });
 cdp.onUserCancel = () => runner.onDebuggerCanceled();
@@ -360,6 +400,7 @@ const router = new UiRouter({
   memory,
   memoryQuestion: () => memorySync.question(),
   memoryBackfill: () => episodes.backfillProgress(),
+  titles,
   showAgent: (sessionId) => slots.show(sessionId ?? runner.running?.sessionId),
   localStore,
   sessions,
@@ -373,6 +414,7 @@ const router = new UiRouter({
   vault,
   account,
   todo: todoSource,
+  onTodoEdited: (before, after) => memory.taskEdited(before, after),
   tabChats,
   focusTab: async (tabId) => {
     try {
@@ -403,6 +445,26 @@ const router = new UiRouter({
   },
 });
 sessions.subscribe({ onEvent: (e) => hub.event(e), onSession: (s) => hub.session(s) });
+
+// Which tabs the agent controls shows in its tab group, the toolbar badge and on the page (control-indicator.ts).
+const controlIndicator = new ControlIndicator({
+  running: () =>
+    Promise.all(
+      runner.runningSessions.map(async (s) => ({ sessionId: s.sessionId, tabs: await slots.tabsOf(s.sessionId), needsYou: approvals.waiting(s.sessionId).length > 0 })),
+    ),
+  chatTabOf: (sessionId) => tabChats.tabOf(sessionId),
+  showOverlay: async () => (await loadSettings()).showControlOverlay,
+  groups: { of: agentGroupOf, all: agentGroupIds, apply: applyGroupLook },
+  badges: tabBadges,
+  pages: pageIndicators,
+  storage: {
+    load: async () => (await chrome.storage.session.get("controlIndicator")).controlIndicator,
+    save: (value) => chrome.storage.session.set({ controlIndicator: value }),
+  },
+  log: logger("indicator"),
+});
+sessions.subscribe({ onEvent: (e) => controlIndicator.onEvent(e.sessionId, e) });
+controlIndicator.refresh();
 localStore.onChange(() => {
   hub.push({ type: "tasks.changed" });
   hub.pushState();
@@ -455,6 +517,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 chrome.storage.onChanged.addListener((changes, area) => {
   void handleStorageChange(changes, area);
+  // A run's tabs (agent-tab.ts) or the overlay setting changed.
+  if ((area === "session" && Object.keys(changes).some((k) => k.startsWith("agentTab"))) || (area === "local" && changes.settings)) controlIndicator.refresh();
   if (area === "local" && changes.settings) {
     // The account server URL may have changed: the session belongs to the old one.
     void account.load().then(() => hub.pushState(), () => hub.pushState());
@@ -462,6 +526,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => void runner.onTabUpdated(tabId, changeInfo));
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => changeInfo.status === "loading" && voiceSessions.tabLoading(tabId));
+// A controlled tab's new page gets the badge and the overlay again; a tab that joined or left a group changes its look.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === "loading") tabBadges.tabLoading(tabId);
+  if (changeInfo.status === "complete") controlIndicator.tabLoaded(tabId);
+  if (changeInfo.groupId !== undefined) controlIndicator.refresh();
+});
 // What the user looks at, for hands-free voice (the panel running it is hidden on other tabs).
 chrome.tabs.onActivated.addListener(({ tabId, windowId }) => voiceSessions.tabActivated(tabId, windowId));
 chrome.windows.onFocusChanged.addListener((windowId) => voiceSessions.windowFocused(windowId), { windowTypes: ["normal"] });
@@ -472,6 +542,9 @@ chrome.tabs.onCreated.addListener((tab) => void slots.adopt(tab).catch(() => {})
 chrome.tabs.onRemoved.addListener((tabId) => {
   panelCommands.tabRemoved(tabId);
   voiceSessions.tabRemoved(tabId);
+  tabBadges.tabRemoved(tabId);
+  pageIndicators.tabRemoved(tabId);
+  controlIndicator.tabRemoved(tabId);
   void tabChats
     .unbind(tabId)
     .then((sessionId) => {
@@ -490,6 +563,12 @@ chrome.sidePanel?.onClosed?.addListener(({ tabId }) => {
 chrome.debugger.onDetach.addListener((source, reason) => cdp.handleDetach(source, String(reason)));
 chrome.runtime.onMessage.addListener((msg: UiRequest | ExtraRequest, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return false;
+  // The overlay's pill on a page the agent controls (page-indicator.ts).
+  if (isIndicatorMessage(msg as unknown)) {
+    const tabId = sender.tab?.id;
+    if (tabId !== undefined) onIndicatorButton(tabId, (msg as { type: string }).type);
+    return false;
+  }
   if (!msg || typeof (msg as { type?: unknown }).type !== "string") return false;
   void router.handle(msg).then(sendResponse);
   return true;
@@ -505,6 +584,25 @@ chrome.runtime.onConnect.addListener((port) => {
     void account.refresh().catch(() => {});
   }
 });
+
+/** Stop: that tab's run stops. Open: the chat's side panel opens (now, within the click's user gesture) and its tab comes to the front. */
+function onIndicatorButton(tabId: number, type: string): void {
+  if (type === INDICATOR_MESSAGE.stop) {
+    const sessionId = controlIndicator.sessionOf(tabId);
+    if (sessionId) runner.stop(sessionId);
+    return;
+  }
+  const target = controlIndicator.open(tabId);
+  openTabPanel(target).catch((err: unknown) => logger("indicator")(`opening the side panel of tab ${target} failed: ${errorMessage(err)}`));
+  if (target !== tabId) {
+    void chrome.tabs
+      .update(target, { active: true })
+      .then(async (t) => {
+        if (t?.windowId !== undefined) await chrome.windows.update(t.windowId, { focused: true });
+      })
+      .catch(() => {});
+  }
+}
 
 // Every worker start (not only install/startup): alarms, side panel behavior, crash recovery.
 onStart();
@@ -528,10 +626,12 @@ onStart();
   memory,
   memorySync,
   episodes,
+  titles,
   scheduleDueAlarm,
   panelCommands,
   panelTabs,
   voiceSessions,
+  controlIndicator,
   /** The toolbar button's listener (the e2e shortcut presser points the button at the command handler instead). */
   onActionClicked,
   /** Runs use this brain instead of the real ones (null: back to the real ones). */

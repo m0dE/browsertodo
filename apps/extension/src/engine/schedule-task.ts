@@ -83,6 +83,8 @@ export interface TaskSchedulerDeps {
   hour12?: boolean;
   /** A new change's id (Undo names it). Default: a random UUID. */
   newId?(): string;
+  /** A task was changed (update_scheduled_task): its memory follows it (MemoryService.taskEdited). Never fails the change. */
+  onEdited?(before: LocalTask, after: LocalTask): Promise<void>;
 }
 
 /** What nothing was done, in the refusals: "Nothing was scheduled." / "Nothing was changed." */
@@ -196,6 +198,7 @@ export class TaskScheduler {
       return { before, after: await todo.update(before.id, patch) };
     });
     const schedule = scheduleOf(after);
+    await this.deps.onEdited?.(before, after).catch(() => undefined);
     await this.note(sessionId, { taskId: after.id, change: "updated", instructions: after.instructions, schedule, before: fieldsOf(before) });
     return this.described(after.id, after.instructions, schedule, after.notBefore, now);
   }

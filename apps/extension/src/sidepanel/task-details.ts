@@ -3,7 +3,22 @@
  * about a task or a chat message, from its TODO entry and/or a run of it.
  * Fields the panel does not have are left out. See details-sheet.ts for the DOM.
  */
-import { chipHint, describeRepeat, formatBytes, localTimeZone, taskChip, type Chip, type LocalTask, type RepeatSchedule, type SessionInfo, type TextOptions } from "@browsertodo/shared";
+import {
+  chipHint,
+  clipLine,
+  describeRepeat,
+  formatBytes,
+  isEarlierRuns,
+  isTaskRun,
+  localTimeZone,
+  taskChip,
+  type Chip,
+  type LocalTask,
+  type MemoryEntry,
+  type RepeatSchedule,
+  type SessionInfo,
+  type TextOptions,
+} from "@browsertodo/shared";
 import type { LocalMediaInfo } from "../ui-protocol.js";
 import { accountLabel, outcomeChip, sessionHeadline, trimUrlEnd } from "./format.js";
 
@@ -17,7 +32,24 @@ export interface DetailsInput {
   listSource?: "local" | "account";
   /** A run of it (the one shown, or the task's latest). */
   session?: SessionInfo | null;
+  /** What its memory keeps of its earlier runs (memory.taskRuns): newest first, the earlier-runs summary last. */
+  runs?: MemoryEntry[];
 }
+
+/** One earlier run of a task, as its details list it. */
+export interface PreviousRun {
+  /** When it ran, in the user's words ("Sep 25, 2026, 9:00 AM"). */
+  when: string;
+  /** Its first line: the start of what it produced, else its note. */
+  line: string;
+  /** Exactly what it published or sent (task_complete output), when it kept it. */
+  output?: string;
+  /** The run's note for the next runs (absent when it left only an output). */
+  note?: string;
+}
+
+/** How long a previous run's first line is. */
+export const RUN_LINE_CHARS = 90;
 
 export type Origin = "account" | "local" | "api" | "adhoc";
 
@@ -49,6 +81,20 @@ export interface DetailsModel {
   files: { name: string; detail: string }[];
   /** The TODO entry to show with "Open in TODO", when the list has it. */
   todoId?: string;
+  /** Its earlier runs, newest first (dates, outputs and notes), when its memory keeps them. */
+  previousRuns?: PreviousRun[];
+  /** What its memory says of runs older than those (the earlier-runs summary). */
+  earlierRuns?: string;
+}
+
+/** A task's earlier runs as its details list them (the note "(no note)" of an output-only run is left out). */
+export function previousRuns(runs: readonly MemoryEntry[], when: WhenOptions = {}): { runs: PreviousRun[]; earlier?: string } {
+  const out = runs.filter(isTaskRun).map((e): PreviousRun => {
+    const note = e.text === "(no note)" ? undefined : e.text;
+    return { when: formatWhen(e.learnedAt, when), line: clipLine(e.output ?? e.text, RUN_LINE_CHARS), ...(e.output ? { output: e.output } : {}), ...(note ? { note } : {}) };
+  });
+  const earlier = runs.find(isEarlierRuns)?.text;
+  return { runs: out, ...(earlier ? { earlier } : {}) };
 }
 
 export const ORIGIN_LABELS: Record<Origin, string> = {
@@ -169,6 +215,11 @@ export function detailsModel(input: DetailsInput, now = Date.now(), when: WhenOp
   if (chip) model.chip = { ...chip, hint: chipHint(chip.label) };
   if (origin) model.origin = origin;
   if (task) model.todoId = task.id;
+  if (input.runs?.length) {
+    const kept = previousRuns(input.runs, when);
+    if (kept.runs.length) model.previousRuns = kept.runs;
+    if (kept.earlier) model.earlierRuns = kept.earlier;
+  }
   return model;
 }
 

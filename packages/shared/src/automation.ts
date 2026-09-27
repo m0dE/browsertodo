@@ -126,8 +126,18 @@ export interface ApprovalRequest {
 export const ApprovalAnswer = z.enum(["allow_once", "allow_task", "deny"]);
 export type ApprovalAnswer = z.infer<typeof ApprovalAnswer>;
 
-/** How an approval request ended: the user's answer, no answer in time, or the turn ended first (Stop, time limit). */
-export type ApprovalOutcome = ApprovalAnswer | "timeout" | "ended";
+/**
+ * How an approval request ended: the user's answer, no answer in time, the turn ended first (Stop, time limit),
+ * the user wrote to the agent first (interrupted: the agent reads that before anything else), or nobody was
+ * there to answer (paused: an unattended scheduled run pauses at once for the user's OK).
+ */
+export type ApprovalOutcome = ApprovalAnswer | "timeout" | "ended" | "interrupted" | "paused";
+
+/** Where the user answered an approval: its card's buttons, the card's keys (Alt+Y / Alt+T / Alt+N), or voice. */
+export type ApprovalAnsweredBy = "card" | "keyboard" | "voice";
+
+/** What ended an approval request, for the trace: the user's answer (where), or what ended it without one. */
+export type ApprovalEndedBy = ApprovalAnsweredBy | "stop" | "message" | "timeout" | "unattended" | "turn_end" | "not_shown";
 
 /** The outcome as the card shows it once answered. */
 export const APPROVAL_OUTCOME_TEXT: Record<ApprovalOutcome, string> = {
@@ -136,13 +146,26 @@ export const APPROVAL_OUTCOME_TEXT: Record<ApprovalOutcome, string> = {
   deny: "Denied",
   timeout: "No answer in time: not done",
   ended: "The task ended before an answer: not done",
+  interrupted: "You wrote to the agent first: not done",
+  paused: "Paused for your OK: not done yet. Continue the task to do it",
 };
+
+/** A run paused because nobody was there to approve an action: the reason the run, the TODO row and the notification show. */
+export function approvalPauseReason(r: Pick<ApprovalRequest, "action" | "why" | "kind">): string {
+  return `Needs your OK to: ${r.action} (${r.kind ? CONSEQUENCE_TEXT[r.kind] : r.why}) — open to allow`;
+}
 
 /** Starts every refusal the agent gets for an action that was not approved, so the tools can tell it apart from a failure. */
 export const APPROVAL_REFUSAL_PREFIX = "Not done: the user did not approve this action.";
 
 /** The error text for an action that was not approved. */
 export function approvalRefusalText(outcome: Exclude<ApprovalOutcome, "allow_once" | "allow_task">, action: string): string {
+  if (outcome === "interrupted") {
+    return `${APPROVAL_REFUSAL_PREFIX} The user sent you a message before answering (${action}). Read their message first and do what it says; do this action again only if they ask for it.`;
+  }
+  if (outcome === "paused") {
+    return `${APPROVAL_REFUSAL_PREFIX} Nobody is there to approve it now (${action}), so the task pauses until the user allows it. Stop here: don't retry it or do it another way.`;
+  }
   const what =
     outcome === "deny"
       ? `The user denied it (${action}).`
@@ -168,10 +191,10 @@ export function effectiveLevel(s: { automationLevel: AutomationLevel; scheduledA
 const APPROVAL_CARD_NOTE =
   " The user answers on an approval card that shows the step and its text: do not ask for permission in your own words first, just do the step. If a result says the user did not approve, do not retry or work around it: ask what to do instead (task_pause).";
 
-/** The sentence the agent's prompt carries about the level (so it plans for the approvals it will need). */
+/** The sentence the agent's prompt carries about the level (so it plans for the approvals it will need, or knows none will come). */
 export function automationPromptLine(level: EffectiveLevel): string {
   const line = levelLine(level);
-  return line ? line + APPROVAL_CARD_NOTE : "";
+  return level === "full" ? line : line + APPROVAL_CARD_NOTE;
 }
 
 function levelLine(level: EffectiveLevel): string {
@@ -183,6 +206,6 @@ function levelLine(level: EffectiveLevel): string {
     case "full_within_task":
       return "Approvals: this task runs on its own, but an action that publishes, sends, pays or deletes and that the task does not ask for waits for the user's OK. Do only what the task asks.";
     case "full":
-      return "";
+      return "Approvals: the user chose full autonomy: nothing you do waits for their OK. When the request is clear, carry it out now; never stop to propose a plan or to ask them to confirm one.";
   }
 }

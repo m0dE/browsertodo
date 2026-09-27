@@ -6,7 +6,8 @@ import { isTabLoaded, tabExists, tabUrl } from "./chrome-tabs.js";
 import { assertOpenable, BACKGROUND_SHOT_SKIPPED, NAV_TIMEOUT_MS, pollUntil, type Params as P, type Result as R } from "./driver-common.js";
 import { fallbackNote, FallbackDriver } from "./fallback-driver.js";
 import { keyEvents } from "./keys.js";
-import { leavingDocument, waitForUsablePage, type LoadProbe } from "./page-load.js";
+import { pageIndicators, type HiddenPart, type PageIndicators } from "./page-indicator.js";
+import { leavingDocument, readWhenDrawn, stillLoadingNote, waitForUsablePage, type LoadProbe } from "./page-load.js";
 import { WAIT_MIN_GAP_MS, WAIT_POLL_MS, type PageWait, type PageWaitArgs } from "./page-wait.js";
 import { isDebuggerBlocked, isDebuggerDetached, isRestrictedError, restrictedToolError } from "./restricted.js";
 import type { PageResult } from "./scroll-probe.js";
@@ -60,13 +61,16 @@ export class Driver {
   private readonly pendingNotes = new Set<number>();
   /** The current tab as of the last ready(). */
   private lastTab: number | null = null;
+  /** The control overlay on the pages (page-indicator.ts): never in the agent's screenshots, never under its clicks. */
+  private readonly indicator: Pick<PageIndicators, "hiddenDuring">;
 
   constructor(
     private readonly cdp: Cdp,
     private readonly agent: AgentTab,
-    opts: { sleep?: Sleep; fallback?: FallbackDriver; knownTabs?: () => Promise<number[]> } = {},
+    opts: { sleep?: Sleep; fallback?: FallbackDriver; knownTabs?: () => Promise<number[]>; indicator?: Pick<PageIndicators, "hiddenDuring"> } = {},
   ) {
     this.sleep = opts.sleep ?? delay;
+    this.indicator = opts.indicator ?? pageIndicators;
     this.viaCdp = new CdpActions(cdp, this.sleep);
     this.fallback = opts.fallback ?? new FallbackDriver({ sleep: this.sleep });
     this.knownTabs = opts.knownTabs ?? (() => this.agent.tabIds());
@@ -125,12 +129,21 @@ export class Driver {
     );
   }
 
-  /** Snapshot of the current tab, or of `tab` (a short id) without activating it or making it current. */
+  /**
+   * Snapshot of the current tab, or of `tab` (a short id) without activating it or making it current. A tab that
+   * shows next to nothing yet (still loading, or a web app drawing its first screen) is waited for, a few seconds
+   * at most (readWhenDrawn); if it still shows nothing, the note says the page is still loading.
+   */
   async readPage(p: P<"browser.readPage"> = {}): Promise<WithNote<PageSnapshot>> {
     const target = p.tab === undefined ? undefined : await this.agent.resolve(p.tab);
+    const drawn = async (tabId: number, read: () => Promise<PageSnapshot>, probe: () => Promise<LoadProbe | null>): Promise<WithNote<PageSnapshot>> => {
+      const tab = () => chrome.tabs.get(tabId).then((t) => ({ heading: t.pendingUrl || t.url, loading: t.status === "loading" }));
+      const { snap, stillLoading } = await readWhenDrawn(read, probe, { sleep: this.sleep, tab });
+      return stillLoading === undefined ? snap : { ...snap, note: stillLoadingNote(snap, stillLoading) };
+    };
     const r = await this.use(
-      (tabId) => this.viaCdp.readPage(tabId),
-      (tabId) => this.fallback.readPage(tabId),
+      (tabId) => drawn(tabId, () => this.viaCdp.readPage(tabId), () => this.viaCdp.probe(tabId)),
+      (tabId) => drawn(tabId, () => this.fallback.readPage(tabId), () => this.fallback.probe(tabId)),
       target,
       { droppedGoesFallback: true },
     );
@@ -147,8 +160,8 @@ export class Driver {
    */
   async screenshot(): Promise<WithNote<Screenshot>> {
     const shot = await this.use(
-      (tabId) => this.cdpScreenshot(tabId),
-      (tabId) => this.fallback.screenshot(tabId),
+      (tabId) => this.withoutIndicator(tabId, "all", () => this.cdpScreenshot(tabId)),
+      (tabId) => this.withoutIndicator(tabId, "all", () => this.fallback.screenshot(tabId)),
       undefined,
       { droppedGoesFallback: true },
     );
@@ -158,15 +171,15 @@ export class Driver {
 
   click(p: P<"browser.click">): Promise<WithNote<R<"browser.click">>> {
     return this.use(
-      (tabId) => this.viaCdp.click(tabId, p),
-      (tabId) => this.fallback.click(tabId, p),
+      (tabId) => this.withoutIndicator(tabId, "pill", () => this.viaCdp.click(tabId, p)),
+      (tabId) => this.withoutIndicator(tabId, "pill", () => this.fallback.click(tabId, p)),
     );
   }
 
   type(p: P<"browser.type">): Promise<WithNote<R<"browser.type">>> {
     return this.use(
-      (tabId) => this.viaCdp.type(tabId, p),
-      (tabId) => this.fallback.type(tabId, p),
+      (tabId) => this.withoutIndicator(tabId, "pill", () => this.viaCdp.type(tabId, p)),
+      (tabId) => this.withoutIndicator(tabId, "pill", () => this.fallback.type(tabId, p)),
     );
   }
 
@@ -192,8 +205,8 @@ export class Driver {
 
   scroll(p: P<"browser.scroll">): Promise<WithNote<R<"browser.scroll">>> {
     return this.use(
-      (tabId) => this.viaCdp.scroll(tabId, p),
-      (tabId) => this.fallback.scroll(tabId, p),
+      (tabId) => this.withoutIndicator(tabId, "pill", () => this.viaCdp.scroll(tabId, p)),
+      (tabId) => this.withoutIndicator(tabId, "pill", () => this.fallback.scroll(tabId, p)),
     );
   }
 
@@ -341,8 +354,10 @@ export class Driver {
         }
       }
       const result: WithNote<T> = await viaFallback(tabId);
-      if (this.pendingNotes.delete(tabId)) result.note = fallbackNote(await this.fallback.foreignExtension(tabId));
-      return await this.withNewTabs(result);
+      if (!this.pendingNotes.delete(tabId)) return await this.withNewTabs(result);
+      // Before a note the result already carries (e.g. the page is still loading); on a copy, never the page's own object.
+      const note = [fallbackNote(await this.fallback.foreignExtension(tabId)), result.note].filter(Boolean).join("\n");
+      return await this.withNewTabs({ ...result, note });
     } catch (err) {
       // A page Chrome keeps extensions out of (Web Store, chrome://): one plain sentence, not Chrome's raw error.
       if (!isRestrictedError(err)) throw err;
@@ -396,6 +411,14 @@ export class Driver {
     const known = new Set(await this.knownTabs());
     for (const t of attached) if (!known.has(t)) await this.cdp.detach(t);
     for (const t of [...this.fallbackTabs]) if (!known.has(t)) this.fallbackTabs.delete(t);
+  }
+
+  /**
+   * Runs a call with the control overlay hidden in the tab: all of it for a screenshot (the agent sees the page as
+   * it is), its pill for input at a point (a click there must reach the page, never the pill's Stop).
+   */
+  private withoutIndicator<T>(tabId: number, part: HiddenPart, call: () => Promise<T>): Promise<T> {
+    return this.indicator.hiddenDuring(tabId, part, call);
   }
 
   /** A debugger screenshot; of a background tab with a time limit, since Chrome may not paint it. */

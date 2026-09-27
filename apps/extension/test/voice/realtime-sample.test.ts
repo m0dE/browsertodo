@@ -90,7 +90,7 @@ describe("Test voice for Realtime", () => {
     t.relay().open();
     t.relay().event({ type: "browsertodo.error", error: "realtime_unavailable", message: "Realtime voice is not set up on this server yet" });
     t.relay().onclose?.({ code: 4503, reason: "realtime_unavailable" });
-    await expect(t.done).rejects.toMatchObject({ kind: "unavailable", message: "Realtime voice is unavailable. Using Standard." });
+    await expect(t.done).rejects.toMatchObject({ kind: "unavailable", message: "Realtime voice is unavailable on the server right now." });
   });
 
   it("fails with the ticket's reason when there is no session (signed out, no plan)", async () => {
@@ -104,7 +104,7 @@ describe("Test voice for Realtime", () => {
       const t = setup();
       await vi.advanceTimersByTimeAsync(0);
       t.relay().open();
-      const failed = expect(t.done).rejects.toMatchObject({ fallback: true });
+      const failed = expect(t.done).rejects.toMatchObject({ kind: "network", transient: true });
       await vi.advanceTimersByTimeAsync(20_000);
       await failed;
     } finally {

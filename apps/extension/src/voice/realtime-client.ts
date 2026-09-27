@@ -13,10 +13,18 @@
  * in when the user looks at another one (it cannot see that tab).
  *
  * Input transcription is on (REALTIME_INPUT_TRANSCRIPTION_MODEL, which the
- * relay bills and the server's price includes): the user's own words, keyed
- * by their input item, are what the chat shows. The agent gets the request
- * the narrator forwards (send_to_agent) at once, without waiting for them.
- * "stop" and "cancel" are the narrator's tools rather than words matched here.
+ * relay bills and the server's price includes), told the languages the user
+ * speaks (voice-language.ts). The chat shows each request as the narrator
+ * understood it (send_to_agent's text), with the user's words for it word for
+ * word: the transcripts of every part of their speech since the last request
+ * or spoken reply (server VAD may split one request into several turns). A
+ * transcript in another script is either unclear (the narrator's own reading
+ * counts; the words are kept as heard) or other people talking nearby (no
+ * reply, no request, not kept). A send_to_agent goes out once its turn's words are in (at most
+ * HOLD_FOR_WORDS_MS), and only for the user's own request: never for speech
+ * not addressed to the assistant, and never for an update the narrator was
+ * given (forwardRefusal). "stop" and "cancel" are the narrator's tools rather
+ * than words matched here.
  *
  * OpenAI event names and shapes as documented (read 2026-09-26):
  * developers.openai.com/api/docs/guides/realtime-conversations,
@@ -42,8 +50,9 @@ import {
   type TraceDraft,
 } from "@browsertodo/shared";
 import { bytesToBase64 } from "../base64.js";
-import { REALTIME_NOT_AVAILABLE_NOTE } from "./engine-choice.js";
-import { floor, isNoise, moreImportant, repeatsRequest, speechTurnOf, type ForwardedRequest, type ReplyKind, type SpeechTurn, type SpokenKind } from "./narrator-policy.js";
+import { REALTIME_UNAVAILABLE_TEXT } from "./engine-choice.js";
+import { ECHO_WINDOW_MS, echoesSpoken, echoesUpdate, floor, isNoise, moreImportant, repeatsRequest, speechTurnOf, type ForwardedRequest, type ReplyKind, type SpeechTurn, type SpokenKind } from "./narrator-policy.js";
+import { transcriptFit, type TranscriptFit } from "./voice-language.js";
 
 /** PCM16 mono at this rate, both ways ("audio/pcm" is 24 kHz). */
 export const REALTIME_SAMPLE_RATE = 24_000;
@@ -83,8 +92,9 @@ export const NARRATOR_INSTRUCTIONS = [
   "When asked to reply to an update: one short sentence for progress; for a result, the actual answer in one to three short sentences. If an update came while the user was talking, include its news in your answer to them. Never read long text, lists, links, code or numbers of steps aloud. Never make up results: say only what the updates say.",
   "When the agent needs the user (a question, a login, a code), ask the user in your own words and pass their answer on with send_to_agent.",
   "If the user asks to stop the task, call stop_task. If they say goodbye or ask you to stop listening, call end_voice.",
-  "When an update says an action needs the user's OK, ask them briefly; when they answer yes or no, call answer_approval (never send_to_agent for it).",
+  "When an update says an action needs the user's OK, ask them briefly, naming the action; when they plainly answer yes or no, call answer_approval with that action (never send_to_agent for it). A question or a remark is not a yes: answer or pass it on, and ask again.",
   "You and the agent work in one browser tab. A note says when the user looks at another tab; neither of you can see that tab. While they do, if they ask about what they see or 'this page', pass it on with send_to_agent like any request (the agent is told which tab they look at); they can say 'use this tab' or press Use voice here to move the conversation there. When they ask to use this tab or to switch here, call use_this_tab and tell them what it answered.",
+  "Other people may be talking near the user. Speech that is not addressed to you, or is in another language than the user's, is not for you: say nothing and call no tool.",
   "Be friendly and brief. Speak the user's language.",
 ].join("\n");
 
@@ -137,6 +147,26 @@ export const UNMUTED_NOTE = "The user unmuted their microphone: you can hear the
 /** The narrator's answer to a send_to_agent that passes on the request just sent again (repeatsRequest): it is not sent twice. */
 export const ALREADY_SENT_OUTPUT = "Already sent to the agent: it was not sent again. Its updates will follow.";
 
+/** The narrator's answers to a tool call that is not the user's doing (callRefusal): not done, nothing to say. */
+export const NOT_A_REQUEST_OUTPUT = {
+  echo: "Not sent: that was an update for you to say, not a request from the user. Say nothing more.",
+  not_user: "Not done: the user did not ask for it (other people talking, or noise). Say nothing.",
+} as const;
+
+/**
+ * Small talk while the agent works (a stray "Hey."): its reply is made again, capped, instead of the long one it made
+ * (a real trace: "Hey! I'm here. If you want, you can tell me..." for 6.35 s while the agent worked). The cap is
+ * ACK_MAX_OUTPUT_TOKENS' measure: acknowledgements of a few words took 23-80 output tokens.
+ */
+export const WORKING_SMALL_TALK_MAX_OUTPUT_TOKENS = 80;
+export const WORKING_SMALL_TALK_RESPONSE = {
+  instructions:
+    "The agent is working on the user's request right now. Answer what the user just said in at most five words, in their language (for example 'Still on it.' or 'I'm here.'), and nothing else: no question, no offer.",
+  tool_choice: "none",
+  max_output_tokens: WORKING_SMALL_TALK_MAX_OUTPUT_TOKENS,
+  reasoning: { effort: "minimal" },
+} as const;
+
 /** The narrator's tools (function tools only: the relay refuses others). */
 export const NARRATOR_TOOLS = [
   {
@@ -165,10 +195,14 @@ export const NARRATOR_TOOLS = [
   {
     type: "function",
     name: "answer_approval",
-    description: "The user's answer to the action waiting for their OK: allow true for yes (it runs once), false for no (it is not done).",
+    description:
+      "The user's answer to the action waiting for their OK: allow true only when the user plainly said yes to it (it runs once), false for no (it is not done). A question or anything else is not a yes: ask them plainly first.",
     parameters: {
       type: "object",
-      properties: { allow: { type: "boolean", description: "true: allow it once; false: deny it" } },
+      properties: {
+        allow: { type: "boolean", description: "true: allow it once; false: deny it" },
+        action: { type: "string", description: 'The action they answered, as the update named it (e.g. Click "Post"). Required to allow.' },
+      },
       required: ["allow"],
     },
   },
@@ -198,31 +232,46 @@ export function realtimeUrl(apiBase: string, sessionId?: string): string {
   return u.toString();
 }
 
+/** The relay's address asking it to end the user's open session and take its place (REALTIME_QUERY.takeover). */
+export function takeoverUrl(url: string): string {
+  const u = new URL(url);
+  u.searchParams.set(REALTIME_QUERY.takeover, "1");
+  return u.toString();
+}
+
 // ---------------------------------------------------------------- failures
 
-export type RealtimeFailureKind = "auth" | "credit" | "plan" | "idle" | "limit" | "busy" | "unavailable" | "upstream" | "protocol" | "network";
+export type RealtimeFailureKind = "auth" | "credit" | "plan" | "idle" | "limit" | "busy" | "replaced" | "unavailable" | "upstream" | "protocol" | "network";
 
 export interface RealtimeFailure {
   kind: RealtimeFailureKind;
   /** One line for the panel; auth, credit and plan use the texts error-help.ts knows (its fix buttons). */
   message: string;
-  /** Standard voice can take over (Realtime could not, but voice as such can). */
-  fallback: boolean;
+  /**
+   * A new connection may well work (the connection dropped; or, while connecting, the user's previous session is
+   * still closing on the server): the panel reconnects Realtime a few times before it gives up. Never a reason to
+   * change engine.
+   */
+  transient: boolean;
 }
 
 const minutes = (ms: number) => Math.round(ms / 60_000);
 
+/** When the voice connection dropped and could not be made again. */
+export const DISCONNECTED_MESSAGE = "Voice disconnected.";
+
 const FAILURES: Record<RealtimeFailureKind, RealtimeFailure> = {
-  auth: { kind: "auth", message: "Not signed in: log in again to use voice.", fallback: false },
-  credit: { kind: "credit", message: `${OUT_OF_CREDIT}: top up to keep using voice.`, fallback: false },
-  plan: { kind: "plan", message: PLAN_REQUIRED_MESSAGES.voice, fallback: false },
-  idle: { kind: "idle", message: `Hands-free stopped after ${minutes(REALTIME_LIMITS.idleMs)} minutes without activity.`, fallback: false },
-  limit: { kind: "limit", message: `Hands-free stopped: a Realtime session lasts up to ${minutes(REALTIME_LIMITS.maxSessionMs)} minutes.`, fallback: false },
-  busy: { kind: "busy", message: "Realtime voice is open in another window. Using Standard.", fallback: true },
-  unavailable: { kind: "unavailable", message: REALTIME_NOT_AVAILABLE_NOTE, fallback: true },
-  upstream: { kind: "upstream", message: REALTIME_NOT_AVAILABLE_NOTE, fallback: true },
-  protocol: { kind: "protocol", message: REALTIME_NOT_AVAILABLE_NOTE, fallback: true },
-  network: { kind: "network", message: REALTIME_NOT_AVAILABLE_NOTE, fallback: true },
+  auth: { kind: "auth", message: "Not signed in: log in again to use voice.", transient: false },
+  credit: { kind: "credit", message: `${OUT_OF_CREDIT}: top up to keep using voice.`, transient: false },
+  plan: { kind: "plan", message: PLAN_REQUIRED_MESSAGES.voice, transient: false },
+  idle: { kind: "idle", message: `Hands-free stopped after ${minutes(REALTIME_LIMITS.idleMs)} minutes without activity.`, transient: false },
+  limit: { kind: "limit", message: `Hands-free stopped: a Realtime session lasts up to ${minutes(REALTIME_LIMITS.maxSessionMs)} minutes.`, transient: false },
+  busy: { kind: "busy", message: "Realtime voice is on in another window or on another device.", transient: true },
+  replaced: { kind: "replaced", message: "Voice was turned on in another window, so it stopped here.", transient: false },
+  unavailable: { kind: "unavailable", message: REALTIME_UNAVAILABLE_TEXT, transient: false },
+  upstream: { kind: "upstream", message: DISCONNECTED_MESSAGE, transient: true },
+  protocol: { kind: "protocol", message: DISCONNECTED_MESSAGE, transient: true },
+  network: { kind: "network", message: DISCONNECTED_MESSAGE, transient: true },
 };
 
 const KIND_OF_ERROR: Partial<Record<RealtimeErrorCode, RealtimeFailureKind>> = {
@@ -231,6 +280,7 @@ const KIND_OF_ERROR: Partial<Record<RealtimeErrorCode, RealtimeFailureKind>> = {
   out_of_credit: "credit",
   realtime_unavailable: "unavailable",
   session_open: "busy",
+  session_replaced: "replaced",
   idle_timeout: "idle",
   session_limit: "limit",
   message_too_big: "protocol",
@@ -253,6 +303,12 @@ const KIND_OF_CLOSE: Record<number, RealtimeFailureKind> = {
 export function realtimeFailure(input: { closeCode: number; error?: RealtimeErrorCode; opened: boolean }): RealtimeFailure {
   const kind = (input.error && KIND_OF_ERROR[input.error]) || KIND_OF_CLOSE[input.closeCode] || (input.opened ? "upstream" : "network");
   return FAILURES[kind];
+}
+
+/** A failure object (a RealtimeFailure, or anything else thrown). */
+export function asRealtimeFailure(err: unknown): RealtimeFailure | null {
+  const f = err as Partial<RealtimeFailure> | null;
+  return f && typeof f === "object" && typeof f.kind === "string" && f.kind in FAILURES && typeof f.message === "string" ? (f as RealtimeFailure) : null;
 }
 
 // ---------------------------------------------------------------- the client
@@ -285,11 +341,14 @@ export interface RealtimeHandlers {
   onUserSpeech?(): void;
   /**
    * A narrator tool call; the answer goes back to the narrator (a throw is answered as an error).
-   * inputId: the user's input item the reply making the call answers (null: a reply we asked for).
+   * inputId: the user's input item the reply making the call answers (null: a reply we asked for). heard: for
+   * send_to_agent, the user's words for the request, word for word (every part of their speech since the last request
+   * or spoken reply, in order); for answer_approval, the user's words of the turn it answers (clear ones only); [] for
+   * other tools.
    */
-  onTool?(name: NarratorTool, args: Record<string, unknown>, inputId: string | null): Promise<string> | string;
-  /** The user's words of input item `inputId`, word for word ("" when they could not be transcribed). */
-  onUserWords?(inputId: string, text: string): void;
+  onTool?(name: NarratorTool, args: Record<string, unknown>, inputId: string | null, heard: string[]): Promise<string> | string;
+  /** The user's words, word for word, for speech that led to no request (the narrator answered it, or acted on it). */
+  onHeard?(words: string[]): void;
   /** The reply to input item `inputId` is done (its tool calls, if any, came before). */
   onTurnDone?(inputId: string): void;
   /** The session ended: null when we closed it, else why. */
@@ -355,8 +414,22 @@ export interface RealtimeClientOptions {
   /** The narrator's voice and speaking speed (Settings; the voice is fixed once it spoke). */
   voice?: RealtimeVoiceId;
   speed?: number;
+  /** The languages the user speaks (voice-language.ts voiceLanguages): the transcription's hint, and what counts as theirs. */
+  languages?: readonly string[];
   open?: OpenSocket;
 }
+
+/** What the transcription made of a user's turn. */
+type TurnWords = { fit: TranscriptFit | "noise" | "echo" | "failed"; text: string };
+
+/** The kind of a user's turn by its words: small talk or a request (speechTurnOf), or unclear (the narrator's reading counts). */
+type TurnKind = SpeechTurn | "unclear";
+
+/** Update notes remembered, to tell a send_to_agent that only passes one on (echoesUpdate). */
+const MAX_REMEMBERED_NOTES = 12;
+
+/** The transcription's context for the recording (gpt-transcribe's prompt). */
+export const TRANSCRIPTION_PROMPT = "A person talking to BrowserTODO, a voice assistant in their web browser, about tasks in the browser.";
 
 type ServerEvent = { type?: unknown; [k: string]: unknown };
 
@@ -389,8 +462,21 @@ export class RealtimeClient {
   private droppedNews: SpokenKind | null = null;
   /** Input items that were noise: their reply is cancelled when it starts. */
   private readonly noise = new Set<string>();
-  /** What each input item's words make its turn (speechTurnOf; failed transcription: small talk, heard as before). */
-  private readonly turnKinds = new Map<string, SpeechTurn>();
+  /** What each input item's words make its turn (speechTurnOf; unclear or failed transcription: "unclear"). */
+  private readonly turnKinds = new Map<string, TurnKind>();
+  /** What each input item's transcription was (for send_to_agent), and the calls waiting for it. */
+  private readonly turnWords = new Map<string, TurnWords>();
+  private readonly wordsWaiters = new Map<string, ((w: TurnWords | null) => void)[]>();
+  /** The user said clear words since the last request passed on (a send_to_agent not answering their turn needs them). */
+  private clearWordsSinceForward = false;
+  /** The notes the narrator was told lately (its updates). */
+  private readonly notes: string[] = [];
+  /** What the narrator said aloud lately, with when (a transcript of it is the microphone hearing the speaker). */
+  private readonly saidAloud: { text: string; at: number }[] = [];
+  /** The agent is working on a task of the chat (small talk then gets a short reply). */
+  private agentWorking = false;
+  /** How the reply being made again is asked for (MAKE_AGAIN_RESPONSE, or WORKING_SMALL_TALK_RESPONSE). */
+  private redoResponse: Record<string, unknown> = MAKE_AGAIN_RESPONSE;
   /** The reply to the user's speech held until their words are in. */
   private held: Held | null = null;
   /** The input whose reply answered a request by itself and is being cancelled: made again once it is done. */
@@ -410,6 +496,8 @@ export class RealtimeClient {
   private replyInput: string | null = null;
   private lastError: RealtimeErrorCode | undefined;
   private narratorText = "";
+  /** The output item the reply's words so far belong to (a reply can say several items: a space goes between them). */
+  private narratorItem = "";
   private ready = false;
   /** Timing (see RealtimeHandlers.onTrace). */
   private connectAt = 0;
@@ -420,6 +508,14 @@ export class RealtimeClient {
   private readonly inputTimes = new Map<string, InputTiming>();
   /** The user muted the microphone: no audio goes out. */
   private muted = false;
+  /** Tool calls still running, by the input item their reply answers (its turn is done once they are). */
+  private readonly running = new Map<string, Promise<void>>();
+  /** The user's words since the last request or spoken reply, in order: what the next request is word for word. */
+  private pendingWords: { inputId: string; text: string }[] = [];
+  /** Input items whose reply was heard, or ran a tool other than send_to_agent: their words led to no request. */
+  private readonly answeredInputs = new Set<string>();
+  /** Input items whose reply passed a request on (its words went with it). */
+  private readonly requestInputs = new Set<string>();
   /** The request last passed on (send_to_agent), answered to the narrator once `answered` settles. */
   private forwarded: (ForwardedRequest & { answered: Promise<void> }) | null = null;
 
@@ -464,8 +560,15 @@ export class RealtimeClient {
   /** Tells the narrator something (a system message); `speak`: and asks it to say it, when the floor allows (floor()). */
   note(text: string, speak: SpokenKind | null): void {
     if (!this.isOpen()) return;
+    this.notes.push(text);
+    if (this.notes.length > MAX_REMEMBERED_NOTES) this.notes.shift();
     this.send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text }] } });
     if (speak) this.requestReply(speak);
+  }
+
+  /** The agent started or stopped working on a task of the chat. */
+  setAgentWorking(working: boolean): void {
+    this.agentWorking = working;
   }
 
   /** The narrator's audio finished playing here: a line waiting for the floor may start. */
@@ -503,7 +606,11 @@ export class RealtimeClient {
       audio: {
         input: {
           format,
-          transcription: { model: REALTIME_INPUT_TRANSCRIPTION_MODEL },
+          transcription: {
+            model: REALTIME_INPUT_TRANSCRIPTION_MODEL,
+            ...(this.opts.languages?.length ? { languages: [...this.opts.languages] } : {}),
+            prompt: TRANSCRIPTION_PROMPT,
+          },
           turn_detection: { type: "server_vad", silence_duration_ms: TURN_SILENCE_MS, create_response: true, interrupt_response: SERVER_INTERRUPTS_REPLY },
         },
         output: { format, voice: this.opts.voice ?? DEFAULT_REALTIME_VOICE, speed: clampSpeed(this.opts.speed ?? REALTIME_SPEED.default, REALTIME_SPEED) },
@@ -613,13 +720,14 @@ export class RealtimeClient {
   }
 
   /** The user's words of input `inputId` are transcribed (or could not be): the time since the input was committed. */
-  private traceWords(inputId: string, text: string, usage: unknown, failed = false, noise = false): void {
+  private traceWords(inputId: string, text: string, usage: unknown, failed = false, noise = false, fit: TranscriptFit | "echo" = "clear"): void {
     const input = this.inputTimes.get(inputId);
     const now = Date.now();
     const u = (usage && typeof usage === "object" ? usage : {}) as Record<string, unknown>;
     const data: NonNullable<TraceDraft["data"]> = { chars: text.length, model: REALTIME_INPUT_TRANSCRIPTION_MODEL };
     if (failed) data.failed = true;
     if (noise) data.noise = true;
+    if (fit !== "clear") data.fit = fit;
     for (const [from, to] of [["input_tokens", "inTokens"], ["output_tokens", "outTokens"], ["seconds", "audioSeconds"]] as const) {
       if (typeof u[from] === "number") data[to] = u[from] as number;
     }
@@ -661,6 +769,7 @@ export class RealtimeClient {
         this.writingCall = false;
         this.cancelAfterCall = false;
         this.narratorText = "";
+        this.narratorItem = "";
         this.replyInput = this.unansweredInput;
         this.unansweredInput = null;
         this.reply = this.newReply(this.replyInput);
@@ -678,6 +787,8 @@ export class RealtimeClient {
         const answered = this.replyInput;
         this.replyInput = null;
         this.traceReply(ev, answered);
+        // Heard: what it said may come back through the microphone.
+        if (this.spoke && this.narratorText.trim()) this.rememberSaid(this.narratorText);
         h.onReplyDone?.();
         // What was held of it and let go was never heard: the narrator's memory keeps none of it.
         if (this.unheardItem) this.truncate(this.unheardItem, 0);
@@ -688,7 +799,7 @@ export class RealtimeClient {
         } else if (answered && this.held?.inputId === answered) {
           this.held.done = true;
           this.decideHeld();
-        } else if (answered) h.onTurnDone?.(answered);
+        } else if (answered) this.turnDone(answered);
         // The user's turn was answered, with the news let go meanwhile in it (not when it was noise).
         if (answered && !this.noiseReply) this.droppedNews = null;
         this.flush();
@@ -711,6 +822,7 @@ export class RealtimeClient {
           this.decideHeld();
         } else {
           this.spoke = true;
+          if (this.replyInput) this.remember(this.answeredInputs, this.replyInput);
           h.onAudio?.(str("delta"), str("item_id"));
         }
         break;
@@ -737,26 +849,54 @@ export class RealtimeClient {
           if (isNoise(text, this.speechMs(id, ev.usage))) {
             // Noise (a cough, a door): nothing is said for it and it is no message; the trace keeps it, marked.
             this.traceWords(id, text, ev.usage, false, true);
+            this.settleWords(id, { fit: "noise", text });
             this.onNoiseInput(id);
             break;
           }
-          this.traceWords(id, text, ev.usage);
+          if (echoesSpoken(text, this.recentlySaid())) {
+            // The microphone heard the narrator (its line, a result said aloud), not the user: like noise.
+            this.traceWords(id, text, ev.usage, false, false, "echo");
+            this.trace({ t: Date.now(), cat: "voice", name: "voice.echo", data: { chars: text.length } }, id);
+            this.settleWords(id, { fit: "echo", text });
+            this.onNoiseInput(id);
+            break;
+          }
+          const fit = transcriptFit(text, this.opts.languages ?? []);
+          this.traceWords(id, text, ev.usage, false, false, fit);
+          this.settleWords(id, { fit, text });
+          if (fit === "other_language") {
+            // Other people talking nearby: no reply, no request, nothing shown (like noise).
+            this.trace({ t: Date.now(), cat: "voice", name: "voice.not_addressed", data: { chars: text.length } }, id);
+            this.onNoiseInput(id);
+            break;
+          }
+          if (fit === "unclear") {
+            // Not the user's words as said: the narrator's own reading of the audio counts, not these words.
+            this.trace({ t: Date.now(), cat: "voice", name: "voice.unclear", data: { chars: text.length } }, id);
+            this.heardWords(id, text);
+            this.wordsIn(id, "unclear");
+            break;
+          }
+          this.clearWordsSinceForward = true;
+          this.heardWords(id, text);
           this.wordsIn(id, speechTurnOf(text));
-          h.onUserWords?.(id, text);
         }
         break;
       case "conversation.item.input_audio_transcription.failed":
         this.log("realtime: the user's words could not be transcribed");
         if (str("item_id")) {
           this.traceWords(str("item_id"), "", undefined, true);
-          // Words unknown: its reply is heard, as before holding.
-          this.wordsIn(str("item_id"), "small_talk");
-          h.onUserWords?.(str("item_id"), "");
+          this.settleWords(str("item_id"), { fit: "failed", text: "" });
+          // Words unknown: the narrator's own reading counts (its reply is heard, as before holding).
+          this.wordsIn(str("item_id"), "unclear");
         }
         break;
       case "response.output_audio_transcript.delta":
         // Words of a reply the user talked over, of noise's, or of one made again are not shown (never "said").
         if (this.replyStale) break;
+        // Another item of the same reply: its words start a new sentence (they were run together: "exciting!I need").
+        if (this.narratorText && str("item_id") && this.narratorItem && str("item_id") !== this.narratorItem && !/\s$/.test(this.narratorText)) this.narratorText += " ";
+        if (str("item_id")) this.narratorItem = str("item_id");
         this.narratorText += str("delta");
         if (this.held) this.held.text = this.narratorText;
         else h.onNarratorText?.(this.narratorText);
@@ -798,8 +938,60 @@ export class RealtimeClient {
     }
   }
 
+  /** The reply to input `inputId` is done: its turn is, once the tool calls it made have run (a request goes with its words). */
+  private turnDone(inputId: string): void {
+    const calls = this.running.get(inputId);
+    if (calls) return void calls.then(() => this.turnDone(inputId));
+    // Answered without a request (spoken to, or acted on): the words so far led to none. A turn with a silent reply
+    // keeps them for the request a later turn makes (one request split by server VAD).
+    if (this.answeredInputs.has(inputId) && !this.requestInputs.has(inputId)) this.flushHeard(inputId);
+    this.opts.handlers.onTurnDone?.(inputId);
+  }
+
+  /** A transcript of the user's words (input `inputId`): part of the next request, or of speech that leads to none. */
+  private heardWords(inputId: string, text: string): void {
+    if (text) this.pendingWords.push({ inputId, text });
+  }
+
+  /** The words up to input `inputId` led to no request: they are passed on as heard. */
+  private flushHeard(inputId: string): void {
+    const upTo = this.pendingWords.findIndex((w) => w.inputId === inputId);
+    if (upTo < 0) return;
+    const words = this.pendingWords.splice(0, upTo + 1).map((w) => w.text);
+    this.opts.handlers.onHeard?.(words);
+  }
+
+  /** What the narrator said aloud within ECHO_WINDOW_MS. */
+  private recentlySaid(): string[] {
+    const since = Date.now() - ECHO_WINDOW_MS;
+    while (this.saidAloud[0] && this.saidAloud[0].at < since) this.saidAloud.shift();
+    return this.saidAloud.map((s) => s.text);
+  }
+
+  private rememberSaid(text: string): void {
+    this.saidAloud.push({ text, at: Date.now() });
+    if (this.saidAloud.length > MAX_TURN_KINDS) this.saidAloud.shift();
+  }
+
+  /** Adds `id` to a bounded set of input items. */
+  private remember(set: Set<string>, id: string): void {
+    set.add(id);
+    if (set.size > MAX_TURN_KINDS) set.delete(set.values().next().value!);
+  }
+
+  /** Runs a tool call; the turn it answers waits for it (turnDone). */
+  private runTool(callId: string, name: string, rawArgs: string, inputId: string | null, replyKind: ReplyKind | null): Promise<void> {
+    const run = this.runToolNow(callId, name, rawArgs, inputId, replyKind);
+    if (inputId === null) return run;
+    const all = Promise.all([this.running.get(inputId), run]).then(() => {
+      if (this.running.get(inputId) === all) this.running.delete(inputId);
+    });
+    this.running.set(inputId, all);
+    return run;
+  }
+
   /** replyKind: what the reply making the call is (null: not known). */
-  private async runTool(callId: string, name: string, rawArgs: string, inputId: string | null, replyKind: ReplyKind | null): Promise<void> {
+  private async runToolNow(callId: string, name: string, rawArgs: string, inputId: string | null, replyKind: ReplyKind | null): Promise<void> {
     let args: Record<string, unknown> | null = null;
     try {
       const parsed: unknown = JSON.parse(rawArgs || "{}");
@@ -818,12 +1010,35 @@ export class RealtimeClient {
     let answered = () => {};
     // Held before the first await: a repeat in the same reply arrives while this one runs.
     if (request) this.forwarded = { inputId, text: request, answered: new Promise<void>((r) => (answered = r)) };
+    const refusal = TOOL_NAMES.has(name) ? await this.callRefusal(request || null, inputId) : null;
+    if (refusal) {
+      // Not the user's: not run (not sent, not acknowledged), and not what a repeat is compared with.
+      if (request && this.forwarded?.text === request) this.forwarded = earlier;
+      this.trace({ t: Date.now(), cat: "voice", name: "voice.refused_forward", data: { reason: refusal, tool: name, chars: request.length } }, inputId);
+      this.send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: NOT_A_REQUEST_OUTPUT[refusal] } });
+      answered();
+      return;
+    }
+    let heard: string[] = [];
+    if (request) {
+      this.clearWordsSinceForward = false;
+      // The request is what all the user's words since the last request or spoken reply came to.
+      heard = this.pendingWords.splice(0).map((w) => w.text);
+      if (inputId) this.remember(this.requestInputs, inputId);
+    } else if (inputId && TOOL_NAMES.has(name)) {
+      this.remember(this.answeredInputs, inputId);
+      // An approval answer is checked against the user's own words for that turn (a yes allows only when they said one).
+      if (name === "answer_approval") {
+        const words = await this.wordsFor(inputId);
+        if (words?.fit === "clear" && words.text) heard = [words.text];
+      }
+    }
     let output: string;
     if (!TOOL_NAMES.has(name)) output = `Error: unknown tool ${name}`;
     else if (!args) output = "Error: the arguments are not valid JSON";
     else {
       try {
-        output = (await this.opts.handlers.onTool?.(name as NarratorTool, args, inputId)) ?? "Done.";
+        output = (await this.opts.handlers.onTool?.(name as NarratorTool, args, inputId, heard)) ?? "Done.";
       } catch (err) {
         output = `Error: ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -842,6 +1057,44 @@ export class RealtimeClient {
       this.requestText = request || null;
       this.requestReply("ack");
     }
+  }
+
+  /**
+   * Why a tool call is not the user's doing (null: it is): it answers speech that was not the user talking to the
+   * assistant (other people, noise); or, a send_to_agent of `request`, it passes on an update the narrator was given
+   * (echoesUpdate); or it answers no turn of the user's and no clear words of theirs came since the last request. A
+   * call answering a turn waits for that turn's words (at most HOLD_FOR_WORDS_MS; not in by then, it goes on as before).
+   */
+  private async callRefusal(request: string | null, inputId: string | null): Promise<keyof typeof NOT_A_REQUEST_OUTPUT | null> {
+    const words = inputId ? await this.wordsFor(inputId) : null;
+    if (words && (words.fit === "other_language" || words.fit === "noise" || words.fit === "echo")) return "not_user";
+    if (request !== null && echoesUpdate(request, this.notes, words?.fit === "clear" ? words.text : null)) return "echo";
+    if (!inputId && !this.clearWordsSinceForward) return "not_user";
+    return null;
+  }
+
+  /** The transcription of input `inputId` once it is in (null: not within HOLD_FOR_WORDS_MS, or the session ended). */
+  private wordsFor(inputId: string): Promise<TurnWords | null> {
+    const known = this.turnWords.get(inputId);
+    if (known) return Promise.resolve(known);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => done(null), HOLD_FOR_WORDS_MS);
+      const done = (w: TurnWords | null) => {
+        clearTimeout(timer);
+        const left = (this.wordsWaiters.get(inputId) ?? []).filter((f) => f !== done);
+        if (left.length) this.wordsWaiters.set(inputId, left);
+        else this.wordsWaiters.delete(inputId);
+        resolve(w);
+      };
+      this.wordsWaiters.set(inputId, [...(this.wordsWaiters.get(inputId) ?? []), done]);
+    });
+  }
+
+  /** The transcription of input `inputId` is in: remembered, and the calls waiting for it go on. */
+  private settleWords(inputId: string, words: TurnWords): void {
+    this.turnWords.set(inputId, words);
+    if (this.turnWords.size > MAX_TURN_KINDS) this.turnWords.delete(this.turnWords.keys().next().value!);
+    for (const wake of this.wordsWaiters.get(inputId) ?? []) wake(words);
   }
 
   /**
@@ -866,7 +1119,7 @@ export class RealtimeClient {
   }
 
   /** The user's words of input `inputId` are in: what they make the turn decides what its reply may do. */
-  private wordsIn(inputId: string, turn: SpeechTurn): void {
+  private wordsIn(inputId: string, turn: TurnKind): void {
     this.turnKinds.set(inputId, turn);
     if (this.turnKinds.size > MAX_TURN_KINDS) this.turnKinds.delete(this.turnKinds.keys().next().value!);
     if (this.held?.inputId === inputId) this.decideHeld();
@@ -894,9 +1147,16 @@ export class RealtimeClient {
       if (h.called && !said) this.releaseHeld();
       return;
     }
-    if (turn === "small_talk") return this.releaseHeld();
+    // Unclear words: the narrator's own reading of the audio decides (its reply is heard, its tool calls stand).
+    if (turn === "unclear") return this.releaseHeld();
+    if (turn === "small_talk") {
+      // While the agent works, a few words at most: a longer reply is made again, capped.
+      if (this.agentWorking && !h.called && this.redoneInput !== h.inputId && (said || h.done)) return this.redo(h, WORKING_SMALL_TALK_RESPONSE);
+      if (this.agentWorking && !h.called && this.redoneInput !== h.inputId) return;
+      return this.releaseHeld();
+    }
     if (h.called || this.redoneInput === h.inputId) return this.dropHeld();
-    if (said) return this.redo(h);
+    if (said) return this.redo(h, MAKE_AGAIN_RESPONSE);
     // Silent so far: it may still call a tool; done without one, there is nothing to hear.
     if (h.done) this.dropHeld();
   }
@@ -906,10 +1166,13 @@ export class RealtimeClient {
     if (!h) return;
     this.held = null;
     clearTimeout(h.timer);
-    if (h.audio.length) this.spoke = true;
+    if (h.audio.length) {
+      this.spoke = true;
+      this.remember(this.answeredInputs, h.inputId);
+    }
     for (const [b64, itemId] of h.audio) this.opts.handlers.onAudio?.(b64, itemId);
     if (h.text) this.opts.handlers.onNarratorText?.(h.text);
-    if (h.done) this.opts.handlers.onTurnDone?.(h.inputId);
+    if (h.done) this.turnDone(h.inputId);
     this.flush();
   }
 
@@ -924,13 +1187,17 @@ export class RealtimeClient {
     const itemId = h.audio[0]?.[1];
     if (itemId && h.done) this.truncate(itemId, 0);
     else if (itemId) this.unheardItem = itemId;
-    if (h.done && settle) this.opts.handlers.onTurnDone?.(h.inputId);
+    if (h.done && settle) this.turnDone(h.inputId);
     this.flush();
   }
 
-  /** The reply answered a request by itself: it is let go (cancelled if still being made) and made again. */
-  private redo(h: Held): void {
+  /**
+   * The reply is not the one wanted (it answered a request by itself; or long small talk while the agent works): it is
+   * let go (cancelled if still being made) and made again as `response` asks.
+   */
+  private redo(h: Held, response: Record<string, unknown>): void {
     this.redoneInput = h.inputId;
+    this.redoResponse = response;
     this.dropHeld(false);
     if (h.done) return this.makeAgain(h.inputId);
     this.replyStale = true;
@@ -938,12 +1205,12 @@ export class RealtimeClient {
     this.send({ type: "response.cancel" });
   }
 
-  /** The reply to input `inputId` again, with a tool call required; not when the user has since spoken again (theirs answers). */
+  /** The reply to input `inputId` again (redoResponse); not when the user has since spoken again (theirs answers). */
   private makeAgain(inputId: string): void {
-    if (this.userSpeaking || this.unansweredInput !== null) return this.opts.handlers.onTurnDone?.(inputId);
+    if (this.userSpeaking || this.unansweredInput !== null) return this.turnDone(inputId);
     this.unansweredInput = inputId;
     this.committedAt = Date.now();
-    this.send({ type: "response.create", response: MAKE_AGAIN_RESPONSE });
+    this.send({ type: "response.create", response: this.redoResponse });
   }
 
   private vadTime(itemId: string, at: "start" | "end", ms: unknown): void {
@@ -994,6 +1261,7 @@ export class RealtimeClient {
     this.wantReply = null;
     if (this.held) clearTimeout(this.held.timer);
     this.held = null;
+    for (const waiters of [...this.wordsWaiters.values()]) for (const wake of waiters) wake(null);
     this.opts.handlers.onClose?.(failure);
   }
 

@@ -18,6 +18,7 @@ import {
   narrationOf,
   NARRATOR_MILESTONE_GAP_MS,
   NOISE_MAX_SPEECH_MS,
+  echoesSpoken,
   repeatsRequest,
   speechTurnOf,
   type Floor,
@@ -34,7 +35,7 @@ describe("narrationOf: what may make the narrator speak", () => {
     const quiet: AgentEvent[] = [
       { type: "user_message", text: "Check my inbox.", voice: true },
       { type: "user_message", text: "Check my inbox." },
-      { type: "heard", text: "Check my inbox.", sent: "Check my inbox." },
+      { type: "heard", text: "Check my inbox." },
       { type: "assistant_text", text: "I'll open your Gmail inbox and summarize it." },
       { type: "status", text: "Claude API" },
       nav("https://mail.google.com/"),
@@ -142,10 +143,17 @@ async function started() {
     narrating: noop,
     said: noop,
     narratorText: (text: string) => void shown.push(text),
-    forward: (text: string) => void forwarded.push(text),
-    userWords: (w: string, sent: string | null) => {
-      words.push(w);
-      paired.push([w, sent]);
+    // A request, with the user's words for it; words that led to none.
+    forward: (text: string, heard?: readonly string[]) => {
+      forwarded.push(text);
+      if (heard?.length) {
+        words.push(heard.join(" "));
+        paired.push([heard.join(" "), text]);
+      }
+    },
+    userWords: (w: readonly string[]) => {
+      words.push(w.join(" "));
+      paired.push([w.join(" "), null]);
     },
     stopTask: async () => "ok",
     endVoice: noop,
@@ -195,13 +203,15 @@ describe("one reply per spoken request (the owner's report)", () => {
       if (order === "before") transcribed(t.s, "in1", "Check my inbox.");
       t.s.event({ type: "response.done", response: { id: "r1", status: "completed" } });
       if (order === "after") transcribed(t.s, "in1", "Check my inbox.");
+      // The call went out once its turn's words were in.
+      await settle();
       t.serve();
       // The agent's first events for the request (the panel feeds them), its steps, and the clock.
       const evs: AgentEvent[] = [
         { type: "user_message", text: "Check my inbox.", voice: true },
         { type: "assistant_text", text: "I'll open your Gmail inbox and summarize the important emails." },
         nav("https://mail.google.com/mail/u/0/#inbox"),
-        { type: "heard", text: "Check my inbox.", sent: "Check my inbox." },
+        { type: "heard", text: "Check my inbox." },
         { type: "tool_call", id: "t2", name: "read_page", args: {} },
         { type: "assistant_text", text: "I'm still working through the inbox." },
         { type: "tool_call", id: "t3", name: "act", args: { steps: [{ goal: "open the first email" }] } },
@@ -388,6 +398,7 @@ describe("the owner's trace of 2026-09-27, gpt-realtime-2.1 with Claude Code: th
       await settle();
       t.s.event({ type: "response.done", response: { id: "r3", status: "completed" } });
       if (!wordsFirst) transcribed(t.s, "in3", "What did the second email say exactly?");
+      await settle();
       expect(t.forwarded).toEqual(["What did the second email say exactly?"]);
       expect(t.played()).toEqual([]);
       expect(t.shown).toEqual([]);
@@ -395,15 +406,18 @@ describe("the owner's trace of 2026-09-27, gpt-realtime-2.1 with Claude Code: th
     }
   });
 
-  it("a request whose reply calls send_to_agent first is not held or asked again: the call runs at once (0 ms added)", async () => {
+  it("a request whose reply calls send_to_agent first is not held or asked again: the call goes out the moment its words are in", async () => {
     const t = await started();
     userTurn(t.s, "in1", "r1");
     t.s.event({ type: "response.output_item.added", response_id: "r1", item: { type: "function_call", name: "send_to_agent" } });
     t.s.event({ type: "response.function_call_arguments.done", response_id: "r1", call_id: "c1", name: "send_to_agent", arguments: JSON.stringify({ text: "Check my Chrome Web Store emails." }) });
     await settle();
+    // Only the user's own request goes to the agent: its turn's words say whether it is theirs.
+    expect(t.forwarded).toEqual([]);
+    transcribed(t.s, "in1", "Check my Chrome Web Store emails.");
+    await settle();
     expect(t.forwarded).toEqual(["Check my Chrome Web Store emails."]);
     t.s.event({ type: "response.done", response: { id: "r1", status: "completed" } });
-    transcribed(t.s, "in1", "Check my Chrome Web Store emails.");
     expect(t.creates()).toEqual([{ type: "response.create", response: ackResponse("Check my Chrome Web Store emails.") }]);
     expect(cancels(t.s)).toBe(0);
   });
@@ -555,6 +569,29 @@ describe("speechTurnOf: what the narrator may answer by itself", () => {
   it("anything about what the agent did, knows or remembers, a follow-up or correction, a question for the browser, a command: a tool call is required (0 answered alone)", () => {
     const answeredAlone = requests.filter((w) => speechTurnOf(w) !== "request");
     expect(answeredAlone).toEqual([]);
+  });
+});
+
+describe("speechTurnOf: what the agent is doing, or whether the assistant is there (the owner's trace: these restarted the agent)", () => {
+  it("is answered by the narrator from the latest update, whatever the fillers and swearing", () => {
+    const status = ["What are you doing bro", "I'm asking you what the fuck are you doing", "I'm asking you a question", "Are you there? Hello?", "What's going on?", "Hey, what are you working on right now?", "Are you done yet?"];
+    expect(status.filter((w) => speechTurnOf(w) !== "small_talk")).toEqual([]);
+  });
+
+  it("what it did, found or remembers still goes to the agent", () => {
+    const requests = ["What did you do bro?", "I'm asking you what you found", "What are you doing on Gmail? Stop that.", "Tell me what the second email said", "So what did it post?"];
+    expect(requests.filter((w) => speechTurnOf(w) !== "request")).toEqual([]);
+  });
+});
+
+describe("echoesSpoken: the microphone hearing the assistant's own voice (the owner's trace)", () => {
+  it("what was just said aloud, heard back, is echo; the user's own words are not", () => {
+    expect(echoesSpoken("opening the home timeline", ["Opening the home timeline now."])).toBe(true);
+    expect(echoesSpoken("posted open Gmail", ["Posted. Opening Gmail next."])).toBe(true);
+    expect(echoesSpoken("Post gm on X from beta", ["Opening the home timeline now."])).toBe(false);
+    // Too short to tell, or nothing said lately.
+    expect(echoesSpoken("okay", ["Okay, on it."])).toBe(false);
+    expect(echoesSpoken("opening the home timeline", [])).toBe(false);
   });
 });
 

@@ -17,9 +17,17 @@
  * point at. An action that waits becomes an approval request (broker.ts); a
  * refusal is an error whose text tells the agent not to retry
  * (approvalRefusalText).
+ *
+ * Nothing runs on a stale answer: Stop ends a waiting request at once and no
+ * action of a stopped run runs after it (checked again right before the
+ * action), a message from the user ends the request as not done (the agent
+ * reads the message first), and an unattended run (a scheduled task nobody
+ * watches) does not wait for a card nobody sees: it pauses at once for the
+ * user's OK.
  */
 import {
   APPROVAL_TIMEOUT_MS,
+  approvalPauseReason,
   approvalRefusalText,
   CONSEQUENCE_TEXT,
   isApprovalGated,
@@ -34,9 +42,12 @@ import {
   type EffectiveLevel,
   type ElementInfo,
   type PageSnapshot,
+  type TraceEvent,
+  type TraceValue,
 } from "@browsertodo/shared";
 import type { BrowserCaller } from "@browsertodo/core";
 import { normalizeId } from "../agent-tab.js";
+import type { ApprovalRequestOptions } from "./broker.js";
 import { hostOf, type GateAction, type GateMethod, type TypedField } from "./consequence.js";
 import type { SystemOneLike } from "./jev-judge.js";
 import { judgeAction, judgeWithinTask } from "./judge.js";
@@ -48,15 +59,28 @@ export interface GateContext {
   instructions?: string;
   /** When the turn's time limit ends it (epoch ms): an approval waits at most until shortly before. */
   endsAt?: number;
+  /**
+   * Someone can answer an approval card now (a chat, or a scheduled run whose conversation is open). Absent: a
+   * scheduled level (full_within_task) counts as unattended, a chat level as attended.
+   */
+  attended?: boolean;
+  /** Ends a waiting approval when aborted, with reason "stop" (the run was stopped) or "message" (the user wrote to the agent). */
+  interrupt?: AbortSignal;
+  /** The run was stopped (Stop, a page that needs the user, its tab closed): no action of it runs any more. */
+  stopped?(): boolean;
+  /** An unattended run needs the user's OK: it pauses with this reason (the TODO row and the notification show it). */
+  pause?(reason: string): void;
 }
 
 export interface GateDeps {
   /** The level and task of a session, looked up at each action (a changed setting applies at once). */
   context(sessionId: string): Promise<GateContext>;
   /** Asks the user (ApprovalBroker.request). */
-  request(sessionId: string, ask: Omit<ApprovalRequest, "id" | "expiresAt">, opts?: { timeoutMs?: number }): Promise<ApprovalOutcome>;
+  request(sessionId: string, ask: Omit<ApprovalRequest, "id" | "expiresAt">, opts?: ApprovalRequestOptions): Promise<ApprovalOutcome>;
   /** Jev for what the rules are unsure about, for this session; null: rules only (unsure asks). */
   jev?(sessionId: string): SystemOneLike | null | Promise<SystemOneLike | null>;
+  /** Adds a row to the session's timing trace (the Raw view): how each consequential action was judged. */
+  trace?(sessionId: string, row: TraceEvent): void;
   now?(): number;
 }
 
@@ -108,7 +132,11 @@ export class ApprovalGate {
       const sessionId = this.sessionOf();
       this.follow(sessionId);
       const gated = isApprovalGated(method) ? GATED_METHODS[method] : undefined;
-      if (gated && sessionId) await this.check(sessionId, gated, params as Record<string, unknown>);
+      if (gated && sessionId) {
+        const ctx = await this.check(sessionId, gated, params as Record<string, unknown>);
+        // Stopped while it was judged or waited: it is not done, whatever was answered.
+        if (ctx.stopped?.()) throw new Error(stoppedText(describeAction(this.actionOf(gated, params as Record<string, unknown>))));
+      }
       const result = await this.inner.call(method, params);
       this.observe(method, params as Record<string, unknown>, result);
       return result;
@@ -134,13 +162,15 @@ export class ApprovalGate {
     this.typed = [];
   }
 
-  private async check(sessionId: string, method: GateMethod, params: Record<string, unknown>): Promise<void> {
+  /** Returns when the action may run (with the context it was judged in); throws the refusal otherwise. */
+  private async check(sessionId: string, method: GateMethod, params: Record<string, unknown>): Promise<GateContext> {
     const ctx = await this.deps.context(sessionId);
-    if (ctx.level === "full" || this.allowAll) return;
     const action = this.actionOf(method, params);
+    if (ctx.stopped?.()) throw new Error(stoppedText(describeAction(action)));
+    if (ctx.level === "full" || this.allowAll) return ctx;
     const ask = await this.why(sessionId, ctx, action);
-    if (!ask) return;
-    await this.ask(sessionId, ctx, approvalAsk(action, ask.why, ask.kind));
+    if (ask) await this.ask(sessionId, ctx, approvalAsk(action, ask.why, ask.kind));
+    return ctx;
   }
 
   /**
@@ -151,18 +181,30 @@ export class ApprovalGate {
   async confirm(sessionId: string, request: Omit<ApprovalRequest, "id" | "expiresAt">): Promise<void> {
     this.follow(sessionId);
     const ctx = await this.deps.context(sessionId);
+    if (ctx.stopped?.()) throw new Error(stoppedText(request.action));
     if (ctx.level === "full" || this.allowAll) return;
     await this.ask(sessionId, ctx, request);
+    if (ctx.stopped?.()) throw new Error(stoppedText(request.action));
   }
 
-  /** Asks the user (no longer than the turn allows); returns when allowed, throws the refusal otherwise. */
+  /**
+   * Asks the user (no longer than the turn allows); returns when allowed, throws the refusal otherwise. Unattended:
+   * the card is kept in the thread and the run pauses for the user's OK at once, instead of waiting for nobody.
+   */
   private async ask(sessionId: string, ctx: GateContext, request: Omit<ApprovalRequest, "id" | "expiresAt">): Promise<void> {
     const now = this.deps.now?.() ?? Date.now();
     const left = ctx.endsAt === undefined ? undefined : Math.max(0, ctx.endsAt - now - APPROVAL_TURN_MARGIN_MS);
-    const waited = this.waiting?.();
-    const outcome = await this.deps.request(sessionId, request, left === undefined || left >= APPROVAL_TIMEOUT_MS ? undefined : { timeoutMs: left }).finally(() => waited?.());
-    // An answer that comes after the turn ended (the slot moved on) does nothing.
-    const still = this.sessionOf() === sessionId;
+    const unattended = !(ctx.attended ?? ctx.level !== "full_within_task");
+    const opts: ApprovalRequestOptions = {
+      ...(left === undefined || left >= APPROVAL_TIMEOUT_MS ? {} : { timeoutMs: left }),
+      ...(ctx.interrupt ? { signal: ctx.interrupt } : {}),
+      ...(unattended ? { unattended: true } : {}),
+    };
+    const waited = unattended ? undefined : this.waiting?.();
+    const outcome = await this.deps.request(sessionId, request, opts).finally(() => waited?.());
+    if (outcome === "paused") ctx.pause?.(approvalPauseReason(request));
+    // An answer that comes after the turn ended (the slot moved on) or after Stop does nothing.
+    const still = this.sessionOf() === sessionId && !ctx.stopped?.() && ctx.interrupt?.reason !== "stop";
     if ((outcome === "allow_once" || outcome === "allow_task") && still) {
       if (outcome === "allow_task") this.allowAll = true;
       return;
@@ -170,20 +212,26 @@ export class ApprovalGate {
     throw new Error(approvalRefusalText(outcome === "allow_once" || outcome === "allow_task" ? "ended" : outcome, request.action));
   }
 
-  /** Why this action waits at this level; null: it runs. */
+  /** Why this action waits at this level; null: it runs. How a consequential action was judged goes to the trace (approval.judge). */
   private async why(sessionId: string, ctx: GateContext, action: GateAction): Promise<{ why: string; kind?: ConsequenceKind } | null> {
     if (ctx.level === "ask_all") return { why: ASK_ALL_WHY };
     const jev = (await this.deps.jev?.(sessionId)) ?? null;
     const pageText = this.page?.text ?? "";
+    const started = this.deps.now?.() ?? Date.now();
     const j = await judgeAction(action, { jev, pageText });
     if (!j.consequential) return null;
     const what = j.kind ? CONSEQUENCE_TEXT[j.kind] : "may publish, send, pay or delete (it could not be told apart)";
+    const judged: Record<string, TraceValue> = { action: describeAction(action), level: ctx.level, kind: j.kind ?? null, by: j.by, reason: j.reason };
+    let wait: { why: string; kind?: ConsequenceKind } | null = { why: what, ...(j.kind ? { kind: j.kind } : {}) };
     if (ctx.level === "full_within_task") {
       const w = await judgeWithinTask(j.kind, action, ctx.instructions ?? "", { jev, pageText });
-      if (w.within) return null;
-      return { why: `${what}; the task does not ask for this`, ...(j.kind ? { kind: j.kind } : {}) };
+      // Both verdicts: a Jev veto over the task's own words is plain in the Raw view.
+      Object.assign(judged, { withinRules: w.rules, withinJev: w.jev ?? null, within: w.within });
+      wait = w.within ? null : { why: `${what}; the task does not ask for this`, ...(j.kind ? { kind: j.kind } : {}) };
     }
-    return { why: what, ...(j.kind ? { kind: j.kind } : {}) };
+    judged.waits = wait !== null;
+    this.deps.trace?.(sessionId, { t: started, ms: (this.deps.now?.() ?? Date.now()) - started, cat: "approval", name: "approval.judge", src: "engine", data: judged });
+    return wait;
   }
 
   private elementAt(index: unknown): ElementInfo | undefined {
@@ -260,6 +308,11 @@ export class ApprovalGate {
         return;
     }
   }
+}
+
+/** The refusal for an action of a run that was stopped. */
+function stoppedText(action: string): string {
+  return approvalRefusalText("ended", action);
 }
 
 /** The tab a run starts on (AgentTab: the main tab is t1 and current when a turn starts). */

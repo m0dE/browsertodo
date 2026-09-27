@@ -11,7 +11,7 @@ import { buildFollowUpInstructions, isContinuableOutcome } from "../../continue.
 import { isContinuable, SessionEndedError, type Brain } from "../brains.js";
 import type { LocalStore } from "../local-store.js";
 import { mediaSources, withContext, type TurnJob } from "./jobs.js";
-import { isRestrictedUrl } from "../../restricted.js";
+import { asksAboutThePage, isRestrictedUrl } from "../../restricted.js";
 import { approvalsLine, runConfig, userTabOf, type ActiveSession, type Cleanup, type TurnRunner } from "./turn.js";
 
 /** The message "Continue" sends when the user adds no note. */
@@ -57,7 +57,7 @@ export async function runNextTurn(
   const page = tab === null ? null : await turns.pageOf(tab);
   // The conversation's own task (a TODO or cloud task) keeps its run notes in memory; a chat has none.
   const memoryRun = {
-    ...(from.source === "adhoc" ? {} : { task: { instructions: job.first.instructions, account: job.first.account } }),
+    ...(from.source === "adhoc" ? {} : { task: job.first }),
     title: from.title,
     request: job.text,
     ...(page ? { tabUrl: page.url, tabTitle: page.title } : {}),
@@ -72,7 +72,8 @@ export async function runNextTurn(
   if (tab === null) await turns.prepareTab(active, { mode: "own-tab" });
   else {
     const picked = await turns.prepareTab(active, { mode: "current-tab", tabId: tab });
-    await turns.follow(active, tab, picked, !!page && isRestrictedUrl(page.url));
+    const restricted = !!page && isRestrictedUrl(page.url);
+    await turns.follow(active, tab, picked, restricted, restricted && asksAboutThePage(job.text, !!job.screen));
     if (page) userTab = userTabOf(page, picked);
   }
   if (active.forced) throw new Error(active.forced.reason);

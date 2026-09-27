@@ -21,17 +21,13 @@ import { renderErrorHelp } from "./error-view.js";
 import {
   describeEvent,
   isBrainStartLine,
-  isEarlyHeard,
   isNearBottom,
-  openingText,
   openingTurn,
-  pairHeard,
   sameWords,
   scheduledView,
   spokenEchoes,
   turnError,
   turnPicks,
-  type HeardPairs,
   type TurnContext,
 } from "./event-format.js";
 import {
@@ -92,6 +88,8 @@ export interface ChatOptions {
   voiceEnv?(): ReportEnv["voice"];
   /** View in TODO on a scheduled card: the TODO tab, at that task. */
   onOpenTask?(taskId: string): void;
+  /** Under the new chat: the recent chats to go on with (recent-chats.ts). */
+  recent?: { readonly el: HTMLElement; refresh(): void };
 }
 
 /** The panel's keyboard shortcuts as the user reads them ("Ctrl+.", "Ctrl+,"); null: Chrome assigned none. */
@@ -159,10 +157,6 @@ export function initChat(opts: ChatOptions = {}): ChatView {
   const liveEls = new Map<string, { el: HTMLElement; view: MarkdownView }>();
   let paintQueued = false;
 
-  /** The user's own words (Realtime) shown in place of the voice messages that carried them (see pairHeard). */
-  let heard: HeardPairs = pairHeard([], null);
-  const pairsNow = () => pairHeard(events, current ? openingText(current) : null);
-
   /**
    * The buttons of TODO cards: View in TODO, and Undo (the card turns "undone" when its task_unscheduled, or a
    * changed card's task_change_undone, arrives).
@@ -196,7 +190,7 @@ export function initChat(opts: ChatOptions = {}): ChatView {
 
   /** The answers of approval cards (the card changes when its approval_resolved arrives); Alt+Y / Alt+T / Alt+N too. */
   const approvalActions: ApprovalCardActions = {
-    answer: async (id, answer) => (current ? (await uiRequest({ type: "approval.answer", sessionId: current.sessionId, id, answer })).ok : false),
+    answer: async (id, answer, by) => (current ? (await uiRequest({ type: "approval.answer", sessionId: current.sessionId, id, answer, by })).ok : false),
   };
   bindApprovalKeys(log);
 
@@ -233,9 +227,9 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     if (ev.type === "approval_resolved") return;
     // An undo changes its memory note (see markMemoryUndone).
     if (ev.type === "memory_undone") return;
-    if (heard.placed.has(i)) return;
-    const words = heard.messages.get(i);
-    const e = words === undefined ? ev : events[words]!;
+    // Words that led to no request are kept for the record (Raw), not shown.
+    if (ev.type === "heard") return;
+    const e = ev;
     const s = e.type === "task_end" && current?.sessionId === e.sessionId ? current : null;
     const canContinue = !!opts.onContinue && e.type === "task_end" && isContinuableOutcome(e.outcome) && s?.source !== "cloud";
     const turn: TurnContext =
@@ -351,7 +345,9 @@ export function initChat(opts: ChatOptions = {}): ChatView {
           h("p.empty-title", null, "New chat"),
           shortcutHint(),
         ),
+        ...(opts.recent ? [opts.recent.el] : []),
       );
+      opts.recent?.refresh();
       return;
     }
     if (!current) {
@@ -359,12 +355,8 @@ export function initChat(opts: ChatOptions = {}): ChatView {
       return;
     }
     lives = [];
-    heard = pairsNow();
-    // What was said before the conversation existed comes before its first message.
-    log.replaceChildren();
-    events.forEach((ev, i) => isEarlyHeard(ev) && renderOne(ev, i));
-    log.append(renderOpeningOf(current), renderSessionHead(current));
-    events.forEach((ev, i) => !isEarlyHeard(ev) && renderOne(ev, i));
+    log.replaceChildren(renderOpeningOf(current), renderSessionHead(current));
+    events.forEach((ev, i) => renderOne(ev, i));
     liveEls.clear();
     showSpeaking();
     if (!events.length && !live.of(current.sessionId).some(([, t]) => t.trim())) log.append(h("p.empty", null, "Waiting for the agent…"));
@@ -395,8 +387,7 @@ export function initChat(opts: ChatOptions = {}): ChatView {
 
   /** The conversation's first message (its prompt), which opens its details. */
   function renderOpeningOf(s: SessionInfo): HTMLElement {
-    const words = heard.opening === undefined ? undefined : events[heard.opening];
-    const v = openingTurn(s, events, undefined, words?.type === "heard" ? words : undefined);
+    const v = openingTurn(s, events);
     // The details of the session as it is now (it ends, gets an outcome, ...).
     const el = renderOpening(v, (trigger) => opts.onDetails?.(current ?? s, trigger));
     el.dataset.files = String(v.files ?? 0);
@@ -456,20 +447,6 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     if (backfilling || !current) {
       settleLive(ev);
       return;
-    }
-    // Said before the conversation existed: it goes above the first message.
-    if (isEarlyHeard(ev)) {
-      renderLog();
-      return;
-    }
-    // The user's own words found their message (or the message its words): they are shown in its place.
-    if (ev.type === "heard" || (ev.type === "user_message" && ev.voice)) {
-      const next = pairsNow();
-      if (next.placed.size !== heard.placed.size) {
-        settleLive(ev);
-        renderLog();
-        return;
-      }
     }
     if (ev.type === "task_unscheduled") {
       markUndone(ev.taskId);

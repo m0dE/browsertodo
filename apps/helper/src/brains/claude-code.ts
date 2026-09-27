@@ -168,6 +168,12 @@ export class ClaudeStreamMapper {
   }
 }
 
+/** Claude Code's `system/status: requesting` line: a model request starts. */
+function isRequestStart(line: unknown): boolean {
+  const ev = asStreamLine(line) as (StreamLine & { status?: unknown }) | null;
+  return ev?.type === "system" && ev.subtype === "status" && ev.status === "requesting";
+}
+
 /** Raw stream lines kept out of the run log (and so the Raw Log): the partial-message deltas; the full text follows in "assistant". */
 export function isNoisyStreamLine(line: unknown): boolean {
   const ev = asStreamLine(line);
@@ -371,6 +377,21 @@ export class ClaudeCodeBrain implements Brain {
         interrupted = true;
         ctx.interjections.reroute("interrupt");
         ctx.log({ type: "claude_interrupt" });
+        timer.interrupted("user message");
+        stdin.write(interruptLine(`interrupt-${++interrupts}`));
+      };
+      /**
+       * The turn already has its task_* result, yet Claude Code starts one more request after that tool's result:
+       * its text would reach nobody (measured: 17 to 323 output tokens, 1 to 4 s each). It is stopped at its start;
+       * the session stays open for the next message, and the stop's result still gives the turn's summary.
+       */
+      let afterResult = false;
+      const stopAfterResult = () => {
+        if (interrupted || !turn.interruptible || turn.pendingInput || !writable()) return;
+        interrupted = true;
+        afterResult = true;
+        ctx.log({ type: "claude_interrupt", reason: "turn over" });
+        timer.interrupted("turn over");
         stdin.write(interruptLine(`interrupt-${++interrupts}`));
       };
       /** A raise's note, waiting for the model's request to be stoppable (a raise takes effect in a new turn). */
@@ -388,6 +409,7 @@ export class ClaudeCodeBrain implements Brain {
         raising = null;
         interrupted = true;
         ctx.log({ type: "claude_interrupt", reason: "reasoning raised" });
+        timer.interrupted("reasoning raised");
         stdin.write(interruptLine(`interrupt-${++interrupts}`));
         ctx.log({ type: "claude_user_message", kind: "reasoning", chars: note.length });
         send(note);
@@ -469,6 +491,7 @@ export class ClaudeCodeBrain implements Brain {
           timer.line(event);
           const read = turn.line(event);
           if (read !== null) ctx.interjections.seen(read);
+          if (isRequestStart(event) && ctx.turnOver?.()) stopAfterResult();
           // A request that started without the message written before its step would only read it after its tool.
           if (turn.missedInput && ctx.interjections.unread) interrupt();
           raiseNow();
@@ -480,8 +503,9 @@ export class ClaudeCodeBrain implements Brain {
           }
           const isInit = ev?.type === "system" && ev.subtype === "init";
           const isResult = ev?.type === "result";
-          // The interrupted request ends with an error result: expected, not a failure to show.
-          if (!(isInit && started) && !(isResult && interrupted))
+          // The interrupted request ends with an error result: expected, not a failure to show. A request stopped
+          // after the turn's result shows nothing it may have streamed before the stop took effect.
+          if (!(isInit && started) && !(isResult && interrupted) && !afterResult)
             for (const e of mapper.map(event)) {
               if (e.type === "assistant_text_delta") out.delta(e.id, e.text);
               else out.emit(e);
@@ -490,6 +514,7 @@ export class ClaudeCodeBrain implements Brain {
           if (isResult) {
             out.flush();
             interrupted = false;
+            afterResult = false;
             // The turn ended before its request could be stopped: its next turn thinks anyway (the setting was sent).
             raising = null;
             if (!turn.pendingInput && !ctx.input.closed && !sendInterjections("next_message")) {

@@ -37,26 +37,44 @@ export async function judgeAction(action: GateAction, opts: { jev?: SystemOneLik
   }
 }
 
+/** How the within-task question was answered: the verdict, the rules' answer, and Jev's ("no 0.90"; absent: not asked). */
+export interface WithinVerdict {
+  within: boolean;
+  reason: string;
+  rules: boolean;
+  jev?: string;
+}
+
 /**
  * Whether a scheduled task's instructions ask for a consequential action: the
  * word rules (within-task.ts), and Jev may only overrule a "yes" with a sure
  * "no" (it never lets through what the rules hold back). Measured on the
  * labelled set: rules alone 17 of 18, Jev alone 15 of 18, this 17 or 18 of 18
  * (Jev's answers vary between runs; the set is small and was used to design it).
+ *
+ * The veto stays even when the task's words name the action: the rules' one
+ * miss is exactly that kind of false yes ("what my domain renewal would cost"
+ * names "renew", and a payment would run), and a yes that is wrong does what
+ * cannot be taken back, while a veto that is wrong costs the user one OK (an
+ * unattended run pauses at once and says why, gate.ts). Both verdicts go to
+ * the trace (approval.judge) so a wrong veto is plain to see.
  */
 export async function judgeWithinTask(
   kind: ConsequenceKind | undefined,
   action: GateAction,
   instructions: string,
   opts: { jev?: SystemOneLike | null; pageText?: string },
-): Promise<{ within: boolean; reason: string }> {
-  if (!kind || !withinInstructions(kind, action, instructions)) return { within: false, reason: "the task does not ask for this" };
-  if (!opts.jev) return { within: true, reason: "the task asks for this" };
+): Promise<WithinVerdict> {
+  const rules = !!kind && withinInstructions(kind, action, instructions);
+  if (!rules) return { within: false, reason: "the task does not ask for this", rules };
+  if (!opts.jev) return { within: true, reason: "the task asks for this", rules };
+  let jev = "error";
   try {
     const j = await judgeWithJev(opts.jev, action, opts.pageText ?? "", instructions);
-    if (j.within && !j.within.yes && j.within.confidence >= JUDGE_MIN_CONFIDENCE) return { within: false, reason: `Jev: the task does not ask for this (${j.within.confidence.toFixed(2)})` };
+    jev = j.within ? `${j.within.yes ? "yes" : "no"} ${j.within.confidence.toFixed(2)}` : "no answer";
+    if (j.within && !j.within.yes && j.within.confidence >= JUDGE_MIN_CONFIDENCE) return { within: false, reason: `Jev: the task does not ask for this (${j.within.confidence.toFixed(2)})`, rules, jev };
   } catch {
     /* Jev's veto is optional: the rules' yes stands */
   }
-  return { within: true, reason: "the task asks for this" };
+  return { within: true, reason: "the task asks for this", rules, jev };
 }

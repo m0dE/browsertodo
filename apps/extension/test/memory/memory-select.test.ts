@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { MAX_INJECTED_TASK_NOTES, MEMORY_RECORD_TOKEN_BUDGET, MEMORY_TOKEN_BUDGET, memoryRecordKey, type MemoryEntry } from "@browsertodo/shared";
+import {
+  EARLIER_RUNS_SUBJECT,
+  MAX_INJECTED_TASK_NOTES,
+  MAX_INJECTED_TASK_RUNS,
+  MAX_MEMORY_NOTE_CHARS,
+  MEMORY_RECORD_TOKEN_BUDGET,
+  MEMORY_TASK_HISTORY_TOKEN_BUDGET,
+  MEMORY_TOKEN_BUDGET,
+  memoryRecordKey,
+  TASK_PROFILE_SUBJECT,
+  type MemoryEntry,
+} from "@browsertodo/shared";
 import { hostsIn, MEMORY_HEADER, recallMemory, recordFor, recordsNamedIn, RECORDS_LABEL, selectMemory, tokensOf } from "../../src/memory/select.js";
 
 let n = 0;
@@ -57,18 +68,44 @@ describe("selectMemory", () => {
     expect(selectMemory([...all.filter((e) => e !== tone), pinnedTone], { hosts: [], text: "anything" }).entries).toEqual([pinnedTone]);
   });
 
-  it("puts this task's newest run notes first, and never another task's", () => {
-    const notes = Array.from({ length: MAX_INJECTED_TASK_NOTES + 2 }, (_, i) => entry({ kind: "task", subject: "Run note", text: `Posted topic ${i}`, taskKey: "tA" }));
+  it("puts this task's newest runs first (the newest in full, then one line each), and never another task's", () => {
+    const notes = Array.from({ length: MAX_INJECTED_TASK_NOTES + 2 }, (_, i) => entry({ kind: "task", subject: "Run note", text: `Posted topic ${i}`, taskKey: "tA", output: `Tip ${i}: short lists get done` }));
     const other = entry({ kind: "task", subject: "Run note", text: "Other task", taskKey: "tB" });
     const s = selectMemory([...all, ...notes, other], { taskKey: "tA", hosts: ["x.com"], text: "Post a daily tip" });
     const given = s.entries.filter((e) => e.kind === "task");
-    expect(given).toHaveLength(MAX_INJECTED_TASK_NOTES);
+    expect(given).toHaveLength(MAX_INJECTED_TASK_NOTES + 2);
     expect(given[0]!.text).toBe(`Posted topic ${MAX_INJECTED_TASK_NOTES + 1}`);
     expect(s.entries).not.toContain(other);
     expect(s.text.split("\n")[0]).toBe(MEMORY_HEADER);
-    expect(s.text).toMatch(/^Task history:\n- \[m\d+\] \d{4}-\d\d-\d\d Run note: Posted topic/m);
+    expect(s.text).toMatch(/^Task history:\n- \[m\d+\] \d{4}-\d\d-\d\d Run note: Posted topic 3 · output: "Tip 3: short lists get done"/m);
+    // Past the newest MAX_INJECTED_TASK_NOTES: the date and the start of the output.
+    expect(s.text).toMatch(/^- \d{4}-\d\d-\d\d "Tip 0: short lists get done"$/m);
+    expect(s.brief?.size).toBe(2);
     // Without the task (a chat), no run notes at all.
     expect(selectMemory([...notes], { hosts: [], text: "Post a daily tip" }).entries).toEqual([]);
+  });
+
+  it("gives the task's profile first at every run, then its runs, within the task history's own budget (measured)", () => {
+    const long = (i: number) => `Run ${i}: ${"posted a grounded update about the product roadmap and what shipped this week ".repeat(4)}`.slice(0, MAX_MEMORY_NOTE_CHARS);
+    const runs = Array.from({ length: 40 }, (_, i) =>
+      entry({ kind: "task", subject: "Run note", text: long(i), taskKey: "tA", output: `Post ${i}: ${"We shipped scheduled tasks that remember every earlier run, so nothing is posted twice. ".repeat(3)}`.slice(0, 280) }),
+    );
+    const profile = entry({ kind: "task", subject: TASK_PROFILE_SUBJECT, text: "@acme is the account of Acme, a browser agent. Voice: plain, confident. Never talk about price.", taskKey: "tA", learnedAt: "2020-01-01T00:00:00.000Z" });
+    const summary = entry({ kind: "task", subject: EARLIER_RUNS_SUBJECT, text: "57 earlier runs, 2026-06-01 to 2026-07-20. Frequent words (runs): ship (40), roadmap (22)", taskKey: "tA" });
+    const s = selectMemory([...all, profile, summary, ...runs], { taskKey: "tA", hosts: ["x.com"], text: "Post a daily update on X" });
+    const history = s.entries.filter((e) => e.kind === "task");
+    expect(history[0]).toBe(profile);
+    expect(history).toContain(summary);
+    const runsGiven = history.filter((e) => e.subject === "Run note");
+    expect(runsGiven.length).toBeLessThanOrEqual(MAX_INJECTED_TASK_RUNS);
+    const historyText = s.text.slice(s.text.indexOf("Task history:"), s.text.indexOf("\n", s.text.indexOf("older runs are kept")) + 1 || undefined);
+    // What it costs, measured: within its own budget, apart from the rest of memory's.
+    const cost = tokensOf(historyText);
+    expect(cost).toBeLessThanOrEqual(MEMORY_TASK_HISTORY_TOKEN_BUDGET);
+    expect({ runsGiven: runsGiven.length, cost }).toEqual({ runsGiven: 20, cost: expect.any(Number) });
+    expect(s.text).toMatch(/- \(20 older runs are kept: check_similar compares a draft with all of them; recall finds them\)/);
+    // The rest of memory still has its own budget (the X playbook is given too).
+    expect(s.entries).toContain(xBook);
   });
 
   it("leaves out kinds the user turned off", () => {

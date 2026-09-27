@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChromeFake } from "./chrome-fake.js";
-import { driverHarness, runInUserTab } from "./driver-harness.js";
+import { DRAWN, driverHarness, runInUserTab } from "./driver-harness.js";
 import type { AgentTab } from "../src/agent-tab.js";
 import { DEBUGGER_CANCELED, type Cdp } from "../src/cdp.js";
 import type { Driver } from "../src/driver.js";
@@ -21,7 +21,7 @@ let onSleep: () => void;
 /** Snapshot the fake page of a tab returns: its URL and title. */
 const snapOf = (tabId: number) => {
   const t = chrome.tabs.byId.get(tabId)!;
-  return { url: t.url, title: t.title ?? "", text: `text of ${t.url}`, elements: [], truncated: false };
+  return { url: t.url, title: t.title ?? "", text: `text of ${t.url}`, elements: DRAWN, truncated: false };
 };
 
 beforeEach(async () => {

@@ -138,6 +138,11 @@ export class VoiceSessions {
     this.update();
   }
 
+  /** The voice badge a tab has now, or null. */
+  badgeOf(tabId: number): VoiceBadge | null {
+    return this.badges.get(tabId) ?? null;
+  }
+
   /** A tab started loading a page: Chrome cleared its badge, so it is set again. */
   tabLoading(tabId: number): void {
     const look = this.badges.get(tabId);

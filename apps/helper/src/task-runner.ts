@@ -341,6 +341,7 @@ export class TaskRunner {
           reasoning: s.reasoning,
           onModelChange: (fn) => s.onModelChange(fn),
           idle: () => s.onIdle(),
+          turnOver: () => s.turnOver(),
           task: { instructions: task.instructions, account: task.account, mediaPaths },
         })
         .catch((e: unknown) => {

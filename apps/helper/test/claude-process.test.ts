@@ -23,6 +23,7 @@ afterEach(() => {
   delete process.env.FAKE_CLAUDE_SLOW_MS;
   delete process.env.FAKE_CLAUDE_PARTIAL;
   delete process.env.FAKE_CLAUDE_TOOL;
+  delete process.env.FAKE_CLAUDE_ANSWER_MS;
   for (const [k, v] of [["CLAUDECODE", saved.CLAUDECODE], ["CLAUDE_CODE_CHILD_SESSION", saved.CHILD]] as const) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -253,6 +254,37 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     // Claude Code repeats its init event every turn; "started" shows once.
     expect(events.filter((e) => e.type === "status")).toEqual([{ type: "status", text: "Claude Code started (sonnet)" }]);
     expect(log.at(-1)).toMatchObject({ type: "claude_exit", code: 0 });
+  });
+
+  it("persistent: the request Claude Code starts after the turn's task_* result is stopped at once; nothing it wrote shows, its rows are still traced, and the session answers the next message", async () => {
+    process.env.FAKE_CLAUDE_TOOL = "1";
+    process.env.FAKE_CLAUDE_SLOW_MS = "100";
+    process.env.FAKE_CLAUDE_ANSWER_MS = "400";
+    const log: Record<string, any>[] = [];
+    const events: AgentEvent[] = [];
+    const input = new UserInput();
+    let idle = 0;
+    // The task_* call runs as the tool: its result is recorded before Claude Code gets the tool's result.
+    let over = false;
+    const c = { ...ctx(new AbortController().signal, log, events, input), idle: () => idle++, turnOver: () => over };
+    const run = new ClaudeCodeBrain({ claudePath: process.execPath, model: "sonnet", prefixArgs: [FAKE], persistent: true }).run(c);
+    await vi.waitFor(() => expect(log.some((e) => e.type === "claude" && e.event.type === "assistant")).toBe(true));
+    over = true;
+    await vi.waitFor(() => expect(idle).toBe(1), { timeout: 10_000 });
+    expect(log.filter((e) => e.type === "claude_interrupt")).toEqual([{ type: "claude_interrupt", reason: "turn over" }]);
+    expect(events.filter((e) => e.type === "assistant_text" || e.type === "assistant_text_delta" || e.type === "error")).toEqual([]);
+    const traces = events.flatMap((e) => (e.type === "trace" ? [e.trace] : []));
+    expect(traces.find((t) => t.name === "model.call" && t.data?.interrupted)).toMatchObject({ data: { interrupted: "turn over", toolUses: 0 } });
+    expect(traces.find((t) => t.name === "claude.result")).toMatchObject({ data: { interrupted: "turn over" } });
+    expect(traces.find((t) => t.name === "claude.result")!.data!.error).toBeUndefined();
+    // The next turn runs in the same process, untouched.
+    over = false;
+    input.push("two");
+    await vi.waitFor(() => expect(idle).toBe(2), { timeout: 10_000 });
+    input.close();
+    await run;
+    expect(events.filter((e) => e.type === "assistant_text").map((e) => (e as { text: string }).text)).toEqual(["got: two"]);
+    expect(log.filter((e) => e.type === "claude_interrupt")).toHaveLength(1);
   });
 
   it("persistent: a later turn's model setting switches the session's model (set_model) before its message; a refused switch is said", async () => {

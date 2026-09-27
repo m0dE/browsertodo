@@ -109,6 +109,11 @@ export const REALTIME_INPUT_TRANSCRIPTION_MODEL = "gpt-transcribe";
 export const REALTIME_QUERY = {
   /** Optional chat/run id, recorded with the session's usage (like X-Browsertodo-Session). */
   session: "session",
+  /**
+   * "1": if another session of this user is open, it is ended (REALTIME_CLOSE.concurrent with a
+   * `session_replaced` event) and this one takes its place, instead of the 409 session_open.
+   */
+  takeover: "takeover",
 } as const;
 
 /** Limits of one realtime session (the server enforces them). */
@@ -147,7 +152,7 @@ export const REALTIME_CLOSE = {
   plan: 4403,
   /** Idle for REALTIME_LIMITS.idleMs. */
   idle: 4408,
-  /** Another realtime session of this user is open. */
+  /** Another realtime session of this user is open, or (with `session_replaced`) a new one took this one's place. */
   concurrent: 4409,
   /** REALTIME_LIMITS.maxSessionMs reached. */
   sessionLimit: 4410,
@@ -167,6 +172,8 @@ export const RealtimeErrorCode = z.enum([
   "out_of_credit",
   "realtime_unavailable",
   "session_open",
+  /** This session was ended because a new one of the same user took over (REALTIME_QUERY.takeover). */
+  "session_replaced",
   "denied",
   "idle_timeout",
   "session_limit",

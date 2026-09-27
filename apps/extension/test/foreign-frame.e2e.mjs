@@ -133,6 +133,64 @@ try {
     return `${buf.length} bytes -> ${out}`;
   });
 
+  await step("fallback: the control overlay is on the page, yet not in read_page or the agent's screenshot, and a click still reaches the page", async () => {
+    const tabId = (await mode()).tab;
+    await sw.evaluate((t) => globalThis.__browsertodo.pageIndicators.show(t, "working"), tabId);
+    const pill = await sw.evaluate(async (t) => {
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId: t },
+        func: () => {
+          const r = window.__browsertodoControl?.root.querySelector(".pill")?.getBoundingClientRect();
+          return r ? { x: r.x + 4, y: r.y + r.height / 2 } : null;
+        },
+      });
+      return res?.result ?? null;
+    }, tabId);
+    assert.ok(pill, "the overlay is on the page");
+    const read = await call("readPage");
+    assert.doesNotMatch(read.text, /BrowserTODO/);
+    assert.ok(!read.elements.some((e) => /Stop|BrowserTODO/.test(`${e.name} ${e.text ?? ""}`)));
+    const shot = await call("screenshot");
+    /** The colour at the pill's place in an image, measured in the page. */
+    const colourAt = (base64, mime) =>
+      page.evaluate(
+        async ([src, at]) => {
+          const img = new Image();
+          img.src = src;
+          await img.decode();
+          const c = document.createElement("canvas");
+          [c.width, c.height] = [img.width, img.height];
+          const g = c.getContext("2d");
+          g.drawImage(img, 0, 0);
+          const k = img.width / innerWidth;
+          return [...g.getImageData(Math.round(at.x * k), Math.round(at.y * k), 1, 1).data.slice(0, 3)];
+        },
+        [`data:${mime};base64,${base64}`, pill],
+      );
+    const PILL = [30, 27, 58];
+    const near = (rgb) => rgb.every((v, i) => Math.abs(v - PILL[i]) < 40);
+    const agent = await colourAt(shot.base64, shot.mimeType);
+    const user = await colourAt((await page.screenshot()).toString("base64"), "image/png");
+    assert.ok(!near(agent), `the agent's screenshot shows the pill: ${agent}`);
+    assert.ok(near(user), `the user's view lacks the pill: ${user}`);
+    const before = await page.evaluate(() => document.querySelector("#count")?.textContent ?? null);
+    const inc = (await call("readPage")).elements.find((e) => e.name === "Increment");
+    await call("click", { index: inc.index });
+    const after = await page.evaluate(() => document.querySelector("#count")?.textContent ?? null);
+    assert.notEqual(after, before, "the click reached the page");
+    // The next steps count their own clicks.
+    await page.evaluate(() => {
+      window.clicks = 0;
+      document.querySelector("#count").textContent = "0";
+    });
+    assert.equal(await page.evaluate(() => document.querySelector("browsertodo-control").hasAttribute("data-busy")), false, "the pill is back");
+    await sw.evaluate((t) => globalThis.__browsertodo.pageIndicators.remove(t), tabId);
+    assert.equal(await page.evaluate(() => document.querySelector("browsertodo-control")), null);
+    // Chrome allows two captureVisibleTab calls a second (MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND); the next step takes one.
+    await new Promise((r) => setTimeout(r, 1000));
+    return `pill at (${Math.round(pill.x)}, ${Math.round(pill.y)}): agent ${agent}, user ${user}; count ${before} -> ${after}`;
+  });
+
   await step("a screenshot of a wide window is scaled to 1280 px wide", async () => {
     await page.setViewportSize({ width: 2400, height: 1300 });
     const shot = await call("screenshot");

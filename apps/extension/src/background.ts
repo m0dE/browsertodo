@@ -452,6 +452,7 @@ const controlIndicator = new ControlIndicator({
     Promise.all(
       runner.runningSessions.map(async (s) => ({ sessionId: s.sessionId, tabs: await slots.tabsOf(s.sessionId), needsYou: approvals.waiting(s.sessionId).length > 0 })),
     ),
+  tabsOf: (sessionId) => slots.tabsOf(sessionId),
   chatTabOf: (sessionId) => tabChats.tabOf(sessionId),
   showOverlay: async () => (await loadSettings()).showControlOverlay,
   groups: { of: agentGroupOf, all: agentGroupIds, apply: applyGroupLook },
@@ -632,6 +633,7 @@ onStart();
   panelTabs,
   voiceSessions,
   controlIndicator,
+  pageIndicators,
   /** The toolbar button's listener (the e2e shortcut presser points the button at the command handler instead). */
   onActionClicked,
   /** Runs use this brain instead of the real ones (null: back to the real ones). */

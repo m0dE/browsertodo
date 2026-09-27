@@ -90,10 +90,23 @@ try {
     assert.deepEqual(running.runningSessions.map((s) => s.title).sort(), ["Task A", "Task B"]);
     assert.deepEqual(running.runningTabs[a.sessionId], [tabA]);
     assert.deepEqual(running.runningTabs[b.sessionId], [tabB]);
+    // Both tabs are in the one BrowserTODO group of the window: it says two runs work there (control-indicator.ts).
+    const groupOf = (t) => sw.evaluate(async (id) => {
+      const tab = await chrome.tabs.get(id);
+      return tab.groupId === -1 ? null : await chrome.tabGroups.get(tab.groupId).then((g) => ({ id: g.id, title: g.title, color: g.color }));
+    }, t);
+    const working = await waitFor(async () => {
+      const g = await groupOf(tabA);
+      return g?.title === "BrowserTODO · 2 working" ? g : null;
+    }, "the group to say 2 working");
+    assert.equal(working.color, "purple");
+    assert.equal((await groupOf(tabB))?.id, working.id);
     // The user is on tab B; A's agent still acts on tab A.
     await fake.release("task A");
     await fake.release("task B");
     await waitFor(async () => (await sessionOf(sw, a.sessionId))?.outcome === "done" && (await sessionOf(sw, b.sessionId))?.outcome === "done", "both runs to end");
+    await waitFor(async () => (await groupOf(tabA))?.color === "grey", "the group to go idle");
+    assert.equal((await groupOf(tabA)).title, "BrowserTODO");
     const log = await sw.evaluate(() => globalThis.__turns);
     assert.equal(log.find((l) => l.name === "task A").url, `${base}/a`);
     assert.equal(log.find((l) => l.name === "task B").url, `${base}/b`);

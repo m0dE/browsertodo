@@ -46,6 +46,7 @@ function harness() {
   const make = () =>
     new ControlIndicator({
       running: async () => running,
+      tabsOf: async (sessionId) => running.find((s) => s.sessionId === sessionId)?.tabs ?? [],
       chatTabOf: async (sessionId) => (sessionId === "chat" ? 50 : null),
       showOverlay: async () => overlay,
       groups: {
@@ -150,6 +151,17 @@ describe("ControlIndicator", () => {
     await ind.applyNow();
     expect(h.looks.get(10)?.title).toBe("BrowserTODO · working");
     expect(h.pages.get(1)).toBe("working");
+  });
+
+  it("a turn too short for any refresh to see still leaves 'needs you' in its tabs", async () => {
+    h.setRunning([{ sessionId: "s1", tabs: [2], needsYou: false }]);
+    // Its slot still has the tab when its task_end comes.
+    ind.onEvent("s1", end("paused", "Which size?"));
+    await new Promise((r) => setTimeout(r, 5));
+    h.setRunning([]);
+    await ind.applyNow();
+    expect(h.pages.get(2)).toBe("needs-you");
+    expect(h.looks.get(10)?.title).toBe("BrowserTODO · needs you");
   });
 
   it("a run the user stopped does not ask for them", async () => {

@@ -62,6 +62,8 @@ export function tabStates(sessions: readonly (ControlledSession & { state?: Cont
 export interface ControlIndicatorDeps {
   /** The sessions running now, with their tabs and whether they wait for the user. */
   running(): Promise<ControlledSession[]>;
+  /** The tabs a session acts in now (its slot's; at a turn's end they are still there). */
+  tabsOf(sessionId: string): Promise<number[]>;
   /** The tab whose side panel has the session's chat (null: none, e.g. a scheduled run). */
   chatTabOf(sessionId: string): Promise<number | null>;
   /** The setting "Show when BrowserTODO controls a tab" (the page overlay). */
@@ -96,8 +98,6 @@ export class ControlIndicator {
   private shown = new Map<number, Stored["shown"][string]>();
   /** Each running session's tabs at the last refresh (a run that ends paused needs you there). */
   private readonly lastTabs = new Map<string, number[]>();
-  /** The sessions running at the last refresh: one running now that was not is a new turn. */
-  private wasRunning = new Set<string>();
   /** Each session's chat tab at the last refresh (Open must answer at once: the click's user gesture). */
   private readonly chatTabs = new Map<string, number | null>();
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -143,11 +143,18 @@ export class ControlIndicator {
       return;
     }
     if (event.type !== "task_end") return;
-    const tabs = this.lastTabs.get(sessionId);
+    const known = this.lastTabs.get(sessionId);
     this.lastTabs.delete(sessionId);
-    if (event.outcome === "paused" && event.reason?.trim() !== USER_STOP_REASON && tabs?.length) this.paused.set(sessionId, tabs);
-    else this.paused.delete(sessionId);
-    this.refresh();
+    if (event.outcome !== "paused" || event.reason?.trim() === USER_STOP_REASON) {
+      this.paused.delete(sessionId);
+      return this.refresh();
+    }
+    // A short turn may have ended before any refresh saw its tabs: they are read now, while its slot still has them.
+    const tabs = known?.length ? Promise.resolve(known) : this.deps.tabsOf(sessionId).catch(() => []);
+    void tabs.then((t) => {
+      if (t.length) this.paused.set(sessionId, t);
+      this.refresh();
+    });
   }
 
   /** The session controlling the tab (the pill's Stop), or null. */
@@ -184,12 +191,8 @@ export class ControlIndicator {
 
   private async apply(): Promise<void> {
     const running = await this.deps.running();
-    for (const s of running) {
-      this.lastTabs.set(s.sessionId, s.tabs);
-      // A turn that ended paused may still be finishing; a new turn of it clears that.
-      if (!this.wasRunning.has(s.sessionId)) this.paused.delete(s.sessionId);
-    }
-    this.wasRunning = new Set(running.map((s) => s.sessionId));
+    for (const s of running) this.lastTabs.set(s.sessionId, s.tabs);
+    // A turn that ended paused may still be finishing: it needs the user already. Its next turn starts with the user's message (onEvent).
     const all = [...running.filter((s) => !this.paused.has(s.sessionId)), ...[...this.paused].map(([sessionId, tabs]): ControlledSession & { state: ControlState } => ({ sessionId, tabs, needsYou: true, state: "needs-you" }))];
     for (const s of all) this.chatTabs.set(s.sessionId, await this.deps.chatTabOf(s.sessionId).catch(() => null));
     for (const id of [...this.chatTabs.keys()]) if (!all.some((s) => s.sessionId === id)) this.chatTabs.delete(id);

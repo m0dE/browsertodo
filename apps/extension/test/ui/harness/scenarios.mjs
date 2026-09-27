@@ -108,7 +108,7 @@ export function scenario(kind) {
     apiBase: "", runnerKey: "", maxConsecutiveFailures: 3, retryAfterMinutes: 10, intervalMinutes: 15,
     delayMinSec: 60, delayMaxSec: 180, maxToolCalls: 60, maxTaskMinutes: 10, maxParallelTasks: 2, jevEnabled: true, jevThreshold: 0.8,
     paused: false, pauseRetryMinutes: 15, accountApiBase: "https://app.browsertodo.com",
-    voiceEngine: "realtime", speechVoice: "", speechRate: 1, realtimeVoice: "marin", realtimeSpeed: 1, realtimeCostNoticed: true, voiceSounds: true,
+    voiceEngine: "realtime", speechVoice: "", speechRate: 1, realtimeVoice: "marin", realtimeSpeed: 1, realtimeCostNoticed: true, voiceSounds: true, showControlOverlay: true,
     automationLevel: "ask_consequential", scheduledAutomation: "full_within_task",
     memoryPaused: false, memoryKindsOff: [], reasoning: "fast", reasoningAutoRaise: true,
   };

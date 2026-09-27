@@ -255,6 +255,9 @@ export const OPTION_CASES = [
     // The schedule moved to Permission.
     ["no schedule here", async () => (await p.locator("#panel-tasks #f-intervalMinutes").count()) === 0],
     ["limits", async () => shown(p, "#f-maxToolCalls")],
+    // The page glow while BrowserTODO controls a tab: on by default.
+    ["control overlay switch shown and on", async () => (await shown(p, "#f-showControlOverlay")) && (await p.isChecked("#f-showControlOverlay"))],
+    ["control overlay says what it shows", async () => /glow/.test(await p.textContent("label[for=f-showControlOverlay]"))],
   ]],
   ["options-logins", "ok", "#logins", () => {}, (p) => [
     ["saved sites", async () => (await p.locator("#vault-sites li").count()) === 2],
@@ -590,6 +593,10 @@ export const OPTION_FLOWS = [
       check("Jev key hidden", !(await shown(p, "[data-secret=jevApiKey]")));
       await autoSaved(() => p.click("#f-jevEnabled"));
       check("Jev key shown", await shown(p, "[data-secret=jevApiKey]"));
+      // The control overlay switch (Tasks) saves by itself.
+      await p.click("#tab-tasks");
+      await autoSaved(() => p.click("#f-showControlOverlay"));
+      check("control overlay off saved", (await saves()).some((s) => s.showControlOverlay === false));
       await optChecks(p, "interactions", checks);
       await p.ctx.close();
     },

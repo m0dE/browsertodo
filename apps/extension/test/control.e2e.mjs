@@ -84,18 +84,21 @@ try {
       const [res] = await chrome.scripting.executeScript({
         target: { tabId: t },
         func: () => {
-          const b = window.__browsertodoControl?.root.querySelector("button");
+          const root = window.__browsertodoControl?.root;
+          const b = root?.querySelector("button");
           if (!b) return null;
           const r = b.getBoundingClientRect();
-          return { text: b.textContent, x: r.x + r.width / 2, y: r.y + r.height / 2 };
+          const pill = root.querySelector(".pill").getBoundingClientRect();
+          // A point of the pill's own background: its left padding, before the dot.
+          return { text: b.textContent, x: r.x + r.width / 2, y: r.y + r.height / 2, pillX: pill.x + 4, pillY: pill.y + pill.height / 2 };
         },
       });
       return res?.result ?? null;
     }, tabId);
-  /** Whether an image (base64 JPEG/PNG) is dark at the pill's place (top center), measured in the page. */
-  const pillDarkIn = async (base64, mime) =>
+  /** Whether an image (base64 JPEG/PNG) is dark at a point of the page (CSS px), measured in the page. */
+  const darkIn = async (base64, mime, at) =>
     page.evaluate(
-      async ([src, viewW]) => {
+      async ([src, viewW, at]) => {
         const img = new Image();
         img.src = src;
         await img.decode();
@@ -105,10 +108,10 @@ try {
         const g = c.getContext("2d");
         g.drawImage(img, 0, 0);
         const scale = img.width / viewW;
-        const [r, gg, b] = g.getImageData(Math.round(img.width / 2), Math.round(22 * scale), 1, 1).data;
+        const [r, gg, b] = g.getImageData(Math.round(at.x * scale), Math.round(at.y * scale), 1, 1).data;
         return { dark: r + gg + b < 300, rgb: [r, gg, b], size: [img.width, img.height] };
       },
-      [`data:${mime};base64,${base64}`, await page.evaluate(() => innerWidth)],
+      [`data:${mime};base64,${base64}`, await page.evaluate(() => innerWidth), at],
     );
 
   let look;
@@ -137,22 +140,27 @@ try {
 
   await step("the agent's read_page and screenshot never show the overlay (the page's own screenshot does)", async () => {
     await fake.release("look");
-    const seen = await waitFor(() => sw.evaluate(() => (globalThis.__seen.shot ? globalThis.__seen : null)), "the agent's read and screenshot");
+    const seen = await waitFor(() => sw.evaluate(() => (globalThis.__seen.shot ? globalThis.__seen : null)), "the agent's read and screenshot", {
+      // A screenshot may take up to 10 s on a busy machine (driver.ts BACKGROUND_SHOT_TIMEOUT_MS).
+      timeout: 30_000,
+    });
     assert.doesNotMatch(seen.snap.text, /BrowserTODO/);
     assert.ok(!seen.snap.elements.some((e) => /Stop|BrowserTODO/.test(`${e.name} ${e.text ?? ""}`)), JSON.stringify(seen.snap.elements));
     assert.deepEqual(
       seen.snap.elements.map((e) => e.name),
       ["Count"],
     );
-    const agent = await pillDarkIn(seen.shot.base64, seen.shot.mimeType);
+    const pill = await pillButton();
+    const at = { x: pill.pillX, y: pill.pillY };
+    const agent = await darkIn(seen.shot.base64, seen.shot.mimeType, at);
     assert.equal(agent.dark, false, `the agent's screenshot at the pill's place: ${JSON.stringify(agent)}`);
     writeFileSync(join(shots, "control-agent-screenshot.jpg"), Buffer.from(seen.shot.base64, "base64"));
-    const user = await pillDarkIn((await page.screenshot()).toString("base64"), "image/png");
+    const user = await darkIn((await page.screenshot()).toString("base64"), "image/png", at);
     assert.equal(user.dark, true, `the user's view at the pill's place: ${JSON.stringify(user)}`);
     // Put back after the capture.
     assert.equal((await pillButton())?.text, "Stop");
     assert.equal(await page.evaluate(() => document.querySelector("browsertodo-control").hasAttribute("hidden")), false);
-    return `agent ${JSON.stringify(agent.rgb)}, user ${JSON.stringify(user.rgb)}`;
+    return `at the pill (${Math.round(at.x)}, ${Math.round(at.y)}): agent's screenshot ${JSON.stringify(agent.rgb)}, the user's view ${JSON.stringify(user.rgb)}`;
   });
 
   await step("the run ends: group 'BrowserTODO' in grey, no badge, no overlay", async () => {

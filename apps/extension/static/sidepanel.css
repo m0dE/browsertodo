@@ -482,7 +482,8 @@ button.title-btn:hover { color: var(--accent); }
 .log .ev-scheduled .sched-note.bad { color: color-mix(in srgb, var(--bad) 75%, var(--text)); }
 .log .ev-scheduled.undone { background: none; border-left-color: var(--border); color: var(--muted); }
 .log .ev-scheduled.undone .sched-line > svg { color: var(--faint); }
-.log .ev-scheduled.undone .sched-task { text-decoration: line-through; }
+/* An undone Scheduled card: the task is gone. An undone change (Changed, Cancelled): the task is back as it was. */
+.log .ev-scheduled.undone:not([data-change]) .sched-task { text-decoration: line-through; }
 /* A change to the agent's memory (event-render.ts renderMemoryNote): one quiet line, "Remembered: subject · text", with Undo at its end. */
 .log .ev-memory { display: flex; flex-direction: column; gap: 3px; min-width: 0; font-size: var(--text-sm); line-height: 1.45; color: var(--muted); }
 .log .ev-memory .mem-line { display: flex; align-items: center; gap: 5px; min-width: 0; }

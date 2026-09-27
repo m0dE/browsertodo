@@ -5,7 +5,12 @@
  * the live meter (the microphone's level, or the speaker while a line is
  * said), and which buttons show. On another tab it names the tab the session
  * listens in instead, with Go to tab and Use voice here; in another tab's
- * panel (remoteBarView) the same, with nothing live.
+ * panel (remoteBarView) the same, with nothing live (and no Mute: the panel
+ * running the session owns its microphone).
+ *
+ * Muted (Mute, or MUTE_KEY): "Muted" while it would listen, no meter, and
+ * the bar in grey (voice.css); while a line is said or a message waits, that
+ * state, with hints that need no talking. Mute shows once the session runs.
  *
  * "Hearing you…" comes from the microphone's level (VoiceActivity), the
  * same for both engines. The polite announcement for screen readers leaves
@@ -20,12 +25,14 @@ import { elsewhereLabel } from "./hands-free-tab.js";
 /** A session's phase as the bar knows it: the state machine's, or still starting (microphone, connection). */
 export type VoiceBarPhase = Exclude<HandsFreePhase, "off"> | "starting";
 
-export type VoiceBarState = "starting" | "listening" | "hearing" | "sending" | "working" | "speaking" | "elsewhere";
+export type VoiceBarState = "starting" | "listening" | "hearing" | "muted" | "sending" | "working" | "speaking" | "elsewhere";
 
 export interface VoiceBarInput {
   phase: VoiceBarPhase;
   /** The microphone hears a voice now (VoiceActivity). */
   hearing: boolean;
+  /** The user muted the microphone. */
+  muted: boolean;
   /** The engine running (null: not chosen yet). */
   engine: VoiceEngineId | null;
   /** How long the session has been on. */
@@ -54,7 +61,20 @@ export interface VoiceBarView {
   stopLabel: string;
   /** The voice shortcut, shown by Stop (null: none assigned). */
   shortcut: string | null;
+  /** The microphone is muted (the bar goes grey). */
+  muted: boolean;
+  /** The Mute button: pressed while muted, its tooltip and accessible name (null: not offered). */
+  mute: { pressed: boolean; label: string } | null;
 }
+
+/** Mute and unmute inside the side panel, by the key's position (Alt on a Mac types another letter). */
+export const MUTE_KEY = { code: "KeyM", label: "Alt+M" } as const;
+
+export function isMuteKey(e: { code: string; altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }): boolean {
+  return e.code === MUTE_KEY.code && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey;
+}
+
+const muteButton = (muted: boolean) => ({ pressed: muted, label: `${muted ? "Unmute" : "Mute"} the microphone · ${MUTE_KEY.label}` });
 
 export const ENGINE_NAMES: Record<VoiceEngineId, string> = { realtime: "Realtime", standard: "Standard" };
 
@@ -71,6 +91,7 @@ const TITLES: Record<Exclude<VoiceBarState, "elsewhere">, string> = {
   starting: "Starting…",
   listening: "Listening",
   hearing: "Hearing you…",
+  muted: "Muted",
   sending: "Sending",
   working: "Agent working",
   speaking: "Speaking",
@@ -80,14 +101,23 @@ const HINTS: Record<Exclude<VoiceBarState, "elsewhere">, string> = {
   starting: "Turning on the microphone",
   listening: "Just talk · say “stop” to end",
   hearing: "Just talk · say “stop” to end",
+  muted: "Microphone off · Unmute to talk",
   sending: "Say “cancel” or press Esc to take it back",
   working: "Still listening: talk to add to the task",
   speaking: "Tap Interrupt, or just talk",
 };
 
+/** Muted, the hints that do not ask the user to talk. */
+const MUTED_HINTS: Partial<Record<VoiceBarState, string>> = {
+  sending: "Press Esc to take it back",
+  speaking: "Tap Interrupt · microphone muted",
+};
+const MUTED_WORKING_HINT = "Agent working · updates are still said";
+
 function stateOf(input: VoiceBarInput): VoiceBarState {
   if (input.elsewhere) return "elsewhere";
   const { phase, hearing } = input;
+  if (input.muted && (phase === "listening" || phase === "working")) return "muted";
   // The voice counts while the microphone is what is live: listening, or listening while the agent works.
   if (hearing && (phase === "listening" || phase === "working")) return "hearing";
   return phase;
@@ -99,24 +129,30 @@ export function voiceBarView(input: VoiceBarInput): VoiceBarView {
   const stopLabel = shortcut ? `Stop hands-free · ${shortcut}` : "Stop hands-free";
   const time = elapsedText(input.elapsedMs);
   const engine = input.engine ? `${ENGINE_NAMES[input.engine]} · ` : "";
+  const { muted } = input;
+  const mute = input.phase === "starting" ? null : muteButton(muted);
   if (state === "elsewhere") {
     const title = elsewhereLabel(input.elsewhere?.title ?? null);
-    return { state, title, detail: `${engine}${time}`, meter: "mic", announce: title, interrupt: false, elsewhere: true, stopLabel, shortcut };
+    const detail = `${engine}${time}${muted ? " · Muted" : ""}`;
+    return { state, title, detail, meter: muted ? "none" : "mic", announce: title, interrupt: false, elsewhere: true, stopLabel, shortcut, muted, mute };
   }
   const title = TITLES[state];
-  const meter = state === "speaking" ? "speaker" : state === "starting" ? "none" : "mic";
+  const meter = state === "speaking" ? "speaker" : state === "starting" || muted ? "none" : "mic";
   // "Hearing you…" comes and goes with the voice: it is announced as listening.
   const announced = state === "hearing" ? (input.phase === "working" ? TITLES.working : TITLES.listening) : title;
+  const hint = !muted ? HINTS[state] : state === "muted" && input.phase === "working" ? MUTED_WORKING_HINT : (MUTED_HINTS[state] ?? HINTS[state]);
   return {
     state,
     title,
-    detail: state === "starting" ? HINTS.starting : `${engine}${time} · ${HINTS[state]}`,
+    detail: state === "starting" ? HINTS.starting : `${engine}${time} · ${hint}`,
     meter,
     announce: `Hands-free: ${announced}`,
     interrupt: state === "speaking",
     elsewhere: false,
     stopLabel,
     shortcut,
+    muted,
+    mute,
   };
 }
 
@@ -128,10 +164,12 @@ export const NOT_HERE_TEXT = "Not listening in this tab";
  * background): where, with Go to tab, Use voice here and Stop; no meter, no time, no shortcut (here it would move
  * the session, not stop it).
  */
-export function remoteBarView(input: { title: string | null; engine: VoiceEngineId | null }): VoiceBarView {
+export function remoteBarView(input: { title: string | null; engine: VoiceEngineId | null; muted?: boolean }): VoiceBarView {
   const title = elsewhereLabel(input.title);
   const engine = input.engine ? `${ENGINE_NAMES[input.engine]} · ` : "";
-  return { state: "elsewhere", title, detail: `${engine}${NOT_HERE_TEXT}`, meter: "none", announce: title, interrupt: false, elsewhere: true, stopLabel: "Stop voice in that tab", shortcut: null };
+  const muted = input.muted ?? false;
+  const detail = `${engine}${muted ? "Muted · " : ""}${NOT_HERE_TEXT}`;
+  return { state: "elsewhere", title, detail, meter: "none", announce: title, interrupt: false, elsewhere: true, stopLabel: "Stop voice in that tab", shortcut: null, muted, mute: null };
 }
 
 /** How loud (the 0..1 meter level) counts as a voice, and how long "Hearing you…" stays after it. */

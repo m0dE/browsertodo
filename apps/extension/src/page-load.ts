@@ -29,6 +29,15 @@ export function loadProbeInPage(): LoadProbe {
   return { doc: performance.timeOrigin, state: document.readyState, controls, text: document.body?.textContent?.length ?? 0, foreignFrame };
 }
 
+/**
+ * The id of another extension whose frame is in the page (the first found), or null. Chrome refuses
+ * the debugger for the tab because of it. Self-contained: run with chrome.scripting.
+ */
+export function foreignExtensionInPage(): string | null {
+  const frame = document.querySelector<HTMLIFrameElement>('iframe[src^="chrome-extension://"]');
+  return (frame && /^chrome-extension:\/\/([a-p]{32})\//.exec(frame.src)?.[1]) || null;
+}
+
 /** Unchanged readings in a row that make a page usable: complete, or only past DOMContentLoaded (still loading resources). */
 export const STABLE_READINGS = { complete: 1, interactive: 3 } as const;
 

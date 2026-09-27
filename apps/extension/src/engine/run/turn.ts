@@ -178,6 +178,17 @@ export class TurnRunner {
     // extensions out of: the run still starts, in a tab next to it.
     const page = adhoc ? await this.pageOf(origin) : null;
     const restricted = !!page && isRestrictedUrl(page.url);
+    // What memory gives the turn is picked while its tab and files are made ready (it may wait on the account's search).
+    // A TODO or cloud task keeps its run notes in memory; a one-off chat has none.
+    const memoryReady = this.memoryFor(active, {
+      ...(adhoc ? {} : { task: { instructions: opened.task.instructions, account: opened.task.account } }),
+      title: active.session.title,
+      request: opened.task.instructions,
+      ...(page ? { tabUrl: page.url, tabTitle: page.title } : {}),
+    });
+    const config = runConfig(settings, opened.isRetry);
+    // Meanwhile the agent starts too: its process is ready when the task (with its memory) is.
+    brain.prewarm?.(config);
     let picked: number;
     if (origin === undefined) {
       picked = await this.prepareTab(active, { mode: adhoc ? "current-tab" : "own-tab" });
@@ -192,15 +203,8 @@ export class TurnRunner {
     const sources = await mediaSources(job, this.deps.localStore);
     if (sources.length) this.emit(active, { type: "status", text: `Preparing ${sources.length} file(s)` });
     const mediaPaths = await this.materialize(active, sources, cleanups);
-    const config = runConfig(settings, opened.isRetry);
     if (active.forced) throw new Error(active.forced.reason);
-    // A TODO or cloud task keeps its run notes in memory; a one-off chat has none.
-    const memory = await this.memoryFor(active, {
-      ...(adhoc ? {} : { task: { instructions: task.instructions, account: task.account } }),
-      title: active.session.title,
-      request: task.instructions,
-      ...(task.userTab ? { tabUrl: task.userTab.url, tabTitle: task.userTab.title } : {}),
-    });
+    const memory = await this.timed(active, "memory.wait", () => memoryReady);
     const run = this.start(active, brain, { task: memory ? { ...task, memory } : task, mediaPaths, config, settings });
     return this.drive(active, run, settings, cleanups);
   }
@@ -208,7 +212,8 @@ export class TurnRunner {
   /**
    * What the agent is given from memory this turn (undefined: memory is off, or nothing applies), recorded in the
    * trace (memory.inject: how long picking took; memory.given: how many entries and tokens). Memory never stops a
-   * turn: a failure is logged.
+   * turn: a failure is logged. Callers start it early and await it just before the brain starts (memory.wait: how
+   * long the turn's start still waited for it).
    */
   async memoryFor(active: ActiveSession, run: MemoryRun): Promise<string | undefined> {
     if (!this.deps.memory) return undefined;

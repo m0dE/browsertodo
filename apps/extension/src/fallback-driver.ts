@@ -26,17 +26,24 @@ import {
   typeTargetInPage,
   viewportInPage,
 } from "./page-input.js";
-import { loadProbeInPage, waitForUsablePage, type LoadProbe } from "./page-load.js";
+import { foreignExtensionInPage, loadProbeInPage, waitForUsablePage, type LoadProbe } from "./page-load.js";
 import { snapshotPage } from "./page-snapshot.js";
 import { waitInPage, type PageWait, type PageWaitArgs } from "./page-wait.js";
 import { scrollProbeInPage, scrollReport, type PageResult, type ScrollProbe } from "./scroll-probe.js";
 
 /**
- * Shown once per tab when the driver switches to this fallback. The runner
- * or executor should put it in front of the tool result text.
+ * Shown once per tab when the driver switches to this fallback, in front of
+ * the tool result text. extensionId: the other extension whose frame is on
+ * the page, when the page shows it (foreignExtensionInPage). Its name would
+ * need the "management" permission; chrome://extensions/?id=... shows it.
  */
-export const FALLBACK_NOTE =
-  "(Using fallback mode: another extension's frame on this page blocks Chrome's debugger. Clicks and typing are simulated.)";
+export function fallbackNote(extensionId: string | null): string {
+  const which = extensionId ? `the frame of another extension (id ${extensionId}; chrome://extensions/?id=${extensionId} shows which)` : "another extension's frame";
+  return `(Using fallback mode: ${which} on this page blocks Chrome's debugger. Clicks and typing are simulated.)`;
+}
+
+/** The note when the other extension is not known. */
+export const FALLBACK_NOTE = fallbackNote(null);
 
 const FALLBACK_UPLOAD_ERROR =
   "upload is not possible on this page because another extension's frame blocks Chrome's debugger, " +
@@ -84,6 +91,16 @@ export class FallbackDriver {
     } catch {
       // A loaded page no script may enter (e.g. an error page): usable as it is.
       return tab.status === "complete" ? { doc: -1, state: "complete", controls: 0, text: 0, foreignFrame: false } : null;
+    }
+  }
+
+  /** The id of the other extension whose frame is on the page (see fallbackNote), or null when the page does not show one. */
+  async foreignExtension(tabId: number): Promise<string | null> {
+    try {
+      const [res] = await chrome.scripting.executeScript({ target: { tabId }, func: foreignExtensionInPage });
+      return typeof res?.result === "string" ? res.result : null;
+    } catch {
+      return null;
     }
   }
 

@@ -571,9 +571,24 @@ describe("scheduling from the chat (schedule_task)", () => {
     expect(buildFollowUpMessage({ text: "hi" })).toBe("hi");
   });
 
-  it("the tool's input schema converts to JSON Schema for Claude Code and the Messages API", () => {
-    const schema = z.toJSONSchema(toolArgsSchema("schedule_task", false), { io: "input" }) as { properties: Record<string, unknown>; required: string[] };
-    expect(Object.keys(schema.properties)).toEqual(["task", "schedule", "account"]);
-    expect(schema.required).toEqual(["task", "schedule"]);
+  it("says how to list, move and cancel TODO tasks, times in another zone, and to confirm times in the user's zone", () => {
+    expect(withTool).toMatch(/list_scheduled_tasks shows its waiting tasks with their ids/);
+    expect(withTool).toMatch(/call update_scheduled_task or cancel_scheduled_task; never cancel and schedule it again to move it/);
+    expect(withTool).toMatch(/call schedule_task once for each, leaving out times that have passed/);
+    expect(withTool).toContain('"10 minutes before" an event = its start - 10 min');
+    expect(withTool).toContain("A time a page shows in another zone");
+    expect(withTool).toMatch(/with each time in the user's own time zone as its answer gives it/);
+    // Measured with the real Claude Code: without this, "add ... to our schedule" paused to ask which calendar app.
+    expect(withTool).toMatch(/"Our schedule", "my schedule", "my TODOs" and "the TODO list" mean the user's BrowserTODO TODO list/);
+  });
+
+  it("the tools' input schemas convert to JSON Schema for Claude Code and the Messages API", () => {
+    const schema = (name: Parameters<typeof toolArgsSchema>[0]) => z.toJSONSchema(toolArgsSchema(name, false), { io: "input" }) as { properties: Record<string, unknown>; required?: string[] };
+    expect(Object.keys(schema("schedule_task").properties)).toEqual(["task", "schedule", "account"]);
+    expect(schema("schedule_task").required).toEqual(["task", "schedule"]);
+    expect(Object.keys(schema("update_scheduled_task").properties)).toEqual(["task_id", "task", "schedule", "account"]);
+    expect(schema("update_scheduled_task").required).toEqual(["task_id"]);
+    expect(schema("cancel_scheduled_task").required).toEqual(["task_id"]);
+    expect(schema("list_scheduled_tasks").properties).toEqual({});
   });
 });

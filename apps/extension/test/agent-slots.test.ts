@@ -61,6 +61,24 @@ describe("AgentSlots", () => {
     expect(slots.slotOf("B")).toBeNull();
   });
 
+  it("confirm: a change outside the page asks through the session's gate; a session without a slot is refused", async () => {
+    const asked: [string, string][] = [];
+    const gated = new AgentSlots(new Cdp(), vault, undefined, undefined, {
+      context: async () => ({ level: "ask_consequential" }),
+      request: async (sessionId, ask) => (asked.push([sessionId, ask.action]), "allow_once"),
+      end: () => {},
+    });
+    gated.take(1, "B");
+    const change = { action: 'Cancel the TODO task "Dentist"', site: "", why: "cancels a task in your TODO list" };
+    await gated.confirm("B", change);
+    expect(asked).toEqual([["B", change.action]]);
+    gated.release(1, "B", { keepTabs: true });
+    await expect(gated.confirm("B", change)).rejects.toThrow(/nothing was changed/);
+    // Without approvals nothing waits.
+    slots.take(0, "A");
+    await slots.confirm("A", change);
+  });
+
   it("two one-off runs never share the tab the user is looking at", async () => {
     await slots.take(0, "A").prepare({ mode: "current-tab" });
     expect(await slots.get(0).tab.tabId()).toBe(userTab);

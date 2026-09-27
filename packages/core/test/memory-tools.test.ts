@@ -42,6 +42,22 @@ describe("memory tools in the executor", () => {
     expect(calls).toHaveLength(3);
   });
 
+  it("passes search_history to the conversation's memory (past chats), with checked arguments", async () => {
+    const calls: [string, unknown][] = [];
+    const { exec } = setup(async (tool, args) => {
+      calls.push([tool, args]);
+      return { text: "1 past conversation(s)" };
+    });
+    expect(await exec.call("search_history", { query: "emails yesterday" })).toEqual({ text: "1 past conversation(s)" });
+    expect(await exec.call("search_history", { session_id: "s-1" })).toEqual({ text: "1 past conversation(s)" });
+    expect(calls).toEqual([
+      ["search_history", { query: "emails yesterday" }],
+      ["search_history", { session_id: "s-1" }],
+    ]);
+    expect((await exec.call("search_history", { query: "x".repeat(300) })).isError).toBe(true);
+    expect(calls).toHaveLength(2);
+  });
+
   it("refuses without a conversation (mcp-server --attach)", async () => {
     const { exec } = setup();
     expect(await exec.call("recall", { query: "x" })).toMatchObject({ isError: true, text: expect.stringMatching(/not available here/) });
@@ -70,9 +86,10 @@ describe("memory tools in the executor", () => {
 
 describe("memory in the prompts", () => {
   it("the tools are offered to task sessions, not to the user's own Claude Code", () => {
-    expect(toolsFor()).toEqual(expect.arrayContaining(["remember", "recall", "forget"]));
-    expect(CONVERSATION_TOOLS).toEqual(expect.arrayContaining(["remember", "recall", "forget"]));
+    expect(toolsFor()).toEqual(expect.arrayContaining(["remember", "recall", "forget", "search_history"]));
+    expect(CONVERSATION_TOOLS).toEqual(expect.arrayContaining(["remember", "recall", "forget", "search_history"]));
     expect(INTERACTIVE_TOOL_NAMES).not.toContain("remember");
+    expect(INTERACTIVE_TOOL_NAMES).not.toContain("search_history");
   });
 
   it("the system prompt says when to remember, to use memory first, and to correct stale entries", () => {
@@ -83,6 +100,13 @@ describe("memory in the prompts", () => {
     expect(p).toMatch(/memory_note/);
     expect(p).toMatch(/many separate things .*file what you learn about each under its identifier with remember .*key.*in a chat in the user.s own.*recall its key/);
     expect(buildSystemPrompt({ tools: toolsFor({ interactive: true }), jev: true })).not.toMatch(/Memory: /);
+  });
+
+  it("the system prompt says to look up an earlier conversation before saying there is no record of it", () => {
+    const p = buildSystemPrompt({ tools: toolsFor(), jev: false });
+    expect(p).toMatch(/Earlier conversations: .*what did you tell me .*yesterday.*recall and search_history.*before answering/);
+    expect(p).toMatch(/Only when both find nothing, say you have no record of it/);
+    expect(buildSystemPrompt({ tools: toolsFor({ interactive: true }), jev: false })).not.toMatch(/Earlier conversations:/);
   });
 
   it("the memory block goes before the task's instructions, and before a follow-up message", () => {

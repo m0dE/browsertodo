@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { AgentEvent } from "@browsertodo/shared";
 import { interjectionText, Interjections, raiseNote, THINKING_BUDGET_TOKENS, type ReasoningChange } from "@browsertodo/core";
 import { ClaudeCodeBrain, buildClaudeArgs } from "../src/brains/claude-code.js";
-import { apiBillingVarsIn, claudeEnv, resolveClaudePath } from "../src/claude-process.js";
+import { apiBillingVarsIn, CLAUDE_RUN_ENV, claudeEnv, resolveClaudePath } from "../src/claude-process.js";
 import { UserInput, type BrainContext } from "../src/brains/brain.js";
 import { SelfTestCache, parseSelfTestOutput, runSelfTest, selfTestArgs } from "../src/self-test.js";
 
@@ -255,6 +255,60 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     expect(log.at(-1)).toMatchObject({ type: "claude_exit", code: 0 });
   });
 
+  it("persistent: a later turn's model setting switches the session's model (set_model) before its message; a refused switch is said", async () => {
+    const log: Record<string, any>[] = [];
+    const events: AgentEvent[] = [];
+    const input = new UserInput();
+    let idle = 0;
+    let switchModel: ((model: string) => void) | null = null;
+    const c = { ...ctx(new AbortController().signal, log, events, input), idle: () => idle++, onModelChange: (fn: (m: string) => void) => void (switchModel = fn) };
+    const run = new ClaudeCodeBrain({ claudePath: process.execPath, model: "sonnet", prefixArgs: [FAKE], persistent: true }).run(c);
+    await vi.waitFor(() => expect(idle).toBe(1), { timeout: 10_000 });
+    switchModel!("claude-opus-5-5");
+    input.push("two");
+    await vi.waitFor(() => expect(idle).toBe(2), { timeout: 10_000 });
+    switchModel!("bad-model");
+    input.push("three");
+    await vi.waitFor(() => expect(idle).toBe(3), { timeout: 10_000 });
+    input.close();
+    await run;
+    const inits = log.filter((e) => e.type === "claude" && e.event.subtype === "init").map((e) => e.event.model);
+    expect(inits).toEqual(["sonnet", "claude-opus-5-5", "claude-opus-5-5"]);
+    expect(log.filter((e) => e.type === "claude_model").map((e) => e.model)).toEqual(["claude-opus-5-5", "bad-model"]);
+    expect(events.filter((e) => e.type === "status").map((e) => (e as { text: string }).text)).toEqual([
+      "Claude Code started (sonnet)",
+      "Switched the model to claude-opus-5-5",
+      "The model was not switched to bad-model (API error: 404 · model not changed): this session keeps claude-opus-5-5",
+    ]);
+  });
+
+  it("warm: a session started with the same args takes the process started ahead (its early output kept); with other args it is stopped", async () => {
+    const b = brain();
+    const c = ctx(new AbortController().signal, [], []);
+    const spec = { systemPrompt: c.systemPrompt, mcpConfigPath: c.mcpConfigPath, allowedTools: c.allowedTools, thinking: false };
+    const warm = b.warm(spec);
+    await new Promise((r) => setTimeout(r, 300));
+    const log: Record<string, any>[] = [];
+    const events: AgentEvent[] = [];
+    await b.run({ ...ctx(new AbortController().signal, log, events), warm });
+    expect(warm.ready).toBe(false);
+    expect(log.find((e) => e.type === "claude_start")!.prewarmed.ageMs).toBeGreaterThanOrEqual(250);
+    // The init line it wrote while waiting reached the session; the prompt was answered.
+    expect(events.filter((e) => e.type === "status")).toEqual([{ type: "status", text: "Claude Code started (sonnet)" }]);
+    expect(events.some((e) => e.type === "assistant_text")).toBe(true);
+    const ready = events.flatMap((e) => (e.type === "trace" && e.trace.name === "claude.ready" ? [e.trace] : []));
+    expect(ready[0]?.data?.prewarmedMs).toBeGreaterThanOrEqual(250);
+
+    // Started with Thorough, taken by a Fast session: not used (stopped), a fresh one runs.
+    const other = b.warm({ ...spec, thinking: true });
+    const log2: Record<string, any>[] = [];
+    await b.run({ ...ctx(new AbortController().signal, log2, []), warm: other });
+    expect(other.ready).toBe(false);
+    expect(log2.find((e) => e.type === "claude_start")!.prewarmed).toBe("not used: started with other settings");
+    expect(log2.at(-1)).toMatchObject({ type: "claude_exit", code: 0 });
+    await other.closed;
+  });
+
   it("kills the process tree on abort", async () => {
     process.env.FAKE_CLAUDE_HANG = "1";
     const log: Record<string, any>[] = [];
@@ -343,12 +397,18 @@ describe("Claude Code executable", () => {
 
   it("strips nested-session variables from the child env", () => {
     const env = claudeEnv({ PATH: "p", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_CODE_CHILD_SESSION: "1", BROWSERTODO_BRAIN: "scripted" });
-    expect(env).toEqual({ PATH: "p" });
+    expect(env).toEqual({ PATH: "p", ...CLAUDE_RUN_ENV });
+  });
+
+  it("turns Claude Code's auto memory off: a smaller system prompt that is the same in every run folder (cacheable across sessions)", () => {
+    expect(CLAUDE_RUN_ENV).toEqual({ CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" });
+    // A parent's own value never turns it back on.
+    expect(claudeEnv({ PATH: "p", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0" }).CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
   });
 
   it("never passes an API key or another endpoint to Claude Code: it runs on the user's own login", () => {
     const parent = { PATH: "p", ANTHROPIC_API_KEY: "sk-ant-x", ANTHROPIC_AUTH_TOKEN: "t", ANTHROPIC_BASE_URL: "https://proxy", ANTHROPIC_MODEL: "m" };
-    expect(claudeEnv(parent)).toEqual({ PATH: "p", ANTHROPIC_MODEL: "m" });
+    expect(claudeEnv(parent)).toEqual({ PATH: "p", ANTHROPIC_MODEL: "m", ...CLAUDE_RUN_ENV });
     expect(apiBillingVarsIn(parent)).toEqual(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"]);
     expect(apiBillingVarsIn({ PATH: "p" })).toEqual([]);
   });

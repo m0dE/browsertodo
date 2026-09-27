@@ -38,11 +38,12 @@ function setup() {
   const socket = new FakeSocket();
   const mic = new FakeMic();
   const log: string[] = [];
+  const levels: number[] = [];
   const events: EngineEvents = {
     speech: () => void log.push("speech"),
     heard: (t, f) => void log.push(`heard:${t}:${f}`),
     partial: (t) => void log.push(`partial:${t}`),
-    level: () => {},
+    level: (l) => void levels.push(l),
     narrating: () => void log.push("narrating"),
     said: () => void log.push("said"),
     narratorText: (t) => void log.push(`narrator:${t}`),
@@ -62,7 +63,7 @@ function setup() {
     openSocket: () => socket,
     player,
   });
-  return { socket, mic, log, engine, player };
+  return { socket, mic, log, levels, engine, player };
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
@@ -166,5 +167,49 @@ describe("RealtimeEngine", () => {
     u.engine.stop();
     await settle();
     expect(u.log.filter((l) => l.startsWith("failed"))).toEqual([]);
+  });
+});
+
+describe("RealtimeEngine: muted", () => {
+  it("streams nothing while muted (no input audio is billed), the meter drops, and the narrator's speech still plays", async () => {
+    const t = await started();
+    const appends = () => t.socket.sent.filter((e) => e.type === "input_audio_buffer.append");
+    // Half a chunk, then mute: the half is dropped, not sent later.
+    t.mic.deliver!(new Float32Array(1200).fill(0.1));
+    t.engine.setMuted(true);
+    expect(t.levels.at(-1)).toBe(0);
+    t.levels.length = 0;
+    for (let i = 0; i < 20; i++) t.mic.deliver!(new Float32Array(512).fill(0.2));
+    expect(appends()).toHaveLength(0);
+    expect(t.levels).toEqual([]);
+    expect(t.socket.sent.map((e) => e.type)).toContain("input_audio_buffer.clear");
+    t.socket.event({ type: "response.created" });
+    t.socket.event({ type: "response.output_audio.delta", delta: "AAAA", item_id: "a1" });
+    expect(t.player.play).toHaveBeenCalledWith("AAAA", "a1");
+    t.engine.setMuted(false);
+    // The first chunk after unmuting is whole (nothing from before the mute).
+    t.mic.deliver!(new Float32Array(1200).fill(0.1));
+    expect(appends()).toHaveLength(0);
+    t.mic.deliver!(new Float32Array(1200).fill(0.1));
+    expect(appends()).toHaveLength(1);
+    // 2400 samples of PCM16: 4800 bytes, 6400 base64 characters.
+    expect(String(appends()[0]!.audio).length).toBe(6400);
+    t.engine.stop();
+  });
+
+  it("muted before it starts: the narrator is told once connected, and no audio goes out", async () => {
+    const t = setup();
+    t.engine.setMuted(true);
+    const start = t.engine.start();
+    await settle();
+    t.socket.readyState = 1;
+    t.socket.onopen?.({});
+    t.socket.event({ type: "session.created", session: { type: "realtime" } });
+    await start;
+    for (let i = 0; i < 10; i++) t.mic.deliver!(new Float32Array(512).fill(0.2));
+    const types = t.socket.sent.map((e) => e.type);
+    expect(types).not.toContain("input_audio_buffer.append");
+    expect(types).toContain("conversation.item.create");
+    t.engine.stop();
   });
 });

@@ -726,6 +726,62 @@ export const PANEL_CASES = [
       }
     },
   },
+  // The TODO tools from a calendar: a Changed card (a task this chat scheduled, moved without asking) and a Cancelled
+  // card (a task the user made, after its approval), each with View in TODO and Undo; Undo on the Cancelled card sends
+  // its change id and the card says the task is back.
+  {
+    names: ["panel-todo-changed", "panel-todo-changed-undone"],
+    async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, checkLayout, reportErrors }) {
+      if (!want("panel-todo-changed", size, scheme) && !want("panel-todo-changed-undone", size, scheme)) return;
+      const cards = (p) =>
+        p.evaluate(() =>
+          [...document.querySelectorAll("#chat-log .ev-scheduled")].map((c) => {
+            const line = c.querySelector(".sched-line");
+            return {
+              change: c.dataset.change ?? "scheduled",
+              label: c.querySelector(".sched-label").textContent,
+              task: c.querySelector(".sched-task").textContent,
+              lines: Math.round(line.getBoundingClientRect().height / parseFloat(getComputedStyle(line).lineHeight)),
+              inside: c.scrollWidth <= c.clientWidth + 1 && c.getBoundingClientRect().right <= document.getElementById("chat-log").getBoundingClientRect().right + 1,
+              buttons: [...c.querySelectorAll("button")].map((b) => b.textContent),
+              note: c.querySelector(".sched-note:not([hidden])")?.textContent ?? "",
+            };
+          }),
+        );
+      const p = await openPanel(ctx, "todo-changes", "#chat-log .ev-scheduled[data-change=cancelled]");
+      const got = await cards(p);
+      const want3 = [
+        ["scheduled", "Scheduled:"],
+        ["updated", "Changed:"],
+        ["cancelled", "Cancelled:"],
+      ];
+      if (JSON.stringify(got.map((c) => [c.change, c.label])) !== JSON.stringify(want3)) fail(`cards ${JSON.stringify(got)}`);
+      for (const c of got) {
+        if (c.buttons.join(" | ") !== "View in TODO | Undo") fail(`${c.change} buttons ${c.buttons.join(" | ")}`);
+        if (c.lines > (size.w >= 480 ? 1 : 2) || !c.inside) fail(`${c.change} layout ${JSON.stringify(c)}`);
+      }
+      if (!got[2]?.task.startsWith("Dentist appointment")) fail(`cancelled card task "${got[2]?.task}"`);
+      // The approval the cancel waited for sits before its card, answered.
+      const order = await p.evaluate(() => [...document.querySelectorAll("#chat-log > *")].map((e) => e.className.split(" ")[0]).join(" "));
+      if (!/ev-approval .*ev-scheduled .*ev-text/.test(order)) fail(`approval and card out of order: ${order}`);
+      await checkLayout(p, `todo-changed ${label}`);
+      await shoot(p, "panel-todo-changed", size, scheme);
+
+      // Undo on the Cancelled card: its change id goes to the background, and the card says the task is back.
+      await p.click("#chat-log .ev-scheduled[data-change=cancelled] .sched-undo");
+      await p.waitForSelector("#chat-log .ev-scheduled[data-change=cancelled].undone");
+      const sent = await p.evaluate(() => window.__requests.find((r) => r.type === "chat.undoTaskChange"));
+      if (sent?.sessionId !== "s-todo" || sent.changeId !== "c-cancel") fail(`undo sent ${JSON.stringify(sent)}`);
+      const after = (await cards(p))[2];
+      if (after?.label !== "Undone:" || after.buttons.length || after.note !== "Back in your TODO list.") fail(`undone card ${JSON.stringify(after)}`);
+      // The other cards keep their buttons.
+      if ((await cards(p)).slice(0, 2).some((c) => c.buttons.length !== 2)) fail("undo changed another card");
+      await checkLayout(p, `todo-changed-undone ${label}`);
+      await shoot(p, "panel-todo-changed-undone", size, scheme);
+      reportErrors(p, `todo-changed ${label}`);
+      await p.close();
+    },
+  },
   // An action waiting for the user's OK (automation level "Ask before posting, sending or paying"): the approval card
   // with what, where, why and the exact text, answered by a click (Allow once) or a key (Alt+N denies); an earlier
   // allowed one keeps one quiet line.
@@ -2269,6 +2325,123 @@ export const PANEL_CASES = [
         reportErrors(p, `handsfree-fallback ${label}`);
         await p.close();
       }
+    },
+  },
+  // Hands-free muted (the bar's Mute, Alt+M): the bar in grey with "Muted" and the mic-off icon, no meter, Mute pressed;
+  // the box without the glow and "Listening…"; the mic still, in grey; the background told (the MUTE badge). Realtime
+  // stops streaming the microphone (no input_audio_buffer.append: no input audio billed) and clears the server's buffer;
+  // the narrator is told, and still speaks (Interrupt, Mute and Stop in one row, narrow too). While the agent works the
+  // hint says updates are still said. Alt+M unmutes: the stream starts again.
+  {
+    names: ["panel-handsfree-muted", "panel-handsfree-muted-speaking", "panel-handsfree-muted-working"],
+    async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors, base }) {
+      await ctx.grantPermissions(["microphone"], { origin: base });
+      const p = await openPanel(ctx, "account", ".chat-empty", { init: [installVoiceFakes] });
+      const appends = () => p.evaluate(() => window.__rt?.sent.filter((e) => e.type === "input_audio_buffer.append").length ?? 0);
+      await p.evaluate(() => window.__push({ type: "panel.voice" }));
+      await p.waitForFunction(() => document.querySelector("#voice-bar:not([hidden])")?.dataset.phase === "listening", null, { timeout: 20_000 });
+      // The fake microphone streams to the narrator.
+      await p.waitForFunction(() => window.__rt.sent.some((e) => e.type === "input_audio_buffer.append"), null, { timeout: 10_000 });
+      await p.click("#voice-bar .vb-mute");
+      const look = () =>
+        p.evaluate(() => {
+          const bar = document.getElementById("voice-bar");
+          const mute = bar.querySelector(".vb-mute");
+          const mic = document.querySelector("#now-actions .voice-mic");
+          const r = bar.getBoundingClientRect();
+          const m = mute.getBoundingClientRect();
+          const s = bar.querySelector(".vb-stop").getBoundingClientRect();
+          const inside = (x) => x.left >= r.left && x.right <= r.right + 0.5 && x.width > 0;
+          const out = [];
+          if (!inside(m) || !inside(s)) out.push("Mute or Stop clipped");
+          if (m.right > s.left + 0.5) out.push("Mute overlaps Stop");
+          const i = bar.querySelector(".vb-interrupt");
+          if (!i.hidden && i.getBoundingClientRect().right > m.left + 0.5) out.push("Interrupt overlaps Mute");
+          for (const el of bar.querySelectorAll(".vb-title, .vb-detail")) if (el.getBoundingClientRect().right > m.left + 0.5 && !el.hidden) out.push(`${el.className} runs under Mute`);
+          if (r.height > 64) out.push(`bar too tall (${Math.round(r.height)})`);
+          return {
+            state: bar.dataset.state,
+            muted: bar.dataset.muted ?? null,
+            title: bar.querySelector(".vb-title").textContent,
+            detail: bar.querySelector(".vb-detail").textContent,
+            meter: !bar.querySelector(".vb-meter").hidden,
+            pressed: mute.getAttribute("aria-pressed"),
+            label: mute.getAttribute("aria-label"),
+            tooltip: mute.title,
+            live: bar.querySelector("[aria-live=polite]").textContent,
+            barBg: getComputedStyle(bar).backgroundImage,
+            ring: getComputedStyle(bar.querySelector(".vb-icon"), "::after").animationName,
+            placeholder: document.getElementById("now-text").placeholder,
+            glow: document.body.classList.contains("voice-live"),
+            micMuted: mic.dataset.muted ?? null,
+            micRing: getComputedStyle(mic, "::before").animationName,
+            orb: document.querySelector(".voice-orb").hidden ? null : { muted: document.querySelector(".voice-orb").dataset.muted ?? null, caption: document.querySelector(".voice-caption").textContent, halo: getComputedStyle(document.querySelector(".voice-orb-halo")).animationName },
+            reported: window.__portSent.filter((x) => x.type === "panel.listening").at(-1),
+            layout: out,
+          };
+        });
+      const want = (ok, what, seen) => ok || fail(`muted ${label}: ${what} ${JSON.stringify(seen)}`);
+      const muted = await look();
+      want(muted.state === "muted" && muted.muted === "true" && muted.title === "Muted" && muted.live === "Hands-free: Muted", "state", muted);
+      want(/^Realtime · \d:\d\d · Microphone off · Unmute to talk$/.test(muted.detail), "detail", muted);
+      want(!muted.meter && muted.ring === "none", "meter or ring", muted);
+      want(muted.pressed === "true" && muted.label === "Unmute the microphone · Alt+M" && muted.tooltip === muted.label, "Mute button", muted);
+      want(!/200, 35, 63|196, 42, 68/.test(muted.barBg), "the bar is still red", muted);
+      want(/muted/i.test(muted.placeholder) && !muted.glow, "box", muted);
+      want(muted.micMuted === "true" && muted.micRing === "none", "mic button", muted);
+      want(muted.orb?.muted === "true" && muted.orb.caption === "Microphone muted · Unmute to talk" && muted.orb.halo === "none", "orb", muted);
+      want(muted.reported?.listening === true && muted.reported?.muted === true, "reported (badge)", muted);
+      want(!muted.layout.length, "layout", muted);
+      // Nothing more goes out, the server's buffer was cleared, and the narrator knows.
+      const sentAtMute = await p.evaluate(() => window.__rt.sent.map((e) => e.type));
+      const clearAt = sentAtMute.lastIndexOf("input_audio_buffer.clear");
+      want(clearAt > sentAtMute.lastIndexOf("input_audio_buffer.append"), "buffer not cleared after the last audio", sentAtMute.slice(-5));
+      const before = await appends();
+      await p.waitForTimeout(1200);
+      want((await appends()) === before, "audio streamed while muted", { before, after: await appends() });
+      want(await p.evaluate(() => window.__rt.sent.some((e) => e.type === "conversation.item.create" && /muted their microphone/.test(e.item?.content?.[0]?.text ?? ""))), "narrator not told", null);
+      await checkLayout(p, `handsfree-muted ${label}`);
+      await shoot(p, "panel-handsfree-muted", size, scheme);
+
+      // The narrator still speaks: Speaking, with Interrupt, Mute (still pressed) and Stop in one row.
+      await p.evaluate(() => {
+        // 3 s of audio, in two deltas (one big spread would overflow the call stack).
+        const pcm = btoa(String.fromCharCode(...new Uint8Array(24_000 * 2 * 1.5)));
+        window.__rt.emit({ type: "response.created", response: { id: "r1" } });
+        window.__rt.emit({ type: "response.output_audio_transcript.delta", item_id: "a1", delta: "Still here. Tell me when you're ready." });
+        for (let i = 0; i < 2; i++) window.__rt.emit({ type: "response.output_audio.delta", item_id: "a1", response_id: "r1", delta: pcm });
+      });
+      await p.waitForFunction(() => document.getElementById("voice-bar").dataset.state === "speaking", null, { timeout: 5000 });
+      const speaking = await look();
+      want(speaking.muted === "true" && speaking.pressed === "true" && /Tap Interrupt · microphone muted$/.test(speaking.detail), "speaking while muted", speaking);
+      want(!speaking.layout.length, "speaking layout", speaking);
+      await checkLayout(p, `handsfree-muted-speaking ${label}`);
+      await shoot(p, "panel-handsfree-muted-speaking", size, scheme);
+      await p.click("#voice-bar .vb-interrupt");
+      await p.waitForFunction(() => document.getElementById("voice-bar").dataset.state === "muted", null, { timeout: 5000 });
+
+      // A task runs: the hint says its updates are still said.
+      await p.evaluate(() => {
+        const s = { sessionId: "s-new", source: "adhoc", title: "Read my email", instructions: "Read my email", brain: "claude-api", jev: true, model: "claude-sonnet-5", startedAt: new Date().toISOString() };
+        const st = window.__data.state;
+        window.__push({ type: "state", state: { ...st, running: s, runningSessions: [s], tabChats: { 1: s.sessionId }, runningTabs: { [s.sessionId]: [1] } } });
+      });
+      await p.waitForFunction(() => document.getElementById("voice-bar").dataset.phase === "working", null, { timeout: 5000 });
+      const working = await look();
+      want(working.state === "muted" && /Agent working · updates are still said$/.test(working.detail), "working while muted", working);
+      await checkLayout(p, `handsfree-muted-working ${label}`);
+      await shoot(p, "panel-handsfree-muted-working", size, scheme);
+
+      // Alt+M unmutes: the bar is live again and the microphone streams.
+      await p.keyboard.press("Alt+KeyM");
+      const unmuted = await look();
+      want(unmuted.muted === null && unmuted.pressed === "false" && unmuted.state !== "muted" && unmuted.reported?.muted === undefined, "Alt+M did not unmute", unmuted);
+      const at = await appends();
+      await p.waitForFunction((n) => window.__rt.sent.filter((e) => e.type === "input_audio_buffer.append").length > n, at, { timeout: 5000 }).catch(() => fail(`unmuted ${label}: no audio streamed`));
+      await p.evaluate(() => window.__push({ type: "panel.voice" }));
+      await p.waitForFunction(() => document.querySelector("#voice-bar").hidden);
+      reportErrors(p, `handsfree-muted ${label}`);
+      await p.close();
     },
   },
   // Voice in the chat: messages the user spoke carry a mic; what was said aloud is part of the thread, quieter than the

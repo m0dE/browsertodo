@@ -529,6 +529,48 @@ export function scenario(kind) {
       tasks.splice(1, 0, task("t-sched", "pending", check, { notBefore: iso(180), createdAt: iso(-1), updatedAt: iso(-1) }));
     }
   }
+  if (kind === "todo-changes") {
+    // The TODO tools from a calendar: the agent moved the Vendor call task this chat scheduled (a Changed card, no
+    // approval), then cancelled the dentist task the user made in the TODO tab (its approval, allowed once, and a
+    // Cancelled card). Both cards have View in TODO and Undo.
+    const vendor = "Open the Vendor call meeting link https://meet.example.com/vendor-call and join the call.";
+    const dentist = "Dentist appointment: leave the office by 2:30 PM.";
+    const conv = {
+      sessionId: "s-todo", source: "adhoc", title: "Look at my calendar and add Thursday's Vendor call to our schedule", brain: "claude-code", jev: false,
+      startedAt: iso(-1), endedAt: iso(0), firstStartedAt: iso(-8), outcome: "done", turns: 3, summary: "Cancelled the dentist TODO",
+    };
+    const tev = (minutes, e) => ({ ...e, ts: iso(minutes), sessionId: "s-todo" });
+    eventsBySession["s-todo"] = [
+      tev(-8, { type: "status", text: "Claude Code" }),
+      tev(-8, { type: "tool_call", id: "1", name: "schedule_task", args: { task: vendor, schedule: { at: iso(60 * 24 + 50) } } }),
+      tev(-8, { type: "task_scheduled", taskId: "t-vendor", instructions: vendor, schedule: { at: iso(60 * 24 + 50) } }),
+      tev(-8, { type: "assistant_text", text: "Added: the Vendor call link opens tomorrow, 10 minutes before the call." }),
+      tev(-8, { type: "task_end", outcome: "done", summary: "Scheduled the Vendor call" }),
+      tev(-4, { type: "user_message", text: "move the Vendor call TODO two days from now" }),
+      tev(-4, { type: "tool_call", id: "2", name: "update_scheduled_task", args: { task_id: "t-vendor", schedule: { at: iso(60 * 48) } } }),
+      tev(-4, {
+        type: "task_changed", changeId: "c-move", taskId: "t-vendor", change: "updated", instructions: vendor, schedule: { at: iso(60 * 48) },
+        before: { instructions: vendor, account: null, schedule: { at: iso(60 * 24 + 50) } },
+      }),
+      tev(-4, { type: "assistant_text", text: "Moved: the Vendor call task now runs two days from now, at this time of day (your time)." }),
+      tev(-4, { type: "task_end", outcome: "done", summary: "Moved the Vendor call TODO" }),
+      tev(-1, { type: "user_message", text: "cancel the TODO for the dentist" }),
+      tev(-1, { type: "tool_call", id: "3", name: "list_scheduled_tasks", args: {} }),
+      tev(-1, { type: "tool_call", id: "4", name: "cancel_scheduled_task", args: { task_id: "t-dentist" } }),
+      tev(-1, { type: "approval_request", request: { id: "ap-todo", action: 'Cancel the TODO task "Dentist appointment: leave the office by 2:30 PM."', site: "", why: "cancels a task in your TODO list", expiresAt: iso(9) } }),
+      tev(-1, { type: "approval_resolved", id: "ap-todo", outcome: "allow_once" }),
+      tev(-1, { type: "task_changed", changeId: "c-cancel", taskId: "t-dentist", change: "cancelled", instructions: dentist, schedule: { at: iso(60 * 26) } }),
+      tev(0, { type: "assistant_text", text: "Cancelled the dentist TODO; Undo on the card puts it back." }),
+      tev(0, { type: "task_end", outcome: "done", summary: conv.summary }),
+    ];
+    state.running = null;
+    state.runningTabs = {};
+    state.tabChats = { "1": "s-todo" };
+    sessions.unshift(conv);
+    tasksSource = "account";
+    tasks.splice(1, 0, task("t-vendor", "pending", vendor, { notBefore: iso(60 * 48), createdAt: iso(-8), updatedAt: iso(-4) }));
+    tasks.splice(2, 0, task("t-dentist", "cancelled", dentist, { notBefore: iso(60 * 26), createdAt: iso(-60 * 24), updatedAt: iso(-1) }));
+  }
   if (kind === "approval") {
     // "Ask before posting, sending or paying": the agent wrote the post; its Post click waits for the user's OK.
     // An earlier approval in the thread (the Like it was allowed once) keeps one quiet line.

@@ -2,16 +2,20 @@
  * The soft sounds hands-free voice makes when the microphone goes live and
  * when it stops (Settings > AI > Voice > Sounds): two short sine notes,
  * rising to start and falling to stop, made with WebAudio (no sound files).
+ * Mute and unmute are the same shape a register lower, so they read as the
+ * microphone going off and on without sounding like the session ending.
  * Played in the side panel, after the microphone is open (Chrome lets a page
  * that captures audio play it without a click).
  */
 
-export type Earcon = "start" | "stop";
+export type Earcon = "start" | "stop" | "mute" | "unmute";
 
 /** Each sound's notes (Hz), one after the other. */
 export const EARCON_NOTES: Record<Earcon, readonly number[]> = {
   start: [587.33, 880], // D5 -> A5
   stop: [880, 587.33], // A5 -> D5
+  mute: [523.25, 392], // C5 -> G4
+  unmute: [392, 523.25], // G4 -> C5
 };
 
 /** Soft: a low peak with quick fades, each note short. */

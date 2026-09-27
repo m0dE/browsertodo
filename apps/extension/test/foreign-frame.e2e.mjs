@@ -29,7 +29,9 @@ function jpegSize(buf) {
 }
 
 const injector = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "iframe-injector");
-const NOTE = "(Using fallback mode: another extension's frame on this page blocks Chrome's debugger. Clicks and typing are simulated.)";
+/** The fallback note, naming the extension whose frame is on the page (the injector's id: it has no fixed key). */
+const noteFor = (id) =>
+  `(Using fallback mode: the frame of another extension (id ${id}; chrome://extensions/?id=${id} shows which) on this page blocks Chrome's debugger. Clicks and typing are simulated.)`;
 
 /** The driver page; unless `clean`, the injector adds its frame (after `delay` ms). */
 const fixture = ({ clean = false, delay = 0 } = {}) =>
@@ -97,8 +99,10 @@ try {
   await step("navigate onto the page with the foreign frame switches to fallback, with the note once", async () => {
     const nav = await call("navigate", { url: `${base}/` });
     assert.equal(nav.title, "Foreign frame page");
-    assert.equal(nav.note, NOTE);
     await page.waitForSelector("#foreign-extension-frame");
+    const injectorId = /^chrome-extension:\/\/([a-p]{32})\//.exec(await page.$eval("#foreign-extension-frame", (f) => f.src))?.[1];
+    assert.ok(injectorId);
+    assert.equal(nav.note, noteFor(injectorId));
     // After a navigation the debugger is tried again; it is refused again here.
     snap = await call("readPage");
     assert.equal(snap.note, undefined, "note only once");

@@ -11,7 +11,7 @@ import type { VoiceTip } from "../../src/sidepanel/voice-input.js";
 import type { AudioSource } from "../../src/voice/dictation.js";
 import type { EngineEvents, HandsFreeEngine } from "../../src/voice/engine.js";
 import { HANDS_FREE } from "../../src/voice/hands-free.js";
-import { ACKNOWLEDGE_INSTRUCTIONS, NARRATOR_INSTRUCTIONS, RealtimeClient, type RealtimeHandlers, type RealtimeSocketLike } from "../../src/voice/realtime-client.js";
+import { ackResponse, ACKNOWLEDGE_INSTRUCTIONS, NARRATOR_INSTRUCTIONS, RealtimeClient, type RealtimeHandlers, type RealtimeSocketLike } from "../../src/voice/realtime-client.js";
 import { RealtimeEngine } from "../../src/voice/realtime-engine.js";
 import { RealtimeTurns } from "../../src/voice/realtime-turns.js";
 import { installMiniDom, MiniElement } from "../ui/mini-dom.js";
@@ -82,12 +82,24 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
     // Still replying: nothing yet (a second reply would be refused while one is being made).
     expect(socket.replies()).toEqual([]);
     replyDone(socket, "r1");
-    expect(socket.replies()).toEqual([{ type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS, tool_choice: "none" } }]);
+    expect(socket.replies()).toEqual([{ type: "response.create", response: ackResponse("Open Gmail") }]);
     // The acknowledgement itself asks for nothing more.
     socket.event({ type: "response.created", response: { id: "r2" } });
     socket.event({ type: "response.output_audio.delta", item_id: "a2", delta: "AAAA" });
     replyDone(socket, "r2");
     expect(socket.replies()).toHaveLength(1);
+  });
+
+  it("the acknowledgement is out of the conversation: cut off, nothing of it is truncated (there is no such item)", async () => {
+    const { c, socket } = client({ onTool: () => "Sent to the agent. Its updates will follow." });
+    userTurn(socket, "in1", "r1");
+    callSend(socket, "Open Gmail");
+    await flush();
+    replyDone(socket, "r1");
+    socket.event({ type: "response.created", response: { id: "r2" } });
+    socket.event({ type: "response.output_audio.delta", item_id: "a2", delta: "AAAA" });
+    c.truncate("a2", 300);
+    expect(socket.sent.filter((e) => e.type === "conversation.item.truncate")).toEqual([]);
   });
 
   it("the tool's output arriving after its reply is done still gets one acknowledgement", async () => {
@@ -98,7 +110,7 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
     replyDone(socket, "r1");
     answer("Sent to the agent.");
     await flush();
-    expect(socket.replies()).toEqual([{ type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS, tool_choice: "none" } }]);
+    expect(socket.replies()).toEqual([{ type: "response.create", response: ackResponse("Open Gmail") }]);
   });
 
   it("a reply that already spoke gets no acknowledgement", async () => {
@@ -364,6 +376,7 @@ class FakeEngine implements HandsFreeEngine {
   speak(): void {}
   hush(): void {}
   setTranscribing(): void {}
+  setMuted(): void {}
   agentEvent(): void {}
   notes: string[] = [];
   note(text: string): void {

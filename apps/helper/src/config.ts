@@ -6,15 +6,19 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import type { HelperBrain } from "@browsertodo/shared";
+import { DEFAULT_MODEL, type HelperBrain } from "@browsertodo/shared";
 import helperPackage from "../package.json" with { type: "json" };
 import { ENV } from "./env-names.js";
 
 /** Reported in helper.hello and by the MCP server: the version in apps/helper/package.json (bundled at build time). */
 export const HELPER_VERSION: string = helperPackage.version;
 
-/** Claude Code's model alias when neither the extension nor BROWSERTODO_MODEL names a model. */
-export const DEFAULT_CLAUDE_MODEL = "sonnet";
+/**
+ * The model when neither the extension nor BROWSERTODO_MODEL names one: the extension setting's own
+ * default, by its full id. Every run passes --model, so the user's own Claude Code default model
+ * (their settings.json, /model) never decides.
+ */
+export const DEFAULT_CLAUDE_MODEL: string = DEFAULT_MODEL;
 
 export interface HelperConfig {
   /** BROWSERTODO_HOME, else %LOCALAPPDATA%\browsertodo (Windows), ~/Library/Application Support/browsertodo (macOS) or ~/.local/share/browsertodo. */

@@ -8,6 +8,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
+  APPROVAL_TIMEOUT_MS,
   DEFAULT_SETTINGS,
   delay,
   errorMessage,
@@ -16,7 +17,7 @@ import {
   type AgentEvent,
   type BrowserMethods,
   type MemoryMethods,
-  type ScheduleMethods,
+  type TodoMethods,
   type HelperMethods,
   type HelperNotifications,
   type RpcMessage,
@@ -63,7 +64,7 @@ async function main(): Promise<void> {
     }
     process.stdout.write(frame);
   };
-  const peer = new RpcPeer<BrowserMethods & ScheduleMethods & MemoryMethods, HelperMethods>(writeFrame, "h");
+  const peer = new RpcPeer<BrowserMethods & TodoMethods & MemoryMethods, HelperMethods>(writeFrame, "h");
   const notify = <K extends keyof HelperNotifications>(method: K, params: HelperNotifications[K]) => peer.notify(method, params);
   const browser = rpcBrowser(peer);
 
@@ -88,8 +89,9 @@ async function main(): Promise<void> {
     makeJev,
     makeBrain,
     notify: (sessionId, event: AgentEvent) => notify("helper.event", { sessionId, event }),
-    // schedule_task: the extension stores the task in the TODO list of that session's conversation.
-    scheduleTask: (sessionId, args) => peer.call("todo.scheduleTask", { sessionId, args }, { timeoutMs: BROWSER_RPC_TIMEOUT_MS }),
+    // The TODO tools: the extension answers them from the TODO list of that session's conversation. Changing a task
+    // may wait for the user's OK (the automation level), so the call may take an approval's time too.
+    todo: (sessionId, tool, args) => peer.call("todo.call", { sessionId, tool, args }, { timeoutMs: BROWSER_RPC_TIMEOUT_MS + APPROVAL_TIMEOUT_MS }),
     // remember / recall / forget: the extension keeps the memory of that session's conversation.
     memory: (sessionId, tool, args) => peer.call("memory.call", { sessionId, tool, args }, { timeoutMs: BROWSER_RPC_TIMEOUT_MS }),
     onSessionsChanged: (open) => notify("helper.sessions", { open }),
@@ -165,6 +167,14 @@ async function main(): Promise<void> {
     const result = await runner.continueSession(params);
     logLine(`continueSession ${params.sessionId} -> ${result.outcome}${result.reason ? `: ${result.reason}` : ""}`);
     return result;
+  });
+  peer.handle("helper.prewarm", ({ config }) => {
+    try {
+      return { ok: runner.prewarm(config) };
+    } catch (e) {
+      logLine(`prewarm failed: ${errorMessage(e)}`);
+      return { ok: false };
+    }
   });
   peer.handle("helper.endSession", ({ sessionId }) => ({ ok: runner.endSession(sessionId) }));
   peer.handle("helper.sendUserMessage", ({ sessionId, text }) => ({ ok: runner.sendUserMessage(sessionId, text) }));

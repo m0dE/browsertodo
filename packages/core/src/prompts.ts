@@ -35,13 +35,14 @@ const SPOKEN_RULE = [
  * carry everything; times come from the user's time line of each turn (userTimeLine).
  */
 const SCHEDULE_RULE = [
-  'Scheduling: when the user asks for something to happen later or again ("check again in 3 hours", "k schedule a check up after 3 hours", "remind me tomorrow morning", "make a repeat task for what we just did", "make this a daily task at 9am"), call schedule_task, and do not also do the task now unless they ask for that too. Never schedule anything they did not ask for.',
+  'Scheduling: when the user asks for something to happen later or again ("check again in 3 hours", "k schedule a check up after 3 hours", "remind me tomorrow morning", "make a repeat task for what we just did", "make this a daily task at 9am"), call schedule_task, and do not also do the task now unless they ask for that too. Never schedule anything they did not ask for. "Our schedule", "my schedule", "my TODOs" and "the TODO list" mean the user\'s BrowserTODO TODO list (these tools), not another calendar or app, unless they name one; adding an event from a page to it means a TODO at the event\'s time with what to do then (e.g. open its link).',
   'Write `task` so it runs alone, later, in a fresh session with no memory of this chat: the goal and the steps of what was done or asked, with every URL, account (@handle, email, or the account address you used, e.g. https://mail.google.com/mail/u/1/), search term, name and value it needs, and what to report back. Never write "same as before", "what we just did" or "check it again". E.g. after checking an order: "Open https://shop.example.com/orders/48213 and tell me whether order #48213 has shipped; if it has, give the carrier and tracking number."',
-  `Times are the user's local time, from the line "The user's time: ..." in the task or message (their date, time, IANA zone and UTC offset). Count relative times from it: "after 3 hours" / "in 3 hours" = that time + 3 h; "tomorrow morning" = 09:00 tomorrow; "this afternoon" = 15:00 today; "tonight" = 20:00 today; "next week" = next Monday 09:00; a day without a time = 09:00 that day. Give \`at\` as ISO 8601 with the user's offset on that date (e.g. 2026-09-26T18:45:00-04:00).`,
-  'Repeats go in `repeat` as cron in the user\'s zone (`tz` = their IANA zone): "every day at 9" = "0 9 * * *"; "every weekday at 9" = "0 9 * * 1-5"; "every Monday at 8:30" = "30 8 * * 1"; "at 9 and 18" = "0 9,18 * * *"; "on the 1st of each month" = "0 9 1 * *"; "every other week" adds interval {every: 2, unit: "week"}; "until Friday" sets end (YYYY-MM-DD); "5 times" sets count. A repeat\'s first run is its next time; give `at` only when they say when it starts.',
+  `Times are the user's local time, from the line "The user's time: ..." in the task or message (their date, time, IANA zone and UTC offset). Count relative times from it: "after 3 hours" / "in 3 hours" = that time + 3 h; "tomorrow morning" = 09:00 tomorrow; "this afternoon" = 15:00 today; "tonight" = 20:00 today; "next week" = next Monday 09:00; a day without a time = 09:00 that day; "10 minutes before" an event = its start - 10 min. Give \`at\` as ISO 8601 with the user's offset on that date (e.g. 2026-09-26T18:45:00-04:00). A time a page shows in another zone (a calendar event at "2:00 PM PT") is that zone's: give it with that zone's offset on that date (2:00 PM PDT = 14:00-07:00).`,
+  'The TODO list: list_scheduled_tasks shows its waiting tasks with their ids. To move, change or cancel one ("move the gym reminder to Friday 3pm", "cancel the invoice check"), find its id there and call update_scheduled_task or cancel_scheduled_task; never cancel and schedule it again to move it. For several at once ("add each of these as a TODO"), call schedule_task once for each, leaving out times that have passed.',
+  'Repeats go in `repeat` as cron in the user\'s zone (`tz` = their IANA zone; for a page\'s times in another zone, that zone): "every day at 9" = "0 9 * * *"; "every weekday at 9" = "0 9 * * 1-5"; "every Monday at 8:30" = "30 8 * * 1"; "at 9 and 18" = "0 9,18 * * *"; "on the 1st of each month" = "0 9 1 * *"; "every other week" adds interval {every: 2, unit: "week"}; "until Friday" sets end (YYYY-MM-DD); "5 times" sets count. A repeat\'s first run is its next time; give `at` only when they say when it starts.',
   'When the time or how often is not clear ("later", "regularly", "make this a repeat task" with no when), or the time has passed, ask once in one short question (message text, then task_pause) instead of guessing; do not ask about what is clear.',
   "Never schedule, without the user's plain confirmation in this chat, a task that pays or buys, deletes, sends a message, email or post to other people, or changes account settings: say what the task will do and ask first (task_pause). Checking, reading and reporting back need no confirmation.",
-  "When schedule_task succeeds, say in one short line what runs and when (the chat shows a card with Undo), then call task_complete. When it answers that scheduling needs a plan or a log in, say so in one line and call task_complete; do not retry.",
+  "When a TODO tool succeeds, say in one short line what runs and when, with each time in the user's own time zone as its answer gives it (the chat shows a card with Undo), then call task_complete. When it answers that scheduling needs a plan or a log in, say so in one line and call task_complete; do not retry.",
 ].join(" ");
 
 /**
@@ -58,6 +59,10 @@ const MEMORY_RULE = [
   "When your work deals with many separate things (tickets, orders, customers, leads), file what you learn about each under its identifier with remember (key: that one thing's address, ID, number or name; never a key for a task itself or its runs): in a repeating task it goes in the task's records, in a chat in the user's own; before working on one, recall its key for what was learned before.",
   "Case file: when work on one such thing takes many steps, turns or chats (e.g. reproduce a problem, ask someone to fix it, wait, check, answer), keep its record as the case file: remember with its key the current step, how to reproduce it, what you asked of whom and what you promised, again at each milestone; when you come back to it, recall that key first and resume from the step it names.",
 ].join(" ");
+
+/** Past conversations (search_history): the user's "what did you tell me yesterday" is answered from them, not denied. */
+const HISTORY_RULE =
+  "Earlier conversations: when the user refers to an earlier chat or run (what did we do, what did you tell me or find yesterday, last week, last time), look it up with recall and search_history (query with the topic and the time words, e.g. 'emails yesterday'; then session_id for the details) before answering, and answer from what they return. Only when both find nothing, say you have no record of it.";
 
 /**
  * System prompt for either brain. followUps: the agent stays open after its
@@ -128,6 +133,7 @@ export function buildSystemPrompt(opts: { tools: ToolName[]; jev: boolean; follo
   );
   if (tools.includes("schedule_task")) rules.push(SCHEDULE_RULE);
   if (tools.includes("remember")) rules.push(MEMORY_RULE);
+  if (tools.includes("search_history")) rules.push(HISTORY_RULE);
 
   const prompt = `${intro}
 You control the browser only through these tools (in Claude Code they are named mcp__browsertodo__<name>):

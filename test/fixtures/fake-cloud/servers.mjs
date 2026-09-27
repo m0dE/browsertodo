@@ -140,14 +140,14 @@ export function parsePage(text) {
   return page;
 }
 
-const textOf = (content) =>
+export const textOf = (content) =>
   (Array.isArray(content) ? content : [{ type: "text", text: String(content ?? "") }])
     .filter((b) => b.type === "text")
     .map((b) => b.text)
     .join("\n");
 
 /** The tool calls so far, each with its result text. */
-function history(messages) {
+export function history(messages) {
   const calls = [];
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
@@ -223,7 +223,11 @@ export function nextPostingStep(body) {
 /** Usage each reply reports (claude-sonnet-5: 10k in = 2 c, 2k out = 2 c; x 1.30 = 5.2 -> 6 c charged). */
 export const FAKE_USAGE = { input_tokens: 10_000, output_tokens: 2_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
 
-export function createFakeAnthropic() {
+/**
+ * plan: the next reply for a request body, { text, tool } or { text, tools: [...] } for several tool calls in one
+ * reply (default: nextPostingStep, the post on the fake X).
+ */
+export function createFakeAnthropic({ plan = nextPostingStep } = {}) {
   const requests = [];
   let drainNext = false;
   const srv = makeServer(async (req, res) => {
@@ -231,17 +235,18 @@ export function createFakeAnthropic() {
     if (req.method !== "POST" || url.pathname !== "/v1/messages") return sendJson(res, 404, { type: "error", error: { type: "not_found_error", message: "not found" } });
     const raw = await readBody(req);
     const body = JSON.parse(raw);
-    const step = nextPostingStep(body);
+    const step = plan(body);
+    const tools = step.tools ?? [step.tool];
     let usage = FAKE_USAGE;
     if (drainNext) {
       // One very large request: takes the balance below zero (the server allows that once).
       drainNext = false;
       usage = { ...FAKE_USAGE, input_tokens: 5_000_000 };
     }
-    requests.push({ headers: req.headers, model: body.model, tool: step.tool.name, usage });
+    requests.push({ headers: req.headers, model: body.model, tool: tools.map((t) => t.name).join(","), usage, body });
     const content = [];
     if (step.text) content.push({ type: "text", text: step.text });
-    content.push({ type: "tool_use", id: `toolu_${randomBytes(8).toString("hex")}`, name: step.tool.name, input: step.tool.input });
+    for (const t of tools) content.push({ type: "tool_use", id: `toolu_${randomBytes(8).toString("hex")}`, name: t.name, input: t.input });
     sendJson(res, 200, {
       id: `msg_${randomBytes(8).toString("hex")}`,
       type: "message",

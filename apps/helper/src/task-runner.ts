@@ -11,6 +11,7 @@
  * extension gives each its own tab: every browser call carries the session
  * id); a few idle sessions may stay open beside them.
  */
+import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -24,16 +25,17 @@ import {
   type AgentTask,
   type MemoryToolName,
   type RunConfig,
-  type ScheduledTask,
-  type ScheduleTaskArgs,
+  type TodoToolName,
+  type TodoToolResult,
   type Sleep,
   type TaskRunResult,
   type ToolName,
   traceStart,
 } from "@browsertodo/shared";
-import { buildSystemPrompt, buildTaskPrompt, FOLLOW_UP_PREFIX, SecretRedactor, type BrowserCaller, type JevLike } from "@browsertodo/core";
+import { buildSystemPrompt, buildTaskPrompt, FOLLOW_UP_PREFIX, reasoningOf, SecretRedactor, type BrowserCaller, type JevLike } from "@browsertodo/core";
 import { RunLog, type LiveLog } from "./logger.js";
 import type { Brain } from "./brains/brain.js";
+import type { WarmClaude } from "./brains/claude-code.js";
 import { INTERACTIVE_TASK_ID } from "./mcp-tools.js";
 import type { ToolSession } from "./tool-router.js";
 import { buildMcpConfig, runDirFor } from "./session/session-setup.js";
@@ -63,7 +65,22 @@ export const RUNNER_DEFAULTS = {
   idleSessionMs: 30 * 60_000,
   /** At most this many kept-open task sessions; starting another closes the oldest idle one. */
   maxSessions: 3,
+  /** An agent started ahead (prewarm) that no session took is stopped after this long. */
+  warmMs: 10 * 60_000,
 } as const;
+
+/** An agent process started ahead of the next new session (TaskRunner.prewarm), with the run folder it was started in. */
+interface Spare {
+  /** The task id its tool calls carry (its MCP config's): the session that takes it answers to it. */
+  toolTaskId: string;
+  runDir: string;
+  /** The settings it was started with. */
+  model: string | null;
+  jev: boolean;
+  thinking: boolean;
+  warm: WarmClaude;
+  timer: ReturnType<typeof setTimeout>;
+}
 
 export interface TaskRunnerDeps {
   runsDir: string;
@@ -76,8 +93,8 @@ export interface TaskRunnerDeps {
   makeBrain: () => Brain;
   /** helper.event notifications. */
   notify: (sessionId: string, event: AgentEvent) => void;
-  /** schedule_task for a session (the extension's todo.scheduleTask). Absent: the tool is refused. */
-  scheduleTask?: (sessionId: string, args: ScheduleTaskArgs) => Promise<ScheduledTask>;
+  /** The TODO tools for a session (the extension's todo.call). Absent: the tools are refused. */
+  todo?: (sessionId: string, tool: TodoToolName, args: unknown) => Promise<TodoToolResult>;
   /** remember / recall / forget for a session (the extension's memory.call). Absent: the tools are refused. */
   memory?: (sessionId: string, tool: MemoryToolName, args: unknown) => Promise<{ text: string; isError?: boolean }>;
   /** The set of open sessions changed (one opened or closed): helper.sessions notifications. */
@@ -88,6 +105,7 @@ export interface TaskRunnerDeps {
   abortWaitMs?: number;
   idleSessionMs?: number;
   maxSessions?: number;
+  warmMs?: number;
   nodePath?: string;
   sleep?: Sleep;
 }
@@ -100,6 +118,10 @@ export class TaskRunner {
   private readonly active = new Set<TaskSession>();
   /** Waiting for every session to close (see whenAllClosed). */
   private readonly allClosedWaiters: (() => void)[] = [];
+  /** The agent started ahead for the next new session (prewarm). */
+  private spare: Spare | null = null;
+  /** Sessions that took a spare: the task id their tool calls carry, to the session id. */
+  private readonly toolTaskIds = new Map<string, string>();
 
   constructor(private readonly deps: TaskRunnerDeps) {}
 
@@ -133,7 +155,7 @@ export class TaskRunner {
    */
   session(taskId?: string): ToolSession | null {
     if (taskId === undefined) return [...this.active][0]?.tools ?? null;
-    return this.sessions.get(taskId)?.tools ?? null;
+    return this.sessions.get(this.toolTaskIds.get(taskId) ?? taskId)?.tools ?? null;
   }
 
   forcePause(sessionId: string, reason: string): boolean {
@@ -162,7 +184,80 @@ export class TaskRunner {
 
   /** Abort everything, closing sessions included (used when Chrome closes the port). */
   shutdown(reason: string): void {
+    this.dropSpare();
     for (const s of [...this.sessions.values(), ...this.closing]) s.abort(reason);
+  }
+
+  /**
+   * Starts the agent of the next new session ahead (the side panel opened), with this run config's
+   * model, Reasoning and Jev: run() then takes it instead of starting one. It waits for its first
+   * message without using tokens, RUNNER_DEFAULTS.warmMs at most. One is kept: a call with the same
+   * settings keeps it, one with others replaces it. False when the brain starts nothing ahead.
+   */
+  prewarm(config: RunConfig): boolean {
+    const brain = this.deps.makeBrain();
+    if (!brain.warm) return false;
+    const model = config.model?.trim() || null;
+    const jev = this.jevKey(config) !== null;
+    const thinking = reasoningOf(config).level === "thorough";
+    const current = this.spare;
+    if (current?.warm.ready && current.model === model && current.jev === jev && current.thinking === thinking) {
+      current.timer.refresh();
+      return true;
+    }
+    this.dropSpare();
+    const toolTaskId = `warm-${randomUUID()}`;
+    const runDir = runDirFor(this.deps.runsDir, toolTaskId);
+    mkdirSync(runDir, { recursive: true });
+    const files = this.sessionFiles(runDir, toolTaskId, jev, brain.persistent === true);
+    const warm = brain.warm({ ...files, ...(model ? { model } : {}), thinking });
+    const timer = setTimeout(() => this.dropSpare(), this.deps.warmMs ?? RUNNER_DEFAULTS.warmMs);
+    (timer as { unref?: () => void }).unref?.();
+    this.spare = { toolTaskId, runDir, model, jev, thinking, warm, timer };
+    return true;
+  }
+
+  /** The spare, for a new session with this Jev setting (its MCP config and prompt depend on it); else it is stopped. */
+  private takeSpare(jev: boolean): Spare | null {
+    const spare = this.spare;
+    if (!spare) return null;
+    this.spare = null;
+    clearTimeout(spare.timer);
+    // The brain takes the process only when started with the session's model and thinking too.
+    if (spare.warm.ready && spare.jev === jev) return spare;
+    spare.warm.stop();
+    return null;
+  }
+
+  private dropSpare(): void {
+    if (!this.spare) return;
+    clearTimeout(this.spare.timer);
+    this.spare.warm.stop();
+    this.spare = null;
+  }
+
+  /** The Jev key a run with this config uses, or null (Jev off). */
+  private jevKey(config: RunConfig): string | null {
+    const key = config.jevApiKey?.trim() || this.deps.envJevKey;
+    return config.jevEnabled && key ? key : null;
+  }
+
+  /** Writes the session's MCP config into its run folder; returns it with the session's tools and system prompt. */
+  private sessionFiles(runDir: string, toolTaskId: string, jev: boolean, followUps: boolean): { mcpConfigPath: string; allowedTools: string[]; systemPrompt: string } {
+    // act replaces click and type (steps can still name an exact element index).
+    const allowed = new Set<ToolName>(toolsFor());
+    const toolNames = TOOL_NAMES.filter((n) => allowed.has(n));
+    const mcpConfigPath = join(runDir, "mcp-config.json");
+    const mcpConfig = buildMcpConfig({
+      nodePath: this.deps.nodePath ?? process.execPath,
+      mcpServerPath: this.deps.mcpServerPath,
+      pipePath: this.deps.pipePath,
+      taskId: toolTaskId,
+      toolNames,
+      jev,
+    });
+    writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
+    return { mcpConfigPath, allowedTools: toolNames.map(mcpToolName), systemPrompt: buildSystemPrompt({ tools: toolNames, jev, followUps }) };
   }
 
   async run(params: RunTaskParams): Promise<TaskRunResult> {
@@ -175,18 +270,23 @@ export class TaskRunner {
     if (previous) this.retire(previous, "replaced by a new run");
     this.makeRoom();
 
-    const runDir = runDirFor(this.deps.runsDir, sessionId);
+    const jevKey = this.jevKey(config);
+    const jev = jevKey ? this.deps.makeJev(jevKey) : null;
+    // An agent started ahead (prewarm) comes with its run folder; its tool calls carry its own task id.
+    const spare = this.takeSpare(jev !== null);
+    const runDir = spare?.runDir ?? runDirFor(this.deps.runsDir, sessionId);
+    const toolTaskId = spare?.toolTaskId ?? sessionId;
+    if (spare) this.toolTaskIds.set(toolTaskId, sessionId);
     mkdirSync(runDir, { recursive: true });
     const secrets = new SecretRedactor();
     const log = new RunLog(join(runDir, "log.jsonl"), this.deps.live ?? null, sessionId, secrets);
-    const jevKey = config.jevApiKey?.trim() || this.deps.envJevKey;
-    const jev = config.jevEnabled && jevKey ? this.deps.makeJev(jevKey) : null;
     // act replaces click and type (steps can still name an exact element index).
     const allowed = new Set<ToolName>(toolsFor());
     const brain = this.deps.makeBrain();
 
     const s = new TaskSession({
       sessionId,
+      toolTaskId,
       runDir,
       log,
       persistent: brain.persistent === true,
@@ -197,7 +297,7 @@ export class TaskRunner {
       mediaPaths,
       secrets,
       notify: this.deps.notify,
-      ...(this.deps.scheduleTask ? { scheduleTask: this.deps.scheduleTask } : {}),
+      ...(this.deps.todo ? { todo: this.deps.todo } : {}),
       ...(this.deps.memory ? { memory: this.deps.memory } : {}),
       finishGraceMs: this.deps.finishGraceMs ?? RUNNER_DEFAULTS.finishGraceMs,
       abortWaitMs: this.deps.abortWaitMs ?? RUNNER_DEFAULTS.abortWaitMs,
@@ -221,34 +321,25 @@ export class TaskRunner {
     });
 
     try {
-      const toolNames = TOOL_NAMES.filter((n) => allowed.has(n));
-      const mcpConfigPath = join(runDir, "mcp-config.json");
-      const mcpConfig = buildMcpConfig({
-        nodePath: this.deps.nodePath ?? process.execPath,
-        mcpServerPath: this.deps.mcpServerPath,
-        pipePath: this.deps.pipePath,
-        taskId: sessionId,
-        toolNames,
-        jev: jev !== null,
-      });
-      writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
-      const systemPrompt = buildSystemPrompt({ tools: toolNames, jev: jev !== null, followUps: s.persistent });
+      const { mcpConfigPath, allowedTools, systemPrompt } = this.sessionFiles(runDir, toolTaskId, jev !== null, s.persistent);
       // The run folder, the MCP config and the prompts, before the agent starts.
-      s.emit({ type: "trace", trace: { t: setup.t, ms: setup.elapsed(), cat: "brain", name: "helper.setup", src: "helper", data: { jev: jev !== null, media: mediaPaths.length } } });
+      s.emit({ type: "trace", trace: { t: setup.t, ms: setup.elapsed(), cat: "brain", name: "helper.setup", src: "helper", data: { jev: jev !== null, media: mediaPaths.length, prewarmed: spare !== null } } });
       s.brainDone = brain
         .run({
-          taskId: sessionId,
+          taskId: toolTaskId,
           prompt: buildTaskPrompt(task, mediaPaths, { isRetry: config.isRetry }),
           systemPrompt,
           ...(config.model?.trim() ? { model: config.model.trim() } : {}),
           mcpConfigPath,
-          allowedTools: toolNames.map(mcpToolName),
+          allowedTools,
+          ...(spare ? { warm: spare.warm } : {}),
           signal: s.controller.signal,
           log: (e) => log.event(e),
           emit: (e) => s.emit(e),
           input: s.input,
           interjections: s.interjections,
           reasoning: s.reasoning,
+          onModelChange: (fn) => s.onModelChange(fn),
           idle: () => s.onIdle(),
           task: { instructions: task.instructions, account: task.account, mediaPaths },
         })
@@ -258,6 +349,7 @@ export class TaskRunner {
         })
         .finally(() => this.onBrainExit(s));
     } catch (e) {
+      spare?.warm.stop();
       s.brainError = errorMessage(e);
       s.brainDone = Promise.resolve();
       this.onBrainExit(s);
@@ -302,6 +394,7 @@ export class TaskRunner {
     if (!s.markEnded()) return;
     this.closing.delete(s);
     if (this.sessions.get(s.sessionId) === s) this.sessions.delete(s.sessionId);
+    if (s.tools.taskId !== s.sessionId) this.toolTaskIds.delete(s.tools.taskId);
     this.sessionsChanged();
     s.log.event({ type: "session_closed" });
     this.checkAllClosed();

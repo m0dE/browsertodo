@@ -43,7 +43,7 @@ import {
 } from "@browsertodo/shared";
 import { bytesToBase64 } from "../base64.js";
 import { REALTIME_NOT_AVAILABLE_NOTE } from "./engine-choice.js";
-import { floor, isNoise, moreImportant, repeatsRequest, type ForwardedRequest, type ReplyKind, type SpokenKind } from "./narrator-policy.js";
+import { floor, isNoise, moreImportant, repeatsRequest, speechTurnOf, type ForwardedRequest, type ReplyKind, type SpeechTurn, type SpokenKind } from "./narrator-policy.js";
 
 /** PCM16 mono at this rate, both ways ("audio/pcm" is 24 kHz). */
 export const REALTIME_SAMPLE_RATE = 24_000;
@@ -59,11 +59,24 @@ const TURN_SILENCE_MS = 700;
 const SERVER_INTERRUPTS_REPLY = false;
 /** The user's turn is in and its reply is expected this long; past it (no reply came) the floor is free again. */
 const AWAIT_REPLY_MS = 5_000;
+/**
+ * A reply to the user's speech is held (its audio and words not played or shown) until their words are in, and then
+ * played (small talk), dropped (a request: only a tool answers it; noise), or made again when it answered a request by
+ * itself (MAKE_AGAIN_RESPONSE). The server still starts the reply the moment their turn ends (create_response): a
+ * request's send_to_agent is never waited for, and a spoken reply's first audio (550-850 ms after the turn) mostly
+ * comes after the words (median 528 ms, 385-763 ms, once 1.1 s in 25 turns), so holding adds nothing to most turns,
+ * where waiting for the words before making any reply (create_response off) would add ~530 ms to every turn,
+ * requests included (measured on gpt-realtime-2.1 with gpt-transcribe, 2026-09-27). Words later than this (from the
+ * reply's start) release what is held, as before.
+ */
+export const HOLD_FOR_WORDS_MS = 1_500;
 
 export const NARRATOR_INSTRUCTIONS = [
   "You are the voice of BrowserTODO, an assistant that works in the user's Chrome browser.",
   "A separate agent does all the work in the browser. You never do anything yourself: you listen, pass requests on, and tell the user what the agent is doing.",
   "When the user asks for something, call send_to_agent immediately, before saying anything. After it returns, say at most one short acknowledgement.",
+  "Only the agent knows what it did, saw, found or remembers. Anything about that, any follow-up, correction or clarification of a request (for example 'no, I mean yesterday'), and any question that needs the browser, the user's accounts or memory: call send_to_agent with the user's words. Never answer those yourself from the updates, never guess dates or times, and never say again an answer you already gave.",
+  "Answer by yourself only small talk (a greeting, 'can you hear me', thanks) or what the agent is doing right now according to the latest update, in one short sentence.",
   "Pass the request in the user's own words, keeping every detail (names, the text to post, times). A message for the running task (for example 'use the second draft') goes the same way.",
   "If right after that the user says 'cancel', 'never mind' or 'don't send it', call cancel_request: the request already went to the agent, and this stops its task.",
   "You get 'Agent update' messages about what the agent does. Speak only when you have news the user doesn't have: results, questions, blockers, errors. Never describe routine steps (opening, reading, clicking, still working), never repeat the user's request back to them, and never say again what you already said.",
@@ -71,12 +84,55 @@ export const NARRATOR_INSTRUCTIONS = [
   "When the agent needs the user (a question, a login, a code), ask the user in your own words and pass their answer on with send_to_agent.",
   "If the user asks to stop the task, call stop_task. If they say goodbye or ask you to stop listening, call end_voice.",
   "When an update says an action needs the user's OK, ask them briefly; when they answer yes or no, call answer_approval (never send_to_agent for it).",
-  "You and the agent work in one browser tab. A note says when the user looks at another tab; neither of you can see that tab. While they do, if they ask about what they see or 'this page', don't pass it on: say in a few words that you work in the tab the note names, and that they can say 'use this tab' or press Use voice here. When they ask to use this tab or to switch here, call use_this_tab and tell them what it answered.",
+  "You and the agent work in one browser tab. A note says when the user looks at another tab; neither of you can see that tab. While they do, if they ask about what they see or 'this page', pass it on with send_to_agent like any request (the agent is told which tab they look at); they can say 'use this tab' or press Use voice here to move the conversation there. When they ask to use this tab or to switch here, call use_this_tab and tell them what it answered.",
   "Be friendly and brief. Speak the user's language.",
 ].join("\n");
 
 /** The one reply after send_to_agent, when the narrator did not speak before calling it. */
-export const ACKNOWLEDGE_INSTRUCTIONS = "Say one very short acknowledgement, a few words such as 'On it.', and nothing else.";
+export const ACKNOWLEDGE_INSTRUCTIONS =
+  "Say one very short acknowledgement of at most six words, such as 'On it.' or 'Sent to the agent.', and nothing else: no answer, no facts, no question. The agent's updates will follow.";
+/**
+ * The acknowledgement's output is capped at this many tokens (response.create max_output_tokens: its reasoning, words
+ * and audio together, ~20 audio tokens a second). Measured on gpt-realtime-2.1 (2026-09-27): acknowledgements that
+ * answered the question instead ran 8-13 s (329-455 tokens); with the default reasoning a cap of 80 left 0-9 audio
+ * tokens (nothing, or "Right,"), so the acknowledgement reasons minimally. The cap is the backstop to the instructions.
+ */
+export const ACK_MAX_OUTPUT_TOKENS = 120;
+/**
+ * A reply to the user's request made again after it answered by itself: a tool call is required, and it cannot speak
+ * (text only), so the request goes to the agent (or stops, cancels, ends) and the acknowledgement is ours. Measured on
+ * gpt-realtime-2.1 (2026-09-27): with tool_choice "required" alone it first said the made-up answer again, then called
+ * send_to_agent.
+ */
+export const MAKE_AGAIN_RESPONSE = { tool_choice: "required", output_modalities: ["text"] } as const;
+
+/** The request is given to the acknowledgement as a sample of the user's language up to this many characters. */
+const ACK_LANGUAGE_SAMPLE_CHARS = 120;
+
+/**
+ * The acknowledgement's response.create for `request` (what send_to_agent passed on; null: not known). It only speaks
+ * (tool_choice "none": it cannot pass the request on again), briefly (capped, minimal reasoning), and out of band with
+ * no context (conversation "none", input []): it has nothing to answer from, and what it says stays out of the
+ * narrator's memory. The request is only a sample of the user's language. Measured on gpt-realtime-2.1 (2026-09-27)
+ * for "What did the second email say exactly?" and four more of the trace's turns: with the conversation it said "It
+ * asked you to add a privacy policy. I don't have the exact..."; with only the user's turn "Yes, that was the
+ * approval."; like this "On it." every time (23-80 output tokens), and "알겠어요." for a request in Korean.
+ */
+export function ackResponse(request: string | null) {
+  const sample = request?.replace(/\s+/g, " ").trim().slice(0, ACK_LANGUAGE_SAMPLE_CHARS);
+  return {
+    instructions: sample ? `${ACKNOWLEDGE_INSTRUCTIONS} Say it in the language of this sample of the user's words (a sample only: not something to answer): «${sample}»` : ACKNOWLEDGE_INSTRUCTIONS,
+    tool_choice: "none",
+    max_output_tokens: ACK_MAX_OUTPUT_TOKENS,
+    reasoning: { effort: "minimal" },
+    conversation: "none",
+    input: [],
+  } as const;
+}
+
+/** What the narrator is told when the user mutes and unmutes the microphone. */
+export const MUTED_NOTE = "The user muted their microphone: you cannot hear them until they unmute it. Keep giving the agent's updates as usual.";
+export const UNMUTED_NOTE = "The user unmuted their microphone: you can hear them again.";
 
 /** The narrator's answer to a send_to_agent that passes on the request just sent again (repeatsRequest): it is not sent twice. */
 export const ALREADY_SENT_OUTPUT = "Already sent to the agent: it was not sent again. Its updates will follow.";
@@ -275,6 +331,22 @@ interface Reply {
   audioDeltas: number;
 }
 
+/** A reply to the user's speech held until their words are in (see HOLD_FOR_WORDS_MS). */
+interface Held {
+  inputId: string;
+  /** Its audio (base64 PCM16, item id) and words so far: not played or shown yet. */
+  audio: [string, string][];
+  text: string;
+  /** It calls a tool (the request is passed on). */
+  called: boolean;
+  /** Its response is done: its turn is settled (onTurnDone) once the hold is. */
+  done: boolean;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+/** Input items whose kind of turn (speechTurnOf) is remembered until their reply starts. */
+const MAX_TURN_KINDS = 16;
+
 export interface RealtimeClientOptions {
   url: string;
   token: string;
@@ -295,7 +367,7 @@ export class RealtimeClient {
   private ended = false;
   /** A reply is being made (response.created .. response.done). */
   private responding = false;
-  /** The current (or last) reply has audio: the narrator spoke in it. */
+  /** The current (or last) reply was heard (its audio played): the narrator spoke in it. */
   private spoke = false;
   /** A line waiting for the floor (the most important one asked for; see narrator-policy.ts floor()). */
   private wantReply: SpokenKind | null = null;
@@ -317,6 +389,20 @@ export class RealtimeClient {
   private droppedNews: SpokenKind | null = null;
   /** Input items that were noise: their reply is cancelled when it starts. */
   private readonly noise = new Set<string>();
+  /** What each input item's words make its turn (speechTurnOf; failed transcription: small talk, heard as before). */
+  private readonly turnKinds = new Map<string, SpeechTurn>();
+  /** The reply to the user's speech held until their words are in. */
+  private held: Held | null = null;
+  /** The input whose reply answered a request by itself and is being cancelled: made again once it is done. */
+  private redoInput: string | null = null;
+  /** The last input whose reply was made again (once per turn). */
+  private redoneInput: string | null = null;
+  /** The audio item of a held reply let go while still being made: truncated to nothing once it is done. */
+  private unheardItem: string | null = null;
+  /** The request last passed on (its acknowledgement's sample of the user's language; null: none). */
+  private requestText: string | null = null;
+  /** Audio items of acknowledgements (out of band: not in the conversation, never truncated). */
+  private readonly outOfBandItems = new Set<string>();
   /** Server VAD's audio_start_ms / audio_end_ms of each input item (how long the user spoke). */
   private readonly vad = new Map<string, { start?: number; end?: number }>();
   /** The user's latest input item that no reply answered yet, and the one the current reply answers. */
@@ -332,6 +418,8 @@ export class RealtimeClient {
   private askedAt: number | null = null;
   private reply: Reply | null = null;
   private readonly inputTimes = new Map<string, InputTiming>();
+  /** The user muted the microphone: no audio goes out. */
+  private muted = false;
   /** The request last passed on (send_to_agent), answered to the narrator once `answered` settles. */
   private forwarded: (ForwardedRequest & { answered: Promise<void> }) | null = null;
 
@@ -354,7 +442,23 @@ export class RealtimeClient {
 
   /** Microphone audio (PCM16 at REALTIME_SAMPLE_RATE). */
   appendAudio(pcm: Int16Array): void {
+    if (this.muted) return;
     this.send({ type: "input_audio_buffer.append", audio: bytesToBase64(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength)) });
+  }
+
+  /**
+   * Muted: no microphone audio goes out (none is billed), and what the server holds of an unfinished turn is cleared,
+   * so half an utterance is never committed. The narrator is told, so it goes on with updates without waiting for
+   * the user.
+   */
+  setMuted(muted: boolean): void {
+    if (muted === this.muted) return;
+    this.muted = muted;
+    if (muted) {
+      this.userSpeaking = false;
+      this.send({ type: "input_audio_buffer.clear" });
+    }
+    this.note(muted ? MUTED_NOTE : UNMUTED_NOTE, null);
   }
 
   /** Tells the narrator something (a system message); `speak`: and asks it to say it, when the floor allows (floor()). */
@@ -372,11 +476,14 @@ export class RealtimeClient {
   /** Stops the reply being made (the user pressed Esc or the shortcut while it spoke). */
   cancelResponse(): void {
     this.wantReply = null;
+    this.dropHeld();
     if (this.responding) this.send({ type: "response.cancel" });
   }
 
   /** The user heard only `audioEndMs` of item `itemId` (it was cut off): the narrator's memory is trimmed to match. */
   truncate(itemId: string, audioEndMs: number): void {
+    // Out of the conversation (an acknowledgement): nothing of it to trim.
+    if (this.outOfBandItems.has(itemId)) return;
     this.send({ type: "conversation.item.truncate", item_id: itemId, content_index: 0, audio_end_ms: Math.max(0, Math.round(audioEndMs)) });
   }
 
@@ -419,7 +526,9 @@ export class RealtimeClient {
    */
   private requestReply(kind: SpokenKind): void {
     const awaitingReply = this.unansweredInput !== null && Date.now() - this.committedAt < AWAIT_REPLY_MS;
-    const decision = floor(kind, { userSpeaking: this.userSpeaking, awaitingReply, replying: this.responding, playing: this.opts.handlers.playing?.() ?? false });
+    // A reply held for the user's words, or one being made again, still has the floor.
+    const replying = this.responding || this.held !== null || this.redoInput !== null;
+    const decision = floor(kind, { userSpeaking: this.userSpeaking, awaitingReply, replying, playing: this.opts.handlers.playing?.() ?? false });
     if (decision === "drop") {
       if ((this.userSpeaking || awaitingReply) && kind !== "milestone" && kind !== "ack") this.droppedNews = moreImportant(this.droppedNews, kind);
       return;
@@ -431,8 +540,7 @@ export class RealtimeClient {
     if (kind === "ack" && this.spoke) return;
     this.askedAt = Date.now();
     this.askedKind = kind;
-    // The acknowledgement only speaks: with tools off for it (tool_choice "none"), it cannot pass the request on again.
-    this.send(kind === "ack" ? { type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS, tool_choice: "none" } } : { type: "response.create" });
+    this.send(kind === "ack" ? { type: "response.create", response: ackResponse(this.requestText) } : { type: "response.create" });
   }
 
   /** The line waiting for the floor, if the floor is free now. */
@@ -559,6 +667,8 @@ export class RealtimeClient {
         this.noiseReply = false;
         // The reply answers noise (its empty transcript came first): it is not said.
         if (this.replyInput && this.noise.has(this.replyInput)) this.dropNoiseReply();
+        // A reply to the user's speech is heard once their words say it may be (HOLD_FOR_WORDS_MS).
+        else if (this.replyInput) this.hold(this.replyInput);
         break;
       }
       case "response.done": {
@@ -569,7 +679,16 @@ export class RealtimeClient {
         this.replyInput = null;
         this.traceReply(ev, answered);
         h.onReplyDone?.();
-        if (answered) h.onTurnDone?.(answered);
+        // What was held of it and let go was never heard: the narrator's memory keeps none of it.
+        if (this.unheardItem) this.truncate(this.unheardItem, 0);
+        this.unheardItem = null;
+        if (answered && this.redoInput === answered) {
+          this.redoInput = null;
+          this.makeAgain(answered);
+        } else if (answered && this.held?.inputId === answered) {
+          this.held.done = true;
+          this.decideHeld();
+        } else if (answered) h.onTurnDone?.(answered);
         // The user's turn was answered, with the news let go meanwhile in it (not when it was noise).
         if (answered && !this.noiseReply) this.droppedNews = null;
         this.flush();
@@ -578,13 +697,22 @@ export class RealtimeClient {
       case "response.output_audio.delta":
         // A reply the user talked over (or noise's): the rest of it is not heard.
         if (this.replyStale) break;
-        this.spoke = true;
         if (this.reply) {
           this.reply.firstAudio ??= Date.now();
           this.reply.audioDeltas++;
           this.reply.audioBytes += base64Bytes(str("delta"));
         }
-        h.onAudio?.(str("delta"), str("item_id"));
+        if (this.reply?.kind === "ack" && str("item_id") && !this.outOfBandItems.has(str("item_id"))) {
+          this.outOfBandItems.add(str("item_id"));
+          if (this.outOfBandItems.size > MAX_TURN_KINDS) this.outOfBandItems.delete(this.outOfBandItems.values().next().value!);
+        }
+        if (this.held) {
+          this.held.audio.push([str("delta"), str("item_id")]);
+          this.decideHeld();
+        } else {
+          this.spoke = true;
+          h.onAudio?.(str("delta"), str("item_id"));
+        }
         break;
       case "input_audio_buffer.speech_stopped":
         this.speechEndAt = Date.now();
@@ -613,6 +741,7 @@ export class RealtimeClient {
             break;
           }
           this.traceWords(id, text, ev.usage);
+          this.wordsIn(id, speechTurnOf(text));
           h.onUserWords?.(id, text);
         }
         break;
@@ -620,26 +749,37 @@ export class RealtimeClient {
         this.log("realtime: the user's words could not be transcribed");
         if (str("item_id")) {
           this.traceWords(str("item_id"), "", undefined, true);
+          // Words unknown: its reply is heard, as before holding.
+          this.wordsIn(str("item_id"), "small_talk");
           h.onUserWords?.(str("item_id"), "");
         }
         break;
       case "response.output_audio_transcript.delta":
+        // Words of a reply the user talked over, of noise's, or of one made again are not shown (never "said").
+        if (this.replyStale) break;
         this.narratorText += str("delta");
-        h.onNarratorText?.(this.narratorText);
+        if (this.held) this.held.text = this.narratorText;
+        else h.onNarratorText?.(this.narratorText);
         break;
       case "input_audio_buffer.speech_started":
         // The user's turn gets its own reply; ours would talk over it, and what waited for older turns is let go.
         this.wantReply = null;
         this.userSpeaking = true;
+        // A reply held for their last words is talked over before it was heard.
+        this.dropHeld();
         if (this.responding) this.bargeIn();
         this.vadTime(str("item_id"), "start", ev.audio_start_ms);
         h.onUserSpeech?.();
         break;
       case "response.output_item.added":
-        if ((ev.item as { type?: unknown } | undefined)?.type === "function_call") this.writingCall = true;
+        if ((ev.item as { type?: unknown } | undefined)?.type === "function_call") {
+          this.writingCall = true;
+          this.calls();
+        }
         break;
       case "response.function_call_arguments.done":
         this.writingCall = false;
+        this.calls();
         void this.runTool(str("call_id"), str("name"), str("arguments"), this.replyInput, this.reply?.kind ?? null);
         break;
       case REALTIME_ERROR_EVENT: {
@@ -698,7 +838,10 @@ export class RealtimeClient {
     // Tool first, then at most one short acknowledgement (none when the narrator already spoke in that reply, and
     // never for a call the acknowledgement itself made: that would acknowledge the acknowledgement).
     if (name !== "send_to_agent") this.requestReply("result");
-    else if (replyKind !== "ack") this.requestReply("ack");
+    else if (replyKind !== "ack") {
+      this.requestText = request || null;
+      this.requestReply("ack");
+    }
   }
 
   /**
@@ -710,6 +853,97 @@ export class RealtimeClient {
     this.replyStale = true;
     if (this.writingCall) this.cancelAfterCall = true;
     else this.send({ type: "response.cancel" });
+  }
+
+  // ---- a reply to the user's speech, held for their words (HOLD_FOR_WORDS_MS)
+
+  /** The reply now starting answers input `inputId`: nothing of it is heard or shown until their words say so. */
+  private hold(inputId: string): void {
+    this.dropHeld();
+    const held: Held = { inputId, audio: [], text: "", called: false, done: false, timer: setTimeout(() => this.held === held && this.releaseHeld(), HOLD_FOR_WORDS_MS) };
+    this.held = held;
+    this.decideHeld();
+  }
+
+  /** The user's words of input `inputId` are in: what they make the turn decides what its reply may do. */
+  private wordsIn(inputId: string, turn: SpeechTurn): void {
+    this.turnKinds.set(inputId, turn);
+    if (this.turnKinds.size > MAX_TURN_KINDS) this.turnKinds.delete(this.turnKinds.keys().next().value!);
+    if (this.held?.inputId === inputId) this.decideHeld();
+  }
+
+  /** The reply being made calls a tool. */
+  private calls(): void {
+    if (!this.held) return;
+    this.held.called = true;
+    this.decideHeld();
+  }
+
+  /**
+   * Small talk: the reply is heard. A request: only a tool answers it, and nothing the reply says is heard (the
+   * narrator's own notes are not the truth about what the agent did or knows; its acknowledgement is the out-of-band
+   * one, ackResponse): a reply that calls a tool goes on unheard, one that speaks instead is made again (makeAgain).
+   * Words not in yet: it waits, unless it only called a tool (nothing to hold: its acknowledgement is not delayed).
+   */
+  private decideHeld(): void {
+    const h = this.held;
+    if (!h) return;
+    const said = h.audio.length > 0 || h.text !== "";
+    const turn = this.turnKinds.get(h.inputId);
+    if (!turn) {
+      if (h.called && !said) this.releaseHeld();
+      return;
+    }
+    if (turn === "small_talk") return this.releaseHeld();
+    if (h.called || this.redoneInput === h.inputId) return this.dropHeld();
+    if (said) return this.redo(h);
+    // Silent so far: it may still call a tool; done without one, there is nothing to hear.
+    if (h.done) this.dropHeld();
+  }
+
+  private releaseHeld(): void {
+    const h = this.held;
+    if (!h) return;
+    this.held = null;
+    clearTimeout(h.timer);
+    if (h.audio.length) this.spoke = true;
+    for (const [b64, itemId] of h.audio) this.opts.handlers.onAudio?.(b64, itemId);
+    if (h.text) this.opts.handlers.onNarratorText?.(h.text);
+    if (h.done) this.opts.handlers.onTurnDone?.(h.inputId);
+    this.flush();
+  }
+
+  /** What is held is never heard (noise, talked over, hushed, made again); settle: its turn is over if its reply is. */
+  private dropHeld(settle = true): void {
+    const h = this.held;
+    if (!h) return;
+    this.held = null;
+    clearTimeout(h.timer);
+    // Nor is the rest of it, if it is still being made.
+    if (this.responding && this.replyInput === h.inputId) this.replyStale = true;
+    const itemId = h.audio[0]?.[1];
+    if (itemId && h.done) this.truncate(itemId, 0);
+    else if (itemId) this.unheardItem = itemId;
+    if (h.done && settle) this.opts.handlers.onTurnDone?.(h.inputId);
+    this.flush();
+  }
+
+  /** The reply answered a request by itself: it is let go (cancelled if still being made) and made again. */
+  private redo(h: Held): void {
+    this.redoneInput = h.inputId;
+    this.dropHeld(false);
+    if (h.done) return this.makeAgain(h.inputId);
+    this.replyStale = true;
+    this.redoInput = h.inputId;
+    this.send({ type: "response.cancel" });
+  }
+
+  /** The reply to input `inputId` again, with a tool call required; not when the user has since spoken again (theirs answers). */
+  private makeAgain(inputId: string): void {
+    if (this.userSpeaking || this.unansweredInput !== null) return this.opts.handlers.onTurnDone?.(inputId);
+    this.unansweredInput = inputId;
+    this.committedAt = Date.now();
+    this.send({ type: "response.create", response: MAKE_AGAIN_RESPONSE });
   }
 
   private vadTime(itemId: string, at: "start" | "end", ms: unknown): void {
@@ -731,6 +965,7 @@ export class RealtimeClient {
   /** Input `itemId` was noise: its reply (being made, or when it starts) is cancelled and not heard. */
   private onNoiseInput(itemId: string): void {
     if (this.responding && this.replyInput === itemId) this.dropNoiseReply();
+    else if (this.held?.inputId === itemId) this.dropHeld();
     else if (this.unansweredInput === itemId) this.noise.add(itemId);
     // News let go for that turn is said after all (no reply of it will carry it).
     const news = this.droppedNews;
@@ -741,6 +976,7 @@ export class RealtimeClient {
   private dropNoiseReply(): void {
     this.replyStale = true;
     this.noiseReply = true;
+    this.dropHeld();
     this.send({ type: "response.cancel" });
     if (this.replyInput) this.noise.delete(this.replyInput);
     this.opts.handlers.onNoise?.();
@@ -756,6 +992,8 @@ export class RealtimeClient {
     this.ended = true;
     this.responding = false;
     this.wantReply = null;
+    if (this.held) clearTimeout(this.held.timer);
+    this.held = null;
     this.opts.handlers.onClose?.(failure);
   }
 

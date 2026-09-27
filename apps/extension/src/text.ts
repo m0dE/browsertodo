@@ -61,6 +61,12 @@ export function toolArgsSummary(name: string, args: unknown, max = 70): string {
       return clip(String(a.reason ?? ""), max);
     case "schedule_task":
       return clip(String(a.task ?? "").trim().split("\n")[0]!, max);
+    case "update_scheduled_task": {
+      const at = obj(a.schedule).at;
+      return clip([String(a.task_id ?? ""), at ? `at ${String(at)}` : "", a.task ? String(a.task).trim().split("\n")[0] : ""].filter(Boolean).join(" "), max);
+    }
+    case "cancel_scheduled_task":
+      return String(a.task_id ?? "");
     case "wait_for": {
       const until = Array.isArray(a.until) ? a.until.map(obj) : [];
       const what = until.map((c) => [c.kind, c.text ?? c.selector].filter(Boolean).join(" ")).join(" or ");

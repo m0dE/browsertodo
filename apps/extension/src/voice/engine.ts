@@ -54,6 +54,11 @@ export interface HandsFreeEngine {
   hush(): void;
   /** Half-duplex: stop or start turning speech into text. */
   setTranscribing(on: boolean): void;
+  /**
+   * Muted: nothing the microphone hears is processed or leaves the browser (the microphone itself stays open, so
+   * unmuting is instant); lines are still said. May be called before start().
+   */
+  setMuted(muted: boolean): void;
   /** An event of the chat the session follows (Realtime tells the narrator). */
   agentEvent(ev: AgentEvent, now: number): void;
   /** Something the narrator should know, not say (Realtime: which tab the user looks at). */

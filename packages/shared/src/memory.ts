@@ -9,6 +9,7 @@
 import { z } from "zod";
 import { secretProblem } from "./secret-text.js";
 import { siteHost } from "./urls.js";
+import type { MemoryToolName } from "./tools.js";
 
 /**
  * preference: how the user wants things done (tone, sign-offs, language, "never post before 8am").
@@ -325,9 +326,9 @@ export const RECALL_DESCRIPTION =
   "Search your memory for facts not given at the start of the turn (older task notes, dated episodes of past chats and runs, another site's playbook, a person, what a fact was before it changed), or get the record for an identifier (key). Give query or key.";
 export const FORGET_DESCRIPTION = "Delete a memory entry that turned out wrong or out of date (by its id). To correct one, remember it again with the same kind and subject.";
 
-/** RPC the helper calls on the extension for remember / recall / forget (Claude Code brain), with the task session's id. */
+/** RPC the helper calls on the extension for the memory tools (MEMORY_TOOLS: remember, recall, forget, search_history; Claude Code brain), with the task session's id. */
 export type MemoryMethods = {
-  "memory.call": { params: { sessionId: string; tool: "remember" | "recall" | "forget"; args: unknown }; result: { text: string; isError?: boolean } };
+  "memory.call": { params: { sessionId: string; tool: MemoryToolName; args: unknown }; result: { text: string; isError?: boolean } };
 };
 
 // ---------------------------------------------------------------- rules every write follows

@@ -4,7 +4,9 @@
  * gives each utterance's Dictation a branch of it. A branch can start with
  * the last `replaySamples` samples, so words begun just before it (the user
  * cutting in while a line is said) are not lost. Stopping a branch never
- * closes the microphone; stopping the tee does.
+ * closes the microphone; stopping the tee does. Muted, the microphone stays
+ * open but what it hears is dropped here: passed on to no one, not kept for
+ * a replay.
  */
 import type { AudioSource } from "./dictation.js";
 
@@ -12,6 +14,7 @@ export class MicTee {
   private readonly branches = new Set<(s: Float32Array) => void>();
   private recent: Float32Array[] = [];
   private recentLength = 0;
+  private muted = false;
 
   constructor(
     private readonly source: AudioSource,
@@ -21,6 +24,7 @@ export class MicTee {
   /** Opens the microphone; `onSamples` gets everything until stop(). */
   start(onSamples: (s: Float32Array) => void): Promise<void> {
     return this.source.start((s) => {
+      if (this.muted) return;
       this.remember(s);
       onSamples(s);
       for (const b of this.branches) b(s);
@@ -30,6 +34,14 @@ export class MicTee {
   stop(): void {
     this.branches.clear();
     this.source.stop();
+  }
+
+  /** Muting forgets what was heard before (a replay after it never reaches back past the mute). */
+  setMuted(muted: boolean): void {
+    this.muted = muted;
+    if (!muted) return;
+    this.recent = [];
+    this.recentLength = 0;
   }
 
   /** A listener as an AudioSource (for a Dictation); `replay`: it starts with the most recent samples. */

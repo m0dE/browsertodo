@@ -41,6 +41,8 @@ function clipEvent(e: AgentEvent): AgentEvent {
       return { ...e, text: clipEventText(e.text), ...(e.sent === undefined ? {} : { sent: clipEventText(e.sent) }) };
     case "task_scheduled":
       return { ...e, instructions: clipEventText(e.instructions) };
+    case "task_changed":
+      return { ...e, instructions: clipEventText(e.instructions), ...(e.before ? { before: { ...e.before, instructions: clipEventText(e.before.instructions) } } : {}) };
     case "tool_result": {
       const out = { ...e };
       if (out.text !== undefined) out.text = clipEventText(out.text);

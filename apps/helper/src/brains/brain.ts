@@ -1,6 +1,7 @@
 import type { AgentEvent } from "@browsertodo/shared";
 import type { Interjections, ReasoningChange } from "@browsertodo/core";
 import type { EventLogger } from "../logger.js";
+import type { WarmClaude, WarmSpec } from "./claude-code.js";
 
 /**
  * The user's next turns in a kept-open session (already framed by the
@@ -68,6 +69,11 @@ export interface BrainContext {
   systemPrompt: string;
   /** Model chosen in the extension for this run; the brain's own default when absent. */
   model?: string;
+  /**
+   * Persistent brains: a later turn's model setting differs from the one the session runs. Called
+   * before that turn's message is given to the brain, so the brain switches first.
+   */
+  onModelChange?(fn: (model: string) => void): void;
   mcpConfigPath: string;
   /** Fully qualified MCP tool names, e.g. mcp__browsertodo__click. */
   allowedTools: string[];
@@ -90,6 +96,8 @@ export interface BrainContext {
   idle?: () => void;
   /** How much the model thinks (the Reasoning setting, raised while a Fast run is stuck). Absent: the brain's own default. */
   reasoning?: ReasoningChannel;
+  /** An agent process started ahead for this session (Brain.warm): taken when its settings are the session's, else stopped. */
+  warm?: WarmClaude;
   /**
    * Structured task data. Not needed by ClaudeCodeBrain (it reads `prompt`);
    * the ScriptedBrain uses it to run its deterministic script.
@@ -110,4 +118,6 @@ export interface Brain {
    */
   readonly persistent?: boolean;
   run(ctx: BrainContext): Promise<void>;
+  /** Starts the agent process ahead of a session (ClaudeCodeBrain.warm). Absent: there is nothing to start ahead. */
+  warm?(spec: WarmSpec): WarmClaude;
 }

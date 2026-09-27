@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent, MemoryEntry } from "@browsertodo/shared";
-import { dayTimeText, EPISODES_PAGE, forgetAllText, forgetTaskText, kindsOffAfter, memoryPanel, PINNABLE_KINDS, RECORDS_PAGE, syncText } from "../../src/options/memory-view.js";
+import { backfillText, dayTimeText, EPISODES_PAGE, forgetAllText, forgetTaskText, kindsOffAfter, memoryPanel, PINNABLE_KINDS, RECORDS_PAGE, syncText } from "../../src/options/memory-view.js";
 import { memoryNoteView, undoneText } from "../../src/sidepanel/memory-note.js";
 import { chatMemoryView } from "../../src/sidepanel/chat-memory.js";
 import { describeEvent } from "../../src/sidepanel/event-format.js";
@@ -215,5 +215,11 @@ describe("chatMemoryView (the composer's Memory switch)", () => {
     expect(chatMemoryView({ paused: false, off: true, conversation: true })).toMatchObject({ on: false, hint: "Off in this chat", offBadge: true });
     expect(chatMemoryView({ paused: false, off: true, conversation: false }).hint).toBe("Off for this new chat");
     expect(chatMemoryView({ paused: true, off: true, conversation: true })).toEqual({ on: false, disabled: true, hint: "Paused in settings", offBadge: false });
+  });
+});
+
+describe("Settings > Memory: summarizing past chats", () => {
+  it("is one quiet line with how far it is", () => {
+    expect(backfillText({ done: 12, total: 40 })).toBe("Summarising past chats: 12/40");
   });
 });

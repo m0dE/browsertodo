@@ -55,6 +55,19 @@ export async function runNextTurn(
   const tab = await turns.tabOf(sessionId);
   // What the conversation's tab shows now. It may be a page Chrome keeps extensions out of: the turn goes on in a tab next to it.
   const page = tab === null ? null : await turns.pageOf(tab);
+  // The conversation's own task (a TODO or cloud task) keeps its run notes in memory; a chat has none.
+  const memoryRun = {
+    ...(from.source === "adhoc" ? {} : { task: { instructions: job.first.instructions, account: job.first.account } }),
+    title: from.title,
+    request: job.text,
+    ...(page ? { tabUrl: page.url, tabTitle: page.title } : {}),
+  };
+  const sameSession = from.brain === brain.kind && isContinuable(brain) && brain.isOpen?.(sessionId) !== false;
+  // Picked while the tab is made ready. The same agent session already has what earlier turns were given: only what
+  // is new comes with this message.
+  const memoryReady = turns.memoryFor(active, sameSession ? { ...memoryRun, continued: true } : memoryRun);
+  // A fresh agent session starts meanwhile: its process is ready when the task (with its memory) is.
+  if (!sameSession) brain.prewarm?.(runConfig(settings, from.outcome !== "done"));
   let userTab: UserTab | undefined;
   if (tab === null) await turns.prepareTab(active, { mode: "own-tab" });
   else {
@@ -67,16 +80,7 @@ export async function runNextTurn(
   const message = { text: withContext(job.text, job.context), ...(job.screen ? { screenHelp: true } : {}) };
   // What waits for the user's approval this turn (the level may have changed since the last one).
   const approvals = approvalsLine(settings, active.scheduled);
-  // The conversation's own task (a TODO or cloud task) keeps its run notes in memory; a chat has none.
-  const memoryRun = {
-    ...(from.source === "adhoc" ? {} : { task: { instructions: job.first.instructions, account: job.first.account } }),
-    title: from.title,
-    request: job.text,
-    ...(page ? { tabUrl: page.url, tabTitle: page.title } : {}),
-  };
-  const sameSession = from.brain === brain.kind && isContinuable(brain) && brain.isOpen?.(sessionId) !== false;
-  // The same agent session already has what earlier turns were given: only what is new comes with this message.
-  const memory = sameSession ? await turns.memoryFor(active, { ...memoryRun, continued: true }) : undefined;
+  const memory = sameSession ? await turns.timed(active, "memory.wait", () => memoryReady) : undefined;
   const text = buildFollowUpMessage({
     ...message,
     timeZone: localTimeZone(),
@@ -104,7 +108,8 @@ export async function runNextTurn(
   const instructions = buildFollowUpInstructions({ instructions: job.first.instructions, session: from, events, text: buildFollowUpMessage(message) });
   const sources = job.task ? await mediaSources({ source: "local", task: job.task }, localStore) : [];
   const mediaPaths = await turns.materialize(active, sources, cleanups);
-  const fresh = await turns.memoryFor(active, memoryRun);
+  // A fresh session is given what applies anew (when the open session turned out gone, picked again as a fresh one).
+  const fresh = sameSession ? await turns.memoryFor(active, memoryRun) : await turns.timed(active, "memory.wait", () => memoryReady);
   const task: AgentTask = { id: job.task?.id ?? sessionId, instructions, account: job.first.account, ...(userTab ? { userTab } : {}), ...(fresh ? { memory: fresh } : {}) };
   // After a stop, the agent first checks whether the work was already done.
   const run = turns.start(active, brain, { task, mediaPaths, config: runConfig(settings, from.outcome !== "done"), settings });

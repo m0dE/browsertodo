@@ -51,3 +51,27 @@ describe("MicTee: one microphone for the speech detector and each utterance's di
     expect(got).toEqual([3, 4, 5, 6, 7]);
   });
 });
+
+describe("MicTee: muted", () => {
+  it("keeps the microphone open but passes on and remembers nothing; unmuted, a replay starts from after the mute", async () => {
+    const mic = new FakeMic();
+    const tee = new MicTee(mic, 4);
+    const all: number[] = [];
+    await tee.start((s) => all.push(...s));
+    const got: number[] = [];
+    await tee.branch().start((s) => got.push(...s));
+    mic.deliver!(chunk(1, 2));
+    tee.setMuted(true);
+    mic.deliver!(chunk(3, 4));
+    expect(all).toEqual([1, 2]);
+    expect(got).toEqual([1, 2]);
+    expect(mic.stops).toBe(0);
+    tee.setMuted(false);
+    mic.deliver!(chunk(5));
+    const replayed: number[] = [];
+    await tee.branch({ replay: true }).start((s) => replayed.push(...s));
+    // Nothing from before the mute is replayed either: it was dropped when muting.
+    expect(replayed).toEqual([5]);
+    expect(all).toEqual([1, 2, 5]);
+  });
+});

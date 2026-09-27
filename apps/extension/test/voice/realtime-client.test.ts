@@ -3,6 +3,7 @@ import { DEFAULT_REALTIME_VOICE, REALTIME_CLOSE, REALTIME_PROTOCOL, REALTIME_TOK
 import { base64ToBytes } from "../../src/base64.js";
 import { errorHelp } from "../../src/sidepanel/error-help.js";
 import {
+  ackResponse,
   ACKNOWLEDGE_INSTRUCTIONS,
   NARRATOR_TOOLS,
   REALTIME_SAMPLE_RATE,
@@ -182,7 +183,7 @@ describe("RealtimeClient: the feed, the narrator's replies and its tools", () =>
     expect(onTool).toHaveBeenCalledWith("send_to_agent", { text: "Post gm on X" }, "in1");
     expect(socket().sent.at(-1)).toEqual({ type: "conversation.item.create", item: { type: "function_call_output", call_id: "c1", output: "Sent to the agent." } });
     socket().event({ type: "response.done", response: { id: "r1", status: "completed", output: [] } });
-    expect(socket().sent.at(-1)).toEqual({ type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS, tool_choice: "none" } });
+    expect(socket().sent.at(-1)).toEqual({ type: "response.create", response: ackResponse("Post gm on X") });
   });
 
   it("other tools ask for a plain reply after their output (the narrator says what happened)", async () => {
@@ -351,5 +352,55 @@ describe("RealtimeClient: timing trace", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("RealtimeClient: muted", () => {
+  const ready = () => {
+    const t = setup();
+    t.socket().open();
+    t.socket().event({ type: "session.created", session: { type: "realtime" } });
+    t.socket().sent.length = 0;
+    return t;
+  };
+
+  it("sends no microphone audio while muted, and clears what the server holds of an unfinished turn", () => {
+    const { client, socket } = ready();
+    client.appendAudio(new Int16Array([1]));
+    client.setMuted(true);
+    client.appendAudio(new Int16Array([2]));
+    client.appendAudio(new Int16Array([3]));
+    const types = socket().types();
+    expect(types.filter((t) => t === "input_audio_buffer.append")).toHaveLength(1);
+    // Cleared right after the last audio sent, so half an utterance is never committed on unmute.
+    expect(types.slice(0, 2)).toEqual(["input_audio_buffer.append", "input_audio_buffer.clear"]);
+    // The narrator is told it cannot hear the user (it goes on with updates); no reply is asked for.
+    const note = socket().sent.find((e) => e.type === "conversation.item.create") as { item: { role: string; content: { text: string }[] } };
+    expect(note.item.role).toBe("system");
+    expect(note.item.content[0]!.text).toMatch(/muted/i);
+    expect(types).not.toContain("response.create");
+    client.setMuted(true);
+    expect(socket().types()).toEqual(types);
+  });
+
+  it("unmuted, audio goes out again and the narrator is told it can hear the user", () => {
+    const { client, socket } = ready();
+    client.setMuted(true);
+    socket().sent.length = 0;
+    client.setMuted(false);
+    client.appendAudio(new Int16Array([4]));
+    expect(socket().types()).toEqual(["conversation.item.create", "input_audio_buffer.append"]);
+    expect((socket().sent[0] as { item: { content: { text: string }[] } }).item.content[0]!.text).toMatch(/unmuted/i);
+    expect(socket().types()).not.toContain("input_audio_buffer.clear");
+  });
+
+  it("muting mid-turn: the user no longer counts as speaking, so a waiting update may be said", () => {
+    const { client, socket } = ready();
+    socket().event({ type: "input_audio_buffer.speech_started", item_id: "in1", audio_start_ms: 0 });
+    client.note("Agent result: done.", "result");
+    expect(socket().types()).not.toContain("response.create");
+    client.setMuted(true);
+    client.note("Agent result: done again.", "result");
+    expect(socket().types()).toContain("response.create");
   });
 });

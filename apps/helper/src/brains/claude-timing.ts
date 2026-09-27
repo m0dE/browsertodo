@@ -2,7 +2,8 @@
  * Claude Code's timing for the conversation's trace, read from its
  * stream-json output (with --include-partial-messages):
  *
- * - claude.ready: from spawning the process to its `system/init` line.
+ * - claude.ready: from spawning the process (or taking one started ahead,
+ *   prewarmedMs ago) to its `system/init` line.
  * - model.call: one per Messages request, from Claude Code's
  *   `system/status: requesting` to the stream's message_stop: time to the
  *   response (message_start), to the first token, text and tool call, the
@@ -45,7 +46,7 @@ interface Call {
 export class ClaudeStreamTimer {
   private readonly clock: () => number;
   private readonly now: () => number;
-  private spawnedAt: { t: number; at: number } | null = null;
+  private spawnedAt: { t: number; at: number; prewarmedMs?: number } | null = null;
   private ready = false;
   /** When the last input reached Claude Code (a message on stdin, or a tool result). */
   private lastInputAt: number | null = null;
@@ -60,9 +61,9 @@ export class ClaudeStreamTimer {
     this.now = clock.now ?? (() => Date.now());
   }
 
-  /** The process was just spawned. */
-  spawned(): void {
-    this.spawnedAt = { t: this.now(), at: this.clock() };
+  /** The process was just spawned; with prewarmedMs, one started that long ago (ClaudeCodeBrain.warm) was just taken. */
+  spawned(warm?: { prewarmedMs: number }): void {
+    this.spawnedAt = { t: this.now(), at: this.clock(), ...(warm ? { prewarmedMs: warm.prewarmedMs } : {}) };
   }
 
   /** A user message was written to Claude Code's stdin. */
@@ -101,6 +102,7 @@ export class ClaudeStreamTimer {
     const version = str(ev.claude_code_version);
     if (model) data.model = model;
     if (version) data.version = version;
+    if (this.spawnedAt.prewarmedMs !== undefined) data.prewarmedMs = this.spawnedAt.prewarmedMs;
     this.out({ t: this.spawnedAt.t, ms: round(at - this.spawnedAt.at), cat: "brain", name: "claude.ready", data });
   }
 

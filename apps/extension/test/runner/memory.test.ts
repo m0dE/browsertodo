@@ -62,6 +62,87 @@ describe("Runner: memory", () => {
     expect((await h.sessions.get(on.sessionId))?.memoryOff).toBeUndefined();
   });
 
+  it("memory is picked while the turn's tab is made ready, and given when both are done (first turn and next turn)", async () => {
+    const h = harness();
+    const order: string[] = [];
+    let release!: () => void;
+    let picked!: Promise<void>;
+    const arm = () => void (picked = new Promise<void>((r) => (release = r)));
+    arm();
+    h.deps.memory = {
+      begin: async (_id, run) => {
+        order.push(`begin ${run.request}`);
+        // The account's search answers only once the tab is being made ready (it waited on it before).
+        await picked;
+        return { text: `Memory for ${run.request}`, entries: [], tokens: 5 };
+      },
+      runNote: async () => {},
+    };
+    const slots = h.deps.slots;
+    h.deps.slots = {
+      ...slots,
+      take: (...args: Parameters<typeof slots.take>) => {
+        const slot = slots.take(...args)!;
+        return {
+          ...slot,
+          prepare: async (opts) => {
+            order.push("prepare");
+            release();
+            return slot.prepare(opts);
+          },
+        };
+      },
+    };
+    h.runner = new Runner(h.deps);
+    h.brain.script = () => ({ outcome: "done", summary: "ok" });
+    const { sessionId } = await h.runner.runAdhoc({ instructions: "Check my inbox" });
+    await h.runner.idle();
+    expect(order).toEqual(["begin Check my inbox", "prepare"]);
+    expect(h.brain.starts[0]!.task.memory).toBe("Memory for Check my inbox");
+    await h.sessions.flush();
+    const names = (await h.sessions.traceOf(sessionId))?.events.map((e) => e.name) ?? [];
+    expect(names).toEqual(expect.arrayContaining(["memory.inject", "memory.wait", "engine.tab"]));
+
+    // The next turn in the same agent session: the same, and what is picked comes with the message.
+    order.length = 0;
+    arm();
+    h.brain.continueScript = () => ({ outcome: "done", summary: "ok" });
+    expect(await h.runner.message(sessionId, "And the spam folder")).toEqual({ sessionId, mode: "turn" });
+    await h.runner.idle();
+    expect(order).toEqual(["begin And the spam folder", "prepare"]);
+    expect(h.brain.continues[0]!.text).toContain("Memory for And the spam folder");
+  });
+
+  it("a fresh agent session starts (prewarm) while memory is picked, not after; the same session's next turn starts none", async () => {
+    const h = harness();
+    const order: string[] = [];
+    let release!: () => void;
+    const picked = new Promise<void>((r) => (release = r));
+    h.deps.memory = {
+      begin: async () => {
+        order.push("memory begin");
+        await picked;
+        order.push("memory ready");
+        return { text: "Memory", entries: [], tokens: 5 };
+      },
+      runNote: async () => {},
+    };
+    h.runner = new Runner(h.deps);
+    (h.brain as { prewarm?: (c: unknown) => void }).prewarm = (config) => {
+      order.push(`prewarm ${(config as { model?: string }).model}`);
+      release();
+    };
+    h.brain.script = () => ({ outcome: "done", summary: "ok" });
+    const { sessionId } = await h.runner.runAdhoc({ instructions: "Check my inbox" });
+    await h.runner.idle();
+    expect(order).toEqual(["memory begin", `prewarm ${h.settings.anthropicModel}`, "memory ready"]);
+    order.length = 0;
+    h.brain.continueScript = () => ({ outcome: "done", summary: "ok" });
+    await h.runner.message(sessionId, "And the spam folder");
+    await h.runner.idle();
+    expect(order.filter((o) => o.startsWith("prewarm"))).toEqual([]);
+  });
+
   it("memory paused in settings: nothing given", async () => {
     const h = harness({ memoryPaused: true });
     const { store } = withMemory(h);

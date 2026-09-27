@@ -73,6 +73,12 @@ export interface Brain {
   end?(sessionId: string): Promise<void>;
   /** Conversations whose agent session is open. */
   openSessions?(): string[];
+  /**
+   * Starts the agent of a new session ahead, with this config's model, Reasoning and Jev: the next
+   * start() takes it (Claude Code: its process is ready ~0.65 s sooner). Called when the side panel
+   * opens and while a fresh turn's memory is picked. Never fails the caller.
+   */
+  prewarm?(config: RunConfig): void;
 }
 
 /** A brain that keeps a conversation's agent session between turns. */

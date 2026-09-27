@@ -233,3 +233,31 @@ describe("the acknowledgement cannot start more work, and a request passed on tw
     expect(t.deps.send).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("a reply cut off is never kept as said (the trace's stray 'Said aloud: I don't have' before the result)", () => {
+  beforeAll(installMiniDom);
+
+  it("a reply to noise that began a sentence: nothing of it reaches the chat; the result that follows is the line", async () => {
+    const t = await panel();
+    const kept: string[] = [];
+    const shown: string[] = [];
+    t.deps.keepSpoken = (_chat, text) => void kept.push(text);
+    t.deps.onSpeaking = (line) => void (line && shown.push(line.text));
+    const s = t.socket;
+    s.ourReply = speaks("The second email asks for a privacy policy.");
+    s.event({ type: "input_audio_buffer.speech_started", item_id: "in_noise", audio_start_ms: 0 });
+    s.event({ type: "input_audio_buffer.speech_stopped", item_id: "in_noise", audio_end_ms: 700 });
+    s.event({ type: "input_audio_buffer.committed", item_id: "in_noise" });
+    s.event({ type: "response.created", response: { id: "r_noise" } });
+    s.event({ type: "response.output_audio_transcript.delta", response_id: "r_noise", delta: "I don't have" });
+    s.event({ type: "response.output_audio.delta", response_id: "r_noise", item_id: "a_noise", delta: "AAAA" });
+    s.event({ type: "conversation.item.input_audio_transcription.completed", item_id: "in_noise", content_index: 0, transcript: "" });
+    s.event({ type: "response.done", response: { id: "r_noise", status: "cancelled", output: [] } });
+    t.hf.onEvent(stamped({ type: "task_end", outcome: "done", summary: "x", spoken: "The second email asks you to add a privacy policy." }));
+    await settle(50);
+    // The result is asked for once, and is what is shown; the cut reply never was.
+    expect(s.creates()).toEqual([{ type: "response.create" }]);
+    expect([...shown, ...kept].filter((l) => l.includes("I don't have"))).toEqual([]);
+    expect(shown.at(-1)).toBe("The second email asks for a privacy policy.");
+  });
+});

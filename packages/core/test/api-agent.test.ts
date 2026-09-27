@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AgentEvent, RunConfig, TraceDraft } from "@browsertodo/shared";
+import { TODO_TOOLS, toolsFor, type AgentEvent, type RunConfig, type TraceDraft } from "@browsertodo/shared";
 import { MAX_RETRY_AFTER_MS, RETRY_JITTER, retryWaitMs, startApiAgentWith } from "../src/api-agent.js";
 import { retryAfterMs } from "../src/anthropic.js";
 import { ENDED_WITHOUT_RESULT } from "../src/failures.js";
@@ -85,8 +85,9 @@ describe("startApiAgent", () => {
     expect(toolNames(first)).toContain("act");
     expect(toolNames(first)).not.toContain("click");
     expect(toolNames(first)).not.toContain("type");
-    expect(toolNames(first)).toHaveLength(22);
-    // schedule_task (scheduling from the chat) is offered with its input schema.
+    expect(toolNames(first)).toEqual(toolsFor());
+    // The TODO tools (scheduling from the chat) are offered, schedule_task with its input schema.
+    expect(toolNames(first)).toEqual(expect.arrayContaining([...TODO_TOOLS]));
     const schedule = first.body.tools.find((t: any) => t.name === "schedule_task");
     expect(schedule.input_schema).toMatchObject({ type: "object", required: ["task", "schedule"] });
     expect(first.body.tools.filter((t: any) => t.cache_control)).toEqual([first.body.tools.at(-1)]);

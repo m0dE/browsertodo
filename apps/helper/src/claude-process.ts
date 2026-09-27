@@ -87,10 +87,20 @@ export function apiBillingVarsIn(env: NodeJS.ProcessEnv = process.env): string[]
 }
 
 /**
+ * Set for every Claude Code run the helper starts. Auto memory off: its
+ * section of the system prompt names a memory folder derived from the working
+ * directory (a new run folder each session), so no two sessions shared a
+ * cacheable prompt; it also doubled the prompt (26.8k to 13.6k characters,
+ * Claude Code 2.1.283) and left a folder per run in ~/.claude/projects. The
+ * agent has no file tools to use it anyway; browsertodo keeps its own memory.
+ */
+export const CLAUDE_RUN_ENV: Readonly<Record<string, string>> = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
+
+/**
  * Environment for a Claude process: drop variables that make it think it is
  * nested (an inherited CLAUDE_CODE_CHILD_SESSION, for one, turns off
  * transcript saving), and API_BILLING_VARS, so it always runs on the user's
- * Claude Code login.
+ * Claude Code login; then CLAUDE_RUN_ENV.
  */
 export function claudeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out = { ...env };
@@ -98,5 +108,5 @@ export function claudeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessE
     if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_") || k === ENV.brain) delete out[k];
   }
   for (const k of API_BILLING_VARS) delete out[k];
-  return out;
+  return { ...out, ...CLAUDE_RUN_ENV };
 }

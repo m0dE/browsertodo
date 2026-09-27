@@ -14,6 +14,7 @@ import { uiRequest, type UiState } from "../ui-protocol.js";
 import { $, busy, flash, h } from "../ui/dom.js";
 import { memoryQuestionText } from "../ui/memory-question.js";
 import {
+  backfillText,
   forgetAllText,
   forgetTaskText,
   kindsOffAfter,
@@ -36,6 +37,7 @@ export function initMemorySection(opts: { onState(state: UiState): void }): Memo
   const pausedNote = $("memory-paused-note");
   const syncNote = $("memory-sync");
   const syncActions = $("memory-sync-actions");
+  const backfill = $("memory-backfill");
   const search = $<HTMLInputElement>("memory-search");
   const found = $("memory-found");
   const kindsHost = $("memory-kinds");
@@ -363,6 +365,10 @@ export function initMemorySection(opts: { onState(state: UiState): void }): Memo
 
   return {
     render(state) {
+      // Past chats being summarized in the background: a quiet line while it lasts.
+      const b = state.memoryBackfill;
+      backfill.textContent = b ? backfillText(b) : "";
+      backfill.hidden = !b;
       const s = state.settings;
       const same = settings && s.memoryPaused === settings.memoryPaused && s.memoryKindsOff.join() === settings.memoryKindsOff.join();
       settings = { memoryPaused: s.memoryPaused, memoryKindsOff: [...s.memoryKindsOff] as MemoryKind[] };

@@ -7,7 +7,8 @@
  *   that is on, wherever it listens. The session shows itself on the button
  *   (filled in the live colour, a ring following the voice, its state in the
  *   tooltip), the orb, and the box (a glow and "Listening… just talk" while
- *   it listens for this tab); the voice bar at the top is hands-free.ts's.
+ *   it listens for this tab; muted, no glow and a placeholder that says so);
+ *   the voice bar at the top is hands-free.ts's.
  * - Plans without voice (and signed out) see a lock that explains, with a
  *   way to pick a plan. The microphone is asked for on mic-permission.html,
  *   since a side panel cannot show Chrome's prompt.
@@ -79,6 +80,8 @@ export interface HandsFreeLook {
   status: string;
   /** It listens for another tab than the one shown (the box here is not its). */
   elsewhere: boolean;
+  /** The microphone is muted: the box does not say it listens, the mic stops pulsing. */
+  muted: boolean;
 }
 
 /** What voice input needs of the hands-free session (hands-free.ts). */
@@ -157,13 +160,17 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
     button.title = title;
     button.setAttribute("aria-label", title);
     button.setAttribute("aria-pressed", String(!!look));
+    if (look?.muted) button.dataset.muted = "true";
+    else delete button.dataset.muted;
     orb.hidden = !look?.orb;
     orb.dataset.state = look?.phase ?? "idle";
+    if (look?.muted) orb.dataset.muted = "true";
+    else delete orb.dataset.muted;
     caption.textContent = look?.caption ?? "";
     // The box shows it listens only on the session's own tab (elsewhere, what is said goes to that tab's chat).
-    const here = !!look && !look.elsewhere;
-    composer.setDictating(here);
-    document.body.classList.toggle("voice-live", here);
+    const box = !look || look.elsewhere ? "off" : look.muted ? "muted" : "listening";
+    composer.setDictating(box);
+    document.body.classList.toggle("voice-live", box === "listening");
     if (!look) setLevel(0);
   }
 

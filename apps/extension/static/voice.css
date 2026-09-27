@@ -1,17 +1,21 @@
 /* Hands-free voice, live: the voice bar under the tabs (voice-bar.ts), the mic button while a session is on, the box
    while it listens for this tab (voice-input.ts), in one "live" colour distinct from the accent, like a recording
    light. --level (0..1, on the body) is the microphone's level. Reduced motion: nothing pulses; the meter and the
-   rings stand still. */
+   rings stand still. Muted, the bar and the mic turn a quiet grey (--mic-off) and stop pulsing. */
 :root {
   --live: #c8233f;
   --live-deep: #a3162f;
   --on-live: #ffffff;
+  --mic-off: #5f6368;
+  --mic-off-deep: #45484c;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --live: #c42a44;
     --live-deep: #8f1a2f;
     --on-live: #ffffff;
+    --mic-off: #55595e;
+    --mic-off-deep: #36393c;
   }
 }
 
@@ -30,6 +34,9 @@
     repeating-linear-gradient(135deg, transparent 0 9px, rgb(0 0 0 / 0.1) 9px 18px),
     linear-gradient(100deg, var(--live), var(--live-deep));
 }
+
+/* Muted: the same bar in grey; everything in it follows the live colour, so it all turns with it. */
+.voice-bar[data-muted] { --live: var(--mic-off); --live-deep: var(--mic-off-deep); }
 
 /* The state's icon, in a soft disc; a ring breathes out of it while the microphone is live. */
 .vb-icon {
@@ -63,13 +70,23 @@
   transition: height 80ms linear;
 }
 
-/* Speaking: the speaker's waves, on the button that cuts the line off. */
-.vb-interrupt {
+/* Speaking: the speaker's waves, on the button that cuts the line off. Mute: the same outlined pill, filled in the
+   bar's ink while pressed (muted). */
+.vb-interrupt, .vb-mute {
   flex: none; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
   border: 1px solid rgb(255 255 255 / 0.6); border-radius: var(--radius-pill);
   background: rgb(255 255 255 / 0.12); color: var(--on-live); font-weight: 600;
 }
-.vb-interrupt:hover { background: rgb(255 255 255 / 0.22); }
+.vb-interrupt:hover, .vb-mute:hover { background: rgb(255 255 255 / 0.22); }
+.vb-mute { gap: 5px; padding: 0 10px 0 8px; }
+.vb-mute-icon { display: inline-grid; place-items: center; }
+.voice-bar .vb-mute[aria-pressed="true"] { background: var(--on-live); border-color: var(--on-live); color: var(--live-deep); }
+.voice-bar .vb-mute[aria-pressed="true"]:hover { background: color-mix(in srgb, var(--on-live) 88%, var(--live)); }
+/* Narrow, with Interrupt showing too: Mute keeps its icon (its name stays in the tooltip and for screen readers). */
+@media (max-width: 400px) {
+  .voice-bar:has(.vb-interrupt:not([hidden])) .vb-mute-text { display: none; }
+  .voice-bar:has(.vb-interrupt:not([hidden])) .vb-mute { padding: 0 8px; }
+}
 .vb-waves { display: inline-flex; align-items: center; gap: 2px; height: 14px; }
 .vb-waves i { width: 2px; height: 12px; border-radius: 1px; background: currentColor; animation: vb-wave 0.9s ease-in-out infinite; transform-origin: center; }
 .vb-waves i:nth-child(2) { animation-delay: -0.3s; }
@@ -99,6 +116,11 @@
 }
 .voice-mic[data-state="handsfree"]::before { animation: vb-mic-ring 1.8s ease-out infinite; }
 @keyframes vb-mic-ring { from { transform: scale(1); opacity: 0.6; } to { transform: scale(1.45); opacity: 0; } }
+/* Muted: the mic and the orb in grey, the mic still (the session is on, the microphone is not). */
+.voice-mic[data-muted], .voice-orb[data-muted] { --live: var(--mic-off); }
+.voice-mic[data-state="handsfree"][data-muted]::before { animation: none; opacity: 0; }
+/* The muted orb rests (the core still breathes while a line is said: the narrator is heard). */
+.voice-orb[data-muted] .voice-orb-halo { animation: none; opacity: 0.7; }
 
 /* The orb (before anything was sent) in the same live colour, so the page reads as one live session. */
 .voice-orb-halo {
@@ -125,7 +147,7 @@ body.voice-live .now textarea::placeholder { color: color-mix(in srgb, var(--liv
   .voice-bar .vb-icon::after, .voice-bar .vb-icon svg, .vb-waves i, .voice-mic::before, body.voice-live .now { animation: none !important; }
   /* Still indicators: a steady ring on the icon and the mic, a fixed meter and waves. */
   .voice-bar:is([data-state="listening"], [data-state="hearing"], [data-state="working"]) .vb-icon::after { opacity: 1; transform: none; }
-  .voice-mic[data-state="handsfree"]::before { opacity: 0.5; transform: scale(1.18); }
+  .voice-mic[data-state="handsfree"]:not([data-muted])::before { opacity: 0.5; transform: scale(1.18); }
   .vb-meter i { transition: none; height: calc(6px + var(--k, 1) * 8px); }
   .vb-waves i { transform: none; height: 9px; }
   .vb-waves i:nth-child(2) { height: 13px; }

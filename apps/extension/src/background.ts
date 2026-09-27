@@ -4,7 +4,7 @@
  */
 import { z } from "zod";
 import * as core from "@browsertodo/core";
-import { errorMessage, type ExtensionSettings, type ScheduledTask, type SessionInfo } from "@browsertodo/shared";
+import { errorMessage, type ExtensionSettings, type SessionInfo, type TodoToolName, type TodoToolResult } from "@browsertodo/shared";
 import { AccountService, browserTimeZone, type AccountServiceDeps } from "./account/account.js";
 import type { AccountTaskList } from "./account/account-api.js";
 import { AccountTodo, LocalTodo, type TodoSource } from "./account/todo-source.js";
@@ -20,7 +20,9 @@ import { ApiBrain } from "./engine/api-brain.js";
 import { hostedBackend } from "./engine/hosted-brain.js";
 import { needsHelper, resolveBrain } from "./engine/brain-resolver.js";
 import { registerBrowserHandlers } from "./engine/browser-caller.js";
+import type { Brain } from "./engine/brains.js";
 import { ClaudeCodeBrain } from "./engine/claude-code-brain.js";
+import { runConfig } from "./engine/run/turn.js";
 import { IdbKvDb } from "./engine/kv.js";
 import { LocalStore } from "./engine/local-store.js";
 import { MediaFiles } from "./engine/media-files.js";
@@ -91,8 +93,8 @@ const db = new IdbKvDb();
 const localStore = new LocalStore({ db });
 // Each conversation's timing trace (Raw view) lives beside its events.
 const sessions = new SessionStore(db, { trace: new TraceStore(db, { log: logger("trace") }) });
-// schedule_task (every brain): the agent's task goes into the TODO list of that conversation's user (engine/schedule-task.ts).
-const scheduleTask = (sessionId: string, args: unknown): Promise<ScheduledTask> => router.scheduler.schedule(sessionId, args);
+// The TODO tools (every brain): schedule, list, change and cancel tasks in the TODO list of that conversation's user (engine/schedule-task.ts).
+const todoTool = (sessionId: string, tool: TodoToolName, args: unknown): Promise<TodoToolResult> => router.scheduler.tool(sessionId, tool, args);
 // The agent's long-term memory (memory/): given at each turn's start, kept with remember / forget and run notes.
 const memoryStore = new MemoryStore();
 // On a plan with the TODO list, memory syncs with the signed-in account (memory/sync.ts); else it stays here.
@@ -121,14 +123,18 @@ const memoryTool = (sessionId: string, tool: MemoryTool, args: unknown) => memor
 const helper = new HelperLink({
   registerHandlers: (peer) => {
     registerBrowserHandlers(peer, (sessionId) => slots.browserFor(sessionId));
-    peer.handle("todo.scheduleTask", ({ sessionId, args }) => scheduleTask(sessionId, args));
+    peer.handle("todo.call", ({ sessionId, tool, args }) => todoTool(sessionId, tool, args));
     peer.handle("memory.call", ({ sessionId, tool, args }) => memoryTool(sessionId, tool, args));
   },
 });
 const mediaFiles = new MediaFiles();
 // Which conversations still have their agent session open shows in the side panel.
-const claudeCodeBrain = new ClaudeCodeBrain(helper, { onSessionsChanged: () => hub.pushState() });
-const apiBrain = new ApiBrain({ core, browser, scheduleTask, memoryTool, onSessionsChanged: () => hub.pushState() });
+const claudeCodeBrain = new ClaudeCodeBrain(helper, {
+  onSessionsChanged: () => hub.pushState(),
+  // The model call that wrote task_complete, and Claude Code's turn summary, end after the turn: kept in its trace.
+  onLateTrace: (sessionId, trace) => void sessions.addTrace(sessionId, [trace]),
+});
+const apiBrain = new ApiBrain({ core, browser, todoTool, memoryTool, onSessionsChanged: () => hub.pushState() });
 
 type SignInIdentity = { clientId: string; identity: NonNullable<AccountServiceDeps["identity"]> };
 /** Google sign-in: the built-in client and Chrome's auth flow (the e2e suite swaps in a fake Google, setIdentity). */
@@ -163,7 +169,7 @@ memorySync.schedule();
 const hostedBrain = new ApiBrain({
   core,
   browser,
-  scheduleTask,
+  todoTool,
   memoryTool,
   onSessionsChanged: () => hub.pushState(),
   backend: hostedBackend({
@@ -293,6 +299,9 @@ const episodes = new EpisodeWriter({
     set: async (when) => void (await chrome.alarms.create(EPISODE_ALARM, { when })),
     clear: async () => void (await chrome.alarms.clear(EPISODE_ALARM)),
   },
+  // Past chats without an episode are summarized in the background, never while a run is going on.
+  busy: (): boolean => runner.runningSessions.length > 0,
+  onBackfillProgress: () => hub.pushState(),
   log: logger("memory"),
 });
 
@@ -343,11 +352,14 @@ async function scheduleDueAlarm(): Promise<void> {
 
 const router = new UiRouter({
   loadSettings,
+  // A TODO task the agent changes or cancels waits for the user's OK like an action on a page (the session's gate).
+  approveTodoChange: (sessionId, ask) => slots.confirm(sessionId, ask),
   saveSettingsPatch,
   runner,
   approvals,
   memory,
   memoryQuestion: () => memorySync.question(),
+  memoryBackfill: () => episodes.backfillProgress(),
   showAgent: (sessionId) => slots.show(sessionId ?? runner.running?.sessionId),
   localStore,
   sessions,
@@ -400,13 +412,25 @@ helper.onInfo(() => hub.pushState());
 tabChats.onChange(() => hub.pushState());
 
 let lastAutoConnect = 0;
-function maybeConnectHelper(): void {
-  if (helper.connected || Date.now() - lastAutoConnect < HELPER_AUTOCONNECT_MS) return;
+function maybeConnectHelper(then?: () => void): void {
+  if (helper.connected) return then?.();
+  if (Date.now() - lastAutoConnect < HELPER_AUTOCONNECT_MS) return;
   lastAutoConnect = Date.now();
   void helper
     .connect()
     .catch(() => undefined)
-    .finally(() => hub.pushState());
+    .finally(() => {
+      hub.pushState();
+      then?.();
+    });
+}
+
+/** The side panel opened: a new chat's agent starts now, so its first answer comes sooner (the brain's prewarm). */
+async function prewarmBrain(): Promise<void> {
+  const settings = await loadSettings();
+  const effective = brainStatus(settings).effective;
+  const brain: Brain | null = effective && effective !== "scripted" ? brains[effective] : null;
+  brain?.prewarm?.(runConfig(settings, false));
 }
 
 function onStart(): void {
@@ -476,7 +500,7 @@ chrome.runtime.onConnect.addListener((port) => {
     panelCommands.attach(port);
     // Where hands-free voice is on, before the panel's hello (a voice shortcut it gets then acts on it).
     port.postMessage({ type: "voice.session", session: voiceSessions.view() } satisfies UiPush);
-    maybeConnectHelper();
+    maybeConnectHelper(() => void prewarmBrain().catch(() => {}));
     // Credit and plan may have changed elsewhere (dashboard, another browser).
     void account.refresh().catch(() => {});
   }

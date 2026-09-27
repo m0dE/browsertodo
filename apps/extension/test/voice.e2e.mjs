@@ -86,7 +86,7 @@ async function cdpPage(devtoolsPort, urlSuffix) {
 /**
  * Runs in the side panel before its scripts (hands-free step): the background's answers that need the account
  * server are faked, nothing else. Its states say signed in on Plus with the Standard voice engine; voice.transcribe
- * answers HEARD; a spoken run.message (what hands-free sends) is recorded (window.__adhoc) and answers "s-hf"; window.__pushToPanel(msg) delivers a
+ * answers HEARD (counted in window.__transcribes: what would leave the browser); a spoken run.message (what hands-free sends) is recorded (window.__adhoc) and answers "s-hf"; window.__pushToPanel(msg) delivers a
  * message as the background's UI port would; speechSynthesis records each line (window.__spoken) and ends it.
  */
 const HEARD = "Open the example page";
@@ -105,7 +105,10 @@ const HANDS_FREE_STUBS = `(() => {
   const send = chrome.runtime.sendMessage.bind(chrome.runtime);
   window.__adhoc = [];
   chrome.runtime.sendMessage = async (msg, ...rest) => {
-    if (msg?.type === "voice.transcribe") return { ok: true, data: { text: ${JSON.stringify(HEARD)} } };
+    if (msg?.type === "voice.transcribe") {
+      window.__transcribes = (window.__transcribes ?? 0) + 1;
+      return { ok: true, data: { text: ${JSON.stringify(HEARD)} } };
+    }
     if (msg?.type === "run.message" && msg.voice) {
       window.__adhoc.push(msg.text);
       return { ok: true, data: { sessionId: "s-hf", mode: "new" } };
@@ -313,6 +316,53 @@ const { step, finish } = createSuite("voice");
       await waitFor(() => panel.evaluate(() => window.__phases.at(-1) === "off"), "hands-free to end");
       await waitFor(async () => (await badgeOf(bar.tab)) === "", "the voice badge to go");
       return `badge MIC on tab ${bar.tab}, then cleared; phases ${JSON.stringify(await panel.evaluate(() => window.__phases))}; sent ${JSON.stringify(sent)}; said ${JSON.stringify(said)}`;
+    });
+
+    await step("hands-free mute (the bar's Mute, then Alt+M): nothing is transcribed or sent while muted, the bar and the badge say MUTE; unmuted it listens again", async () => {
+      const badgeOf = (tabId) => sw.evaluate(async (t) => chrome.action.getBadgeText({ tabId: t }), tabId);
+      const transcribes = () => panel.evaluate(() => window.__transcribes ?? 0);
+      const barLook = () =>
+        panel.evaluate(() => {
+          const b = document.getElementById("voice-bar");
+          const m = b.querySelector(".vb-mute");
+          return { state: b.dataset.state, muted: b.dataset.muted ?? null, title: b.querySelector(".vb-title").textContent, pressed: m.getAttribute("aria-pressed"), label: m.getAttribute("aria-label"), meter: !b.querySelector(".vb-meter").hidden, placeholder: document.getElementById("now-text").placeholder, tab: Number(b.dataset.tabs.split(",")[0]) };
+        });
+      await panel.evaluate(() => {
+        window.__adhoc = [];
+        window.__phases = [];
+      });
+      await panel.evaluate(() => window.__pushToPanel({ type: "panel.voice" }));
+      await waitFor(() => panel.evaluate(() => window.__phases.includes("listening")), "hands-free listening", { timeout: 10_000 });
+      // The fake microphone's speech is being transcribed (what muting must stop).
+      const before = await waitFor(async () => ((await transcribes()) > 0 ? transcribes() : null), "transcription requests while listening", { timeout: 20_000 });
+      await panel.evaluate(() => document.querySelector("#voice-bar .vb-mute").click());
+      const muted = await barLook();
+      assert.deepEqual(
+        [muted.state, muted.muted, muted.title, muted.pressed, muted.meter],
+        ["muted", "true", "Muted", "true", false],
+        `muted bar ${JSON.stringify(muted)}`,
+      );
+      assert.match(muted.label, /^Unmute the microphone · Alt\+M$/);
+      assert.match(muted.placeholder, /muted/i);
+      assert.equal(await waitFor(async () => ((await badgeOf(muted.tab)) === "MUTE" ? "MUTE" : null), "the MUTE badge"), "MUTE");
+      // A request already on its way may land; after that, a whole loop of the fake speech (10 s) makes none.
+      await new Promise((r) => setTimeout(r, 1500));
+      const atMute = await transcribes();
+      await new Promise((r) => setTimeout(r, 10_500));
+      const whileMuted = (await transcribes()) - atMute;
+      assert.equal(whileMuted, 0, "transcription requests while muted");
+      assert.deepEqual(await panel.evaluate(() => window.__adhoc), [], "nothing sent while muted");
+      assert.ok(await panel.evaluate(() => !document.getElementById("voice-bar").hidden), "the session is still on");
+      // Alt+M in the panel unmutes.
+      await panel.evaluate(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "µ", code: "KeyM", altKey: true, bubbles: true, cancelable: true })));
+      const unmuted = await barLook();
+      assert.ok(unmuted.state !== "muted" && unmuted.muted === null && unmuted.pressed === "false", `unmuted bar ${JSON.stringify(unmuted)}`);
+      assert.equal(await waitFor(async () => ((await badgeOf(muted.tab)) === "MIC" ? "MIC" : null), "the MIC badge back"), "MIC");
+      const after = await waitFor(async () => ((await transcribes()) > atMute ? transcribes() : null), "transcription again once unmuted", { timeout: 20_000 });
+      await panel.evaluate(() => window.__pushToPanel({ type: "panel.voice" }));
+      await waitFor(() => panel.evaluate(() => window.__phases.at(-1) === "off"), "hands-free to end");
+      await waitFor(async () => (await badgeOf(muted.tab)) === "", "the voice badge to go");
+      return `requests before mute ${before}, at mute ${atMute}, while muted (10.5 s) ${whileMuted}, after unmute ${after}; badge MUTE then MIC then cleared`;
     });
   } finally {
     await close();

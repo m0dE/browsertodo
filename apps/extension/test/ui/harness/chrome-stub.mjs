@@ -65,6 +65,14 @@ export function installChromeStub(data) {
       setTimeout(() => window.__push({ type: "event", event }), 0);
       return { ok: true };
     },
+    // Undo on a changed or cancelled card: the task goes back (a cancelled one to pending), and task_change_undone is pushed.
+    "chat.undoTaskChange": (req) => {
+      const ev = (data.eventsBySession?.[req.sessionId] ?? []).find((e) => e.type === "task_changed" && e.changeId === req.changeId);
+      if (ev?.change === "cancelled") data.tasks = data.tasks.map((t) => (t.id === ev.taskId ? { ...t, status: "pending" } : t));
+      const event = { type: "task_change_undone", changeId: req.changeId, ts: new Date().toISOString(), sessionId: req.sessionId };
+      setTimeout(() => window.__push({ type: "event", event }), 0);
+      return { ok: true };
+    },
     // Memory (Settings > Memory, the chat's notes and switch): data.memory is what the agent keeps.
     "memory.list": () => ({ entries: data.memory ?? [], ...(data.memorySync ? { sync: data.memorySync } : {}) }),
     "memory.edit": (req) => {

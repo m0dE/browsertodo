@@ -330,6 +330,15 @@ function eventRow(e: StampedAgentEvent, t: number, span: TraceEvent | undefined,
       };
     case "task_unscheduled":
       return { ...base, label: "Schedule undone", text: `task ${e.taskId}` };
+    case "task_changed":
+      return {
+        ...base,
+        label: e.change === "cancelled" ? "Cancelled in TODO" : "Changed in TODO",
+        text: clip(e.instructions, TEXT_LIMITS.status),
+        detail: `${describeSchedule(e.schedule, { now: new Date(e.ts), timeZone: localTimeZone() })} · task ${e.taskId} · change ${e.changeId}`,
+      };
+    case "task_change_undone":
+      return { ...base, label: "TODO change undone", text: `change ${e.changeId}` };
     case "memory": {
       const entry = (e.after ?? e.before)!;
       const label = !e.before ? "Remembered" : e.after ? "Memory updated" : "Memory forgotten";

@@ -138,7 +138,7 @@ describe("Driver with several tabs", () => {
     expect(b!.text).toBe("via scripting");
     expect(b!.note).toBe(`Tab t3: ${FALLBACK_NOTE}`);
     // (openTabs read each new tab's load with chrome.scripting too, without the debugger.)
-    expect(chrome.scripting.calls.filter((c) => c.func.name !== "loadProbeInPage").map((c) => c.tabId)).toEqual([blocked]);
+    expect(chrome.scripting.calls.filter((c) => c.func.name !== "loadProbeInPage" && c.func.name !== "foreignExtensionInPage").map((c) => c.tabId)).toEqual([blocked]);
     expect(activations()).toEqual([]);
     // Once per tab; the main tab still uses the debugger.
     expect((await driver.readPage({ tab: "t3" })).note).toBeUndefined();

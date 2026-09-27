@@ -129,7 +129,7 @@ const { context, sw, extensionId, profile } = ext;
 const devtoolsPort = await waitFor(() => Number(readFileSync(join(profile, "DevToolsActivePort"), "utf8").split("\n")[0]), "DevToolsActivePort");
 const isPanelOf = (tab) => (url) => URL.canParse(url) && new URL(url).pathname === "/sidepanel.html" && new URL(url).searchParams.get("tab") === String(tab);
 const badgeOf = (tabId) => sw.evaluate(async (t) => chrome.action.getBadgeText({ tabId: t }), tabId);
-/** A tab's badge: its text and colour ("live" red, "elsewhere" grey, see voice-session.ts VOICE_BADGES). */
+/** A tab's badge: its text and colour ("live" red, "elsewhere" grey, as MUTE is too; see voice-session.ts VOICE_BADGES). */
 const badgeLook = (tabId) =>
   sw.evaluate(async (t) => {
     const text = await chrome.action.getBadgeText({ tabId: t });
@@ -271,6 +271,35 @@ try {
     await panelB.evaluate(`document.querySelector("#voice-bar .vb-stop").click()`);
     await waitFor(async () => (await badgeOf(ids.b)) === "", "stopped");
     return JSON.stringify({ session, a });
+  });
+
+  await step("muted in A: MUTE badges (grey) on A and on B looked at instead, B's notice says so; Use voice here in B keeps it muted", async () => {
+    await activate(ids.a);
+    await panelA.evaluate(`window.__pushToPanel({ type: "panel.voice" })`);
+    await waitFor(() => panelA.evaluate(`document.getElementById("voice-bar").dataset.phase === "listening"`), "A listening", { timeout: 10_000 });
+    await panelA.evaluate(`document.querySelector("#voice-bar .vb-mute").click()`);
+    await waitFor(async () => (await badgeLook(ids.a)) === "MUTE:elsewhere", "the grey MUTE badge on A");
+    const a = await panelA.evaluate(VOICE_LOOK);
+    assert.ok(a.bar.state === "muted" && !a.voiceLive && !a.bar.meter, JSON.stringify(a));
+    await activate(ids.b);
+    await waitFor(async () => (await badgeLook(ids.b)) === "MUTE:elsewhere", "the grey MUTE badge on B");
+    await waitFor(() => panelB.evaluate(`/Muted/.test(document.querySelector("#voice-bar .vb-detail").textContent)`), "B's notice to say it is muted");
+    const bNotice = await panelB.evaluate(VOICE_LOOK);
+    await panelB.evaluate(`document.querySelector("#voice-bar .vb-use").click()`);
+    await waitFor(() => panelB.evaluate(`document.getElementById("voice-bar").dataset.state === "muted"`), "B to run the session, muted", { timeout: 10_000 });
+    await waitFor(async () => (await badgeLook(ids.b)) === "MUTE:elsewhere" && (await badgeLook(ids.a)) === "", "the MUTE badge moved to B");
+    const b = await panelB.evaluate(VOICE_LOOK);
+    assert.equal(b.voiceLive, false, JSON.stringify(b));
+    assert.match(b.box.placeholder, /muted/i, JSON.stringify(b));
+    const session = await sw.evaluate(() => globalThis.__browsertodo.voiceSessions.view());
+    assert.equal(session.muted, true, JSON.stringify(session));
+    await panelB.screenshot(join(shots, "hands-free-tabs-B-muted.png"));
+    // Unmuted there, the badge is the live MIC again.
+    await panelB.evaluate(`document.querySelector("#voice-bar .vb-mute").click()`);
+    await waitFor(async () => (await badgeLook(ids.b)) === "MIC:live", "MIC on B once unmuted");
+    await panelB.evaluate(`document.querySelector("#voice-bar .vb-stop").click()`);
+    await waitFor(async () => (await badgeOf(ids.b)) === "", "stopped");
+    return JSON.stringify({ aMuted: a.bar, bNotice: bNotice.bar.detail, bMuted: b.bar, session });
   });
 } finally {
   for (const p of opened) p.close();

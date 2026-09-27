@@ -12,14 +12,17 @@
 // (merged into the same turn: one result, its answer says "(and: ...)"); a
 // control_request "interrupt" stops the model's request (an error result
 // "error_during_execution"), and the next stdin message starts a new turn;
-// a set_max_thinking_tokens control_request is echoed as a system/fake_thinking line.
+// a set_max_thinking_tokens control_request is echoed as a system/fake_thinking line;
+// set_model switches the model later init lines name (a model starting "bad-" is
+// refused with an error control_response, as Claude Code refuses one its probe fails).
 import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
 // Like real Claude Code, the init event names the model it runs (and comes again with every later turn).
 const modelAt = args.indexOf("--model");
-const init = () => out({ type: "system", subtype: "init", model: modelAt >= 0 ? args[modelAt + 1] : "fake", args, cwd: process.cwd(), nested: process.env.CLAUDECODE ?? null, child: process.env.CLAUDE_CODE_CHILD_SESSION ?? null });
+let model = modelAt >= 0 ? args[modelAt + 1] : "fake";
+const init = () => out({ type: "system", subtype: "init", model, args, cwd: process.cwd(), nested: process.env.CLAUDECODE ?? null, child: process.env.CLAUDE_CODE_CHILD_SESSION ?? null });
 init();
 let turns = 0;
 process.stdout.write("not json\n");
@@ -40,6 +43,11 @@ rl.on("line", (line) => {
   if (!line.trim()) return;
   const msg = JSON.parse(line);
   if (msg.type === "control_request") {
+    if (msg.request?.subtype === "set_model" && String(msg.request.model).startsWith("bad-")) {
+      out({ type: "control_response", response: { subtype: "error", request_id: msg.request_id, error: "API error: 404 · model not changed" } });
+      return;
+    }
+    if (msg.request?.subtype === "set_model") model = msg.request.model;
     out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id, response: { still_queued: [] } } });
     if (msg.request?.subtype === "interrupt" && current) current.interrupted = true;
     // Shown so tests can see it (real Claude Code only acks it).

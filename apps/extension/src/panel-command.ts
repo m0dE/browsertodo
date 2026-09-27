@@ -52,8 +52,8 @@ import type { VoiceSessionInfo } from "./voice-session.js";
 export type PanelMessage =
   /** tabId: the tab the panel belongs to (absent: the panel page opened as a tab, which follows its window's active tab). */
   | { type: "panel.hello"; windowId: number; tabId?: number }
-  /** Hands-free voice started or stopped listening in the panel; tabId: the tab its session belongs to; engine: the one it runs on. */
-  | { type: "panel.listening"; listening: boolean; tabId?: number; engine?: VoiceEngineId }
+  /** Hands-free voice started or stopped listening in the panel; tabId: the tab its session belongs to; engine: the one it runs on; muted: its microphone is muted. */
+  | { type: "panel.listening"; listening: boolean; tabId?: number; engine?: VoiceEngineId; muted?: boolean }
   /** End the hands-free session, whichever panel runs it (Stop, or Use voice here, in another tab's panel). */
   | { type: "panel.voiceStop" }
   /** The panel's page got or lost the keyboard focus; `draft`: the text in its box then (a recreated panel gets it back). */
@@ -98,6 +98,8 @@ interface PanelInfo {
   voiceTab: number | null;
   /** The engine its session runs on (null: not chosen yet). */
   engine: VoiceEngineId | null;
+  /** Its session's microphone is muted. */
+  muted: boolean;
   /** When it started listening (the latest one is the session, should two ever report at once). */
   since: number;
   /** The panel's page has the keyboard focus. */
@@ -123,7 +125,7 @@ export class PanelCommands {
 
   /** A side panel's UI port (after UiHub.attach accepted it). */
   attach(port: PanelPort): void {
-    const info: PanelInfo = { windowId: null, tabId: null, listening: false, voiceTab: null, engine: null, since: 0, focused: false, draft: "" };
+    const info: PanelInfo = { windowId: null, tabId: null, listening: false, voiceTab: null, engine: null, muted: false, since: 0, focused: false, draft: "" };
     this.panels.set(port, info);
     port.onDisconnect.addListener(() => {
       this.panels.delete(port);
@@ -147,6 +149,7 @@ export class PanelCommands {
         if (msg.listening && !info.listening) info.since = ++this.reports;
         info.listening = msg.listening;
         info.engine = msg.listening && (msg.engine === "realtime" || msg.engine === "standard") ? msg.engine : null;
+        info.muted = msg.listening && msg.muted === true;
         this.setVoiceTab(info, msg.listening && typeof msg.tabId === "number" ? msg.tabId : null);
       } else if (msg?.type === "panel.voiceStop") {
         this.stopVoice();
@@ -246,7 +249,8 @@ export class PanelCommands {
   voiceSession(): VoiceSessionInfo | null {
     let latest: PanelInfo | null = null;
     for (const p of this.panels.values()) if (p.voiceTab !== null && (!latest || p.since > latest.since)) latest = p;
-    return latest && latest.voiceTab !== null ? { tabId: latest.voiceTab, windowId: latest.windowId, host: latest.tabId, engine: latest.engine } : null;
+    if (!latest || latest.voiceTab === null) return null;
+    return { tabId: latest.voiceTab, windowId: latest.windowId, host: latest.tabId, engine: latest.engine, ...(latest.muted ? { muted: true as const } : {}) };
   }
 
   /** The panel's session is now in `tab` (null: none). */

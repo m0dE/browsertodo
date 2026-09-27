@@ -19,6 +19,8 @@ class FakeEngine implements HandsFreeEngine {
   stopped = false;
   notes: string[] = [];
   spoken: string[] = [];
+  /** Each setMuted call, in order. */
+  mutes: boolean[] = [];
   constructor(
     readonly id: VoiceEngineId,
     readonly events: EngineEvents,
@@ -34,6 +36,9 @@ class FakeEngine implements HandsFreeEngine {
   }
   hush(): void {}
   setTranscribing(): void {}
+  setMuted(muted: boolean): void {
+    this.mutes.push(muted);
+  }
   agentEvent(): void {}
   note(text: string): void {
     this.notes.push(text);
@@ -71,6 +76,9 @@ function panel(homeTab: number, opts: { engine?: VoiceEngineId } = {}) {
   const engines: FakeEngine[] = [];
   const looks: (HandsFreeLook | null)[] = [];
   const reports: [boolean, number | null, VoiceEngineId | null][] = [];
+  /** Whether each report said the microphone is muted. */
+  const mutedReports: boolean[] = [];
+  const sounds: string[] = [];
   const bar = new MiniElement("div");
   const deps: HandsFreeDeps = {
     voice: { state: "idle", attachHandsFree: () => {}, showHandsFree: (l) => void looks.push(l), setLevel: () => {}, showTip: () => {}, ensureMic: async () => true, shortcutLabel: null },
@@ -99,14 +107,17 @@ function panel(homeTab: number, opts: { engine?: VoiceEngineId } = {}) {
     answerApproval: async () => true,
     openBilling: () => {},
     signIn: () => {},
-    onActive: (on, tab, engine) => void reports.push([on, tab, engine]),
+    onActive: (on, tab, engine, muted) => {
+      reports.push([on, tab, engine]);
+      mutedReports.push(muted);
+    },
     stopRemote: vi.fn(),
     bar: bar as unknown as HTMLElement,
-    earcons: { play: () => {} },
+    earcons: { play: (kind) => void sounds.push(kind) },
   };
   const hf = initHandsFree(deps);
   const button = (cls: string) => find(bar, cls)!;
-  return { hf, deps, engines, looks, reports, bar, button };
+  return { hf, deps, engines, looks, reports, mutedReports, sounds, bar, button };
 }
 
 /** What the background says: the session runs in tab 1's panel, for tab 1, and the user looks at `viewing`. */
@@ -267,5 +278,120 @@ describe("hands-free voice seen from another tab's panel", () => {
     await settle();
     expect(t.engines.map((e) => e.id)).toEqual(["realtime"]);
     expect(t.hf.tab).toBe(2);
+  });
+});
+
+describe("hands-free voice muted", () => {
+  beforeAll(installMiniDom);
+
+  it("Mute on the bar: the engine stops taking the microphone, the bar goes 'Muted', the badge is told, a soft sound; Unmute undoes it", async () => {
+    const t = panel(1);
+    t.hf.toggle("button");
+    await settle();
+    const rt = t.engines[0]!;
+    const mute = t.button("vb-mute");
+    expect(mute.hidden).toBe(false);
+    expect(mute.getAttribute("aria-pressed")).toBe("false");
+    expect(mute.getAttribute("aria-label")).toBe("Mute the microphone · Alt+M");
+    mute.click();
+    expect(t.hf.muted).toBe(true);
+    expect(rt.mutes).toEqual([true]);
+    expect(t.bar.dataset.state).toBe("muted");
+    expect(t.bar.dataset.muted).toBe("true");
+    expect(find(t.bar, "vb-title")!.textContent).toBe("Muted");
+    expect(find(t.bar, "vb-meter")!.hidden).toBe(true);
+    expect(mute.getAttribute("aria-pressed")).toBe("true");
+    expect(mute.getAttribute("aria-label")).toBe("Unmute the microphone · Alt+M");
+    expect(t.reports.at(-1)).toEqual([true, 1, "realtime"]);
+    expect(t.mutedReports.at(-1)).toBe(true);
+    expect(t.looks.at(-1)).toMatchObject({ muted: true });
+    expect(t.sounds).toEqual(["start", "mute"]);
+    // Still on: the narrator speaking shows as speaking, the Mute still pressed.
+    rt.events.narrating();
+    expect(t.bar.dataset.state).toBe("speaking");
+    expect(t.bar.dataset.muted).toBe("true");
+    rt.events.said();
+    t.hf.toggleMute();
+    expect(rt.mutes).toEqual([true, false]);
+    expect(t.bar.dataset.state).toBe("listening");
+    expect(t.bar.dataset.muted).toBeUndefined();
+    expect(t.mutedReports.at(-1)).toBe(false);
+    expect(t.looks.at(-1)).toMatchObject({ muted: false });
+    expect(t.sounds).toEqual(["start", "mute", "unmute"]);
+  });
+
+  it("no Mute while it starts or when voice is off; toggling then does nothing", async () => {
+    const t = panel(1);
+    t.hf.toggleMute();
+    expect(t.hf.muted).toBe(false);
+    t.hf.toggle("button");
+    expect(t.button("vb-mute").hidden).toBe(true);
+    await settle();
+    expect(t.button("vb-mute").hidden).toBe(false);
+  });
+
+  it("the session ending unmutes: the next one starts with the microphone on", async () => {
+    const t = panel(1);
+    t.hf.toggle("button");
+    await settle();
+    t.hf.toggleMute();
+    t.hf.toggle("button");
+    expect(t.hf.active).toBe(false);
+    expect(t.hf.muted).toBe(false);
+    expect(t.reports.at(-1)).toEqual([false, null, null]);
+    expect(t.mutedReports.at(-1)).toBe(false);
+    t.hf.toggle("button");
+    await settle();
+    expect(t.hf.muted).toBe(false);
+    expect(t.engines[1]!.mutes).toEqual([]);
+  });
+
+  it("moved to another tab it stays muted (a move never turns the microphone on)", async () => {
+    const t = panel(1);
+    t.hf.toggle("button");
+    await settle();
+    const rt = t.engines[0]!;
+    t.hf.toggleMute();
+    t.hf.setSession(inTab1(2, { muted: true }));
+    await settle();
+    expect(t.bar.dataset.state).toBe("elsewhere");
+    expect(find(t.bar, "vb-detail")!.textContent).toMatch(/ · Muted$/);
+    // Mute is still there, looking at another tab.
+    expect(t.button("vb-mute").hidden).toBe(false);
+    expect(await rt.events.useThisTab()).toMatch(/^Moved/);
+    expect(t.hf.tab).toBe(2);
+    expect(t.hf.muted).toBe(true);
+    expect(rt.mutes).toEqual([true]);
+    expect(t.mutedReports.at(-1)).toBe(true);
+  });
+
+  it("Use voice here in another tab's panel: the session starts there muted, as it was", async () => {
+    const t = panel(2);
+    t.hf.setSession(inTab1(2, { muted: true }));
+    expect(find(t.bar, "vb-detail")!.textContent).toBe("Realtime · Muted · Not listening in this tab");
+    expect(t.button("vb-mute").hidden).toBe(true);
+    t.button("vb-use").click();
+    t.hf.setSession(null);
+    await settle();
+    const rt = t.engines[0]!;
+    // Muted before it opened the microphone: nothing was heard in between.
+    expect(rt.mutes[0]).toBe(true);
+    expect(t.hf.muted).toBe(true);
+    expect(t.bar.dataset.state).toBe("muted");
+    expect(t.mutedReports.at(-1)).toBe(true);
+  });
+
+  it("Realtime failing over to Standard keeps the microphone muted", async () => {
+    const t = panel(1);
+    t.hf.toggle("button");
+    await settle();
+    t.hf.toggleMute();
+    t.engines[0]!.events.failed({ kind: "unavailable", fallback: true, message: "Realtime is unavailable; using Standard." });
+    await settle();
+    const std = t.engines[1]!;
+    expect(std.id).toBe("standard");
+    expect(std.mutes).toEqual([true]);
+    expect(t.hf.muted).toBe(true);
+    expect(t.bar.dataset.state).toBe("muted");
   });
 });

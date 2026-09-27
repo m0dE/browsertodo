@@ -7,6 +7,9 @@
  * Each turn's own words (the input transcription) reach the panel paired with
  * the request sent for them (RealtimeTurns). Turn-taking and barge-in are
  * OpenAI's server VAD; local playback stops the moment the user speaks.
+ * Muted: the microphone's samples are dropped here and the client sends no
+ * audio (and clears the server's buffer), so muted time bills no input audio;
+ * the connection and the narrator's speech go on.
  */
 import { traceStart, type AgentEvent, type RealtimeVoiceId } from "@browsertodo/shared";
 import type { VoiceTracer } from "../trace/panel-trace.js";
@@ -52,6 +55,7 @@ export class RealtimeEngine implements HandsFreeEngine {
   private chunked = 0;
   private level = 0;
   private stopped = false;
+  private muted = false;
 
   constructor(private readonly deps: RealtimeEngineDeps) {
     const ev = deps.events;
@@ -139,6 +143,7 @@ export class RealtimeEngine implements HandsFreeEngine {
       this.client = null;
       return;
     }
+    if (this.muted) client.setMuted(true);
     const source = this.deps.createSource();
     this.source = source;
     await source.start((s) => this.onSamples(s));
@@ -165,6 +170,19 @@ export class RealtimeEngine implements HandsFreeEngine {
 
   setTranscribing(_on: boolean): void {
     // Not half-duplex: OpenAI's turn detection hears the user over the narrator.
+  }
+
+  setMuted(muted: boolean): void {
+    if (muted === this.muted) return;
+    this.muted = muted;
+    // A part-filled chunk is dropped either way: from before the mute, or silence.
+    this.chunks = [];
+    this.chunked = 0;
+    if (muted) {
+      this.level = 0;
+      this.deps.events.level(0);
+    }
+    this.client?.setMuted(muted);
   }
 
   agentEvent(ev: AgentEvent, now: number): void {
@@ -219,6 +237,7 @@ export class RealtimeEngine implements HandsFreeEngine {
   }
 
   private onSamples(s: Float32Array): void {
+    if (this.muted) return;
     this.chunks.push(s);
     this.chunked += s.length;
     this.level += (meterLevel(rms(s)) - this.level) * 0.35;

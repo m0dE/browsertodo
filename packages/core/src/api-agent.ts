@@ -193,7 +193,7 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
     mediaPaths: opts.mediaPaths,
     sleep,
     ...(opts.onTrace ? { onTrace: trace } : {}),
-    ...(opts.scheduleTask ? { scheduleTask: opts.scheduleTask } : {}),
+    ...(opts.todo ? { todo: opts.todo } : {}),
     ...(opts.memory ? { memory: opts.memory } : {}),
   });
 

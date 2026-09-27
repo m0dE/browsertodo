@@ -6,7 +6,8 @@
  * browser's own speech (Speaker). Half-duplex: no dictation runs while a
  * line is said; speech long enough (HANDS_FREE.bargeInMs) cuts the line off,
  * and the next dictation starts with the audio just before, so the first
- * words are kept.
+ * words are kept. Muted: the tee drops what the microphone hears, so neither
+ * the detector nor a dictation gets any (no transcription request goes out).
  */
 import { errorMessage, stopwatch, traceStart, traceText, VOICE_LIMITS, VOICE_TUNING, type AgentEvent, type TraceValue } from "@browsertodo/shared";
 import type { VoiceTracer } from "../trace/panel-trace.js";
@@ -50,7 +51,7 @@ export class StandardEngine implements HandsFreeEngine {
   private dictation: Dictation | null = null;
   private readonly timings = new WeakMap<Dictation, UtteranceTiming>();
   private transcribing = false;
-  private readonly detector = new SpeechDetector();
+  private detector = new SpeechDetector();
   private readonly endpointer = new Endpointer(VOICE_TUNING.frameMs);
   private readonly frameSamples = Math.round((VOICE_LIMITS.sampleRate * VOICE_TUNING.frameMs) / 1000);
   private pending = new Float32Array(0);
@@ -64,11 +65,13 @@ export class StandardEngine implements HandsFreeEngine {
   /** hush() cut a line off: the next dictation replays the audio just before. */
   private cutIn = false;
   private stopped = false;
+  private muted = false;
 
   constructor(private readonly deps: StandardEngineDeps) {}
 
   async start(): Promise<void> {
     this.tee = new MicTee(this.deps.createSource(), Math.round((VOICE_LIMITS.sampleRate * BARGE_IN_REPLAY_MS) / 1000));
+    this.tee.setMuted(this.muted);
     await this.tee.start((s) => this.onSamples(s));
   }
 
@@ -115,6 +118,27 @@ export class StandardEngine implements HandsFreeEngine {
     this.cutIn = false;
   }
 
+  setMuted(muted: boolean): void {
+    if (muted === this.muted) return;
+    this.muted = muted;
+    this.tee?.setMuted(muted);
+    if (!muted) {
+      if (this.transcribing && !this.dictation) this.listen(false);
+      return;
+    }
+    // What was being said is dropped, and listening starts over from silence when unmuted.
+    this.dictation?.cancel();
+    this.dictation = null;
+    this.detector = new SpeechDetector();
+    this.endpointer.reset();
+    this.pending = new Float32Array(0);
+    this.reported = false;
+    this.loudFrames = 0;
+    this.cutIn = false;
+    this.level = 0;
+    this.deps.events.level(0);
+  }
+
   agentEvent(_ev: AgentEvent, _now: number): void {
     // The panel picks the lines to say (narration.ts).
   }
@@ -127,7 +151,7 @@ export class StandardEngine implements HandsFreeEngine {
 
   /** Starts the next utterance's dictation (with the audio just before, after a barge-in). */
   private listen(replay: boolean): void {
-    if (!this.tee || this.stopped) return;
+    if (!this.tee || this.stopped || this.muted) return;
     const timing: UtteranceTiming = { vadEnd: null, requests: 0, lastStart: 0, lastMs: 0, lastKB: 0 };
     const d = new Dictation({
       source: this.tee.branch({ replay }),

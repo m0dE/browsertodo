@@ -1,5 +1,5 @@
 /** Headless Claude Code in the helper, behind the Brain interface. */
-import { errorMessage, HelperErrorCode, rpcErrorCode, type AgentEvent, type HelperInfo, type HelperMethods, type HelperNotifications, type TaskRunResult } from "@browsertodo/shared";
+import { errorMessage, HelperErrorCode, rpcErrorCode, type AgentEvent, type HelperInfo, type HelperMethods, type HelperNotifications, type RunConfig, type TaskRunResult, type TraceEvent } from "@browsertodo/shared";
 import { HELPER_CALL_TIMEOUT_MS } from "../helper-link.js";
 import { endedRun, SessionEndedError, type Brain, type BrainContinueOptions, type BrainRun, type BrainStartOptions } from "./brains.js";
 
@@ -21,11 +21,24 @@ export class ClaudeCodeBrain implements Brain {
   readonly kind = "claude-code" as const;
   /** Task sessions alive in the helper, as it last reported them. */
   private open = new Set<string>();
+  /** Sessions whose turn is running: a run listens to their events. */
+  private readonly running = new Set<string>();
 
   constructor(
     private readonly helper: HelperLike,
-    private readonly opts: { onSessionsChanged?: () => void } = {},
+    private readonly opts: {
+      onSessionsChanged?: () => void;
+      /**
+       * A timing of a session whose turn already ended. Claude Code runs task_complete as soon as the
+       * model wrote it, so the turn ends before that model call's stream closes (and its model.call
+       * timing is sent); Claude Code's own summary of the turn (claude.result) comes later still.
+       */
+      onLateTrace?: (sessionId: string, trace: TraceEvent) => void;
+    } = {},
   ) {
+    helper.onNotification("helper.event", (p) => {
+      if (p.event.type === "trace" && !this.running.has(p.sessionId)) this.opts.onLateTrace?.(p.sessionId, p.event.trace);
+    });
     helper.onNotification("helper.sessions", (p) => this.setOpen(p.open));
     helper.onInfo?.((info) => this.setOpen(info?.openSessions ?? []));
     helper.onDisconnect(() => this.setOpen([]));
@@ -49,6 +62,10 @@ export class ClaudeCodeBrain implements Brain {
     );
   }
 
+  prewarm(config: RunConfig): void {
+    this.helper.call("helper.prewarm", { config }, { timeoutMs: HELPER_CALL_TIMEOUT_MS }).catch(() => {});
+  }
+
   isOpen(sessionId: string): boolean {
     return this.open.has(sessionId);
   }
@@ -67,7 +84,8 @@ export class ClaudeCodeBrain implements Brain {
   }
 
   private run(sessionId: string, onEvent: (e: AgentEvent) => void, call: () => Promise<TaskRunResult>): BrainRun {
-    const cleanups: (() => void)[] = [];
+    this.running.add(sessionId);
+    const cleanups: (() => void)[] = [() => this.running.delete(sessionId)];
     cleanups.push(
       this.helper.onNotification("helper.event", (p) => {
         if (p.sessionId === sessionId) onEvent(p.event);

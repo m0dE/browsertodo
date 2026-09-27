@@ -131,6 +131,8 @@ export interface UiState {
    * answers "Add this computer's memory to <account>?" (memory.syncChoice). Absent: nothing to ask.
    */
   memoryQuestion?: { account: string };
+  /** Past chats being summarized into episodes in the background (Settings > Memory shows it). Absent: none. */
+  memoryBackfill?: { done: number; total: number };
 }
 
 export type UiRequest =
@@ -185,6 +187,8 @@ export type UiRequest =
   | { type: "chat.bind"; sessionId: string; tabId: number }
   /** Undo on a scheduled card: the task the agent put in the TODO list (schedule_task) is deleted, and the card says so. */
   | { type: "chat.undoScheduled"; sessionId: string; taskId: string }
+  /** Undo on a changed or cancelled card: the task the agent changed (update_scheduled_task, cancel_scheduled_task) goes back as it was. */
+  | { type: "chat.undoTaskChange"; sessionId: string; changeId: string }
   /** Undo on a "Remembered" note: that memory change is undone (the entry is as it was before), and the note says so. */
   | { type: "memory.undo"; sessionId: string; changeId: string }
   /** Memory on or off for one conversation (the composer's menu). */
@@ -297,6 +301,7 @@ export interface UiResults {
   "run.newChat": { ok: boolean };
   "chat.bind": UiState;
   "chat.undoScheduled": { ok: boolean };
+  "chat.undoTaskChange": { ok: boolean };
   "memory.undo": { ok: boolean };
   "chat.setMemory": { session: SessionInfo };
   /** sync: whether memory syncs with the account (absent: this build has no sync). */

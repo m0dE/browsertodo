@@ -49,6 +49,8 @@ export function buildClaudeArgs(opts: { systemPrompt: string; mcpConfigPath: str
 interface StreamLine {
   type?: unknown;
   subtype?: unknown;
+  /** control_response lines. */
+  response?: { subtype?: unknown; request_id?: unknown; error?: unknown };
   is_error?: unknown;
   result?: unknown;
   model?: unknown;
@@ -82,6 +84,16 @@ export function userMessageLine(text: string): string {
  */
 export function thinkingLine(requestId: string, maxThinkingTokens: number | null): string {
   return JSON.stringify({ type: "control_request", request_id: requestId, request: { subtype: "set_max_thinking_tokens", max_thinking_tokens: maxThinkingTokens } }) + "\n";
+}
+
+/**
+ * The stream-json control request that switches the session's model from its next request on.
+ * Claude Code first checks the model with a one-token request, answers the control request (an
+ * error when the check failed: the model stays), and only then reads the next stdin message
+ * (measured with Claude Code 2.1.283).
+ */
+export function modelLine(requestId: string, model: string): string {
+  return JSON.stringify({ type: "control_request", request_id: requestId, request: { subtype: "set_model", model } }) + "\n";
 }
 
 /** The stream-json control request that stops Claude Code's current model request (it answers with an error result, then reads stdin on). */
@@ -179,6 +191,66 @@ export function withoutBase64Data(value: unknown): unknown {
   return out;
 }
 
+/** What a Claude Code session is started with (BrainContext's part of it). */
+export interface WarmSpec {
+  systemPrompt: string;
+  mcpConfigPath: string;
+  allowedTools: string[];
+  model?: string;
+  /** The Reasoning setting's thinking; absent: DEFAULT_REASONING's. */
+  thinking?: boolean;
+}
+
+/** A Claude Code process started ahead of its session (ClaudeCodeBrain.warm), waiting for its first message. */
+export class WarmClaude {
+  private readonly startedAt = Date.now();
+  private exited = false;
+  private taken = false;
+  /** Settles when the process has exited. */
+  readonly closed: Promise<void>;
+
+  constructor(
+    readonly args: readonly string[],
+    private readonly child: ChildProcess,
+  ) {
+    this.closed = new Promise<void>((resolve) => {
+      child.once("close", () => resolve());
+      child.once("exit", () => {
+        this.exited = true;
+        resolve();
+      });
+      child.once("error", () => {
+        this.exited = true;
+        resolve();
+      });
+    });
+    child.stdin?.on("error", () => {});
+  }
+
+  get ageMs(): number {
+    return Date.now() - this.startedAt;
+  }
+
+  /** Alive and not taken yet. */
+  get ready(): boolean {
+    return !this.exited && !this.taken;
+  }
+
+  /** The process, for a session started with exactly these args; null otherwise. */
+  take(args: readonly string[]): ChildProcess | null {
+    if (!this.ready || args.length !== this.args.length || args.some((a, i) => a !== this.args[i])) return null;
+    this.taken = true;
+    return this.child;
+  }
+
+  /** Ends the process unless a session took it. */
+  stop(): void {
+    if (this.taken) return;
+    this.taken = true;
+    killTree(this.child);
+  }
+}
+
 export class ClaudeCodeBrain implements Brain {
   constructor(
     private readonly opts: {
@@ -204,30 +276,61 @@ export class ClaudeCodeBrain implements Brain {
     return this.opts.persistent === true;
   }
 
-  run(ctx: BrainContext): Promise<void> {
-    // The extension's model setting wins over BROWSERTODO_MODEL / "sonnet".
-    const model = ctx.model?.trim() || this.opts.model;
-    const forced = this.opts.thinking;
-    const thinking = forced ?? ctx.reasoning?.thinking ?? DEFAULT_REASONING === "thorough";
+  /** The model and thinking a session starts with, and Claude Code's args for them. */
+  private plan(spec: WarmSpec): { args: string[]; model: string; thinking: boolean } {
+    // The extension's model setting wins over BROWSERTODO_MODEL / DEFAULT_CLAUDE_MODEL.
+    const model = spec.model?.trim() || this.opts.model;
+    const thinking = this.opts.thinking ?? spec.thinking ?? DEFAULT_REASONING === "thorough";
     const args = buildClaudeArgs({
-      systemPrompt: ctx.systemPrompt,
-      mcpConfigPath: ctx.mcpConfigPath,
-      allowedTools: ctx.allowedTools,
+      systemPrompt: spec.systemPrompt,
+      mcpConfigPath: spec.mcpConfigPath,
+      allowedTools: spec.allowedTools,
       model,
       ...(thinking ? {} : { thinking: false }),
     });
-    ctx.log({ type: "claude_start", claudePath: this.opts.claudePath, model, thinking, allowedTools: ctx.allowedTools });
+    return { args, model, thinking };
+  }
+
+  private spawnClaude(args: string[], mcpConfigPath: string): ChildProcess {
+    return spawn(this.opts.claudePath, [...(this.opts.prefixArgs ?? []), ...args], {
+      cwd: dirname(mcpConfigPath),
+      windowsHide: true,
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: claudeEnv(),
+    });
+  }
+
+  /**
+   * Starts Claude Code ahead of a session's first message (TaskRunner.prewarm): a session started
+   * with the same args then skips starting the process and its MCP server (measured with Claude
+   * Code 2.1.283: 660-745 ms from the first message to the model request, 56-70 ms when started
+   * ahead). It uses no tokens while it waits: Claude Code calls the model only for a message.
+   */
+  warm(spec: WarmSpec): WarmClaude {
+    const { args } = this.plan(spec);
+    return new WarmClaude(args, this.spawnClaude(args, spec.mcpConfigPath));
+  }
+
+  run(ctx: BrainContext): Promise<void> {
+    const { args, model: requested, thinking } = this.plan({ ...ctx, ...(ctx.reasoning ? { thinking: ctx.reasoning.thinking } : {}) });
+    const forced = this.opts.thinking;
+    const warmAgeMs = ctx.warm ? Math.round(ctx.warm.ageMs) : 0;
+    const warm = ctx.warm && !ctx.signal.aborted ? ctx.warm.take(args) : null;
+    ctx.warm?.stop();
+    ctx.log({
+      type: "claude_start",
+      claudePath: this.opts.claudePath,
+      model: requested,
+      thinking,
+      allowedTools: ctx.allowedTools,
+      ...(ctx.warm ? { prewarmed: warm ? { ageMs: warmAgeMs } : "not used: started with other settings" } : {}),
+    });
     return new Promise<void>((resolve, reject) => {
       if (ctx.signal.aborted) return resolve();
       let child: ChildProcess;
       try {
-        child = spawn(this.opts.claudePath, [...(this.opts.prefixArgs ?? []), ...args], {
-          cwd: dirname(ctx.mcpConfigPath),
-          windowsHide: true,
-          shell: false,
-          stdio: ["pipe", "pipe", "pipe"],
-          env: claudeEnv(),
-        });
+        child = warm ?? this.spawnClaude(args, ctx.mcpConfigPath);
       } catch (e) {
         return reject(e);
       }
@@ -235,7 +338,7 @@ export class ClaudeCodeBrain implements Brain {
       // Live text goes out in ~50 ms batches; every other event first sends what is pending.
       const out = new DeltaBatcher(ctx.emit);
       const timer = new ClaudeStreamTimer((trace) => out.emit({ type: "trace", trace: { ...trace, src: "helper" } }));
-      timer.spawned();
+      timer.spawned(warm ? { prewarmedMs: warmAgeMs } : undefined);
       const stdin = child.stdin!;
       stdin.on("error", (e) => ctx.log({ type: "claude_stdin_error", message: e.message }));
 
@@ -307,6 +410,30 @@ export class ClaudeCodeBrain implements Brain {
           if (!change.thinking) ctx.log({ type: "claude_thinking_kept", why: `${change.why}: this session started with thinking on, which stays on` });
         });
       }
+      /** Model switches waiting for Claude Code's answer, by request id. */
+      const switching = new Map<string, string>();
+      let model = requested;
+      ctx.onModelChange?.((next) => {
+        if (!writable()) return;
+        const id = `model-${switching.size + 1}-${Date.now()}`;
+        switching.set(id, next);
+        ctx.log({ type: "claude_model", model: next });
+        stdin.write(modelLine(id, next));
+      });
+      /** Claude Code's answer to a model switch: the chat says which model the session runs now. */
+      const modelSwitched = (response: NonNullable<StreamLine["response"]>): AgentEvent | null => {
+        const id = typeof response.request_id === "string" ? response.request_id : "";
+        const next = switching.get(id);
+        if (next === undefined) return null;
+        switching.delete(id);
+        if (response.subtype === "success") {
+          model = next;
+          return { type: "status", text: `Switched the model to ${next}` };
+        }
+        const why = typeof response.error === "string" && response.error.trim() ? plainErrorText(response.error.trim()) : "refused";
+        ctx.log({ type: "claude_model_refused", model: next, error: why });
+        return { type: "status", text: `The model was not switched to ${next} (${why}): this session keeps ${model}` };
+      };
       send(ctx.prompt);
       ctx.input.onMessage((text) => {
         ctx.log({ type: "claude_user_message", kind: "followup", chars: text.length });
@@ -347,6 +474,10 @@ export class ClaudeCodeBrain implements Brain {
           raiseNow();
           // Claude Code repeats its init event for every turn; "started" is said once per session.
           const ev = asStreamLine(event);
+          if (ev?.type === "control_response" && ev.response) {
+            const said = modelSwitched(ev.response);
+            if (said) out.emit(said);
+          }
           const isInit = ev?.type === "system" && ev.subtype === "init";
           const isResult = ev?.type === "result";
           // The interrupted request ends with an error result: expected, not a failure to show.

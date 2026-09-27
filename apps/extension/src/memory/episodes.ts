@@ -14,6 +14,14 @@
  * worker start (alarms may not survive a browser restart). The writer never blocks a chat: it runs on the alarm,
  * failures are logged and retried at most MAX_EPISODE_ATTEMPTS times, then dropped.
  *
+ * Backfill: conversations from before the writer existed (or while it was off) have no episode. At a worker start
+ * (resume), once per BACKFILL_VERSION, the History's ended conversations of the last BACKFILL_DAYS that have none are
+ * listed, newest first, at most MAX_BACKFILL_SESSIONS, and kept in the same stored state; they are written one at a
+ * time, BACKFILL_GAP_MS apart, only when nothing in the queue is due and no run is going on (deps.busy), by the same
+ * pass as any other (the same checks, the conversation's own brain's writer, metered the same way). The list
+ * survives worker restarts; turning memory or Episodes off drops it, and a later worker start lists again.
+ * backfillProgress() is what Settings > Memory shows ("Summarising past chats: 12/40").
+ *
  * Nothing is written while memory is paused, when the conversation's memory is off, when the user turned Episodes
  * off (Settings > Memory: that stops the whole pass), for a brain without a writer, for a conversation too short to
  * matter (MIN_EPISODE_TRANSCRIPT_CHARS), or when nothing happened since it was last summarized. Facts obey their
@@ -61,6 +69,14 @@ export const EPISODE_TASK_DELAY_MS = 30_000;
 export const EPISODE_RETRY_MS = 5 * 60_000;
 /** Tries per summary before it is dropped. */
 export const MAX_EPISODE_ATTEMPTS = 3;
+/** Bump to list the past conversations without an episode again (a new writer worth running over them). */
+export const BACKFILL_VERSION = 1;
+/** How far back the backfill looks. */
+export const BACKFILL_DAYS = 30;
+/** Most past conversations one backfill writes (the newest). */
+export const MAX_BACKFILL_SESSIONS = 40;
+/** Between two backfill summaries, and from a worker start to the first (Chrome's shortest alarm delay). */
+export const BACKFILL_GAP_MS = 30_000;
 /** How long a tool call's arguments read in the transcript. */
 const ACTION_ARGS_CHARS = 160;
 
@@ -93,20 +109,42 @@ interface EpisodeJob {
   task?: { instructions: string; account: string | null };
 }
 
+/** Past conversations still to summarize (newest first), and how many were listed. */
+interface Backfill {
+  pending: { sessionId: string; attempts: number }[];
+  total: number;
+  /** When the next one may be written (epoch ms). */
+  nextAt: number;
+}
+
 interface WriterState {
   queue: EpisodeJob[];
   /** Each conversation's last event already summarized (its time), oldest first; at most MAX_SESSIONS. */
   written: Record<string, string>;
+  /** The backfill under way, if any. */
+  backfill?: Backfill;
+  /** The BACKFILL_VERSION whose backfill was listed (done, or under way). */
+  backfilled?: number;
+}
+
+/** How far the backfill is: conversations settled (written, skipped or given up) of all it listed. */
+export interface BackfillProgress {
+  done: number;
+  total: number;
 }
 
 export interface EpisodeWriterDeps {
   store: Pick<MemoryStore, "list" | "put" | "putEpisode">;
-  sessions: Pick<SessionStore, "get" | "eventsOf" | "note">;
+  sessions: Pick<SessionStore, "get" | "eventsOf" | "note" | "list">;
   settings(): Promise<Pick<ExtensionSettings, "memoryPaused" | "memoryKindsOff">>;
   /** The writer's call for a conversation on this brain (null: that brain has none). */
   summarizer(brain: SessionInfo["brain"]): Summarize | null;
   /** The EPISODE_ALARM alarm: set to fire at `when` (epoch ms), or cleared. */
   alarms: { set(when: number): Promise<void>; clear(): Promise<void> };
+  /** A run is going on: the backfill waits (absent: never). */
+  busy?(): boolean;
+  /** The backfill's progress changed (Settings > Memory shows it). */
+  onBackfillProgress?(): void;
   /** Default chrome.storage.local (looked up lazily). */
   storage?: StorageLike;
   now?(): number;
@@ -148,9 +186,48 @@ export class EpisodeWriter {
     return true;
   }
 
-  /** A worker start: the alarm is set again for what is queued (alarms may not survive a browser restart). */
+  /**
+   * A worker start: the past conversations without an episode are listed for the backfill (once per
+   * BACKFILL_VERSION), and the alarm is set again for what is queued (alarms may not survive a browser restart).
+   */
   async resume(): Promise<void> {
+    await this.planBackfill().catch((err: unknown) => this.deps.log(`episode backfill not listed: ${errorMessage(err)}`));
+    await this.reschedule();
+  }
+
+  /** The backfill's progress while it runs; null when there is none. */
+  async backfillProgress(): Promise<BackfillProgress | null> {
+    const b = (await this.state()).backfill;
+    return b ? { done: b.total - b.pending.length, total: b.total } : null;
+  }
+
+  private async reschedule(): Promise<void> {
     await this.schedule().catch((err: unknown) => this.deps.log(`episode alarm not set: ${errorMessage(err)}`));
+  }
+
+  /**
+   * Lists the ended conversations of the last BACKFILL_DAYS with no episode (none written, none in memory, none
+   * queued; a brain with a writer; memory on in them), newest first, at most MAX_BACKFILL_SESSIONS. Not while
+   * memory or Episodes are off: a later worker start tries again.
+   */
+  private async planBackfill(): Promise<void> {
+    const st = await this.state();
+    if (st.backfill || st.backfilled === BACKFILL_VERSION) return;
+    if (offIn(await this.deps.settings())) return;
+    const since = this.now() - BACKFILL_DAYS * 86_400_000;
+    const summarized = new Set((await this.deps.store.list()).flatMap((e) => (e.kind === "episode" && e.source.sessionId ? [e.source.sessionId] : [])));
+    const ids = (await this.deps.sessions.list(MAX_SESSIONS))
+      .filter((s) => s.endedAt && !s.memoryOff && Date.parse(s.firstStartedAt ?? s.startedAt) >= since && this.deps.summarizer(s.brain))
+      .filter((s) => !summarized.has(s.sessionId) && !st.written[s.sessionId] && !st.queue.some((j) => j.sessionId === s.sessionId))
+      .slice(0, MAX_BACKFILL_SESSIONS)
+      .map((s) => s.sessionId);
+    await this.mutate((s) => {
+      if (s.backfill || s.backfilled === BACKFILL_VERSION) return;
+      s.backfilled = BACKFILL_VERSION;
+      if (ids.length) s.backfill = { pending: ids.map((sessionId) => ({ sessionId, attempts: 0 })), total: ids.length, nextAt: this.now() + BACKFILL_GAP_MS };
+    });
+    if (ids.length) this.deps.log(`episode backfill: ${ids.length} past conversation(s) to summarize`);
+    this.progressed();
   }
 
   /** Writes every summary that is due, one at a time, then sets the alarm for the next. One pass at a time. */
@@ -164,18 +241,62 @@ export class EpisodeWriter {
       for (;;) {
         const job = (await this.state()).queue.filter((j) => j.dueAt <= this.now()).sort((a, b) => a.dueAt - b.dueAt)[0];
         if (!job) break;
-        let outcome: Outcome;
-        try {
-          outcome = await this.write(job);
-        } catch (err) {
-          outcome = { kind: "fail", why: errorMessage(err) };
-        }
-        await this.settle(job, outcome);
+        await this.settle(job, await this.attempt(job));
       }
+      // The backfill's next conversation: only once nothing else is due, one per BACKFILL_GAP_MS.
+      await this.backfillNext();
     } catch (err) {
       this.deps.log(`episodes: ${errorMessage(err)}`);
     }
-    await this.resume();
+    await this.reschedule();
+  }
+
+  private async attempt(job: EpisodeJob): Promise<Outcome> {
+    try {
+      return await this.write(job);
+    } catch (err) {
+      return { kind: "fail", why: errorMessage(err) };
+    }
+  }
+
+  /** Writes the backfill's next conversation when it is due and no run is going on; drops the backfill when memory is off. */
+  private async backfillNext(): Promise<void> {
+    const b = (await this.state()).backfill;
+    if (!b || b.nextAt > this.now()) return;
+    if (offIn(await this.deps.settings())) {
+      await this.mutate((s) => {
+        delete s.backfill;
+        delete s.backfilled;
+      });
+      this.deps.log("episode backfill dropped: memory or Episodes are off (listed again at a later start)");
+      return this.progressed();
+    }
+    if (this.deps.busy?.()) {
+      await this.mutate((s) => void (s.backfill && (s.backfill.nextAt = this.now() + BACKFILL_GAP_MS)));
+      return;
+    }
+    const item = b.pending[0]!;
+    const outcome = await this.attempt({ sessionId: item.sessionId, dueAt: this.now(), attempts: item.attempts });
+    const retry = outcome.kind === "fail" && item.attempts + 1 < MAX_EPISODE_ATTEMPTS;
+    const said =
+      outcome.kind === "done" ? outcome.why : outcome.kind === "wait" ? "running again (its own turn queues it)" : outcome.kind === "skip" ? `skipped, ${outcome.why}` : `failed${retry ? "" : ", dropped"}: ${outcome.why}`;
+    this.deps.log(`episode backfill ${item.sessionId}: ${said}`);
+    await this.mutate((s) => {
+      if (!s.backfill) return;
+      const rest = s.backfill.pending.filter((p) => p.sessionId !== item.sessionId);
+      s.backfill.pending = retry ? [...rest, { sessionId: item.sessionId, attempts: item.attempts + 1 }] : rest;
+      s.backfill.nextAt = this.now() + BACKFILL_GAP_MS;
+      if (!s.backfill.pending.length) delete s.backfill;
+    });
+    this.progressed();
+  }
+
+  private progressed(): void {
+    try {
+      this.deps.onBackfillProgress?.();
+    } catch {
+      /* the UI's push is not the writer's problem */
+    }
   }
 
   /** The job's queue entry after a pass (unless a later turn queued it again meanwhile). */
@@ -273,16 +394,16 @@ export class EpisodeWriter {
 
   /** Why nothing may be written for this conversation now, or null. */
   private async offReason(sessionId: string): Promise<string | null> {
-    const settings = await this.deps.settings();
-    if (settings.memoryPaused) return "memory is paused";
-    if (settings.memoryKindsOff.includes("episode")) return "episodes are off in Settings";
+    const off = offIn(await this.deps.settings());
+    if (off) return off;
     const session = await this.deps.sessions.get(sessionId);
     if (!session) return "the conversation is gone";
     return session.memoryOff ? "memory is off in this chat" : null;
   }
 
   private async schedule(): Promise<void> {
-    const due = (await this.state()).queue.map((j) => j.dueAt);
+    const st = await this.state();
+    const due = [...st.queue.map((j) => j.dueAt), ...(st.backfill ? [st.backfill.nextAt] : [])];
     if (due.length) await this.deps.alarms.set(Math.min(...due));
     else await this.deps.alarms.clear();
   }
@@ -297,9 +418,13 @@ export class EpisodeWriter {
 
   private async state(): Promise<WriterState> {
     const got = (await this.storage().get(EPISODE_QUEUE_KEY))[EPISODE_QUEUE_KEY] as Partial<WriterState> | undefined;
+    const b = got?.backfill;
+    const pending = Array.isArray(b?.pending) ? b.pending.filter((p) => typeof p?.sessionId === "string" && typeof p.attempts === "number") : [];
     return {
       queue: Array.isArray(got?.queue) ? got.queue.filter((j) => typeof j?.sessionId === "string" && typeof j.dueAt === "number") : [],
       written: got?.written && typeof got.written === "object" ? { ...got.written } : {},
+      ...(pending.length ? { backfill: { pending, total: Math.max(pending.length, Number(b!.total) || 0), nextAt: Number(b!.nextAt) || 0 } } : {}),
+      ...(typeof got?.backfilled === "number" ? { backfilled: got.backfilled } : {}),
     };
   }
 
@@ -371,6 +496,12 @@ function entriesToShow(entries: readonly MemoryEntry[], sessionId: string, lines
     .sort((a, b) => b.s - a.s || b.e.updatedAt.localeCompare(a.e.updatedAt))
     .slice(0, MAX_WRITER_EXISTING_ENTRIES)
     .map((x) => x.e);
+}
+
+/** Why no episode may be written at all now (memory paused, Episodes off), or null. */
+function offIn(settings: Pick<ExtensionSettings, "memoryPaused" | "memoryKindsOff">): string | null {
+  if (settings.memoryPaused) return "memory is paused";
+  return settings.memoryKindsOff.includes("episode") ? "episodes are off in Settings" : null;
 }
 
 function firstLine(text: string): string {

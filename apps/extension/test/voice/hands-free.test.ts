@@ -206,3 +206,73 @@ describe("hands-free: barge-in, cancel, stop words, silence", () => {
     expect(run([{ type: "stop", reason: "shortcut" }]).effects).toEqual([]);
   });
 });
+
+describe("hands-free: mute", () => {
+  const mute = (muted: boolean, now: number): HandsFreeEvent => ({ type: "mute", muted, now });
+
+  it("mute and unmute tell the engine once each; the phase stays what it was (listening or working)", () => {
+    const m = run([mute(true, 100)], started());
+    expect(m.effects).toEqual([{ type: "mute", muted: true }]);
+    expect(m.state).toMatchObject({ phase: "listening", muted: true, lastActivityAt: 100 });
+    expect(run([mute(true, 200)], m.state).effects).toEqual([]);
+    const working = run([{ type: "agent", working: true, now: 300 }], m.state).state;
+    expect(working).toMatchObject({ phase: "working", muted: true });
+    const u = run([mute(false, 400)], working);
+    expect(u.effects).toEqual([{ type: "mute", muted: false }]);
+    expect(u.state).toMatchObject({ phase: "working", muted: false });
+    expect(run([mute(false, 500)], u.state).effects).toEqual([]);
+  });
+
+  it("does nothing while off; a session ending unmutes (a new one starts unmuted unless asked)", () => {
+    expect(run([mute(true, 0)])).toEqual({ state: initialHandsFree(), effects: [] });
+    const ended = run([mute(true, 100), { type: "stop", reason: "button" }], started());
+    expect(ended.state.muted).toBe(false);
+    expect(run([{ type: "start", now: 200, halfDuplex: true }], ended.state).state.muted).toBe(false);
+    // A session moved to another panel keeps its mute: it starts muted, and the engine is told.
+    const moved = run([{ type: "start", now: 0, halfDuplex: false, muted: true }]);
+    expect(moved.state).toMatchObject({ phase: "listening", muted: true });
+    expect(moved.effects).toEqual([{ type: "transcribe", on: true }, { type: "mute", muted: true }]);
+  });
+
+  it("muted, the user's speech is not taken (a late detector event cannot cut a line off or hold a message)", () => {
+    const m = run([mute(true, 100)], started()).state;
+    expect(run([{ type: "speech", now: 200 }], m)).toEqual({ state: m, effects: [] });
+    const speaking = run([{ type: "say", text: "Opening mail", now: 300 }], m).state;
+    expect(speaking.phase).toBe("speaking");
+    expect(run([{ type: "speech", now: 400 }], speaking).effects).toEqual([]);
+  });
+
+  it("lines are still said while muted (the agent's updates go on)", () => {
+    const m = run([mute(true, 100), { type: "agent", working: true, now: 150 }], started()).state;
+    const r = run([{ type: "say", text: "Opening mail", now: 200 }], m);
+    expect(r.effects).toEqual([{ type: "transcribe", on: false }, { type: "speak", text: "Opening mail" }]);
+    expect(run([{ type: "said", now: 300 }], r.state).state).toMatchObject({ phase: "working", muted: true });
+  });
+
+  it("muting mid-utterance: the user no longer counts as speaking, and a held message goes out after the window", () => {
+    const talking = run([{ type: "speech", now: 100 }], started()).state;
+    expect(talking.userSpeaking).toBe(true);
+    // A line waiting for the user to finish is said as they mute.
+    const waiting = run([{ type: "say", text: "Done", now: 150 }], talking);
+    expect(waiting.effects).toEqual([]);
+    const m = run([mute(true, 200)], waiting.state);
+    expect(m.state).toMatchObject({ userSpeaking: false, phase: "speaking", queued: null });
+    expect(m.effects).toEqual([{ type: "mute", muted: true }, { type: "transcribe", on: false }, { type: "speak", text: "Done" }]);
+    // The sending window held by more speech opens again on mute, so what was said is not stuck.
+    const held = run([heard("Open Gmail", 1000), { type: "speech", now: 1100 }], started()).state;
+    expect(held).toMatchObject({ phase: "sending", sendAt: null });
+    const muted = run([mute(true, 1200)], held).state;
+    expect(muted.sendAt).toBe(1200 + HANDS_FREE.sendDelayMs);
+    expect(run([{ type: "tick", now: 1200 + HANDS_FREE.sendDelayMs }], muted).effects).toEqual([{ type: "send", text: "Open Gmail" }]);
+  });
+
+  it("the silence timeout: never while a task runs, muted or not; with nothing running it still ends a muted session", () => {
+    const m = run([mute(true, 1000)], started()).state;
+    // Muting counts as activity: the quiet time starts then.
+    expect(run([{ type: "tick", now: 1000 + HANDS_FREE.silenceTimeoutMs - 1 }], m).state.phase).toBe("listening");
+    expect(run([{ type: "tick", now: 1000 + HANDS_FREE.silenceTimeoutMs }], m).effects).toEqual([{ type: "end", reason: "silence" }]);
+    const working = run([{ type: "agent", working: true, now: 2000 }, { type: "tick", now: 2000 + HANDS_FREE.silenceTimeoutMs * 5 }], m);
+    expect(working.state).toMatchObject({ phase: "working", muted: true });
+    expect(working.effects).toEqual([]);
+  });
+});

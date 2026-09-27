@@ -3,7 +3,7 @@
  * at, the toolbar badges follow (live on its tab, grey on the tab looked at instead), and a restarted worker keeps it.
  */
 import { describe, expect, it, vi } from "vitest";
-import { VoiceSessions, type VoiceSessionDeps, type VoiceSessionInfo } from "../src/voice-session.js";
+import { VOICE_BADGES, VoiceSessions, type VoiceSessionDeps, type VoiceSessionInfo } from "../src/voice-session.js";
 
 const A = 11;
 const B = 12;
@@ -127,6 +127,28 @@ describe("VoiceSessions: the toolbar badges", () => {
     expect(badge.mock.calls).toEqual([[B, null]]);
   });
 
+  it("muted: the badges say MUTE in grey (its tab, and the tab looked at instead); unmuted, MIC again", async () => {
+    const { vs, badge, broadcast } = setup();
+    await vs.ready;
+    vs.seed([{ tabId: A, windowId: WIN }], WIN);
+    vs.set(inA);
+    badge.mockClear();
+    vs.set({ ...inA, muted: true });
+    expect(badge.mock.calls).toEqual([[A, "muted"]]);
+    // Every panel learns it (another tab's bar says it is muted).
+    expect(broadcast.mock.calls.at(-1)).toEqual([{ ...inA, muted: true, viewing: A }]);
+    vs.tabActivated(B, WIN);
+    expect(badge.mock.calls.at(-1)).toEqual([B, "elsewhere-muted"]);
+    badge.mockClear();
+    vs.set(inA);
+    expect(badge.mock.calls).toEqual([
+      [A, "live"],
+      [B, "elsewhere"],
+    ]);
+    expect(VOICE_BADGES.muted).toMatchObject({ text: "MUTE", color: VOICE_BADGES.elsewhere.color });
+    expect(VOICE_BADGES["elsewhere-muted"]).toMatchObject({ text: "MUTE", color: VOICE_BADGES.elsewhere.color, title: expect.stringMatching(/muted/) });
+  });
+
   it("a closed tab is forgotten (Chrome dropped its badge with it)", async () => {
     const { vs, badge } = setup();
     await vs.ready;
@@ -146,6 +168,12 @@ describe("VoiceSessions: a restarted service worker", () => {
     vs.seed([{ tabId: B, windowId: WIN }], WIN);
     vs.set(inA);
     expect(saved.at(-1)).toEqual({ session: inA, badges: [[A, "live"], [B, "elsewhere"]] });
+  });
+
+  it("keeps a muted session muted, with its badges", async () => {
+    const { vs } = setup({ stored: { session: { ...inA, muted: true }, badges: [[A, "muted"]] } });
+    await vs.ready;
+    expect(vs.view()).toEqual({ ...inA, muted: true, viewing: null });
   });
 
   it("knows the kept session before its panel says so again, when that panel is still open", async () => {

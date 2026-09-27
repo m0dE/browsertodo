@@ -15,6 +15,13 @@
  * Saying "stop" / "stop listening", the shortcut or Esc end the session, as
  * does HANDS_FREE.silenceTimeoutMs without speech while nothing runs.
  *
+ * Mute (the bar's Mute button, Alt+M): the microphone is off to the engine
+ * (nothing is transcribed or sent) while the session, the narrator and the
+ * lines said go on; the phase stays what it was. The silence timeout still
+ * applies with nothing running (a muted session no one uses ends like any
+ * other), never while a task runs. The session ending unmutes it; a session
+ * moved to another panel starts muted if it was ("start" with muted).
+ *
  * Half-duplex (the Standard engine): nothing is transcribed while a line is
  * said, so it never hears itself; the speech detector still runs, so the
  * user can cut in. The Realtime engine hears through the narrator's own
@@ -54,12 +61,14 @@ export interface HandsFreeState {
   queued: string | null;
   /** The speech detector heard the user start and the words are not in yet. */
   userSpeaking: boolean;
+  /** The microphone is muted: nothing the user says is taken in. */
+  muted: boolean;
   /** The last speech, message, line or agent activity, for the silence timeout. */
   lastActivityAt: number;
 }
 
 export type HandsFreeEvent =
-  | { type: "start"; now: number; halfDuplex: boolean }
+  | { type: "start"; now: number; halfDuplex: boolean; muted?: boolean }
   | { type: "stop"; reason: EndReason }
   /** The user started speaking (detector or the narrator's turn detection). */
   | { type: "speech"; now: number }
@@ -67,6 +76,8 @@ export type HandsFreeEvent =
   | { type: "heard"; text: string; forward: boolean; now: number }
   /** A message for the agent from the Realtime narrator (its send_to_agent tool): sent at once, the narrator talking on. */
   | { type: "forward"; text: string; now: number }
+  /** The user muted or unmuted the microphone. */
+  | { type: "mute"; muted: boolean; now: number }
   /** Esc. */
   | { type: "cancel"; now: number }
   | { type: "tick"; now: number }
@@ -86,6 +97,8 @@ export type HandsFreeEffect =
   | { type: "hush" }
   /** Half-duplex: stop or start turning speech into text. */
   | { type: "transcribe"; on: boolean }
+  /** Stop or start taking in the microphone. */
+  | { type: "mute"; muted: boolean }
   /** A waiting message was cancelled. */
   | { type: "cancelled" }
   | { type: "end"; reason: EndReason };
@@ -96,7 +109,7 @@ export interface HandsFreeStep {
 }
 
 export function initialHandsFree(): HandsFreeState {
-  return { phase: "off", halfDuplex: true, agentWorking: false, pending: "", sendAt: null, queued: null, userSpeaking: false, lastActivityAt: 0 };
+  return { phase: "off", halfDuplex: true, agentWorking: false, pending: "", sendAt: null, queued: null, userSpeaking: false, muted: false, lastActivityAt: 0 };
 }
 
 const bare = (text: string) =>
@@ -122,10 +135,10 @@ const resting = (s: HandsFreeState): HandsFreePhase => (s.agentWorking ? "workin
 export function handsFree(s: HandsFreeState, e: HandsFreeEvent): HandsFreeStep {
   if (s.phase === "off") {
     if (e.type !== "start") return { state: s, effects: [] };
-    return {
-      state: { ...initialHandsFree(), phase: "listening", halfDuplex: e.halfDuplex, lastActivityAt: e.now },
-      effects: [{ type: "transcribe", on: true }],
-    };
+    const muted = e.muted ?? false;
+    const effects: HandsFreeEffect[] = [{ type: "transcribe", on: true }];
+    if (muted) effects.push({ type: "mute", muted });
+    return { state: { ...initialHandsFree(), phase: "listening", halfDuplex: e.halfDuplex, muted, lastActivityAt: e.now }, effects };
   }
   switch (e.type) {
     case "start":
@@ -133,7 +146,10 @@ export function handsFree(s: HandsFreeState, e: HandsFreeEvent): HandsFreeStep {
     case "stop":
       return end(s, e.reason);
     case "speech":
-      return speech(s, e.now);
+      // Muted, nothing the user says is taken in (a detector event racing the mute is dropped).
+      return s.muted ? { state: s, effects: [] } : speech(s, e.now);
+    case "mute":
+      return mute(s, e.muted, e.now);
     case "heard":
       return heard(s, e.text, e.forward, e.now);
     case "forward":
@@ -167,6 +183,19 @@ function end(s: HandsFreeState, reason: EndReason): HandsFreeStep {
   const effects: HandsFreeEffect[] = s.phase === "speaking" ? [{ type: "hush" }] : [];
   effects.push({ type: "end", reason });
   return { state: { ...initialHandsFree(), lastActivityAt: s.lastActivityAt }, effects };
+}
+
+function mute(s: HandsFreeState, muted: boolean, now: number): HandsFreeStep {
+  if (muted === s.muted) return { state: s, effects: [] };
+  const next: HandsFreeState = { ...s, muted, lastActivityAt: now };
+  if (muted) {
+    // The rest of what the user was saying will not come: a line waiting for them may be said, a held message goes out.
+    next.userSpeaking = false;
+    if (s.phase === "sending" && s.sendAt === null) next.sendAt = now + HANDS_FREE.sendDelayMs;
+  }
+  const effects: HandsFreeEffect[] = [{ type: "mute", muted }];
+  const queued = sayQueued(next);
+  return { state: queued.state, effects: [...effects, ...queued.effects] };
 }
 
 /** The user cut in: the line stops, and what was queued is dropped (they have the floor). */

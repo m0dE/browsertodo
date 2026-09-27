@@ -5,8 +5,9 @@
  * - begin(): at the start of every turn, the memory block for the prompt
  *   (nothing when memory is paused, off in this chat, or nothing is relevant),
  *   and what the turn is (its repeating task, if any) for the tools.
- * - tool(): remember / recall / forget, for both brains (the API brains call it
- *   directly, Claude Code through the helper's memory.call). remember with a
+ * - tool(): remember / recall / forget / search_history, for every brain (the API
+ *   brains call it directly, Claude Code through the helper's memory.call);
+ *   search_history reads the user's past conversations (history.ts). remember with a
  *   key files the fact in the record for that key (a repeating task's own, or
  *   from a chat the user's); recall with a key returns it (in a task its own
  *   first). Turn start and recall add the account's semantic scores when
@@ -37,15 +38,17 @@ import {
   type MemoryKind,
   type MemoryScope,
   type MemorySource,
+  type MemoryToolName,
   type SessionInfo,
 } from "@browsertodo/shared";
 import type { SessionStore } from "../engine/sessions.js";
 import type { UiRequest, UiResults } from "../ui-protocol.js";
+import { searchHistory } from "./history.js";
 import { recallMemory, recordFor, selectMemory, hostsIn, type MemorySelection } from "./select.js";
 import { MemoryRefusal, type MemoryChange, type MemoryStore, type NewMemory, type NewRecord } from "./store.js";
 import type { MemorySync } from "./sync.js";
 
-export type MemoryTool = "remember" | "recall" | "forget";
+export type MemoryTool = MemoryToolName;
 
 /** What a turn is, for its memory. */
 export interface MemoryRun {
@@ -92,7 +95,7 @@ export function isMemoryRequest(msg: { type: string }): msg is MemoryRequest {
 
 export interface MemoryServiceDeps {
   store: MemoryStore;
-  sessions: Pick<SessionStore, "note" | "eventsOf" | "get" | "update">;
+  sessions: Pick<SessionStore, "note" | "eventsOf" | "get" | "update" | "list">;
   settings(): Promise<Pick<ExtensionSettings, "memoryPaused" | "memoryKindsOff">>;
   /** Sync with the signed-in account (sync.ts). Absent: memory stays on this computer. */
   sync?: Pick<MemorySync, "pullSoon" | "sync" | "status" | "forgetAll" | "choose">;
@@ -118,6 +121,9 @@ const OFF_TEXT = {
   paused: "Memory is paused by the user (Settings > Memory)",
   chat: "Memory is off in this chat (the user's choice)",
 } as const;
+
+/** What a memory tool would have done, for its answer when memory is off. */
+const OFF_DONE: Record<MemoryTool, string> = { remember: "saved", recall: "recalled", forget: "forgotten", search_history: "searched" };
 
 export class MemoryService {
   private readonly runs = new Map<string, { taskKey?: string; taskTitle?: string; source: MemorySource }>();
@@ -147,14 +153,16 @@ export class MemoryService {
     // Another browser's new entries come in the background (this turn uses what is here).
     this.deps.sync?.pullSoon();
     const hosts = [...(run.tabUrl ? hostsIn(run.tabUrl) : []), ...hostsIn(run.request)];
-    const unseen = (await this.deps.store.list()).filter((e) => !given.has(e.id));
+    // The account's search (a network call, the slow part) runs while the entries are read.
+    const [all, semantic] = await Promise.all([this.deps.store.list(), this.semantic(run.request, taskKey ?? null)]);
+    const unseen = all.filter((e) => !given.has(e.id));
     const pageText = [run.tabUrl, run.tabTitle].filter(Boolean).join("\n");
-    const semantic = await this.semantic(run.request, taskKey ?? null);
     const ctx = { taskKey: taskKey ?? null, hosts, text: run.request, ...this.clock(), ...(pageText ? { pageText } : {}), ...(semantic ? { semantic } : {}) };
     const picked = selectMemory(unseen, ctx, { kindsOff: settings.memoryKindsOff });
     if (!picked.entries.length) return undefined;
     for (const e of picked.entries) given.add(e.id);
-    await this.deps.store.touch(picked.entries.map((e) => e.id));
+    // When entries were last used only orders what goes first once memory is full: the turn does not wait for it.
+    void this.deps.store.touch(picked.entries.map((e) => e.id)).catch(() => {});
     return picked;
   }
 
@@ -163,7 +171,8 @@ export class MemoryService {
     try {
       const settings = await this.deps.settings();
       const off = await this.offReason(sessionId, settings);
-      if (off) return fail(`${OFF_TEXT[off]}: nothing was ${name === "recall" ? "recalled" : name === "forget" ? "forgotten" : "saved"}. Go on without it; do not try again.`);
+      if (off) return fail(`${OFF_TEXT[off]}: nothing was ${OFF_DONE[name]}. Go on without it; do not try again.`);
+      if (name === "search_history") return await searchHistory(sessionId, rawArgs, { sessions: this.deps.sessions, ...this.clock() });
       if (name === "remember") return await this.remember(sessionId, rawArgs, settings.memoryKindsOff, opts.knownSecret);
       if (name === "recall") return await this.recall(sessionId, rawArgs, settings.memoryKindsOff);
       return await this.forget(sessionId, rawArgs);

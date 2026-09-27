@@ -36,6 +36,14 @@
  * The first Realtime session shows what it costs once, with a switch to
  * Standard. Mic permission and plan gating are voice-input.ts's.
  *
+ * Mute (the bar's Mute, or Alt+M in the panel: MUTE_KEY) turns the
+ * microphone off to the engine while the session goes on: nothing heard is
+ * transcribed or sent (Realtime bills no input audio), the narrator and the
+ * lines said go on, and the bar, the box and the badge show it, with a soft
+ * sound. The session ending unmutes; moving it to another tab (use this tab,
+ * or Use voice here in another tab's panel) keeps it muted, so a move never
+ * turns the microphone on by itself.
+ *
  * Audio lives in the side panel, not an offscreen document: the session is
  * started from the panel, shows itself there, and ends when the panel
  * closes, so the microphone is never on without the indicator in view.
@@ -70,7 +78,7 @@ import type { RealtimeFailure } from "../voice/realtime-client.js";
 import { VoiceError } from "../voice/transcribe.js";
 import { errorHelp } from "./error-help.js";
 import { Earcons, type Earcon } from "../voice/earcons.js";
-import { remoteBarView, VoiceActivity, voiceBarView, type VoiceBarView } from "../voice/voice-bar-view.js";
+import { isMuteKey, remoteBarView, VoiceActivity, voiceBarView, type VoiceBarView } from "../voice/voice-bar-view.js";
 import { initVoiceBar } from "./voice-bar.js";
 import { errorTip, type HandsFreeControl, type VoiceInput, type VoiceTip } from "./voice-input.js";
 
@@ -79,6 +87,8 @@ const STARTING_TEXT = "Hands-free · starting…";
 
 /** Under the orb before anything was sent. */
 const ORB_CAPTION = "Hands-free: say what to do · “stop” to end";
+/** Under the orb while muted (and nothing is being said). */
+const MUTED_CAPTION = "Microphone muted · Unmute to talk";
 
 /** A said line stays under the orb this long after it. */
 const CAPTION_LINGER_MS = 4_000;
@@ -159,10 +169,11 @@ export interface HandsFreeDeps {
   openBilling(): void;
   signIn(): void;
   /**
-   * The session started, moved to another tab, changed engine, or ended; tabId: the tab it belongs to. The panel
-   * tells the background, which tells the other panels, routes the shortcut to it, and sets the badges.
+   * The session started, moved to another tab, changed engine, was muted or unmuted, or ended; tabId: the tab it
+   * belongs to. The panel tells the background, which tells the other panels, routes the shortcut to it, and sets
+   * the badges.
    */
-  onActive(active: boolean, tabId: number | null, engine: VoiceEngineId | null): void;
+  onActive(active: boolean, tabId: number | null, engine: VoiceEngineId | null, muted: boolean): void;
   /** Ends the session another panel runs (the background tells that panel). */
   stopRemote(): void;
   /** The voice bar's element (under the tabs; voice-bar.ts fills it). */
@@ -190,6 +201,9 @@ export interface HandsFree extends HandsFreeControl {
   stopHere(): void;
   /** The chat the session talks to (null: none, or a new chat not started yet). */
   chat(): string | null;
+  /** Mutes or unmutes the microphone of the session on (nothing while none runs yet). */
+  toggleMute(): void;
+  readonly muted: boolean;
   readonly phase: HandsFreePhase;
   /** The tab the session belongs to (null: none is on). */
   readonly tab: number | null;
@@ -213,8 +227,10 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   /** The session as the background last said (this panel's, another panel's, or none), and its tab's title. */
   let remote: VoiceSessionView | null = null;
   let remoteTitle: string | null = null;
-  /** Use voice here: waiting for the session to end where it runs, to start here with its engine. */
-  let takeOver: { engine: VoiceEngineId | null } | null = null;
+  /** Use voice here: waiting for the session to end where it runs, to start here with its engine and mute. */
+  let takeOver: { engine: VoiceEngineId | null; muted: boolean } | null = null;
+  /** A session starting muted (moved here muted), until the state machine holds it. */
+  let startMuted = false;
   /** The narrator was last told the user looks at another tab. */
   let lookingAway = false;
   /** Its tab and the tabs its chat lived in this session (see voice/hands-free-tab.ts). */
@@ -266,6 +282,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     trace?.record({ t: heardAt, cat: "voice", name: "voice.heard", cid: trace.utterance(), data: { chars: text.length } });
   };
   const on = () => state.phase !== "off" || starting;
+  const muted = () => (state.phase === "off" ? startMuted : state.muted);
   /** Adds the tabs the session's chat works in now to its own. */
   const learnTabs = () => {
     const chat = chatNow();
@@ -284,6 +301,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   const bar = initVoiceBar(deps.bar, {
     stop: () => (on() ? stop("button") : deps.stopRemote()),
     interrupt: () => state.phase === "speaking" && dispatch({ type: "cancel", now: now() }),
+    mute: () => toggleMute(),
     goToTab: () => {
       const t = on() ? tab : (remote?.tabId ?? null);
       if (t !== null) deps.goToTab(t);
@@ -294,7 +312,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   function render(): void {
     if (!on()) {
       const r = shownRemote();
-      bar.show(r ? remoteBarView({ title: remoteTitle, engine: r.engine }) : null);
+      bar.show(r ? remoteBarView({ title: remoteTitle, engine: r.engine, muted: r.muted === true }) : null);
       delete deps.bar.dataset.phase;
       deps.voice.showHandsFree(null);
       return;
@@ -307,6 +325,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     const view: VoiceBarView = voiceBarView({
       phase: phase ?? "starting",
       hearing,
+      muted: muted(),
       engine: engine?.id ?? null,
       elapsedMs: t - startedAt,
       elsewhere: elsewhere ? { title: homePage?.title ?? null } : null,
@@ -322,9 +341,10 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     deps.voice.showHandsFree({
       orb,
       phase: phase ?? "opening",
-      caption: phase === "sending" ? "Sending…" : caption || (phase ? ORB_CAPTION : STARTING_TEXT),
+      caption: phase === "sending" ? "Sending…" : caption || (!phase ? STARTING_TEXT : muted() ? MUTED_CAPTION : ORB_CAPTION),
       status: elsewhere ? "on in another tab" : view.title,
       elsewhere,
+      muted: muted(),
     });
   }
 
@@ -401,6 +421,15 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
         break;
       case "transcribe":
         engine?.setTranscribing(effect.on);
+        break;
+      case "mute":
+        engine?.setMuted(effect.muted);
+        // The meter and "Hearing you…" drop at once; the badge and the other panels follow.
+        activity.reset();
+        hearing = false;
+        if (effect.muted) deps.voice.setLevel(0);
+        trace?.record({ t: Date.now(), cat: "voice", name: effect.muted ? "voice.mute" : "voice.unmute" });
+        report();
         break;
       case "cancelled":
         if (wroteBox) deps.composer.setDraft(boxBase);
@@ -577,6 +606,8 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   async function openEngine(id: VoiceEngineId): Promise<boolean> {
     const e = deps.createEngine(id, events());
     engine = e;
+    // Muted before the microphone opens (a muted session moved here, or the engine replaced while muted).
+    if (muted()) e.setMuted(true);
     try {
       await e.start();
     } catch (err) {
@@ -598,7 +629,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     // The narrator starts out knowing whether the user looks at another tab.
     lookingAway = false;
     lookChanged();
-    if (state.phase === "off") dispatch({ type: "start", now: now(), halfDuplex: e.halfDuplex });
+    if (state.phase === "off") dispatch({ type: "start", now: now(), halfDuplex: e.halfDuplex, muted: startMuted });
     else if (e.halfDuplex !== state.halfDuplex) state = { ...state, halfDuplex: e.halfDuplex };
     e.setTranscribing(state.phase !== "speaking");
     if (working) dispatch({ type: "agent", working, now: now() });
@@ -619,15 +650,20 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     if (next !== null) void deps.tabPage(next).then((p) => (tab === next ? ((homePage = p), render()) : undefined), () => undefined);
   }
 
-  /** Tells the background where the session is (or that it ended), and on which engine. */
+  /** Tells the background where the session is (or that it ended), on which engine, and whether it is muted. */
   function report(): void {
-    deps.onActive(on(), on() ? tab : null, on() ? (engine?.id ?? null) : null);
+    const live = on();
+    deps.onActive(live, live ? tab : null, live ? (engine?.id ?? null) : null, live && muted());
   }
 
-  /** `preferred`: the engine to use (a session moved here keeps its engine); else the one in Settings. */
-  async function start(preferred: VoiceEngineId | null = null): Promise<void> {
+  /**
+   * `preferred`: the engine to use (a session moved here keeps its engine); else the one in Settings. `mute`: it
+   * starts muted (a muted session moved here stays so).
+   */
+  async function start(preferred: VoiceEngineId | null = null, mute = false): Promise<void> {
     if (on()) return;
     starting = true;
+    startMuted = mute;
     sent = false;
     wroteBox = false;
     startedAt = now();
@@ -687,6 +723,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   function finish(note: string | null): void {
     if (timer) clearInterval(timer);
     timer = null;
+    startMuted = false;
     const e = engine;
     engine = null;
     e?.stop();
@@ -719,6 +756,14 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       return;
     }
     dispatch({ type: "stop", reason });
+  }
+
+  /** Mute or unmute, once the session runs; a soft sound says which. */
+  function toggleMute(): void {
+    if (state.phase === "off") return;
+    const next = !state.muted;
+    dispatch({ type: "mute", muted: next, now: now() });
+    sound(next ? "mute" : "unmute");
   }
 
   /** Use voice here (on the bar, on another tab): the session goes on in the tab the user looks at. */
@@ -756,7 +801,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
    */
   function useVoiceHere(): void {
     if (on() || takeOver || !remote) return;
-    takeOver = { engine: remote.engine };
+    takeOver = { engine: remote.engine, muted: remote.muted === true };
     deps.stopRemote();
   }
 
@@ -805,9 +850,14 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     dispatch({ type: "agent", working: next, now: now() });
   }
 
-  // Esc: cancels the message waiting to be sent, cuts a line off, else ends the session.
+  // Esc: cancels the message waiting to be sent, cuts a line off, else ends the session. Alt+M: mute or unmute.
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape" || e.defaultPrevented || state.phase === "off") return;
+    if (e.defaultPrevented || state.phase === "off") return;
+    if (isMuteKey(e)) {
+      e.preventDefault();
+      return toggleMute();
+    }
+    if (e.key !== "Escape") return;
     e.preventDefault();
     dispatch({ type: "cancel", now: now() });
   });
@@ -841,6 +891,10 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     get phase() {
       return state.phase;
     },
+    get muted() {
+      return on() && muted();
+    },
+    toggleMute,
     get tab() {
       return on() ? tab : null;
     },
@@ -877,7 +931,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
         // The session ended where it ran: Use voice here starts it in this panel now.
         const moving = takeOver;
         takeOver = null;
-        if (moving) void start(moving.engine);
+        if (moving) void start(moving.engine, moving.muted);
         return render();
       }
       const kind = remoteSession(view, deps.homeTab);

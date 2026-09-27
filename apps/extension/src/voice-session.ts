@@ -15,7 +15,8 @@
  *
  * The toolbar badge: "MIC" in the live colour on the session's tab, and a
  * grey "MIC" on the tab the user is looking at when that is another one
- * (its tooltip says voice is on in another tab): Chrome cannot open a panel
+ * (its tooltip says voice is on in another tab); muted, both say "MUTE" in
+ * grey instead (the microphone is off, the session goes on): Chrome cannot open a panel
  * there by itself, so the button is where it shows, and a click opens that
  * tab's panel, which offers Go to tab and Use voice here. Badges are per
  * tab; Chrome clears a tab's badge when the tab loads a page, so it is set
@@ -33,6 +34,8 @@ export interface VoiceSessionInfo {
   host: number | null;
   /** The engine it runs on (null: still choosing). */
   engine: VoiceEngineId | null;
+  /** The user muted the microphone (absent: not muted). */
+  muted?: true;
 }
 
 /** What every side panel is told. */
@@ -41,14 +44,23 @@ export interface VoiceSessionView extends VoiceSessionInfo {
   viewing: number | null;
 }
 
-/** How a tab's toolbar button shows the session: its own tab, or the tab the user looks at instead. */
-export type VoiceBadge = "live" | "elsewhere";
+/** How a tab's toolbar button shows the session: its own tab, or the tab the user looks at instead; each live or muted. */
+export type VoiceBadge = "live" | "muted" | "elsewhere" | "elsewhere-muted";
 
-/** The toolbar badges: the session's tab in the voice bar's live colour; the tab looked at instead in grey, with a tooltip. */
+const GREY = "#80868b";
+
+/**
+ * The toolbar badges: the session's tab in the voice bar's live colour; the tab looked at instead in grey, with a
+ * tooltip; muted, "MUTE" in grey on either.
+ */
 export const VOICE_BADGES: Readonly<Record<VoiceBadge, { text: string; color: string; textColor: string; title?: string }>> = {
   live: { text: "MIC", color: "#c8233f", textColor: "#ffffff" },
-  elsewhere: { text: "MIC", color: "#80868b", textColor: "#ffffff", title: "Voice is on in another tab: click to see where" },
+  muted: { text: "MUTE", color: GREY, textColor: "#ffffff", title: "Voice is on, microphone muted" },
+  elsewhere: { text: "MIC", color: GREY, textColor: "#ffffff", title: "Voice is on in another tab: click to see where" },
+  "elsewhere-muted": { text: "MUTE", color: GREY, textColor: "#ffffff", title: "Voice is on in another tab, microphone muted: click to see where" },
 };
+
+const isBadge = (look: unknown): look is VoiceBadge => typeof look === "string" && Object.hasOwn(VOICE_BADGES, look);
 
 const KEY = "voiceSession";
 
@@ -151,8 +163,8 @@ export class VoiceSessions {
     const view = this.view();
     const want = new Map<number, VoiceBadge>();
     if (view) {
-      want.set(view.tabId, "live");
-      if (view.viewing !== null && view.viewing !== view.tabId) want.set(view.viewing, "elsewhere");
+      want.set(view.tabId, view.muted ? "muted" : "live");
+      if (view.viewing !== null && view.viewing !== view.tabId) want.set(view.viewing, view.muted ? "elsewhere-muted" : "elsewhere");
     }
     let badgesChanged = false;
     for (const [tab, look] of this.badges) {
@@ -179,11 +191,11 @@ export class VoiceSessions {
   private async load(): Promise<void> {
     const got = (await this.deps.storage?.load()) as Partial<Stored> | undefined;
     for (const [tab, look] of Array.isArray(got?.badges) ? got.badges : []) {
-      if (typeof tab === "number" && (look === "live" || look === "elsewhere") && !this.badges.has(tab)) this.badges.set(tab, look);
+      if (typeof tab === "number" && isBadge(look) && !this.badges.has(tab)) this.badges.set(tab, look);
     }
     const kept = got?.session;
     if (!this.reported && kept && typeof kept.tabId === "number" && (await (this.deps.alive?.(kept) ?? Promise.resolve(true))) && !this.reported) {
-      this.session = { tabId: kept.tabId, windowId: kept.windowId ?? null, host: kept.host ?? null, engine: kept.engine ?? null };
+      this.session = { tabId: kept.tabId, windowId: kept.windowId ?? null, host: kept.host ?? null, engine: kept.engine ?? null, ...(kept.muted === true ? { muted: true } : {}) };
     }
     this.loaded = true;
     this.update();

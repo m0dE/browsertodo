@@ -1,5 +1,5 @@
 /** Pure view models for agent events in Chat and the History tab. */
-import { describeSchedule, localTimeZone, picksText, SCREEN_HELP_TEXT, type AgentEvent, type Chip, type ElementPicks, type SessionInfo, type TaskSource } from "@browsertodo/shared";
+import { describeSchedule, localTimeZone, picksText, SCREEN_HELP_TEXT, type AgentEvent, type Chip, type ElementPicks, type SessionInfo, type TaskSource, type TodoChange } from "@browsertodo/shared";
 import { clip, isLongSummary, sharedWordShare, toolArgsSummary } from "../text.js";
 import { speakable } from "../voice/spoken-line.js";
 import { errorHelp, type ErrorHelp } from "./error-help.js";
@@ -48,10 +48,10 @@ export type EventView =
   /** An error, in plain words with the buttons that fix it (error-help.ts). */
   | { kind: "error"; help: ErrorHelp }
   /**
-   * A task the agent put in the TODO list (schedule_task): its first line, its schedule in words, and whether the
-   * user undid it from the card.
+   * A task the agent put in the TODO list (schedule_task), or changed or cancelled there (change, with the
+   * changeId its Undo names): its first line, its schedule in words, and whether the user undid it from the card.
    */
-  | { kind: "scheduled"; taskId: string; title: string; instructions: string; when: string; undone?: true }
+  | { kind: "scheduled"; taskId: string; title: string; instructions: string; when: string; change?: TodoChange; changeId?: string; undone?: true }
   /** An action waiting for the user's OK, or how that ended (approval-view.ts). */
   | ApprovalView
   /** The agent's memory changed from this chat (memory-view.ts): "Remembered: ...", with Undo. */
@@ -86,7 +86,7 @@ export interface TurnContext {
   error?: string | undefined;
   /** A spoken line repeats what is written above it. */
   echo?: boolean;
-  /** A task_scheduled: the user undid it since (a task_unscheduled of the same task follows it). */
+  /** A task_scheduled or task_changed: the user undid it since (a task_unscheduled or task_change_undone of it follows). */
   undone?: boolean;
   /** An approval_request: how it ended (approvalEnding); absent while it waits. */
   approval?: Parameters<typeof approvalView>[1];
@@ -148,16 +148,23 @@ function describeEnd(ev: Extract<AgentEvent, { type: "task_end" }>, turn: TurnCo
 export type ScheduledView = Extract<EventView, { kind: "scheduled" }>;
 
 /**
- * A task_scheduled's card; undone: the user undid it since. Its schedule is put in words now, in the browser's zone
- * (a card read the next day no longer says "today").
+ * A task_scheduled's or task_changed's card; undone: the user undid it since. Its schedule is put in words now, in
+ * the browser's zone (a card read the next day no longer says "today").
  */
 export function scheduledView(
-  ev: Extract<AgentEvent, { type: "task_scheduled" }>,
+  ev: Extract<AgentEvent, { type: "task_scheduled" | "task_changed" }>,
   undone: boolean,
   opts: { now?: Date; timeZone?: string; hour12?: boolean } = {},
 ): ScheduledView {
   const when = describeSchedule(ev.schedule, { now: opts.now ?? new Date(), timeZone: opts.timeZone ?? localTimeZone(), ...(opts.hour12 === undefined ? {} : { hour12: opts.hour12 }) });
-  const v: ScheduledView = { kind: "scheduled", taskId: ev.taskId, title: firstLine(ev.instructions), instructions: ev.instructions, when };
+  const v: ScheduledView = {
+    kind: "scheduled",
+    taskId: ev.taskId,
+    title: firstLine(ev.instructions),
+    instructions: ev.instructions,
+    when,
+    ...(ev.type === "task_changed" ? { change: ev.change, changeId: ev.changeId } : {}),
+  };
   return undone ? { ...v, undone: true } : v;
 }
 
@@ -214,6 +221,11 @@ export function describeEvent(ev: AgentEvent, turn: TurnContext = {}): EventView
       return scheduledView(ev, !!turn.undone);
     case "task_unscheduled":
       // It changes its task_scheduled card (see turn.undone); the chat shows nothing of its own for it.
+      return { kind: "status", text: "" };
+    case "task_changed":
+      return scheduledView(ev, !!turn.undone);
+    case "task_change_undone":
+      // It changes its task_changed card (see turn.undone); nothing of its own.
       return { kind: "status", text: "" };
     case "approval_request":
       return approvalView(ev, turn.approval);

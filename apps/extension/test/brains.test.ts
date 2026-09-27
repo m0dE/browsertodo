@@ -85,6 +85,32 @@ describe("ClaudeCodeBrain", () => {
     expect(f.listenerCount()).toBe(base);
   });
 
+  it("hands over a session's timings that arrive after its turn ended (the call that wrote task_complete ends after the tool ran)", async () => {
+    const f = fakeHelper();
+    const late: [string, unknown][] = [];
+    const brain = new ClaudeCodeBrain(f.helper, { onLateTrace: (sessionId, trace) => late.push([sessionId, trace]) });
+    const events: AgentEvent[] = [];
+    const run = brain.start(opts(events));
+    const call = { t: 1, ms: 9400, cat: "model", name: "model.call", src: "helper" } as const;
+    // While the run listens, its traces are its events.
+    f.notify("helper.event", { sessionId: "s1", event: { type: "trace", trace: call } });
+    expect(events).toHaveLength(1);
+    expect(late).toEqual([]);
+    f.finish({ outcome: "done", summary: "ok" });
+    await run.done;
+    f.notify("helper.event", { sessionId: "s1", event: { type: "trace", trace: call } });
+    f.notify("helper.event", { sessionId: "s1", event: { type: "assistant_text", text: "after the turn" } });
+    expect(late).toEqual([["s1", call]]);
+    expect(events).toHaveLength(1);
+  });
+
+  it("prewarm asks the helper to start the next session's agent with the run config", () => {
+    const f = fakeHelper();
+    const config = opts([]).config;
+    new ClaudeCodeBrain(f.helper).prewarm(config);
+    expect(f.calls).toEqual([{ method: "helper.prewarm", params: { config } }]);
+  });
+
   it("a helper disconnect ends the run as retry", async () => {
     const f = fakeHelper();
     const run = new ClaudeCodeBrain(f.helper).start(opts([]));
@@ -275,20 +301,22 @@ describe("ApiBrain", () => {
     expect((core.startApiAgent.mock.calls as unknown as [ApiAgentOptions][]).map((c) => c[0].jev)).toEqual([null, null]);
   });
 
-  it("schedule_task goes to the scheduler for this conversation; without one the agent gets none", async () => {
+  it("the TODO tools go to the scheduler for this conversation; without one the agent gets none", async () => {
     const got: ApiAgentOptions[] = [];
     const core = {
       createJev: vi.fn(),
       startApiAgent: vi.fn((o: ApiAgentOptions) => (got.push(o), { sessionId: "s1", sendUserMessage() {}, abort() {}, done: new Promise<never>(() => {}) })),
     };
-    const stored = { taskId: "t9", instructions: "x", when: "Once, today at 6:45 PM", nextRunAt: null };
-    const scheduleTask = vi.fn(async () => stored);
-    new ApiBrain({ core, browser: { call: vi.fn() as never }, scheduleTask }).start(opts([]));
+    const answer = { text: "Scheduled in the user's TODO list (task t9)" };
+    const todoTool = vi.fn(async () => answer);
+    new ApiBrain({ core, browser: { call: vi.fn() as never }, todoTool }).start(opts([]));
     const args = { task: "x", schedule: { at: "2026-09-26T22:45:00Z" } };
-    expect(await got[0]!.scheduleTask!(args)).toBe(stored);
-    expect(scheduleTask).toHaveBeenCalledWith("s1", args);
+    expect(await got[0]!.todo!("schedule_task", args)).toBe(answer);
+    expect(todoTool).toHaveBeenCalledWith("s1", "schedule_task", args);
+    await got[0]!.todo!("cancel_scheduled_task", { task_id: "t9" });
+    expect(todoTool).toHaveBeenLastCalledWith("s1", "cancel_scheduled_task", { task_id: "t9" });
     new ApiBrain({ core, browser: { call: vi.fn() as never } }).start(opts([]));
-    expect(got[1]!.scheduleTask).toBeUndefined();
+    expect(got[1]!.todo).toBeUndefined();
   });
 
   it("remember / recall / forget go to the memory of this conversation; without it the agent gets none", async () => {

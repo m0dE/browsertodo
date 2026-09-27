@@ -4,7 +4,7 @@ import type { Cdp } from "./cdp.js";
 import { CdpActions } from "./cdp-actions.js";
 import { isTabLoaded, tabExists, tabUrl } from "./chrome-tabs.js";
 import { assertOpenable, BACKGROUND_SHOT_SKIPPED, NAV_TIMEOUT_MS, pollUntil, type Params as P, type Result as R } from "./driver-common.js";
-import { FALLBACK_NOTE, FallbackDriver } from "./fallback-driver.js";
+import { fallbackNote, FallbackDriver } from "./fallback-driver.js";
 import { keyEvents } from "./keys.js";
 import { leavingDocument, waitForUsablePage, type LoadProbe } from "./page-load.js";
 import { WAIT_MIN_GAP_MS, WAIT_POLL_MS, type PageWait, type PageWaitArgs } from "./page-wait.js";
@@ -12,7 +12,7 @@ import { isDebuggerBlocked, isDebuggerDetached, isRestrictedError, restrictedToo
 import type { PageResult } from "./scroll-probe.js";
 import { shrinkScreenshot } from "./screenshot-size.js";
 
-/** A result that may carry FALLBACK_NOTE, once, for the caller to show. */
+/** A result that may carry the fallback note (fallbackNote), once, for the caller to show. */
 export type WithNote<T> = T & { note?: string };
 
 /**
@@ -43,7 +43,7 @@ const WAIT_SLICE_GRACE_MS = 2000;
  * live session is detached ("target_closed") when such a frame appears. That
  * tab then switches to FallbackDriver (chrome.scripting + captureVisibleTab,
  * simulated input); other tabs of the run keep using the debugger. The first
- * result in fallback mode for a tab carries `note: FALLBACK_NOTE`. After a
+ * result in fallback mode for a tab carries the fallback note (fallbackNote, naming the other extension when the page shows it). After a
  * navigation the debugger is tried again.
  */
 export class Driver {
@@ -341,7 +341,7 @@ export class Driver {
         }
       }
       const result: WithNote<T> = await viaFallback(tabId);
-      if (this.pendingNotes.delete(tabId)) result.note = FALLBACK_NOTE;
+      if (this.pendingNotes.delete(tabId)) result.note = fallbackNote(await this.fallback.foreignExtension(tabId));
       return await this.withNewTabs(result);
     } catch (err) {
       // A page Chrome keeps extensions out of (Web Store, chrome://): one plain sentence, not Chrome's raw error.

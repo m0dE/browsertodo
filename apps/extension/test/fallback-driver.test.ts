@@ -5,7 +5,7 @@ import type { AgentTab } from "../src/agent-tab.js";
 import { Cdp } from "../src/cdp.js";
 import { Driver } from "../src/driver.js";
 import { BACKGROUND_SHOT_SKIPPED, PAGE_MARKS, SCREENSHOT_JPEG_QUALITY } from "../src/driver-common.js";
-import { FALLBACK_NOTE } from "../src/fallback-driver.js";
+import { FALLBACK_NOTE, fallbackNote } from "../src/fallback-driver.js";
 import {
   checkStateInPage,
   clickInPage,
@@ -20,7 +20,7 @@ import {
 import { isDebuggerBlocked } from "../src/restricted.js";
 import { scrollProbeInPage } from "../src/scroll-probe.js";
 import { snapshotPage } from "../src/page-snapshot.js";
-import { loadProbeInPage } from "../src/page-load.js";
+import { foreignExtensionInPage, loadProbeInPage } from "../src/page-load.js";
 
 let chrome: ChromeFake;
 let cdp: Cdp;
@@ -84,6 +84,18 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
     expect(driver.inFallback).toBe(false);
   });
 
+  it("the note names the extension whose frame is on the page (its id, and where Chrome shows its name)", async () => {
+    const id = "gppongmhjkpfnbhagpmjfkannfbllamg";
+    const respond = chrome.scripting.respond;
+    chrome.scripting.respond = (func, args) => (func === foreignExtensionInPage ? id : respond(func, args));
+    chrome.debugger.blocked.add(tabId);
+    expect((await driver.readPage()).note).toBe(fallbackNote(id));
+    expect(fallbackNote(id)).toBe(
+      `(Using fallback mode: the frame of another extension (id ${id}; chrome://extensions/?id=${id} shows which) on this page blocks Chrome's debugger. Clicks and typing are simulated.)`,
+    );
+    expect(FALLBACK_NOTE).toBe(fallbackNote(null));
+  });
+
   it("switches to the fallback when attach is refused, with the note on the first result only", async () => {
     chrome.debugger.blocked.add(tabId);
     const first = await driver.readPage();
@@ -103,6 +115,8 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
 
     expect(injected()).toEqual([
       snapshotPage,
+      // Once, for the note: which extension's frame is on the page.
+      foreignExtensionInPage,
       checkStateInPage,
       clickInPage,
       typeTargetInPage,
@@ -115,7 +129,7 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
       scrollProbeInPage,
     ]);
     const args = chrome.scripting.calls.map((c) => c.args);
-    expect(args.slice(1)).toEqual([
+    expect(args.slice(2)).toEqual([
       [PAGE_MARKS, 3],
       [PAGE_MARKS, 3],
       [PAGE_MARKS, 4],
@@ -138,7 +152,7 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
     chrome.debugger.blocked.add(tabId);
     cdp.handleDetach({ tabId }, "target_closed");
     expect(await driver.click({ index: 2 })).toEqual({ ok: true, note: FALLBACK_NOTE });
-    expect(injected()).toEqual([checkStateInPage, clickInPage]);
+    expect(injected()).toEqual([checkStateInPage, clickInPage, foreignExtensionInPage]);
   });
 
   it("switches when a command fails even though the session is still attached", async () => {

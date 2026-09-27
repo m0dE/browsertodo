@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { elapsedText, HEARING, NOT_HERE_TEXT, remoteBarView, VoiceActivity, voiceBarView, type VoiceBarInput } from "../../src/voice/voice-bar-view.js";
+import { elapsedText, HEARING, isMuteKey, MUTE_KEY, NOT_HERE_TEXT, remoteBarView, VoiceActivity, voiceBarView, type VoiceBarInput } from "../../src/voice/voice-bar-view.js";
 
-const base: VoiceBarInput = { phase: "listening", hearing: false, engine: "realtime", elapsedMs: 42_000, elsewhere: null, shortcut: "Ctrl+," };
+const base: VoiceBarInput = { phase: "listening", hearing: false, muted: false, engine: "realtime", elapsedMs: 42_000, elsewhere: null, shortcut: "Ctrl+," };
 const view = (patch: Partial<VoiceBarInput>) => voiceBarView({ ...base, ...patch });
 
 describe("the voice bar", () => {
@@ -52,6 +52,8 @@ describe("the voice bar", () => {
       elsewhere: true,
       stopLabel: "Stop voice in that tab",
       shortcut: null,
+      muted: false,
+      mute: null,
     });
     expect(remoteBarView({ title: null, engine: null })).toMatchObject({ title: "Voice is on in another tab", detail: NOT_HERE_TEXT });
   });
@@ -63,6 +65,52 @@ describe("the voice bar", () => {
 
   it("formats the time on", () => {
     expect([0, 999, 7_000, 754_000, 3_723_000, -5].map(elapsedText)).toEqual(["0:00", "0:00", "0:07", "12:34", "1:02:03", "0:00"]);
+  });
+});
+
+describe("the voice bar: muted", () => {
+  const MUTE = { pressed: false, label: "Mute the microphone · Alt+M" };
+  const UNMUTE = { pressed: true, label: "Unmute the microphone · Alt+M" };
+
+  it("offers Mute (with its key) once the session runs, not while it starts", () => {
+    expect(view({}).mute).toEqual(MUTE);
+    expect(view({ phase: "speaking" }).mute).toEqual(MUTE);
+    expect(view({ phase: "starting" }).mute).toBeNull();
+    expect(view({ phase: "starting", muted: true })).toMatchObject({ state: "starting", mute: null, muted: true });
+  });
+
+  it("muted while listening or working: 'Muted', no meter, no 'Hearing you…', and the hint says updates still come", () => {
+    const listening = view({ muted: true, hearing: true });
+    expect(listening).toMatchObject({ state: "muted", title: "Muted", meter: "none", announce: "Hands-free: Muted", interrupt: false, muted: true, mute: UNMUTE });
+    expect(listening.detail).toBe("Realtime · 0:42 · Microphone off · Unmute to talk");
+    const working = view({ phase: "working", muted: true });
+    expect(working).toMatchObject({ state: "muted", title: "Muted", meter: "none", announce: "Hands-free: Muted" });
+    expect(working.detail).toBe("Realtime · 0:42 · Agent working · updates are still said");
+  });
+
+  it("muted while a line is said or a message waits: that state, its hint without talking", () => {
+    const speaking = view({ phase: "speaking", muted: true });
+    expect(speaking).toMatchObject({ state: "speaking", title: "Speaking", meter: "speaker", interrupt: true, muted: true, mute: UNMUTE });
+    expect(speaking.detail).toBe("Realtime · 0:42 · Tap Interrupt · microphone muted");
+    const sending = view({ phase: "sending", muted: true });
+    expect(sending).toMatchObject({ state: "sending", meter: "none", muted: true });
+    expect(sending.detail).toBe("Realtime · 0:42 · Press Esc to take it back");
+  });
+
+  it("on another tab: says it is muted, no meter, Mute still there", () => {
+    const v = view({ muted: true, elsewhere: { title: "Shop A" } });
+    expect(v).toMatchObject({ state: "elsewhere", detail: "Realtime · 0:42 · Muted", meter: "none", muted: true, mute: UNMUTE });
+    expect(view({ elsewhere: { title: "Shop A" } }).mute).toEqual(MUTE);
+  });
+
+  it("in another tab's panel: says it is muted; no Mute there (that panel runs the microphone)", () => {
+    expect(remoteBarView({ title: "Shop A", engine: "realtime", muted: true })).toMatchObject({ detail: `Realtime · Muted · ${NOT_HERE_TEXT}`, muted: true, mute: null });
+  });
+
+  it("Alt+M by the key's position (Alt on a Mac types µ), nothing else", () => {
+    const key = (patch: Partial<Parameters<typeof isMuteKey>[0]>) => isMuteKey({ code: MUTE_KEY.code, altKey: true, ctrlKey: false, metaKey: false, shiftKey: false, ...patch });
+    expect(key({})).toBe(true);
+    expect([key({ altKey: false }), key({ ctrlKey: true }), key({ metaKey: true }), key({ shiftKey: true }), key({ code: "KeyN" })]).toEqual([false, false, false, false, false]);
   });
 });
 

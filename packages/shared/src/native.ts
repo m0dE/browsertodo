@@ -155,6 +155,14 @@ export type HelperMethods = {
    */
   "helper.continueSession": { params: { sessionId: string; text: string; config: RunConfig }; result: TaskRunResult };
   /**
+   * Start the next new session's agent ahead (the side panel opened), with
+   * this config's model, Reasoning and Jev: the next runTask then skips
+   * starting Claude Code (~0.65 s). It uses no tokens while it waits and
+   * stops after 10 minutes unused. ok: false when the brain starts nothing
+   * ahead (scripted, or Claude Code missing).
+   */
+  "helper.prewarm": { params: { config: RunConfig }; result: { ok: boolean } };
+  /**
    * Close a kept-open session (Claude Code exits). Sessions also close after
    * 30 idle minutes, on helper shutdown, and when a 4th would open (the
    * oldest idle one closes).

@@ -6,7 +6,7 @@
  * (BrowserCallContext) and are served by that session's slot.
  */
 import type { BrowserCaller } from "@browsertodo/core";
-import type { Screenshot } from "@browsertodo/shared";
+import type { ApprovalRequest, Screenshot } from "@browsertodo/shared";
 import { AgentTab, closeChatTabs, type TabMode } from "./agent-tab.js";
 import type { Cdp } from "./cdp.js";
 import { Driver } from "./driver.js";
@@ -194,6 +194,17 @@ export class AgentSlots implements SlotPool {
     const slot = this.slotUsedBy(sessionId);
     if (slot) return slot.browser;
     throw new Error("This task session has no browser tab right now (its turn has ended). Stop and wait for the user's next message.");
+  }
+
+  /**
+   * The user's OK for a change a session's agent makes outside the page (a TODO task changed or cancelled), at
+   * its automation level, through its slot's gate ("Allow for this task" and the turn's clock are the slot's).
+   * Without approvals nothing waits. A session without a slot (its turn ended) is refused.
+   */
+  async confirm(sessionId: string, request: Omit<ApprovalRequest, "id" | "expiresAt">): Promise<void> {
+    const slot = this.slotUsedBy(sessionId);
+    if (!slot) throw new Error("This task session has no turn running right now (its turn has ended), so nothing was changed. Stop and wait for the user's next message.");
+    await slot.gate?.confirm(sessionId, request);
   }
 
   /** The slot a session uses right now, if any. */

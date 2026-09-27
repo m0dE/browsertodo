@@ -4,7 +4,7 @@
  * closed); this class handles what happens inside one session: turns, their
  * limits, the task_* result, user messages and stopping.
  */
-import { type Sleep, type AgentEvent, type MemoryToolName, type RunConfig, type ScheduledTask, type ScheduleTaskArgs, type TaskRunResult, type ToolName } from "@browsertodo/shared";
+import { type Sleep, type AgentEvent, type MemoryToolName, type RunConfig, type TaskRunResult, type TodoToolName, type TodoToolResult, type ToolName } from "@browsertodo/shared";
 import { createToolExecutor, Interjections, ReasoningGovernor, reasoningTrace, turnEndEvents, type BrowserCaller, type JevLike, type ReasoningChange, type SecretRedactor } from "@browsertodo/core";
 import type { RunLog } from "../logger.js";
 import { UserInput, type ReasoningChannel } from "../brains/brain.js";
@@ -14,6 +14,8 @@ import { checkToolCall, clearTurnTimers, createTurn, turnResult, type Turn } fro
 
 export interface TaskSessionOptions {
   sessionId: string;
+  /** The task id its agent's tool calls carry: the session id, or that of the agent started ahead that it took. */
+  toolTaskId?: string;
   runDir: string;
   log: RunLog;
   /** The brain stays alive after a task_* call, for follow-up turns. */
@@ -27,8 +29,8 @@ export interface TaskSessionOptions {
   secrets: SecretRedactor;
   /** helper.event notifications. */
   notify: (sessionId: string, event: AgentEvent) => void;
-  /** schedule_task: the extension stores the task in the user's TODO list for this session's conversation. */
-  scheduleTask?: (sessionId: string, args: ScheduleTaskArgs) => Promise<ScheduledTask>;
+  /** The TODO tools: the extension answers them from the user's TODO list for this session's conversation. */
+  todo?: (sessionId: string, tool: TodoToolName, args: unknown) => Promise<TodoToolResult>;
   /** remember / recall / forget: the extension's memory for this session's conversation. */
   memory?: (sessionId: string, tool: MemoryToolName, args: unknown) => Promise<{ text: string; isError?: boolean }>;
   /** Single-turn brains: time the agent gets to exit after its task_* call. */
@@ -50,6 +52,9 @@ export class TaskSession {
   readonly reasoning: ReasoningChannel;
   private readonly governor: ReasoningGovernor;
   private reasoningListener: ((change: ReasoningChange) => void) | null = null;
+  /** The model the session runs: the first turn's setting (null: the brain's default); undefined before it. */
+  private model: string | null | undefined;
+  private modelListener: ((model: string) => void) | null = null;
   /** What the ToolRouter sees of this session. */
   readonly tools: ToolSession;
   turn: Turn | null = null;
@@ -95,10 +100,22 @@ export class TaskSession {
       mediaPaths: opts.mediaPaths,
       secrets: opts.secrets,
       ...(opts.sleep ? { sleep: opts.sleep } : {}),
-      ...(opts.scheduleTask ? { scheduleTask: (args: ScheduleTaskArgs) => opts.scheduleTask!(opts.sessionId, args) } : {}),
+      ...(opts.todo ? { todo: (tool: TodoToolName, args: unknown) => opts.todo!(opts.sessionId, tool, args) } : {}),
       ...(opts.memory ? { memory: (tool: MemoryToolName, args: unknown) => opts.memory!(opts.sessionId, tool, args) } : {}),
     });
-    this.tools = { taskId: opts.sessionId, allowedTools: opts.allowed, jev: opts.jev !== null, beforeCall: (name) => this.beforeCall(name), executor };
+    this.tools = { taskId: opts.toolTaskId ?? opts.sessionId, allowedTools: opts.allowed, jev: opts.jev !== null, beforeCall: (name) => this.beforeCall(name), executor };
+  }
+
+  /** The first turn's model starts the brain; a later turn that names another one switches it. */
+  private followModel(model: string | null): void {
+    const first = this.model === undefined;
+    if (first || (model !== null && model !== this.model)) {
+      if (!first) {
+        this.log.event({ type: "model_change", from: this.model, to: model });
+        this.modelListener?.(model!);
+      }
+      this.model = model;
+    }
   }
 
   get aborted(): boolean {
@@ -119,10 +136,16 @@ export class TaskSession {
     }
   }
 
+  /** The brain follows a later turn's model setting (BrainContext.onModelChange). */
+  onModelChange(fn: (model: string) => void): void {
+    this.modelListener = fn;
+  }
+
   /** A new turn with fresh limits; its time limit aborts the session. */
   startTurn(config: RunConfig): Turn {
     const turn = createTurn(config);
     this.governor.startTurn(config);
+    this.followModel(config.model?.trim() || null);
     const minutes = config.maxTaskMinutes;
     turn.endsAt = Date.now() + minutes * 60_000;
     turn.timeLimit = setTimeout(() => {

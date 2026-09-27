@@ -2,6 +2,7 @@ import type { ApprovalOutcome, ApprovalRequest } from "./automation.js";
 import type { MemoryEntry } from "./memory.js";
 import type { TaskOutcome, TaskSource } from "./task.js";
 import type { ScheduleInput } from "./schedule.js";
+import type { TodoChange, TodoTaskFields } from "./schedule-task.js";
 import type { TraceEvent } from "./trace.js";
 
 /**
@@ -86,6 +87,16 @@ export type AgentEvent =
   | { type: "task_scheduled"; taskId: string; instructions: string; schedule: ScheduleInput }
   /** The user undid a task_scheduled from its card (the task was deleted). Written by the extension. */
   | { type: "task_unscheduled"; taskId: string }
+  /**
+   * The agent changed or cancelled a task in the user's TODO list (update_scheduled_task,
+   * cancel_scheduled_task): the chat shows a card with View in TODO and Undo. changeId: what Undo names
+   * (one task may change more than once). instructions / schedule: the task after the change (a cancelled
+   * one as it was). before: an updated task's fields before the change (Undo puts them back; a cancel is
+   * undone by putting the task back in the queue). Written by the extension, never by a brain.
+   */
+  | { type: "task_changed"; changeId: string; taskId: string; change: TodoChange; instructions: string; schedule: ScheduleInput; before?: TodoTaskFields }
+  /** The user undid a task_changed from its card. Written by the extension. */
+  | { type: "task_change_undone"; changeId: string }
   /**
    * An action waits for the user's OK (the automation level, automation.ts):
    * the chat shows it as a card with Allow once, Allow for this task and

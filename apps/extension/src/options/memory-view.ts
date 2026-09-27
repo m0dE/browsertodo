@@ -288,3 +288,8 @@ export function forgetTaskText(total: number, confirming: boolean): { button: st
     question: `Delete everything this task keeps (${count(total, "entry", "entries")})? This can't be undone.`,
   };
 }
+
+/** The quiet line while past chats are summarized into episodes in the background. */
+export function backfillText(p: { done: number; total: number }): string {
+  return `Summarising past chats: ${p.done}/${p.total}`;
+}

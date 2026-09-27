@@ -10,7 +10,7 @@ import type { BrainStatus, TraceEnv, UiRequest, UiResponse, UiResults, UiState }
 import { realtimeTicketForPanel, voiceEnginesForPanel, type RealtimeAccount } from "../voice/realtime-access.js";
 import { transcribeForPanel, type VoiceAccount } from "../voice/transcribe.js";
 import type { LocalStore } from "./local-store.js";
-import { TaskScheduler, type TodoAccess } from "./schedule-task.js";
+import { TaskScheduler, type TodoAccess, type TodoApprovalAsk } from "./schedule-task.js";
 import { todoAllowed } from "../account/types.js";
 import { uploadToBlob } from "./local-store.js";
 import type { AdhocInput } from "./run/jobs.js";
@@ -78,10 +78,17 @@ export interface UiRouterDeps {
   traceEnv?(): Promise<TraceEnv>;
   /** Approval requests waiting for the user (approval/broker.ts). Absent: nothing waits, and answers are refused. */
   approvals?: { answer(sessionId: string, id: string, answer: ApprovalAnswer, by?: "voice"): boolean };
+  /**
+   * The user's OK for a TODO task the agent changes or cancels (engine/schedule-task.ts), at the session's
+   * automation level (AgentSlots.confirm); throws the refusal. Absent: nothing waits.
+   */
+  approveTodoChange?(sessionId: string, ask: TodoApprovalAsk): Promise<void>;
   /** The agent's memory: Settings > Memory, Undo on the chat's notes, memory off for a chat. Absent: refused. */
   memory?: Pick<MemoryService, "handle">;
   /** "Add this computer's memory to <account>?" while it waits for the user (UiState.memoryQuestion); null: nothing to ask. */
   memoryQuestion?(): Promise<{ account: string } | null>;
+  /** How far summarizing past chats is (UiState.memoryBackfill); null: none under way. */
+  memoryBackfill?(): Promise<{ done: number; total: number } | null>;
 }
 
 /** The helper log's last lines for helper.getLog: by default, and at most. */
@@ -93,8 +100,8 @@ export type ExtraRequest = { type: "helper.getLog"; lines: number };
 
 export class UiRouter {
   /**
-   * schedule_task: puts the agent's task in the TODO tab's list (the account's, on a plan with the TODO list)
-   * and answers the chat card's Undo. The brains call it for their session (engine/schedule-task.ts).
+   * The TODO tools: schedule, list, change and cancel tasks in the TODO tab's list (the account's, on a plan with
+   * the TODO list), and Undo on the chat's cards. The brains call it for their session (engine/schedule-task.ts).
    */
   readonly scheduler: TaskScheduler;
 
@@ -103,6 +110,7 @@ export class UiRouter {
       todo: () => this.todo(),
       access: () => this.todoAccess(),
       sessions: deps.sessions,
+      ...(deps.approveTodoChange ? { approve: deps.approveTodoChange } : {}),
     });
   }
 
@@ -137,6 +145,8 @@ export class UiRouter {
     if (d.runningTabs) state.runningTabs = await d.runningTabs().catch(() => ({}));
     const memoryQuestion = d.memoryQuestion ? await d.memoryQuestion().catch(() => null) : null;
     if (memoryQuestion) state.memoryQuestion = memoryQuestion;
+    const memoryBackfill = d.memoryBackfill ? await d.memoryBackfill().catch(() => null) : null;
+    if (memoryBackfill) state.memoryBackfill = memoryBackfill;
     if (settings.paused && rs.pausedReason) state.pausedReason = rs.pausedReason;
     if (rs.lastRunAt) state.lastRunAt = rs.lastRunAt;
     if (rs.lastError) state.lastError = rs.lastError;
@@ -263,6 +273,13 @@ export class UiRouter {
         if (!sessionId || !taskId) throw new Error("sessionId and taskId are required");
         await this.scheduler.undo(sessionId, taskId);
         return { ok: true } satisfies UiResults["chat.undoScheduled"];
+      }
+      case "chat.undoTaskChange": {
+        const sessionId = optId(msg.sessionId);
+        const changeId = optId(msg.changeId);
+        if (!sessionId || !changeId) throw new Error("sessionId and changeId are required");
+        await this.scheduler.undoChange(sessionId, changeId);
+        return { ok: true } satisfies UiResults["chat.undoTaskChange"];
       }
       case "approval.answer": {
         const sessionId = optId(msg.sessionId);

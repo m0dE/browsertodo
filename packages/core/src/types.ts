@@ -12,10 +12,10 @@ import type {
   BrowserMethods,
   PageSnapshot,
   RunConfig,
-  ScheduledTask,
-  ScheduleTaskArgs,
   Sleep,
   TaskRunResult,
+  TodoToolName,
+  TodoToolResult,
   ToolName,
   ToolResult,
   TraceDraft,
@@ -91,12 +91,12 @@ export interface ToolExecutorOptions {
    */
   interjections?: Interjections;
   /**
-   * schedule_task: stores the task in the user's TODO list for this
-   * conversation and returns what was stored; throws with the reason the
-   * model relays (e.g. the plan has no TODO list). Undefined (mcp-server
-   * --attach): refused, there is no conversation to schedule from.
+   * The TODO tools (schedule_task, list_scheduled_tasks, update_scheduled_task, cancel_scheduled_task): the
+   * user's TODO list for this conversation (the extension answers them). Answers the model's text; isError when
+   * nothing was done (e.g. the plan has no TODO list, or the user did not approve). Undefined (mcp-server
+   * --attach): refused, there is no conversation.
    */
-  scheduleTask?: (args: ScheduleTaskArgs) => Promise<ScheduledTask>;
+  todo?: TodoCall;
   /**
    * remember / recall / forget: the conversation's memory (the extension keeps it). Answers the model's text;
    * isError when it refused (e.g. memory is off, or the entry looks like a secret). Undefined: refused.
@@ -106,6 +106,9 @@ export interface ToolExecutorOptions {
 
 /** One memory tool call, answered by the extension's memory for the conversation. */
 export type MemoryCall = (tool: MemoryToolName, args: unknown) => Promise<{ text: string; isError?: boolean }>;
+
+/** One TODO tool call, answered by the extension's TODO list for the conversation. */
+export type TodoCall = (tool: TodoToolName, args: unknown) => Promise<TodoToolResult>;
 
 export interface ToolExecutor {
   /** Validates args with ToolArgs, runs the tool, emits tool_call/tool_result/jev events. Never throws. */
@@ -174,8 +177,8 @@ export interface ApiAgentOptions {
    * waits), and the tool executor's spans.
    */
   onTrace?: (e: TraceDraft) => void;
-  /** schedule_task for this conversation (see ToolExecutorOptions.scheduleTask). Undefined: refused. */
-  scheduleTask?: (args: ScheduleTaskArgs) => Promise<ScheduledTask>;
+  /** The TODO tools for this conversation (see ToolExecutorOptions.todo). Undefined: refused. */
+  todo?: TodoCall;
   /** remember / recall / forget for this conversation (see ToolExecutorOptions.memory). Undefined: refused. */
   memory?: MemoryCall;
 }

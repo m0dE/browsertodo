@@ -140,7 +140,23 @@ export class ApprovalGate {
     const action = this.actionOf(method, params);
     const ask = await this.why(sessionId, ctx, action);
     if (!ask) return;
-    const request = approvalAsk(action, ask.why, ask.kind);
+    await this.ask(sessionId, ctx, approvalAsk(action, ask.why, ask.kind));
+  }
+
+  /**
+   * A change the agent makes outside the page (a TODO task changed or cancelled, engine/schedule-task.ts): it
+   * waits for the user's OK at every level but full autonomy, like a consequential action the task does not
+   * ask for; "Allow for this task" covers it too. Throws the refusal the agent reads when it is not allowed.
+   */
+  async confirm(sessionId: string, request: Omit<ApprovalRequest, "id" | "expiresAt">): Promise<void> {
+    this.follow(sessionId);
+    const ctx = await this.deps.context(sessionId);
+    if (ctx.level === "full" || this.allowAll) return;
+    await this.ask(sessionId, ctx, request);
+  }
+
+  /** Asks the user (no longer than the turn allows); returns when allowed, throws the refusal otherwise. */
+  private async ask(sessionId: string, ctx: GateContext, request: Omit<ApprovalRequest, "id" | "expiresAt">): Promise<void> {
     const now = this.deps.now?.() ?? Date.now();
     const left = ctx.endsAt === undefined ? undefined : Math.max(0, ctx.endsAt - now - APPROVAL_TURN_MARGIN_MS);
     const waited = this.waiting?.();

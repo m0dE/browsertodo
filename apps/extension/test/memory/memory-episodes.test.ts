@@ -1,7 +1,19 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { memoryTaskKey, type AgentEvent, type ExtensionSettings, type MemoryKind, type SessionInfo } from "@browsertodo/shared";
 import { SessionStore } from "../../src/engine/sessions.js";
-import { EPISODE_IDLE_MS, EPISODE_QUEUE_KEY, EPISODE_RETRY_MS, EPISODE_TASK_DELAY_MS, EpisodeWriter, MAX_EPISODE_ATTEMPTS, episodeTrigger, transcriptLines } from "../../src/memory/episodes.js";
+import {
+  BACKFILL_DAYS,
+  BACKFILL_GAP_MS,
+  EPISODE_IDLE_MS,
+  EPISODE_QUEUE_KEY,
+  EPISODE_RETRY_MS,
+  EPISODE_TASK_DELAY_MS,
+  EpisodeWriter,
+  MAX_BACKFILL_SESSIONS,
+  MAX_EPISODE_ATTEMPTS,
+  episodeTrigger,
+  transcriptLines,
+} from "../../src/memory/episodes.js";
 import { MemoryService } from "../../src/memory/service.js";
 import { MemoryStore } from "../../src/memory/store.js";
 import type { Summarize } from "../../src/memory/summarizers.js";
@@ -363,5 +375,169 @@ describe("transcriptLines and episodeTrigger", () => {
     const first = { instructions: "Post", account: null };
     expect(episodeTrigger({ source: "turn", from: { source: "local" } as SessionInfo, text: "go", task: null, first })).toEqual({ soon: false, task: first });
     expect(episodeTrigger({ source: "turn", from: { source: "adhoc" } as SessionInfo, text: "go", task: null, first })).toEqual({ soon: false });
+  });
+});
+
+describe("backfill: past conversations without an episode", () => {
+  const DAY = 86_400_000;
+  let busy: boolean;
+  let pushes: number;
+  let failFor: Set<string>;
+
+  /** A writer as a worker start makes it: the same stored state, the given summaries (EPISODE for each by default). */
+  function worker(): EpisodeWriter {
+    const summarize: Summarize = async (req) => {
+      prompts.push(req);
+      if (failFor.has(req.sessionId)) throw new Error("the model is overloaded");
+      return { text: JSON.stringify({ episode: { ...EPISODE, subject: `Episode of ${req.sessionId}` }, facts: [] }) };
+    };
+    return new EpisodeWriter({
+      store,
+      sessions,
+      settings: async () => settings,
+      summarizer: (brain) => (brainsWithWriter.includes(brain) ? summarize : null),
+      alarms: { set: async (when) => void (alarm = when), clear: async () => void (alarm = null) },
+      storage,
+      now: () => clock,
+      busy: () => busy,
+      onBackfillProgress: () => void pushes++,
+      log: (m) => logs.push(m),
+    });
+  }
+
+  /** Past conversations, one per hour, oldest first (ids in that order). */
+  async function history(ids: string[], extra: Record<string, Partial<SessionInfo>> = {}): Promise<void> {
+    for (const id of ids) {
+      await conversation(id, extra[id] ?? {});
+      clock += 3_600_000;
+    }
+  }
+
+  const episodeIds = async () => (await store.list()).filter((e) => e.kind === "episode").map((e) => e.source.sessionId);
+
+  /** Runs the alarm's pass once its time has come. */
+  async function tick(w: EpisodeWriter): Promise<void> {
+    clock = Math.max(clock, alarm!);
+    await w.runDue();
+  }
+
+  beforeEach(() => {
+    busy = false;
+    pushes = 0;
+    failFor = new Set();
+  });
+
+  it("lists the recent ended ones with none, newest first, and writes one per BACKFILL_GAP_MS on the conversation's own brain", async () => {
+    clock = START - (BACKFILL_DAYS + 1) * DAY;
+    await history(["too-old"]);
+    clock = START - 3 * DAY;
+    await history(["old", "private", "scripted", "has-episode", "written", "recent"], { private: { memoryOff: true }, scripted: { brain: "scripted" as SessionInfo["brain"] } });
+    // One already has an episode in memory (e.g. from another browser); one the writer already summarized.
+    await store.putEpisode({ ...EPISODE, at: iso() }, { kind: "chat", sessionId: "has-episode" });
+    storage.data[EPISODE_QUEUE_KEY] = { queue: [], written: { written: iso() } };
+    await sessions.create({ sessionId: "running", source: "adhoc", title: "Still going", brain: "claude-api", jev: false, startedAt: iso() });
+    clock = START;
+
+    const w = worker();
+    await w.resume();
+    expect(await w.backfillProgress()).toEqual({ done: 0, total: 2 });
+    expect(alarm).toBe(START + BACKFILL_GAP_MS);
+    expect(pushes).toBe(1);
+    await w.runDue();
+    expect(prompts).toHaveLength(0);
+
+    await tick(w);
+    expect(prompts.map((p) => p.sessionId)).toEqual(["recent"]);
+    expect(await w.backfillProgress()).toEqual({ done: 1, total: 2 });
+    expect(alarm).toBe(clock + BACKFILL_GAP_MS);
+    await tick(w);
+    expect(prompts.map((p) => p.sessionId)).toEqual(["recent", "old"]);
+    expect(await episodeIds()).toEqual(expect.arrayContaining(["recent", "old", "has-episode"]));
+    // Done: nothing left, and a later worker start does not list again.
+    expect(await w.backfillProgress()).toBeNull();
+    expect(alarm).toBeNull();
+    await worker().resume();
+    expect(await w.backfillProgress()).toBeNull();
+  });
+
+  it("is bounded by MAX_BACKFILL_SESSIONS (the newest)", async () => {
+    clock = START - 2 * DAY;
+    const ids = Array.from({ length: MAX_BACKFILL_SESSIONS + 2 }, (_, i) => `c${i}`);
+    await history(ids);
+    const w = worker();
+    await w.resume();
+    expect(await w.backfillProgress()).toEqual({ done: 0, total: MAX_BACKFILL_SESSIONS });
+    await tick(w);
+    expect(prompts[0]!.sessionId).toBe(ids.at(-1));
+  });
+
+  it("goes on where it was after a worker restart, and waits while a run is going on", async () => {
+    clock = START - DAY;
+    await history(["a", "b", "c"]);
+    const first = worker();
+    await first.resume();
+    await tick(first);
+    expect(prompts.map((p) => p.sessionId)).toEqual(["c"]);
+
+    // The worker sleeps and starts again: the alarm is set again, the list is not made anew.
+    alarm = null;
+    const second = worker();
+    await second.resume();
+    expect(await second.backfillProgress()).toEqual({ done: 1, total: 3 });
+    expect(alarm).not.toBeNull();
+    busy = true;
+    await tick(second);
+    expect(prompts).toHaveLength(1);
+    expect(alarm).toBe(clock + BACKFILL_GAP_MS);
+    busy = false;
+    await tick(second);
+    await tick(second);
+    expect(prompts.map((p) => p.sessionId)).toEqual(["c", "b", "a"]);
+    expect(await second.backfillProgress()).toBeNull();
+  });
+
+  it("a conversation whose turn just ended goes first; the backfill waits its turn", async () => {
+    clock = START - DAY;
+    await history(["past"]);
+    const w = worker();
+    await w.resume();
+    await conversation("now");
+    await w.ended("now", { soon: true });
+    clock += BACKFILL_GAP_MS;
+    await w.runDue();
+    expect(prompts.map((p) => p.sessionId)).toEqual(["now", "past"]);
+  });
+
+  it("memory or Episodes off: dropped; listed again at a later worker start once back on", async () => {
+    clock = START - DAY;
+    await history(["a", "b"]);
+    const w = worker();
+    await w.resume();
+    await tick(w);
+    settings.memoryKindsOff = ["episode"];
+    await tick(w);
+    expect(prompts.map((p) => p.sessionId)).toEqual(["b"]);
+    expect(await w.backfillProgress()).toBeNull();
+    // Still off at the next start: nothing listed.
+    await worker().resume();
+    expect(await w.backfillProgress()).toBeNull();
+    settings.memoryKindsOff = [];
+    await worker().resume();
+    expect(await w.backfillProgress()).toEqual({ done: 0, total: 1 });
+    await tick(w);
+    expect(prompts.map((p) => p.sessionId)).toEqual(["b", "a"]);
+  });
+
+  it("a failure is tried again after the others, at most MAX_EPISODE_ATTEMPTS times", async () => {
+    clock = START - DAY;
+    await history(["a", "b"]);
+    failFor.add("b");
+    const w = worker();
+    await w.resume();
+    for (let i = 0; i < MAX_EPISODE_ATTEMPTS + 1; i++) await tick(w);
+    expect(prompts.map((p) => p.sessionId)).toEqual(["b", "a", ...Array(MAX_EPISODE_ATTEMPTS - 1).fill("b")]);
+    expect(await w.backfillProgress()).toBeNull();
+    expect(await episodeIds()).toEqual(["a"]);
+    expect(logs.some((l) => /episode backfill b: failed, dropped/.test(l))).toBe(true);
   });
 });

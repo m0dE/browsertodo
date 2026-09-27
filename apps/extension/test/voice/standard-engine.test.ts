@@ -157,3 +157,66 @@ describe("StandardEngine: timing trace", () => {
     engine.stop();
   });
 });
+
+describe("StandardEngine: muted", () => {
+  it("transcribes nothing while muted (the utterance under way is dropped, not sent), and listens again when unmuted", async () => {
+    const { mic, ev, engine, transcribe } = setup();
+    const levels: number[] = [];
+    ev.level = (l) => void levels.push(l);
+    await engine.start();
+    engine.setTranscribing(true);
+    await settle();
+    mic.play(900, true);
+    expect(ev.log).toEqual(["speech"]);
+    const calls = transcribe.mock.calls.length;
+    engine.setMuted(true);
+    // The meter falls to nothing at once.
+    expect(levels.at(-1)).toBe(0);
+    levels.length = 0;
+    mic.play(1500, false);
+    mic.play(900, true);
+    mic.play(1500, false);
+    // Half-duplex asks for transcription again after a line: muted, it still waits.
+    engine.setTranscribing(false);
+    engine.setTranscribing(true);
+    mic.play(900, true);
+    mic.play(1500, false);
+    await settle();
+    await settle();
+    expect(ev.log).toEqual(["speech"]);
+    expect(transcribe.mock.calls.length).toBe(calls);
+    expect(levels).toEqual([]);
+    engine.setMuted(false);
+    await settle();
+    mic.play(300, false);
+    mic.play(900, true);
+    mic.play(1500, false);
+    await settle();
+    await settle();
+    expect(ev.log).toEqual(["speech", "speech", "heard:open gmail:true"]);
+    engine.stop();
+  });
+
+  it("muted while a line is said: speech cannot cut it off", async () => {
+    const { mic, ev, engine } = setup(true);
+    await engine.start();
+    engine.setTranscribing(false);
+    engine.setMuted(true);
+    mic.play(HANDS_FREE.bargeInMs + 400, true);
+    expect(ev.log).toEqual([]);
+    engine.stop();
+  });
+
+  it("muted before it starts: the microphone opens muted", async () => {
+    const { mic, ev, engine, transcribe } = setup();
+    engine.setMuted(true);
+    await engine.start();
+    engine.setTranscribing(true);
+    mic.play(900, true);
+    mic.play(1500, false);
+    await settle();
+    expect(ev.log).toEqual([]);
+    expect(transcribe).not.toHaveBeenCalled();
+    engine.stop();
+  });
+});

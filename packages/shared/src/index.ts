@@ -28,3 +28,4 @@ export * from "./memory.js";
 export * from "./memory-writer.js";
 export * from "./wait.js";
 export * from "./turn-time.js";
+export * from "./history-search.js";

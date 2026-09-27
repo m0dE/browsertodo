@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, loadEnv, parseDotEnv } from "../src/config.js";
 import { SecretRedactor } from "@browsertodo/core";
+import { DEFAULT_MODEL } from "@browsertodo/shared";
 import { LiveLog, LIVE_LOG_TAIL_MAX_BYTES, RunLog } from "../src/logger.js";
 import { encodeNativeMessage, MAX_NATIVE_OUT } from "../src/native-framing.js";
 
@@ -37,7 +38,8 @@ describe("config", () => {
     expect(cfg.runsDir).toBe(join(dir, "runs"));
     expect(cfg.typesafeApiKey).toBeNull();
     expect(cfg.brain).toBe("scripted");
-    expect(cfg.model).toBe("sonnet");
+    // The same model the extension's setting defaults to, by its full id (Claude Code's "sonnet" alias may name another).
+    expect(cfg.model).toBe(DEFAULT_MODEL);
     expect(cfg.mcpServerPath.endsWith(join("dist", "mcp-server.js"))).toBe(true);
     const withKey = loadConfig({ BROWSERTODO_HOME: dir, TYPESAFE_API_KEY: "k", BROWSERTODO_MODEL: "opus" }, { dotenvDirs: [] });
     expect(withKey.typesafeApiKey).toBe("k");

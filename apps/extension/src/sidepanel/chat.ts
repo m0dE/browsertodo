@@ -163,14 +163,21 @@ export function initChat(opts: ChatOptions = {}): ChatView {
   let heard: HeardPairs = pairHeard([], null);
   const pairsNow = () => pairHeard(events, current ? openingText(current) : null);
 
-  /** The buttons of scheduled cards: View in TODO, and Undo (the card turns "undone" when its task_unscheduled arrives). */
+  /**
+   * The buttons of TODO cards: View in TODO, and Undo (the card turns "undone" when its task_unscheduled, or a
+   * changed card's task_change_undone, arrives).
+   */
   const scheduledActions: ScheduledCardActions = {
     view: (taskId) => opts.onOpenTask?.(taskId),
     undo: async (taskId) => {
       if (current) await uiRequest({ type: "chat.undoScheduled", sessionId: current.sessionId, taskId });
     },
+    undoChange: async (changeId) => {
+      if (current) await uiRequest({ type: "chat.undoTaskChange", sessionId: current.sessionId, changeId });
+    },
   };
   const undone = (taskId: string) => events.some((e) => e.type === "task_unscheduled" && e.taskId === taskId);
+  const changeUndone = (changeId: string) => events.some((e) => e.type === "task_change_undone" && e.changeId === changeId);
 
   /** Undo on memory notes (the note turns "undone" when its memory_undone arrives). */
   const memoryActions: MemoryNoteActions = {
@@ -210,11 +217,18 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     if (ev?.type === "task_scheduled" && card) card.replaceWith(renderScheduled(scheduledView(ev, true)));
   }
 
+  /** An undone change's card, wherever it is in the log, now says so. */
+  function markChangeUndone(changeId: string): void {
+    const ev = events.find((e) => e.type === "task_changed" && e.changeId === changeId);
+    const card = [...log.querySelectorAll<HTMLElement>(".ev-scheduled")].find((c) => c.dataset.changeId === changeId);
+    if (ev?.type === "task_changed" && card) card.replaceWith(renderScheduled(scheduledView(ev, true)));
+  }
+
   function renderOne(ev: StampedAgentEvent, i: number): void {
     // The brain chip under the first message already says which brain started.
     if (ev.type === "status" && isBrainStartLine(ev.text)) return;
     // An undo changes its task's card (see markUndone); it shows nothing of its own.
-    if (ev.type === "task_unscheduled") return;
+    if (ev.type === "task_unscheduled" || ev.type === "task_change_undone") return;
     // An approval's ending changes its card (see refreshApprovals).
     if (ev.type === "approval_resolved") return;
     // An undo changes its memory note (see markMemoryUndone).
@@ -231,11 +245,13 @@ export function initChat(opts: ChatOptions = {}): ChatView {
           ? { echo: spokenEchoes(events, i) }
           : e.type === "task_scheduled"
             ? { undone: undone(e.taskId) }
-            : e.type === "approval_request"
-              ? { approval: approvalEnding(events, e.request.id) }
-              : e.type === "memory"
-                ? { memoryUndone: memoryUndone(e.changeId) }
-                : {};
+            : e.type === "task_changed"
+              ? { undone: changeUndone(e.changeId) }
+              : e.type === "approval_request"
+                ? { approval: approvalEnding(events, e.request.id) }
+                : e.type === "memory"
+                  ? { memoryUndone: memoryUndone(e.changeId) }
+                  : {};
     const view = describeEvent(e, turn);
     const el = renderEvent(view, canContinue ? () => opts.onContinue?.(e.sessionId) : undefined, scheduledActions, approvalActions, memoryActions);
     if (e.type === "spoken") placeKept(el, e.text);
@@ -457,6 +473,10 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     }
     if (ev.type === "task_unscheduled") {
       markUndone(ev.taskId);
+      return;
+    }
+    if (ev.type === "task_change_undone") {
+      markChangeUndone(ev.changeId);
       return;
     }
     if (ev.type === "approval_resolved") {

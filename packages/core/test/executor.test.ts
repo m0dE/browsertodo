@@ -6,7 +6,7 @@ import { picksEvent } from "../src/executor.js";
 import { OutOfCreditError } from "../src/api-errors.js";
 import { goalKey, rankCandidates } from "../src/act.js";
 import { formatElementsInWords } from "../src/page-format.js";
-import type { BrowserCaller, JevLike } from "../src/types.js";
+import type { BrowserCaller, JevLike, ToolExecutorOptions } from "../src/types.js";
 import { FAKE_JPEG_B64, FakeX } from "./fake-x.js";
 import { collect, fakeJev, noSleep, smartJev } from "./helpers.js";
 
@@ -722,12 +722,14 @@ describe("scroll reports what moved", () => {
   });
 });
 
-describe("createToolExecutor: schedule_task", () => {
+describe("createToolExecutor: the TODO tools", () => {
   const args = { task: "Open https://shop.example.com/orders/48213 and tell me whether it shipped.", schedule: { at: "2026-09-26T22:45:00-04:00" } };
+  const executor = (todo: ToolExecutorOptions["todo"]) =>
+    createToolExecutor({ browser: new FakeX().caller(), jev: null, jevThreshold: 0.8, onEvent: () => {}, mediaPaths: [], sleep: noSleep, ...(todo ? { todo } : {}) });
 
-  it("hands the parsed task to scheduleTask and tells the model what was stored", async () => {
+  it("hands each tool's parsed arguments to the conversation's TODO list and relays its answer", async () => {
     const x = new FakeX();
-    const got: unknown[] = [];
+    const got: [string, unknown][] = [];
     const exec = createToolExecutor({
       browser: x.caller(),
       jev: null,
@@ -735,41 +737,39 @@ describe("createToolExecutor: schedule_task", () => {
       onEvent: () => {},
       mediaPaths: [],
       sleep: noSleep,
-      scheduleTask: async (a) => {
-        got.push(a);
-        return { taskId: "t9", instructions: a.task, when: "Once, today at 10:45 PM", nextRunAt: "2026-09-27T02:45:00.000Z" };
+      todo: async (tool, a) => {
+        got.push([tool, a]);
+        return { text: `${tool} done` };
       },
     });
     const r = await exec.call("schedule_task", { ...args, task: `  ${args.task}  ` });
-    expect(got).toEqual([args]);
-    expect(r.isError).toBeUndefined();
-    expect(r.text).toMatch(/^Scheduled in the user's TODO list \(task t9\): "Open https:\/\/shop\.example\.com\/orders\/48213/);
-    expect(r.text).toContain("Once, today at 10:45 PM");
+    expect(r).toEqual({ text: "schedule_task done" });
+    expect((await exec.call("list_scheduled_tasks", {})).text).toBe("list_scheduled_tasks done");
+    expect((await exec.call("update_scheduled_task", { task_id: " t9 ", schedule: { at: "2026-10-02T15:00:00-04:00" } })).text).toBe("update_scheduled_task done");
+    expect((await exec.call("cancel_scheduled_task", { task_id: "t9" })).text).toBe("cancel_scheduled_task done");
+    expect(got).toEqual([
+      ["schedule_task", args],
+      ["list_scheduled_tasks", {}],
+      ["update_scheduled_task", { task_id: "t9", schedule: { at: "2026-10-02T15:00:00-04:00" } }],
+      ["cancel_scheduled_task", { task_id: "t9" }],
+    ]);
     // Nothing happens in the browser.
     expect(x.calls).toEqual([]);
   });
 
   it("a refusal reaches the model as an error with the extension's words", async () => {
-    const exec = createToolExecutor({
-      browser: new FakeX().caller(),
-      jev: null,
-      jevThreshold: 0.8,
-      onEvent: () => {},
-      mediaPaths: [],
-      sleep: noSleep,
-      scheduleTask: async () => {
-        throw new Error("Scheduling needs a paid plan. Nothing was scheduled.");
-      },
-    });
-    const r = await exec.call("schedule_task", args);
-    expect(r).toEqual({ isError: true, text: "schedule_task failed: Scheduling needs a paid plan. Nothing was scheduled." });
+    const exec = executor(async () => ({ text: "Scheduling needs a paid plan. Nothing was scheduled.", isError: true }));
+    expect(await exec.call("schedule_task", args)).toEqual({ isError: true, text: "Scheduling needs a paid plan. Nothing was scheduled." });
   });
 
   it("bad arguments and a session without a conversation are refused", async () => {
     const { exec } = setup(new FakeX());
     expect((await exec.call("schedule_task", { task: "x", schedule: {} })).text).toMatch(/Invalid arguments for schedule_task/);
-    const r = await exec.call("schedule_task", args);
-    expect(r.isError).toBe(true);
-    expect(r.text).toMatch(/no conversation to schedule from/);
+    expect((await exec.call("update_scheduled_task", { task_id: "t1" })).text).toMatch(/Invalid arguments for update_scheduled_task/);
+    for (const [tool, a] of [["schedule_task", args], ["list_scheduled_tasks", {}], ["cancel_scheduled_task", { task_id: "t1" }]] as const) {
+      const r = await exec.call(tool, a);
+      expect(r.isError).toBe(true);
+      expect(r.text).toMatch(/the TODO list belongs to a BrowserTODO chat/);
+    }
   });
 });

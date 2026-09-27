@@ -288,6 +288,31 @@ describe("ApprovalGate for scheduled runs (full_within_task)", () => {
   });
 });
 
+describe("ApprovalGate.confirm (a change outside the page: a TODO task changed or cancelled)", () => {
+  const CHANGE = { action: 'Cancel the TODO task "Dentist"', site: "", why: "cancels a task in your TODO list" };
+
+  it("waits at every level but full autonomy, scheduled runs included", async () => {
+    for (const level of ["ask_all", "ask_consequential", "full_within_task"] as const) {
+      const t = setup({ level });
+      await t.gate.confirm("s1", CHANGE);
+      expect(t.asked, level).toEqual([CHANGE]);
+    }
+    const full = setup({ level: "full" });
+    await full.gate.confirm("s1", CHANGE);
+    expect(full.asked).toEqual([]);
+  });
+
+  it("a denial is the refusal the agent reads; Allow for this task covers later changes and actions", async () => {
+    const denied = setup({ answer: "deny" });
+    await expect(denied.gate.confirm("s1", CHANGE)).rejects.toThrow(`${APPROVAL_REFUSAL_PREFIX} The user denied it (${CHANGE.action}).`);
+    const t = setup({ answer: "allow_task" });
+    await t.gate.confirm("s1", CHANGE);
+    await t.gate.confirm("s1", { ...CHANGE, action: 'Change the TODO task "Standup"' });
+    await postFlow(t.call);
+    expect(t.asked).toEqual([CHANGE]);
+  });
+});
+
 describe("approval card words", () => {
   it("never shows a password, and lists several typed fields by name", () => {
     const pw = el("textbox", "Password", { type: "password" });

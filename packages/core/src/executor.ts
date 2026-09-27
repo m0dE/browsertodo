@@ -11,7 +11,6 @@ import {
   isXSite,
   OUT_OF_CREDIT,
   picksText,
-  scheduledTaskText,
   siteHost,
   TASK_END_TOOLS,
   TOOL_NAMES,
@@ -295,13 +294,18 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
           // The hosted Jev and the hosted AI share one credit: pause the task, like a 402 from the Messages API does.
           outOfCredit: () => endTask({ outcome: "paused", reason: OUT_OF_CREDIT }, "Task paused: the account is out of usage credit. Stop now."),
         });
-      case "schedule_task": {
-        if (!opts.scheduleTask) return err("schedule_task is not available here: there is no conversation to schedule from. Tell the user to ask in the BrowserTODO chat.");
-        return { text: scheduledTaskText(await opts.scheduleTask(a as ToolArgsOf<"schedule_task">)) };
+      case "schedule_task":
+      case "list_scheduled_tasks":
+      case "update_scheduled_task":
+      case "cancel_scheduled_task": {
+        if (!opts.todo) return err(`${name} is not available here: the TODO list belongs to a BrowserTODO chat. Tell the user to ask in the BrowserTODO chat.`);
+        const r = await opts.todo(name, a);
+        return r.isError ? err(r.text) : { text: r.text };
       }
       case "remember":
       case "recall":
-      case "forget": {
+      case "forget":
+      case "search_history": {
         if (!opts.memory) return err(`${name} is not available here: memory belongs to a BrowserTODO chat or task.`);
         // A password get_credential handed out in this run is never kept (the secrets live here, in the executor).
         if (name === "remember" && containsKnownSecret(a)) return err("Not saved: it contains a password you were given. Memory never keeps passwords.");

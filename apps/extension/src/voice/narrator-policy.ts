@@ -146,3 +146,40 @@ export function repeatsRequest(text: string, inputId: string | null, last: Forwa
   if (!last || (inputId !== null && inputId !== last.inputId)) return false;
   return sharedWordShare(text, last.text) >= REPEATED_REQUEST_OVERLAP_MIN;
 }
+
+/**
+ * What a user's turn is, by its words: small talk the narrator may answer by itself (a greeting, "can you hear me",
+ * thanks, a filler, what the agent is doing now), or a request, which must go through one of its tools. Anything about
+ * what the agent did, saw, knows or remembers, a follow-up or correction ("no, I meant yesterday"), a question for the
+ * browser, a command: the narrator's own notes are not the truth about those (it once told a user "yesterday, I told
+ * you..." of something said minutes earlier). Unknown words count as a request: the agent answering a greeting costs
+ * a turn, the narrator answering a request makes things up.
+ */
+export type SpeechTurn = "small_talk" | "request";
+
+/** Whole clauses that are small talk (lowercase, no punctuation). English and Korean, the languages voice is used in. */
+const SMALL_TALK = new RegExp(
+  "^(?:" +
+    [
+      "(?:hi|hello|hey|yo)(?: there)?(?: (?:jev|browsertodo))?",
+      "good (?:morning|afternoon|evening)|morning",
+      "(?:can|could|do) you (?:still )?hear me(?: now| okay| ok)?|you there|are you (?:still )?(?:there|listening|with me)",
+      "testing(?: testing)*(?: one two(?: three)?)?|is (?:this|it) (?:working|on)",
+      "(?:thanks|thank you)(?: (?:so|very) much| a lot)?|(?:ok|okay|cool|great|nice|perfect|awesome|alright|all right|good|sure|fine)(?: thanks| thank you)?|got it|sounds good",
+      "um+|uh+|hmm+|wait|hold on|one sec(?:ond)?|just a sec(?:ond)?|let me think",
+      "what are you (?:doing|working on)(?: (?:right )?now)?|how(?:'s| is) it going",
+      "안녕(?:하세요)?|여보세요|(?:제 말 )?들려(?:요)?|들리(?:세요|나요|니)|고마워(?:요)?|감사합니다|알았어(?:요)?|알겠(?:어|어요|습니다)|오케이|좋아(?:요)?|잠깐(?:만)?(?:요)?",
+    ].join("|") +
+    ")$",
+  "u",
+);
+
+export function speechTurnOf(words: string): SpeechTurn {
+  const clauses = words
+    .toLowerCase()
+    .replace(/[’`]/g, "'")
+    .split(/[.,!?;:…]+/u)
+    .map((c) => c.replace(/[^\p{L}\p{N}' ]+/gu, " ").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  return clauses.every((c) => SMALL_TALK.test(c)) ? "small_talk" : "request";
+}

@@ -180,8 +180,8 @@ const transcribe = panelTranscriber(
  * focus is, the other panels say where voice is on, and the toolbar badges show it (see voice-session.ts).
  */
 let listeningReport: Extract<PanelMessage, { type: "panel.listening" }> = { type: "panel.listening", listening: false };
-function reportListening(listening: boolean, tabId: number | null, engine: VoiceEngineId | null): void {
-  listeningReport = { type: "panel.listening", listening, ...(tabId === null ? {} : { tabId }), ...(engine === null ? {} : { engine }) };
+function reportListening(listening: boolean, tabId: number | null, engine: VoiceEngineId | null, muted: boolean): void {
+  listeningReport = { type: "panel.listening", listening, ...(tabId === null ? {} : { tabId }), ...(engine === null ? {} : { engine }), ...(muted ? { muted } : {}) };
   port.send(listeningReport);
 }
 const voice = initVoiceInput({

@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { getEventListeners } from "node:events";
+import { EventEmitter, getEventListeners } from "node:events";
+import type { ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HelperErrorCode, type AgentEvent, type AgentTask, type RunConfig } from "@browsertodo/shared";
+import { HelperErrorCode, TODO_TOOLS, type AgentEvent, type AgentTask, type RunConfig } from "@browsertodo/shared";
 import { agentError, classifyFailure, ENDED_WITHOUT_RESULT, EXITED_WITHOUT_RESULT, TASK_FAIL_RECHECK, type JevLike } from "@browsertodo/core";
 import { TaskRunner, type RunTaskParams, type TaskRunnerDeps } from "../src/task-runner.js";
 import { ToolRouter } from "../src/tool-router.js";
@@ -11,6 +12,7 @@ import { LiveLog } from "../src/logger.js";
 import { INTERACTIVE_TASK_ID } from "../src/mcp-tools.js";
 import { ScriptedBrain } from "../src/brains/scripted.js";
 import type { Brain, BrainContext } from "../src/brains/brain.js";
+import { WarmClaude, type WarmSpec } from "../src/brains/claude-code.js";
 import { FakeX } from "./fake-x.js";
 import { noSleep } from "../../../packages/core/test/helpers.js";
 
@@ -516,6 +518,129 @@ describe("TaskRunner: kept-open sessions (persistent brain)", () => {
     expect(mine.slice(i).some((e) => e.type === "task_end")).toBe(true);
   });
 
+  it("a follow-up whose model setting changed switches the open session's model before its message (the same model, or none, does not)", async () => {
+    const seen: string[] = [];
+    const { runner } = setup(new FakeX(), {
+      brain: (router) => {
+        const inner = chatBrain(router);
+        return {
+          persistent: true,
+          run: (ctx) => {
+            seen.push(`start ${ctx.model}`);
+            ctx.onModelChange?.((m) => seen.push(`switch ${m}`));
+            // The one input subscriber is the inner brain: see its messages as they reach it.
+            const onMessage = ctx.input.onMessage.bind(ctx.input);
+            ctx.input.onMessage = (fn) => onMessage((text) => (seen.push(`message ${text}`), fn(text)));
+            return inner.run(ctx);
+          },
+        };
+      },
+    });
+    await runner.run(params({}, { config: { ...CONFIG, model: "claude-sonnet-5" } }));
+    for (const [text, model] of [["a", "claude-sonnet-5"], ["b", "claude-opus-5-5"], ["c", undefined], ["d", "claude-opus-5-5"]] as const)
+      await runner.continueSession({ sessionId: "S1", text, config: { ...CONFIG, ...(model ? { model } : {}) } });
+    expect(seen.map((s) => s.replace(/^message .*?(\w)$/, "message $1"))).toEqual([
+      "start claude-sonnet-5",
+      "message a",
+      "switch claude-opus-5-5",
+      "message b",
+      "message c",
+      "message d",
+    ]);
+  });
+
+  /** A persistent brain that starts agents ahead (like Claude Code): each warm() is a stand-in process. */
+  function warmSetup(over: Partial<TaskRunnerDeps> = {}) {
+    const warmed: { spec: WarmSpec; warm: WarmClaude; exit: () => void }[] = [];
+    const runs: BrainContext[] = [];
+    const t = setup(new FakeX(), {
+      ...over,
+      brain: (router) => {
+        const inner = chatBrain(router);
+        return {
+          persistent: true,
+          warm: (spec) => {
+            const child = Object.assign(new EventEmitter(), { exitCode: null, pid: undefined, stdin: null }) as unknown as ChildProcess;
+            const warm = new WarmClaude([spec.model ?? "default", String(spec.thinking), spec.systemPrompt], child);
+            warmed.push({ spec, warm, exit: () => child.emit("exit", 0) });
+            return warm;
+          },
+          run: (ctx) => {
+            runs.push(ctx);
+            // Taken when started with the same settings, as ClaudeCodeBrain does.
+            const taken = ctx.warm?.take([ctx.model ?? "default", String(ctx.reasoning?.thinking), ctx.systemPrompt]);
+            if (!taken) ctx.warm?.stop();
+            return inner.run(ctx);
+          },
+        };
+      },
+    });
+    return { ...t, warmed, runs };
+  }
+
+  it("prewarm: the next new session takes the agent started ahead, with its run folder; its tool calls reach the session", async () => {
+    const { runner, router, warmed, runs } = warmSetup();
+    expect(runner.prewarm({ ...CONFIG, model: "claude-sonnet-5" })).toBe(true);
+    // The same settings again keep it.
+    expect(runner.prewarm({ ...CONFIG, model: "claude-sonnet-5" })).toBe(true);
+    expect(warmed).toHaveLength(1);
+    const { spec, warm } = warmed[0]!;
+    expect(spec).toMatchObject({ model: "claude-sonnet-5", thinking: false });
+    const mcp = JSON.parse(readFileSync(spec.mcpConfigPath, "utf8"));
+    const toolTaskId = mcp.mcpServers.browsertodo.env.BROWSERTODO_TASK as string;
+    expect(toolTaskId).toMatch(/^warm-/);
+
+    const r = await runner.run(params({}, { config: { ...CONFIG, model: "claude-sonnet-5" } }));
+    // The session's own task_complete went through the spare's task id.
+    expect(r).toMatchObject({ outcome: "done", summary: "did: Post: hello from browsertodo" });
+    expect(runs[0]!.warm).toBe(warm);
+    expect(runs[0]!.taskId).toBe(toolTaskId);
+    expect(runs[0]!.mcpConfigPath).toBe(spec.mcpConfigPath);
+    expect(warm.ready).toBe(false);
+    expect(r.logPath).toBe(join(spec.mcpConfigPath, "..", "log.jsonl"));
+    // Its tools answer to the spare's task id only.
+    expect(runner.session(toolTaskId)?.taskId).toBe(toolTaskId);
+    expect((await router.call("S1", "read_page", {})).text).toMatch(/^No running task S1/);
+    // Taken once: the next new session starts its own.
+    await runner.run(params({}, { sessionId: "S2" }));
+    expect(runs[1]!.warm).toBeUndefined();
+    expect(runs[1]!.taskId).toBe("S2");
+  });
+
+  it("prewarm: other settings replace the spare; a session started with others does not take it; an unused one stops (time, shutdown, exit)", async () => {
+    const { runner, warmed, runs } = warmSetup({ warmMs: 30 });
+    runner.prewarm({ ...CONFIG, model: "claude-sonnet-5" });
+    runner.prewarm({ ...CONFIG, model: "claude-opus-5-5" });
+    expect(warmed.map((w) => [w.spec.model, w.warm.ready])).toEqual([
+      ["claude-sonnet-5", false],
+      ["claude-opus-5-5", true],
+    ]);
+    // Another model: offered, but the brain does not take it (stopped), and starts its own.
+    await runner.run(params({}, { config: { ...CONFIG, model: "claude-sonnet-5" } }));
+    expect(runs[0]!.warm).toBe(warmed[1]!.warm);
+    expect(warmed[1]!.warm.ready).toBe(false);
+    // Another Jev setting: its MCP config differs, so it is not offered at all.
+    runner.prewarm({ ...CONFIG, jevEnabled: false });
+    await runner.run(params({}, { sessionId: "S2" }));
+    expect(runs[1]!.warm).toBeUndefined();
+    expect(warmed[2]!.warm.ready).toBe(false);
+    // Unused: stopped after warmMs.
+    runner.prewarm(CONFIG);
+    await vi.waitFor(() => expect(warmed[3]!.warm.ready).toBe(false));
+    // A spare whose process exited is replaced.
+    runner.prewarm(CONFIG);
+    warmed[4]!.exit();
+    runner.prewarm(CONFIG);
+    expect(warmed).toHaveLength(6);
+    runner.shutdown("bye");
+    expect(warmed[5]!.warm.ready).toBe(false);
+  });
+
+  it("prewarm: a brain that starts nothing ahead says so", () => {
+    const { runner } = setup(new FakeX());
+    expect(runner.prewarm(CONFIG)).toBe(false);
+  });
+
   it("endSession closes it: continueSession then says 'session ended'", async () => {
     const { runner, changes } = chatSetup();
     await runner.run(params());
@@ -671,28 +796,38 @@ describe("TaskRunner: memory tools", () => {
   });
 });
 
-describe("TaskRunner: schedule_task", () => {
-  it("offers it to Claude Code and sends it to the extension with the session's id; its answer is the tool result", async () => {
+describe("TaskRunner: the TODO tools", () => {
+  it("offers them to Claude Code and sends each to the extension with the session's id; its answer is the tool result", async () => {
     const x = new FakeX();
     const asked: unknown[] = [];
     let seen: BrainContext | undefined;
     const args = { task: "Open https://shop.example.com/orders/48213 and tell me whether it shipped.", schedule: { at: "2026-09-26T22:45:00-04:00" } };
-    const { runner, router } = setup(x, {
-      scheduleTask: async (sessionId, a) => {
-        asked.push([sessionId, a]);
-        return { taskId: "t9", instructions: a.task, when: "Once, today at 10:45 PM", nextRunAt: null };
+    const results: string[] = [];
+    const { runner } = setup(x, {
+      todo: async (sessionId, tool, a) => {
+        asked.push([sessionId, tool, a]);
+        return tool === "cancel_scheduled_task" ? { text: "Not done: the user did not approve this action.", isError: true } : { text: `${tool} ok` };
       },
       brain: (r) =>
         customBrain(async (ctx) => {
           seen = ctx;
-          const res = await r.call("S1", "schedule_task", args);
-          await r.call("S1", "task_complete", { summary: res.isError ? `error: ${res.text}` : "scheduled" });
+          for (const [tool, a] of [["schedule_task", args], ["list_scheduled_tasks", {}], ["update_scheduled_task", { task_id: "t9", task: "Open the link" }], ["cancel_scheduled_task", { task_id: "t9" }]] as const) {
+            const res = await r.call("S1", tool, a);
+            results.push(`${res.isError ? "error" : "ok"}: ${res.text}`);
+          }
+          await r.call("S1", "task_complete", { summary: "done" });
         }),
     });
     const result = await runner.run(params());
-    expect(asked).toEqual([["S1", args]]);
-    expect(result).toMatchObject({ outcome: "done", summary: "scheduled" });
-    expect(seen!.allowedTools).toContain("mcp__browsertodo__schedule_task");
+    expect(asked).toEqual([
+      ["S1", "schedule_task", args],
+      ["S1", "list_scheduled_tasks", {}],
+      ["S1", "update_scheduled_task", { task_id: "t9", task: "Open the link" }],
+      ["S1", "cancel_scheduled_task", { task_id: "t9" }],
+    ]);
+    expect(results).toEqual(["ok: schedule_task ok", "ok: list_scheduled_tasks ok", "ok: update_scheduled_task ok", "error: Not done: the user did not approve this action."]);
+    expect(result).toMatchObject({ outcome: "done", summary: "done" });
+    for (const tool of TODO_TOOLS) expect(seen!.allowedTools).toContain(`mcp__browsertodo__${tool}`);
     expect(seen!.systemPrompt).toMatch(/Scheduling: when the user asks/);
   });
 });

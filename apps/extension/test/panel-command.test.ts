@@ -287,6 +287,19 @@ describe("PanelCommands: which panel runs hands-free voice", () => {
     expect(voice).toHaveBeenCalledTimes(6);
   });
 
+  it("reports the session muted and unmuted (the badges and the other panels follow)", () => {
+    const { pc, voice } = setup();
+    const port = openPanel(pc, 3);
+    port.deliver({ type: "panel.listening", listening: true, tabId: 3, engine: "realtime" });
+    port.deliver({ type: "panel.listening", listening: true, tabId: 3, engine: "realtime", muted: true });
+    expect(voice.mock.calls.at(-1)).toEqual([{ tabId: 3, windowId: WIN, host: 3, engine: "realtime", muted: true }]);
+    port.deliver({ type: "panel.listening", listening: true, tabId: 3, engine: "realtime" });
+    expect(voice.mock.calls.at(-1)).toEqual([{ tabId: 3, windowId: WIN, host: 3, engine: "realtime" }]);
+    // Anything but true is not muted.
+    port.deliver({ type: "panel.listening", listening: true, tabId: 3, engine: "realtime", muted: "yes" as unknown as boolean });
+    expect(voice).toHaveBeenCalledTimes(3);
+  });
+
   it("the panel page opened as a tab runs it with no tab of its own; listening without a tab is no session", () => {
     const { pc, voice } = setup();
     const page = pageInTab(pc, false);

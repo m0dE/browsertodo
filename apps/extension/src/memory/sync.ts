@@ -11,7 +11,16 @@
  * computer, unsynced while that account is signed in. The first sign-in to an account with no memory, the same
  * account again, or a computer with no memory yet sync at once.
  */
-import { errorMessage, MAX_MEMORY_SYNC_BATCH, type MemoryDeletion, type MemorySyncInput, type MemorySyncResponse } from "@browsertodo/shared";
+import {
+  errorMessage,
+  MAX_MEMORY_SEARCH_QUERY_CHARS,
+  MAX_MEMORY_SYNC_BATCH,
+  type MemoryDeletion,
+  type MemorySearchInput,
+  type MemorySearchResponse,
+  type MemorySyncInput,
+  type MemorySyncResponse,
+} from "@browsertodo/shared";
 import type { StorageLike } from "../engine/kv.js";
 import type { LocalWrite, MemoryStore } from "./store.js";
 
@@ -59,7 +68,7 @@ export interface MemorySyncDeps {
     userId: string;
     email: string;
     syncAllowed: boolean;
-    api: { memorySync(input: MemorySyncInput): Promise<MemorySyncResponse>; forgetMemory(): Promise<void> };
+    api: { memorySync(input: MemorySyncInput): Promise<MemorySyncResponse>; forgetMemory(): Promise<void>; memorySearch?(input: MemorySearchInput): Promise<MemorySearchResponse> };
   } | null>;
   storage?: StorageLike;
   now?(): Date;
@@ -148,6 +157,19 @@ export class MemorySync {
     }
     this.deps.onQuestionChange?.();
     return add ? this.sync() : this.status();
+  }
+
+  /**
+   * The account's semantic search over its copy of this memory (entry id -> cosine similarity to `query`), or null
+   * when memory does not sync with the signed-in account (signed out, no plan, not added to it yet). Entries not
+   * synced yet are simply not among the hits.
+   */
+  async search(query: string, opts: { taskKey?: string | null; limit: number }): Promise<ReadonlyMap<string, number> | null> {
+    const account = await this.deps.account().catch(() => null);
+    if (!account?.syncAllowed || !account.api.memorySearch) return null;
+    if ((await this.read()).userId !== account.userId) return null;
+    const res = await account.api.memorySearch({ query: query.slice(0, MAX_MEMORY_SEARCH_QUERY_CHARS), ...(opts.taskKey ? { taskKey: opts.taskKey } : {}), limit: opts.limit });
+    return new Map(res.hits.map((h) => [h.id, h.score]));
   }
 
   /** Forget everything: the account forgets too (on any plan, when signed in), and nothing noted is sent. */

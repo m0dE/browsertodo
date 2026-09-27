@@ -61,6 +61,11 @@ export function toolArgsSummary(name: string, args: unknown, max = 70): string {
       return clip(String(a.reason ?? ""), max);
     case "schedule_task":
       return clip(String(a.task ?? "").trim().split("\n")[0]!, max);
+    case "wait_for": {
+      const until = Array.isArray(a.until) ? a.until.map(obj) : [];
+      const what = until.map((c) => [c.kind, c.text ?? c.selector].filter(Boolean).join(" ")).join(" or ");
+      return clip(`${a.tab ? `${String(a.tab)}: ` : ""}${what}${a.minutes ? `, up to ${String(a.minutes)} min` : ""}`, max);
+    }
     default: {
       if (args === undefined || args === null) return "";
       if (typeof args !== "object") return clip(String(args), max);

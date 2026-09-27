@@ -479,6 +479,7 @@ button.title-btn:hover { color: var(--accent); }
 .log .ev-memory .mem-label { flex: none; font-weight: 600; color: var(--text); }
 .log .ev-memory .mem-subject { flex: 0 1 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .log .ev-memory .mem-text { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log .ev-memory .mem-replaced { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: italic; }
 .log .ev-memory .mem-undo { flex: none; margin-left: auto; padding-block: 1px; }
 .log .ev-memory .mem-note { font-size: var(--text-xs); padding-left: 18px; }
 .log .ev-memory .mem-note.bad { color: color-mix(in srgb, var(--bad) 75%, var(--text)); }

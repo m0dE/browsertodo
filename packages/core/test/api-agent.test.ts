@@ -3,6 +3,7 @@ import type { AgentEvent, RunConfig, TraceDraft } from "@browsertodo/shared";
 import { MAX_RETRY_AFTER_MS, RETRY_JITTER, retryWaitMs, startApiAgentWith } from "../src/api-agent.js";
 import { retryAfterMs } from "../src/anthropic.js";
 import { ENDED_WITHOUT_RESULT } from "../src/failures.js";
+import { raiseNote, TASK_FAIL_RECHECK, THINKING_MAX_TOKENS } from "../src/reasoning.js";
 import type { ApiAgentOptions, BrowserCaller, JevLike } from "../src/types.js";
 import { FakeX } from "./fake-x.js";
 import { CONFIG, collect, fakeJev, fakeMessagesServer, messageSseEvents, noSleep, smartJev, type FakeReplySource } from "./helpers.js";
@@ -625,5 +626,65 @@ describe("startApiAgent: conversation (continueWith)", () => {
     await session.done;
     expect(String(busy)).toMatch(/busy/);
     expect(() => session.continueWith!("  ")).toThrow(/empty/);
+  });
+});
+
+describe("startApiAgent: reasoning (Fast, auto-raise, Thorough)", () => {
+  const OFF = { type: "disabled" };
+  const ADAPTIVE = { type: "adaptive" };
+
+  it("Fast on Sonnet 5 sends thinking off; a tool failing 3 times in a row raises the next requests (with the note after the tool results) until a page-changing step works", async () => {
+    const traces: TraceDraft[] = [];
+    const x = new FakeX({ url: "https://x.com/home" });
+    const { session, server } = start(
+      x,
+      [
+        msg(tool("switch_tab", { tab: "t91" })),
+        msg(tool("switch_tab", { tab: "t92" })),
+        msg(tool("switch_tab", { tab: "t93" })),
+        // Raised. Reading the page is no success: still raised for the next request.
+        msg(tool("read_page")),
+        msg(tool("navigate", { url: "https://x.com/home" })),
+        msg(tool("task_complete", { summary: "done" })),
+      ],
+      { onTrace: (e) => traces.push(e) },
+    );
+    expect((await session.done).outcome).toBe("done");
+    const bodies = server.requests.map((r) => r.body);
+    expect(bodies.map((b) => b.thinking)).toEqual([OFF, OFF, OFF, ADAPTIVE, ADAPTIVE, OFF]);
+    expect(bodies.map((b) => b.max_tokens)).toEqual([4096, 4096, 4096, THINKING_MAX_TOKENS, THINKING_MAX_TOKENS, 4096]);
+    // The note follows the third failure's result, once; the history stays append-only.
+    const note = raiseNote("switch_tab failed 3 times in a row");
+    expect(lastUser(server.requests[3]!).content.at(-1)).toEqual({ type: "text", text: note });
+    expect(lastUser(server.requests[4]!).content.some((b: Block) => b.text === note)).toBe(false);
+    expect(bodies[5].messages.flatMap((m: any) => m.content).filter((b: Block) => b.text === note)).toHaveLength(1);
+    // The Raw view's lines, and each request's reasoning.
+    expect(traces.filter((t) => t.name.startsWith("reasoning.")).map((t) => [t.name, t.data?.why])).toEqual([
+      ["reasoning.raise", "switch_tab failed 3 times in a row"],
+      ["reasoning.lower", "navigate worked"],
+    ]);
+    expect(traces.filter((t) => t.name === "model.call").map((t) => t.data?.reasoning)).toEqual(["fast", "fast", "fast", "raised", "raised", "fast"]);
+  });
+
+  it("the first task_fail of a Fast turn is answered with a recheck and raised; the second one ends the turn", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    const { session, server, events } = start(x, [msg(tool("task_fail", { reason: "cannot" })), msg(tool("task_fail", { reason: "still cannot" }))]);
+    expect(await session.done).toEqual({ outcome: "failed", reason: "still cannot" });
+    const answer = lastUser(server.requests[1]!).content[0];
+    expect(answer).toMatchObject({ type: "tool_result", is_error: true, content: [{ type: "text", text: TASK_FAIL_RECHECK }] });
+    expect(server.requests[1]!.body.thinking).toEqual(ADAPTIVE);
+    // The refused call never ran: nothing in the conversation says it did.
+    expect(events.filter((e: AgentEvent) => e.type === "tool_call" && e.name === "task_fail")).toHaveLength(1);
+  });
+
+  it("Thorough thinks on every request and never raises; auto-raise off never raises or rechecks", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    const failing = () => [msg(tool("switch_tab", { tab: "t1" })), msg(tool("switch_tab", { tab: "t2" })), msg(tool("switch_tab", { tab: "t3" })), msg(tool("task_fail", { reason: "no" }))];
+    const thorough = start(x, failing(), { config: { reasoning: "thorough" } });
+    expect((await thorough.session.done).outcome).toBe("failed");
+    expect(thorough.server.requests.map((r) => r.body.thinking)).toEqual([ADAPTIVE, ADAPTIVE, ADAPTIVE, ADAPTIVE]);
+    const off = start(x, failing(), { config: { reasoningAutoRaise: false } });
+    expect((await off.session.done).outcome).toBe("failed");
+    expect(off.server.requests.map((r) => r.body.thinking)).toEqual([OFF, OFF, OFF, OFF]);
   });
 });

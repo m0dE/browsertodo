@@ -4,7 +4,7 @@ import { getEventListeners } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HelperErrorCode, type AgentEvent, type AgentTask, type RunConfig } from "@browsertodo/shared";
-import { agentError, classifyFailure, ENDED_WITHOUT_RESULT, EXITED_WITHOUT_RESULT, type JevLike } from "@browsertodo/core";
+import { agentError, classifyFailure, ENDED_WITHOUT_RESULT, EXITED_WITHOUT_RESULT, TASK_FAIL_RECHECK, type JevLike } from "@browsertodo/core";
 import { TaskRunner, type RunTaskParams, type TaskRunnerDeps } from "../src/task-runner.js";
 import { ToolRouter } from "../src/tool-router.js";
 import { LiveLog } from "../src/logger.js";
@@ -268,6 +268,8 @@ describe("TaskRunner with ScriptedBrain", () => {
       brain: (router) =>
         customBrain(async (ctx) => {
           ctx.input.onClose(() => (inputClosed = true));
+          // A Fast turn's first task_fail is answered with a recheck (core reasoning.ts); the second one ends it.
+          await router.call(ctx.taskId, "task_fail", { reason: "cannot" });
           await router.call(ctx.taskId, "task_fail", { reason: "cannot" });
           ctx.signal.addEventListener("abort", () => (aborted = true));
         }, "abort"),
@@ -275,6 +277,70 @@ describe("TaskRunner with ScriptedBrain", () => {
     expect(await runner.run(params())).toMatchObject({ outcome: "failed", reason: "cannot" });
     expect(inputClosed).toBe(true);
     expect(aborted).toBe(true);
+  });
+
+  it("reasoning: three failures of one tool raise the session's reasoning (the brain sees it, the Raw view gets a line); a step that works lowers it", async () => {
+    const seen: { kind: string; thinking: boolean }[] = [];
+    const { runner, events } = setup(new FakeX(), {
+      brain: (router) =>
+        customBrain(async (ctx) => {
+          ctx.reasoning!.onChange((c) => seen.push({ kind: c.kind, thinking: ctx.reasoning!.thinking }));
+          expect(ctx.reasoning!.thinking).toBe(false);
+          for (const tab of ["t91", "t92", "t93"]) await router.call(ctx.taskId, "switch_tab", { tab });
+          await router.call(ctx.taskId, "navigate", { url: "https://x.com/home" });
+          await router.call(ctx.taskId, "task_complete", { summary: "done" });
+        }),
+    });
+    expect(await runner.run(params())).toMatchObject({ outcome: "done" });
+    expect(seen).toEqual([
+      { kind: "raise", thinking: true },
+      { kind: "lower", thinking: false },
+    ]);
+    const lines = events.flatMap(({ event: e }) => (e.type === "trace" && e.trace.name.startsWith("reasoning.") ? [[e.trace.name, e.trace.data?.why, e.trace.src]] : []));
+    expect(lines).toEqual([
+      ["reasoning.raise", "switch_tab failed 3 times in a row", "helper"],
+      ["reasoning.lower", "navigate worked", "helper"],
+    ]);
+  });
+
+  it("reasoning: Thorough (from the run's config) thinks from the start and never raises or rechecks task_fail", async () => {
+    let thinking: boolean | undefined;
+    let failAnswer: string | undefined;
+    const { runner } = setup(new FakeX(), {
+      brain: (router) =>
+        customBrain(async (ctx) => {
+          thinking = ctx.reasoning!.thinking;
+          failAnswer = (await router.call(ctx.taskId, "task_fail", { reason: "cannot" })).text;
+        }),
+    });
+    expect(await runner.run(params({}, { config: { ...CONFIG, reasoning: "thorough" } }))).toMatchObject({ outcome: "failed", reason: "cannot" });
+    expect(thinking).toBe(true);
+    expect(failAnswer).not.toBe(TASK_FAIL_RECHECK);
+  });
+
+  it("reasoning: a Fast turn's first task_fail gets one recheck (and a raise); never once the tool call limit is reached", async () => {
+    const answers: (string | undefined)[] = [];
+    const { runner } = setup(new FakeX(), {
+      brain: (router) =>
+        customBrain(async (ctx) => {
+          answers.push((await router.call(ctx.taskId, "task_fail", { reason: "cannot" })).text);
+          answers.push((await router.call(ctx.taskId, "task_fail", { reason: "cannot" })).text);
+        }),
+    });
+    expect(await runner.run(params())).toMatchObject({ outcome: "failed", reason: "cannot" });
+    expect(answers[0]).toBe(TASK_FAIL_RECHECK);
+    expect(answers[1]).not.toBe(TASK_FAIL_RECHECK);
+
+    let atLimit: string | undefined;
+    const limited = setup(new FakeX(), {
+      brain: (router) =>
+        customBrain(async (ctx) => {
+          for (let i = 0; i < 5; i++) await router.call(ctx.taskId, "read_page", {});
+          atLimit = (await router.call(ctx.taskId, "task_fail", { reason: "out of steps" })).text;
+        }),
+    });
+    expect(await limited.runner.run(params({}, { config: { ...CONFIG, maxToolCalls: 5 } }))).toMatchObject({ outcome: "failed", reason: "out of steps" });
+    expect(atLimit).not.toBe(TASK_FAIL_RECHECK);
   });
 
   it("delivers user messages to the brain and emits user_message", async () => {

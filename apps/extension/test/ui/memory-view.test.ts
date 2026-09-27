@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent, MemoryEntry } from "@browsertodo/shared";
-import { forgetAllText, forgetTaskText, kindsOffAfter, memoryPanel, syncText } from "../../src/options/memory-view.js";
+import { dayTimeText, EPISODES_PAGE, forgetAllText, forgetTaskText, kindsOffAfter, memoryPanel, PINNABLE_KINDS, RECORDS_PAGE, syncText } from "../../src/options/memory-view.js";
 import { memoryNoteView, undoneText } from "../../src/sidepanel/memory-note.js";
 import { chatMemoryView } from "../../src/sidepanel/chat-memory.js";
 import { describeEvent } from "../../src/sidepanel/event-format.js";
@@ -25,7 +25,7 @@ describe("memoryPanel (Settings > Memory)", () => {
 
   it("groups entries by kind in the order Settings lists them, newest first", () => {
     const v = memoryPanel(entries, { memoryPaused: false, memoryKindsOff: [] }, NOW);
-    expect(v.kinds.map((k) => k.kind)).toEqual(["preference", "account", "person", "playbook", "task", "episode"]);
+    expect(v.kinds.map((k) => k.kind)).toEqual(["preference", "account", "person", "playbook", "task", "episode", "record"]);
     expect(v.kinds.find((k) => k.kind === "account")!.entries.map((e) => e.id)).toEqual(["m4", "m1"]);
     expect(v.total).toBe(4);
     expect(v.empty).toBe(false);
@@ -58,9 +58,74 @@ describe("memoryPanel (Settings > Memory)", () => {
   it("search narrows every group to what matches (every word, case aside); a task's total stays whole", () => {
     const v = memoryPanel([...entries, ...records], { memoryPaused: false, memoryKindsOff: [] }, NOW, "  INVOICE resent ");
     expect(v.search).toEqual({ query: "INVOICE resent", found: 1 });
-    expect(v.kinds.map((k) => k.count)).toEqual([0, 0, 0, 0, 1, 0]);
+    expect(v.kinds.map((k) => k.count)).toEqual([0, 0, 0, 0, 1, 0, 0]);
     expect(v.kinds.find((k) => k.kind === "task")!.tasks[0]).toMatchObject({ countText: "1 record", total: 3 });
     expect(memoryPanel(records, { memoryPaused: false, memoryKindsOff: [] }, NOW, "48213").search.found).toBe(1);
+  });
+
+  it("lists episodes by when they happened, newest first, with their date, chips and task; no Edit", () => {
+    const episodes = [
+      entry({ id: "e1", kind: "episode", subject: "Refund for #48213", text: "Sent the refund.", at: "2026-09-20T15:05:00.000Z", entities: ["shop.example", "48213"], taskTitle: "Work the queue", updatedAt: "2026-09-25T09:00:00.000Z" }),
+      entry({ id: "e2", kind: "episode", subject: "Checked the inbox", text: "Two replies needed.", at: "2026-09-23T08:00:00.000Z" }),
+      entry({ id: "e3", kind: "episode", subject: "Last year", text: "Old run.", at: "2025-12-01T12:00:00.000Z", lastUsedAt: "2026-09-26T08:00:00.000Z" }),
+    ];
+    const k = memoryPanel([...entries, ...episodes], { memoryPaused: false, memoryKindsOff: [] }, NOW).kinds.find((x) => x.kind === "episode")!;
+    expect(k.label).toBe("Episodes");
+    expect(k.entries.map((e) => e.id)).toEqual(["e2", "e1", "e3"]);
+    const e1 = k.entries[1]!;
+    expect(e1).toMatchObject({ editable: false, entities: ["shop.example", "48213"], meta: "from “Work the queue”", where: "" });
+    expect(e1.when).toBe(dayTimeText("2026-09-20T15:05:00.000Z", NOW));
+    expect(e1.when).toMatch(/^Sep 20, \d{1,2}:\d{2} [AP]M$/);
+    expect(e1.pinned).toBeUndefined();
+    expect(k.entries[2]).toMatchObject({ meta: "used Sep 26", when: expect.stringMatching(/^Dec 1, 2025, /) });
+    // Not listed as task history.
+    const task = memoryPanel([...entries, ...episodes], { memoryPaused: false, memoryKindsOff: [] }, NOW).kinds.find((x) => x.kind === "task")!;
+    expect(task.count).toBe(1);
+  });
+
+  it("the user's own records (filed by key in chats) are their own group, shown like a task's records, a page at a time", () => {
+    const rec = entry({
+      id: "u1", kind: "record", subject: "Ticket #7731", key: "ticket 7731", text: "Printer on floor 3 jams.", notes: [{ at: "2026-09-25T12:00:00.000Z", text: "Technician booked." }],
+      updatedAt: "2026-09-25T12:00:00.000Z",
+    });
+    const v = memoryPanel([...entries, ...records, rec], { memoryPaused: false, memoryKindsOff: [] }, NOW);
+    const k = v.kinds.find((x) => x.kind === "record")!;
+    expect(k).toMatchObject({ label: "Records (by key)", count: 1, page: RECORDS_PAGE, tasks: [] });
+    expect(k.entries).toEqual([expect.objectContaining({ id: "u1", subject: "Ticket #7731", text: "Printer on floor 3 jams.", where: "", editable: true, notes: [{ when: "Sep 25", text: "Technician booked." }] })]);
+    expect(k.entries[0]!.pinned).toBeUndefined();
+    // A task's records stay under their task.
+    expect(v.kinds.find((x) => x.kind === "task")!.tasks[0]!.records.map((e) => e.id)).toEqual(["r1", "r2"]);
+    expect(memoryPanel([rec], { memoryPaused: false, memoryKindsOff: [] }, NOW, "technician").search.found).toBe(1);
+    expect(memoryPanel([rec], { memoryPaused: false, memoryKindsOff: ["record"] }, NOW).kinds.find((x) => x.kind === "record")).toMatchObject({ on: false, offHint: "Off: records are neither filed nor given to the agent" });
+    expect(v.kinds.find((x) => x.kind === "episode")!.page).toBe(EPISODES_PAGE);
+    expect(v.kinds.find((x) => x.kind === "account")!.page).toBeUndefined();
+  });
+
+  it("an episode's switch says that off, none are written nor given", () => {
+    const v = memoryPanel(entries, { memoryPaused: false, memoryKindsOff: ["episode"] }, NOW);
+    expect(v.kinds.find((k) => k.kind === "episode")).toMatchObject({ on: false, offHint: "Off: no episodes are written after chats and runs, and none are given to the agent" });
+    expect(v.kinds.find((k) => k.kind === "person")!.offHint).toBe("Off: not given to the agent, not saved");
+  });
+
+  it("facts can be pinned (listed first); task history and records cannot", () => {
+    const pinned = entry({ id: "m5", kind: "account", subject: "Old account", text: "x", pinned: true, updatedAt: "2026-09-01T00:00:00.000Z" });
+    const v = memoryPanel([...entries, pinned], { memoryPaused: false, memoryKindsOff: [] }, NOW);
+    expect(v.kinds.find((k) => k.kind === "account")!.entries.map((e) => [e.id, e.pinned])).toEqual([["m5", true], ["m4", false], ["m1", false]]);
+    expect(v.kinds.find((k) => k.kind === "task")!.tasks[0]!.notes[0]!.pinned).toBeUndefined();
+    expect(PINNABLE_KINDS).toEqual(["preference", "account", "person", "playbook"]);
+  });
+
+  it("shows what a fact said before, with the old subject when it was another", () => {
+    const e = entry({
+      id: "m6", kind: "person", subject: "Accountant", text: "Paul Lee",
+      history: [
+        { subject: "Accountant", text: "Tom Kim", since: "2025-01-01T00:00:00.000Z", until: "2026-09-20T12:00:00.000Z" },
+        { subject: "Tax helper", text: "Ann Roe", since: "2024-01-01T00:00:00.000Z", until: "2025-01-01T12:00:00.000Z" },
+      ],
+    });
+    const [row] = memoryPanel([e], { memoryPaused: false, memoryKindsOff: [] }, NOW).kinds.find((k) => k.kind === "person")!.entries;
+    expect(row!.history).toEqual(["Before: Tom Kim (until Sep 20)", "Before: Tax helper: Ann Roe (until Jan 1, 2025)"]);
+    expect(memoryPanel([e], { memoryPaused: false, memoryKindsOff: [] }, NOW, "ann roe").search.found).toBe(1);
   });
 
   it("asks before deleting a task's memory", () => {
@@ -117,11 +182,28 @@ describe("the chat's memory note", () => {
     expect(memoryNoteView(ev(null, r), false)).toMatchObject({ label: "Remembered", text: "Refund asked." });
   });
 
+  it("saved by the background writer after the chat, it says so (still with Undo)", () => {
+    const auto = { ...ev(null, e), auto: true as const };
+    expect(memoryNoteView(auto, false)).toMatchObject({ change: "added", label: "Remembered after this chat", subject: "Compose" });
+    expect(memoryNoteView({ ...ev({ ...e, text: "top" }, e), auto: true }, false).label).toBe("Updated after this chat");
+    expect(undoneText(memoryNoteView(auto, true))).toBe("Not kept.");
+  });
+
+  it("one that replaced an entry of another subject names it; undone, that one is back", () => {
+    const old = entry({ id: "m9", kind: "person", subject: "Tom Kim", text: "The user's accountant." });
+    const now = entry({ id: "m10", kind: "person", subject: "Paul Lee", text: "The user's accountant since September." });
+    const v = memoryNoteView({ ...ev(null, now), replaced: old }, false);
+    expect(v).toMatchObject({ label: "Remembered", subject: "Paul Lee", replaced: { subject: "Tom Kim", text: "replaced “Tom Kim”" } });
+    expect(v.title.endsWith("\n\nReplaced Tom Kim: The user's accountant.")).toBe(true);
+    expect(undoneText(v)).toBe("Not kept. “Tom Kim” is back.");
+    expect(memoryNoteView(ev(null, now), false).replaced).toBeUndefined();
+  });
+
   it("once undone, says so", () => {
     const v = memoryNoteView(ev(null, e), true);
     expect(v.undone).toBe(true);
     expect(undoneText(v)).toBe("Not kept.");
-    expect(undoneText({ label: "Forgot" })).toBe("Kept after all.");
+    expect(undoneText({ change: "forgot" })).toBe("Kept after all.");
     expect(describeEvent({ type: "memory", changeId: "c1", before: null, after: e }, { memoryUndone: true })).toMatchObject({ kind: "memory", undone: true });
     expect(describeEvent({ type: "memory_undone", changeId: "c1" })).toEqual({ kind: "status", text: "" });
   });

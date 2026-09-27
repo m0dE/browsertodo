@@ -368,6 +368,9 @@ function resultSize(d: Record<string, TraceValue>): string {
   const kb = num(d.imageKB);
   if (kb) parts.push(`image ${kb} KB`);
   if (d.error === true) parts.push("error");
+  // wait_for: why it stopped waiting, after how long, and how many slices the browser watched (no model calls).
+  const waited = num(d.waitedMs);
+  if (typeof d.end === "string") parts.push(`wait ${d.end}${waited !== undefined ? ` after ${durationText(waited)}` : ""}${num(d.checks) !== undefined ? `, ${d.checks} checks` : ""}${d.met ? `: ${String(d.met)}` : ""}`);
   return parts.join(" · ");
 }
 
@@ -447,6 +450,7 @@ function traceRow(ev: TraceEvent): Omit<TraceRow, "rel"> {
       row.label = `Model call${num(d.attempt) && num(d.attempt)! > 1 ? ` (attempt ${d.attempt})` : ""}`;
       row.detail = join(
         s(d.model),
+        d.reasoning && d.reasoning !== "fast" && `reasoning ${s(d.reasoning)}`,
         msPart("after input", d.sinceInputMs),
         msPart("response", d.responseMs),
         msPart("first token", d.firstTokenMs),
@@ -459,6 +463,15 @@ function traceRow(ev: TraceEvent): Omit<TraceRow, "rel"> {
       );
       row.slow = over(SLOW_MS.model);
       if (d.result && d.result !== "ok") row.error = true;
+      break;
+    case "reasoning.raise":
+      row.label = `Reasoning raised: ${s(d.why)}`;
+      break;
+    case "reasoning.lower":
+      row.label = `Reasoning back to fast: ${s(d.why)}`;
+      break;
+    case "reasoning.turn":
+      row.label = `Reasoning ${d.thinking === true ? "thorough" : "fast"} for this turn`;
       break;
     case "model.wait":
       row.label = `Retry wait before attempt ${num(d.attempt)! + 1}`;

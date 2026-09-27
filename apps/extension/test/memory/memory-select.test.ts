@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MAX_INJECTED_TASK_NOTES, MEMORY_RECORD_TOKEN_BUDGET, MEMORY_TOKEN_BUDGET, memoryRecordKey, type MemoryEntry } from "@browsertodo/shared";
-import { hostsIn, keywordsOf, MEMORY_HEADER, recallMemory, recordFor, recordsNamedIn, RECORDS_LABEL, selectMemory, tokensOf } from "../../src/memory/select.js";
+import { hostsIn, MEMORY_HEADER, recallMemory, recordFor, recordsNamedIn, RECORDS_LABEL, selectMemory, tokensOf } from "../../src/memory/select.js";
 
 let n = 0;
 function entry(e: Partial<MemoryEntry> & Pick<MemoryEntry, "kind" | "subject" | "text">): MemoryEntry {
@@ -24,15 +24,10 @@ const xBook = entry({ kind: "playbook", subject: "Compose", text: "The Post butt
 const linkedIn = entry({ kind: "playbook", subject: "Messaging", text: "Needs sign-in each morning", domain: "linkedin.com" });
 const all = [workEmail, gameX, paul, tone, gmailBook, xBook, linkedIn];
 
-describe("hostsIn and keywordsOf", () => {
+describe("hostsIn", () => {
   it("finds the sites a request names, not mailboxes", () => {
     expect(hostsIn("Post on x.com and check https://www.LinkedIn.com/feed, then mail admin@runhq.io")).toEqual(["linkedin.com", "x.com"]);
     expect(hostsIn("http://localhost:4777/w/gmail/u/0/")).toEqual(["localhost"]);
-  });
-  it("keeps emails and handles whole, and their parts", () => {
-    const w = keywordsOf("Email admin@runhq.io from @mecharoyalecom about the invoice");
-    expect([...w]).toEqual(expect.arrayContaining(["admin@runhq.io", "runhq", "@mecharoyalecom", "mecharoyalecom", "invoice", "email"]));
-    expect(w.has("the")).toBe(false);
   });
 });
 
@@ -55,8 +50,11 @@ describe("selectMemory", () => {
     expect(selectMemory(all, { hosts: [], text: "Post a tip on LinkedIn" }).entries).not.toContain(xBook);
   });
 
-  it("always gives preferences when the budget allows", () => {
-    expect(selectMemory(all, { hosts: [], text: "anything" }).entries).toEqual([tone]);
+  it("gives a preference only when the request is about it, or when the user pinned it", () => {
+    expect(selectMemory(all, { hosts: [], text: "anything" }).entries).toEqual([]);
+    expect(selectMemory(all, { hosts: [], text: "What tone should the reply have?" }).entries).toEqual([tone]);
+    const pinnedTone = { ...tone, pinned: true as const };
+    expect(selectMemory([...all.filter((e) => e !== tone), pinnedTone], { hosts: [], text: "anything" }).entries).toEqual([pinnedTone]);
   });
 
   it("puts this task's newest run notes first, and never another task's", () => {
@@ -142,12 +140,13 @@ describe("records named in a turn", () => {
 
   it("records spend at most MEMORY_RECORD_TOKEN_BUDGET, leaving the rest for other memory", () => {
     const big = Array.from({ length: 12 }, (_, i) => record(`item-${i}`, `A long summary ${"x".repeat(380)}`));
-    const s = selectMemory([...big, tone], { taskKey: "tA", hosts: [], text: big.map((_, i) => `item-${i}`).join(" ") });
+    const pinnedTone = { ...tone, pinned: true as const };
+    const s = selectMemory([...big, pinnedTone], { taskKey: "tA", hosts: [], text: big.map((_, i) => `item-${i}`).join(" ") });
     // Each of these records costs about 105 tokens: two fit in the records' budget, a third would not.
     const given = s.entries.filter((e) => e.key !== undefined);
     expect(given.map((e) => e.subject)).toEqual(["item-0", "item-1"]);
     expect(tokensOf(RECORDS_LABEL) + given.reduce((n, e) => n + tokensOf(`- ${e.id} key ${e.subject}: ${e.text}`) + 1, 0)).toBeLessThanOrEqual(MEMORY_RECORD_TOKEN_BUDGET);
-    expect(s.entries).toContain(tone);
+    expect(s.entries).toContain(pinnedTone);
     expect(s.tokens).toBeLessThanOrEqual(MEMORY_TOKEN_BUDGET);
   });
 });

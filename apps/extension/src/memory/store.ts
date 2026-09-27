@@ -5,9 +5,9 @@
  * entry's shape and limits, and no secret (memoryWriteProblem). Remembering
  * the same kind, subject and place again replaces the entry, so a correction
  * ("that button moved") updates it instead of adding a contradicting one.
- * A repeating task's records (putRecord) are filed by the task and a key:
- * saving the same key again adds a dated note to the record. Records are
- * capped per task (MAX_TASK_RECORDS), apart from the rest of memory
+ * Records (putRecord) are filed by a key in a space, a repeating task's or
+ * (from a chat) the user's: saving the same key again adds a dated note to
+ * the record. Records are capped per space (MAX_TASK_RECORDS), apart from the rest of memory
  * (MAX_MEMORY_ENTRIES), so neither pushes the other out; so are episodes (MAX_EPISODES), one per conversation.
  * A fact replaced (the same slot again, or an entry named by `replaces`) keeps its earlier value as history, so
  * "what was it before" can still be answered while the newest value is what the agent is given.
@@ -60,9 +60,10 @@ export interface NewEpisode {
   taskTitle?: string;
 }
 
-/** A fact about one thing a repeating task deals with, filed under its key (normalized: memoryRecordKey). */
+/** A fact about one thing, filed under its key (normalized: memoryRecordKey) in a repeating task's records or the user's. */
 export interface NewRecord {
-  taskKey: string;
+  /** The repeating task whose records it goes in; absent: the user's records (from a chat). */
+  taskKey?: string;
   taskTitle?: string;
   key: string;
   /** How the record is named (in Settings, to the agent): given, else kept, else the key as first written. */
@@ -97,15 +98,19 @@ export interface MemoryStoreOptions {
   newId?: () => string;
 }
 
-const sameText = (a: string, b: string) => a.replace(/\s+/g, " ").trim().toLowerCase() === b.replace(/\s+/g, " ").trim().toLowerCase();
+/** The same text, spacing and case aside. */
+export const sameText = (a: string, b: string) => a.replace(/\s+/g, " ").trim().toLowerCase() === b.replace(/\s+/g, " ").trim().toLowerCase();
 
 /** Entries that are the same fact's slot: same kind, subject and place. A task's run notes are never merged, records are not slots. */
-function sameSlot(e: MemoryEntry, m: NewMemory): boolean {
+export function sameSlot(e: MemoryEntry, m: NewMemory): boolean {
   if (isMemoryRecord(e) || e.kind !== m.kind || e.scope !== m.scope || !sameText(e.subject, m.subject)) return false;
   if (m.scope === "domain") return e.domain === m.domain;
   if (m.scope === "task") return e.taskKey === m.taskKey;
   return true;
 }
+
+/** A fact: a preference, an account, a person or a playbook (not a record, a run note nor an episode). */
+const isFact = (e: MemoryEntry): boolean => !isMemoryRecord(e) && e.kind !== "task" && e.kind !== "episode" && e.kind !== "record";
 
 /** The group episodes are capped in (capped). */
 const EPISODES = "episodes";
@@ -239,6 +244,7 @@ export class MemoryStore {
     return this.mutate((entries) => {
       const before = entries.find((e) => e.id === id);
       if (!before) throw new MemoryRefusal("That memory entry no longer exists");
+      if (pinned && !isFact(before)) throw new MemoryRefusal("Only facts (preferences, accounts, people, playbooks) can be given at every turn");
       const { pinned: _p, ...rest } = before;
       const after = this.checked({ ...rest, ...(pinned ? { pinned: true as const } : {}), updatedAt: this.now().toISOString() });
       return { entries: entries.map((e) => (e.id === id ? after : e)), result: { before, after } };
@@ -251,19 +257,20 @@ export class MemoryStore {
     if (slot?.id === clean) return undefined;
     const e = entries.find((x) => x.id === clean);
     if (!e) throw new MemoryRefusal(`Not saved: there is no memory entry ${clean} to replace. Remember it without replaces, or recall to find the entry's id.`);
-    if (isMemoryRecord(e) || e.kind === "episode" || e.kind === "task") throw new MemoryRefusal(`Not saved: ${clean} is not a fact that can be replaced (only preferences, accounts, people and playbooks are).`);
+    if (!isFact(e)) throw new MemoryRefusal(`Not saved: ${clean} is not a fact that can be replaced (only preferences, accounts, people and playbooks are).`);
     return e;
   }
 
   /**
-   * Files a fact in the task's record for `r.key`: a new record takes it as its summary; an existing one gets it as
-   * a dated note (the same text again adds nothing), then condenseRecord keeps it within its limits. Past
-   * MAX_TASK_RECORDS the task's least recently used record goes. Throws MemoryRefusal when it must not be kept.
+   * Files a fact in the record for `r.key` in its space (the task's, or the user's): a new record takes it as its
+   * summary; an existing one gets it as a dated note (the same text again adds nothing), then condenseRecord keeps it
+   * within its limits. Past MAX_TASK_RECORDS the space's least recently used record goes. Throws MemoryRefusal when
+   * it must not be kept.
    */
   async putRecord(r: NewRecord, source: MemorySource): Promise<MemoryChange> {
     return this.mutate((entries) => {
       const at = this.now().toISOString();
-      const before = entries.find((e) => e.taskKey === r.taskKey && e.key === r.key) ?? null;
+      const before = entries.find((e) => isMemoryRecord(e) && e.taskKey === r.taskKey && e.key === r.key) ?? null;
       const text = r.text.trim();
       let body: { text: string; notes: MemoryEntry["notes"] };
       if (!before) body = { text, notes: [] };
@@ -272,10 +279,7 @@ export class MemoryStore {
       const { notes: _old, ...rest } = before ?? { id: this.uniqueId(entries), learnedAt: at };
       const after = this.checked({
         ...rest,
-        kind: "task",
-        scope: "task",
-        taskKey: r.taskKey,
-        ...(r.taskTitle ? { taskTitle: r.taskTitle } : {}),
+        ...(r.taskKey ? { kind: "task", scope: "task", taskKey: r.taskKey, ...(r.taskTitle ? { taskTitle: r.taskTitle } : {}) } : { kind: "record", scope: "global" }),
         key: r.key,
         subject: (r.subject ?? before?.subject ?? r.keyAsWritten).trim(),
         text: body.text,
@@ -430,13 +434,13 @@ function pastValues(olds: readonly (MemoryEntry | null | undefined)[], next: { s
 
 /**
  * Memory within its limits, each counted apart: past MAX_MEMORY_ENTRIES entries that are neither records nor
- * episodes, and past MAX_TASK_RECORDS records of one task, the ones used longest ago go; past MAX_EPISODES episodes,
+ * episodes, and past MAX_TASK_RECORDS records of one space (a task's, the user's), the ones used longest ago go; past MAX_EPISODES episodes,
  * the oldest.
  */
 function capped(entries: MemoryEntry[]): MemoryEntry[] {
   const groups = new Map<string, MemoryEntry[]>();
   for (const e of entries) {
-    const group = isMemoryRecord(e) ? `r:${e.taskKey}` : e.kind === "episode" ? EPISODES : "";
+    const group = isMemoryRecord(e) ? `r:${e.taskKey ?? ""}` : e.kind === "episode" ? EPISODES : "";
     const of = groups.get(group);
     if (of) of.push(e);
     else groups.set(group, [e]);

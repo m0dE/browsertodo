@@ -51,6 +51,7 @@ function setup() {
     stopTask: async () => (log.push("stopTask"), "Stopped the task."),
     answerApproval: async (allow: boolean) => (log.push(`answerApproval:${allow}`), "Allowed: the agent goes on."),
     endVoice: () => void log.push("end"),
+    useThisTab: async () => (log.push("useThisTab"), "Moved: you now work in Recipes (example.com)."),
     failed: (f) => void log.push(`failed:${(f as { kind: string }).kind}`),
   };
   const player = { play: vi.fn(), stop: vi.fn(() => ({ itemId: "a1", playedMs: 800 })), close: vi.fn(), playing: false };
@@ -114,6 +115,19 @@ describe("RealtimeEngine", () => {
     const outputs = t.socket.sent.filter((e) => e.item?.type === "function_call_output").map((e) => e.item.output);
     expect(outputs).toContain("Stopped the task.");
     expect(t.log).toContain("end");
+  });
+
+  it("use_this_tab reaches the panel, and its answer goes back to the narrator; notes are silent system messages", async () => {
+    const t = await started();
+    t.socket.event({ type: "response.function_call_arguments.done", call_id: "c1", name: "use_this_tab", arguments: "{}" });
+    await settle();
+    expect(t.log).toContain("useThisTab");
+    expect(t.socket.sent.find((e) => e.item?.type === "function_call_output")!.item.output).toBe("Moved: you now work in Recipes (example.com).");
+    const before = t.socket.sent.length;
+    t.engine.note("The user is looking at another tab: Recipes (example.com). You work in Shop.");
+    expect(t.socket.sent.slice(before)).toEqual([
+      { type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: "The user is looking at another tab: Recipes (example.com). You work in Shop." }] } },
+    ]);
   });
 
   it("the user speaking cuts the narrator's audio off and trims what it remembers to what was heard", async () => {

@@ -5,7 +5,8 @@
  * state word with its icon, the engine and the time on, the live meter (the
  * microphone's level, or the speaker while a line is said, with Interrupt),
  * and a big Stop with the voice shortcut. On another tab: where it listens,
- * with Go to tab and Use this tab.
+ * with Go to tab and Use voice here (in another tab's panel too, with nothing
+ * live: voice-bar-view.ts remoteBarView).
  *
  * The bar is a labelled region; a polite live line inside it says the state
  * when it changes (the ticking time and "Hearing you…" are left out of it).
@@ -52,7 +53,7 @@ export function initVoiceBar(bar: HTMLElement, actions: VoiceBarActions): VoiceB
   const meter = h("span.vb-meter", { "aria-hidden": "true" }, ...METER_BARS.map((k) => h("i", { style: `--k: ${k}` })));
   const interrupt = h("button.vb-interrupt", { type: "button", title: "Stop talking (Esc)", "aria-label": "Interrupt: stop talking" }, h("span.vb-waves", { "aria-hidden": "true" }, h("i"), h("i"), h("i")), "Interrupt");
   const go = h("button.link.vb-go", { type: "button", title: "Show the tab hands-free listens in" }, "Go to tab");
-  const use = h("button.link.vb-use", { type: "button", title: "Listen for this tab's chat instead" }, "Use this tab");
+  const use = h("button.link.vb-use", { type: "button", title: "Talk to this tab's chat instead" }, "Use voice here");
   const links = h("span.vb-links", null, go, use);
   const key = h("kbd.vb-key", { "aria-hidden": "true" });
   const stop = h("button.vb-stop", { type: "button" });

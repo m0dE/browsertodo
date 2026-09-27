@@ -11,7 +11,9 @@ import {
   isClaudeModel,
   OUT_OF_CREDIT,
   planName,
+  REASONING_LEVELS,
   type BrainMode,
+  type ReasoningLevel,
 } from "@browsertodo/shared";
 import { isPaidActive } from "../account/types.js";
 import { builtInJev, HOSTED_LABEL, resolveBrain } from "../engine/brain-resolver.js";
@@ -85,6 +87,8 @@ export interface Draft {
   jevEnabled: boolean;
   cloudEnabled: boolean;
   anthropicModel: string;
+  /** Absent: the saved setting. */
+  reasoning?: ReasoningLevel;
 }
 
 export interface ViewInput {
@@ -133,6 +137,10 @@ export interface SettingsView {
   showHelper: boolean;
   showModel: boolean;
   model: ModelChoice;
+  /** Under Reasoning: what the chosen level does. */
+  reasoningHint: string;
+  /** "Think harder when stuck": Fast only (Thorough already thinks). */
+  showReasoningAutoRaise: boolean;
   /** Jev's threshold and Test button (Jev on). */
   showJevFields: boolean;
   /** The Jev key field: Jev on, and the brain that runs does not bring its own Jev. */
@@ -264,6 +272,8 @@ export function settingsView(input: ViewInput): SettingsView {
     // Every brain runs the chosen model (the hosted AI only its own list).
     showModel: true,
     model: modelChoice(draft),
+    reasoningHint: REASONING_LEVELS.find((r) => r.id === (draft.reasoning ?? settings.reasoning))?.detail ?? "",
+    showReasoningAutoRaise: (draft.reasoning ?? settings.reasoning) === "fast",
     showJevFields: draft.jevEnabled,
     showJevKey: draft.jevEnabled && jevSource !== "hosted",
     jevUseHint,
@@ -271,6 +281,11 @@ export function settingsView(input: ViewInput): SettingsView {
     jevNote: draft.jevEnabled ? jevNote : null,
     showCloudFields: draft.cloudEnabled,
   };
+}
+
+/** The Reasoning select's choices. */
+export function reasoningOptions(): { id: ReasoningLevel; label: string }[] {
+  return REASONING_LEVELS.map((r) => ({ id: r.id, label: r.label }));
 }
 
 /** Models the select offers: the side panel's list (BrowserTODO AI runs every one of them). */
@@ -293,7 +308,7 @@ export const NUMBER_FIELDS = [
   "maxConsecutiveFailures",
 ] as const satisfies readonly (keyof ExtensionSettings)[];
 export const TEXT_FIELDS = ["anthropicModel", "apiBase", "accountApiBase"] as const satisfies readonly (keyof ExtensionSettings)[];
-export const BOOL_FIELDS = ["jevEnabled", "cloudEnabled"] as const satisfies readonly (keyof ExtensionSettings)[];
+export const BOOL_FIELDS = ["jevEnabled", "cloudEnabled", "reasoningAutoRaise"] as const satisfies readonly (keyof ExtensionSettings)[];
 export type NumberField = (typeof NUMBER_FIELDS)[number];
 export type TextField = (typeof TEXT_FIELDS)[number];
 export type BoolField = (typeof BOOL_FIELDS)[number];
@@ -314,11 +329,11 @@ function numberRule(key: NumberField): NumberRule {
 export const NUMBER_RULES = Object.fromEntries(NUMBER_FIELDS.map((k) => [k, numberRule(k)])) as Record<NumberField, NumberRule>;
 
 /** Raw values as the form holds them. */
-export type FormValues = { brain: BrainMode } & Record<NumberField | TextField, string> & Record<BoolField, boolean>;
+export type FormValues = { brain: BrainMode; reasoning: ReasoningLevel } & Record<NumberField | TextField, string> & Record<BoolField, boolean>;
 
 /** Settings -> what the form shows. */
 export function formValues(s: ExtensionSettings): FormValues {
-  const out: Record<string, unknown> = { brain: s.brain };
+  const out: Record<string, unknown> = { brain: s.brain, reasoning: s.reasoning };
   for (const k of NUMBER_FIELDS) out[k] = String(s[k]);
   for (const k of TEXT_FIELDS) out[k] = s[k];
   for (const k of BOOL_FIELDS) out[k] = s[k];
@@ -360,7 +375,7 @@ export function validateForm(v: FormValues): Partial<Record<NumberField | TextFi
 /** Form values -> settings, leaving out fields with a problem (they keep their saved value). */
 export function parseForm(v: FormValues): Partial<Omit<ExtensionSettings, "anthropicApiKey" | "jevApiKey" | "runnerKey">> {
   const errors = validateForm(v);
-  const out: Record<string, unknown> = { brain: v.brain };
+  const out: Record<string, unknown> = { brain: v.brain, reasoning: v.reasoning };
   for (const k of NUMBER_FIELDS) if (!errors[k]) out[k] = Number(v[k].trim());
   for (const k of TEXT_FIELDS) {
     if (errors[k]) continue;

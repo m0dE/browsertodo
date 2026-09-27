@@ -27,6 +27,12 @@ export interface AgentSlot {
   readonly browser: BrowserCaller;
   isAgentTab(tabId: number): Promise<boolean>;
   screenshot(): Promise<Screenshot>;
+  /**
+   * start is called each time the slot starts waiting (a wait_for slice, an approval the user has not answered);
+   * it returns what ends that wait. The runner's turn clock leaves waits out of the time limit. Returns what
+   * unregisters it.
+   */
+  onWait(start: () => () => void): () => void;
 }
 
 /** Agent slots (tabs) in use at most: maxParallelTasks due tasks plus one-off runs beside them. */
@@ -98,8 +104,15 @@ export class AgentSlots implements SlotPool {
           if (slot.sessionId) onCall(slot.sessionId, call);
         })
       : plain;
+    // Waiting (a wait_for slice, an unanswered approval) is left out of the turn's time limit (onWait).
+    const waiting = new Set<() => () => void>();
+    const startWait = () => {
+      const ends = [...waiting].map((start) => start());
+      return () => ends.forEach((end) => end());
+    };
     // The gate is outside the timing: a browser call's time never includes the user deciding.
-    const gate = this.approvals ? new ApprovalGate(traced, () => slot.sessionId, this.approvals) : null;
+    const gate = this.approvals ? new ApprovalGate(traced, () => slot.sessionId, this.approvals, startWait) : null;
+    const gated = gate?.browser ?? traced;
     const slot: Slot = {
       index,
       tab,
@@ -107,7 +120,13 @@ export class AgentSlots implements SlotPool {
       sessionId: null,
       gate,
       ending: Promise.resolve(),
-      browser: gate?.browser ?? traced,
+      browser: {
+        call: (method, params) => {
+          if (method !== "browser.waitFor") return gated.call(method, params);
+          const end = startWait();
+          return gated.call(method, params).finally(end);
+        },
+      },
       async prepare(opts) {
         cdp.reset();
         // A chat's tabs are parked by its last turn's release, maybe in another slot.
@@ -126,6 +145,10 @@ export class AgentSlots implements SlotPool {
       },
       isAgentTab: (tabId) => tab.isAgentTab(tabId),
       screenshot: () => driver.screenshot(),
+      onWait: (start) => {
+        waiting.add(start);
+        return () => void waiting.delete(start);
+      },
     };
     this.slots.set(index, slot);
     return slot;

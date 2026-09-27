@@ -50,12 +50,13 @@ describe("Runner: memory", () => {
     const { store } = withMemory(h);
     await store.put({ kind: "preference", subject: "Tone", text: "Friendly and short", scope: "global" }, { kind: "user" });
     h.brain.script = () => ({ outcome: "done", summary: "ok" });
-    const { sessionId } = await h.runner.runAdhoc({ instructions: "Say hi", memoryOff: true });
+    // A request the preference is about (a turn memory has nothing relevant for is given nothing either way).
+    const { sessionId } = await h.runner.runAdhoc({ instructions: "Say hi in my usual tone", memoryOff: true });
     await h.runner.idle();
     expect((await h.sessions.get(sessionId))?.memoryOff).toBe(true);
     expect(h.brain.starts[0]!.task.memory).toBeUndefined();
     // With memory on, the same chat is given the preference.
-    const on = await h.runner.runAdhoc({ instructions: "Say hi" });
+    const on = await h.runner.runAdhoc({ instructions: "Say hi in my usual tone" });
     await h.runner.idle();
     expect(h.brain.starts[1]!.task.memory).toMatch(/Preferences:\n- \[m\w+\] Tone: Friendly and short/);
     expect((await h.sessions.get(on.sessionId))?.memoryOff).toBeUndefined();

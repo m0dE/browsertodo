@@ -94,8 +94,19 @@ export interface MemoryServiceDeps {
   settings(): Promise<Pick<ExtensionSettings, "memoryPaused" | "memoryKindsOff">>;
   /** Sync with the signed-in account (sync.ts). Absent: memory stays on this computer. */
   sync?: Pick<MemorySync, "pullSoon" | "sync" | "status" | "forgetAll" | "choose">;
+  /**
+   * The account's semantic search (entry id -> cosine similarity to `query`), when memory syncs with it; null or a
+   * failure: the turn goes on with words, entities and time alone. Given at most MEMORY_SEARCH_TIMEOUT_MS.
+   */
+  semantic?(query: string, taskKey: string | null): Promise<ReadonlyMap<string, number> | null>;
   newChangeId?(): string;
+  now?(): Date;
 }
+
+/** How long a turn waits for the account's semantic search before going on without it. */
+export const MEMORY_SEARCH_TIMEOUT_MS = 1500;
+/** Hits asked of the account's semantic search (the entries a turn could be given are far fewer). */
+export const MEMORY_SEARCH_LIMIT = 50;
 
 /** Turns remembered for the tools: the newest ones (a conversation's next turn calls begin() again). */
 const MAX_RUNS = 50;
@@ -136,7 +147,9 @@ export class MemoryService {
     const hosts = [...(run.tabUrl ? hostsIn(run.tabUrl) : []), ...hostsIn(run.request)];
     const unseen = (await this.deps.store.list()).filter((e) => !given.has(e.id));
     const pageText = [run.tabUrl, run.tabTitle].filter(Boolean).join("\n");
-    const picked = selectMemory(unseen, { taskKey: taskKey ?? null, hosts, text: run.request, ...(pageText ? { pageText } : {}) }, { kindsOff: settings.memoryKindsOff });
+    const semantic = await this.semantic(run.request, taskKey ?? null);
+    const ctx = { taskKey: taskKey ?? null, hosts, text: run.request, ...this.clock(), ...(pageText ? { pageText } : {}), ...(semantic ? { semantic } : {}) };
+    const picked = selectMemory(unseen, ctx, { kindsOff: settings.memoryKindsOff });
     if (!picked.entries.length) return undefined;
     for (const e of picked.entries) given.add(e.id);
     await this.deps.store.touch(picked.entries.map((e) => e.id));
@@ -255,16 +268,17 @@ export class MemoryService {
     const run = this.runs.get(sessionId) ?? { source: { kind: "chat" as const, sessionId } };
     const settled = args.key === undefined ? settle(args, run) : settleRecord(args, run);
     if (typeof settled === "string") return fail(settled);
-    const kind: MemoryKind = "key" in settled ? "task" : settled.kind;
+    const kind: MemoryKind = "key" in settled ? (settled.taskKey ? "task" : "record") : settled.kind;
     if (kindsOff.includes(kind)) return fail(`Not saved: the user turned off ${MEMORY_KIND_TEXT[kind].label} in memory. Do not try again.`);
     if (knownSecret?.(`${args.key ?? ""}\n${args.subject ?? ""}\n${args.text}`)) return fail("Not saved: it contains a password you were given. Memory never keeps passwords.");
-    if ("key" in settled && args.replaces) return fail("replaces is for facts, not a task's records (drop key or replaces). Nothing was saved.");
+    if ("key" in settled && args.replaces) return fail("replaces is for facts, not records (drop key or replaces). Nothing was saved.");
     const change =
       "key" in settled ? await this.deps.store.putRecord(settled, run.source) : await this.deps.store.put(settled, run.source, args.replaces ? { replaces: args.replaces } : {});
     await this.noteChange(sessionId, change);
     const e = change.after!;
     if (e.key !== undefined) {
-      const what = !change.before ? "Started this task's record" : e.notes?.length !== change.before.notes?.length || e.text !== change.before.text ? "Added a note to this task's record" : "Already in this task's record";
+      const space = e.taskKey ? "this task's record" : "the record";
+      const what = !change.before ? `Started ${space}` : e.notes?.length !== change.before.notes?.length || e.text !== change.before.text ? `Added a note to ${space}` : `Already in ${space}`;
       return { text: `${what} [${e.id}] for key ${e.subject}. The user sees it in the chat with Undo.` };
     }
     const replaced = change.replaced ? ` It replaces [${change.replaced.id}] ${change.replaced.subject}, whose value is kept as history.` : "";
@@ -278,17 +292,19 @@ export class MemoryService {
     const taskKey = this.runs.get(sessionId)?.taskKey;
     const entries = await this.deps.store.list();
     if (key) {
-      if (!taskKey) return fail("key looks up a repeating task's records, and this is not a repeating task: recall with a query instead.");
-      if (kindsOff.includes("task")) return fail(`The user turned off ${MEMORY_KIND_TEXT.task.label} in memory: nothing was recalled. Go on without it.`);
-      const record = recordFor(entries, taskKey, key);
-      if (!record) return { text: `This task has no record for key ${key} yet.` };
+      // The task's own record first, then the user's (each only while its kind is on).
+      const usable = entries.filter((e) => !kindsOff.includes(e.kind));
+      const record = recordFor(usable, taskKey ?? null, key);
+      if (!record) return { text: `There is no record for key ${key} yet.` };
       await this.deps.store.touch([record.id]);
       return { text: `- ${memoryLine(record)}` };
     }
-    const found = recallMemory(entries, query!, { kindsOff, taskKey: taskKey ?? null });
+    const semantic = await this.semantic(query!, taskKey ?? null);
+    const found = recallMemory(entries, query!, { kindsOff, taskKey: taskKey ?? null, ...this.clock(), ...(semantic ? { semantic } : {}) });
     if (!found.length) return { text: `Nothing in memory matches "${query}".` };
     await this.deps.store.touch(found.map((e) => e.id));
-    return { text: found.map((e) => `- ${memoryLine(e)}`).join("\n") };
+    // Recall is asked for: a fact's earlier values come with it.
+    return { text: found.map((e) => `- ${memoryLine(e, { history: true })}`).join("\n") };
   }
 
   private async forget(sessionId: string, rawArgs: unknown): Promise<MemoryToolResult> {
@@ -299,6 +315,24 @@ export class MemoryService {
     if (!change) return fail(`No memory entry ${id}.`);
     await this.noteChange(sessionId, change);
     return { text: `Forgot [${id}] ${change.before!.subject}. The user sees it in the chat with Undo.` };
+  }
+
+  /** Now and the user's time zone, for time words ("yesterday", "last spring"). */
+  private clock(): { now: Date; offsetMinutes: number } {
+    const now = this.deps.now?.() ?? new Date();
+    return { now, offsetMinutes: -now.getTimezoneOffset() };
+  }
+
+  /** The account's semantic scores for `query`, or null (none, failed, or later than MEMORY_SEARCH_TIMEOUT_MS). */
+  private async semantic(query: string, taskKey: string | null): Promise<ReadonlyMap<string, number> | null> {
+    if (!this.deps.semantic) return null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), MEMORY_SEARCH_TIMEOUT_MS)));
+    try {
+      return await Promise.race([this.deps.semantic(query, taskKey).catch(() => null), late]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** The chat's note of a change, with its Undo. */
@@ -319,18 +353,22 @@ function firstLine(text: string): string {
   return (text.split("\n").find((l) => l.trim()) ?? "").trim().slice(0, 80);
 }
 
-/** The record remember with a key files the fact in (this repeating task's, under the normalized key), or why it cannot. */
+/**
+ * The record remember with a key files the fact in, under the normalized key: in a repeating task its own records
+ * (unless kind record asks for the user's), in a chat the user's; or why it cannot.
+ */
 function settleRecord(args: RememberArgs, run: { taskKey?: string; taskTitle?: string }): NewRecord | string {
-  if (!run.taskKey) return "key files a fact in a repeating task's records, and this is not a repeating task (it is a chat): remember it without key, or leave it. Nothing was saved.";
-  if ((args.scope && args.scope !== "task") || args.domain) return "key is only for this task's records (scope task, no domain): drop key to save it elsewhere. Nothing was saved.";
+  if (args.scope === "domain" || args.domain) return "key files the fact in a record, which belongs to no site: drop domain, or drop key to save a site's playbook. Nothing was saved.";
   const key = memoryRecordKey(args.key!);
   if (!key) return `key "${args.key}" has no letters or digits: give the identifier itself (an address, an ID, a name). Nothing was saved.`;
   const keyAsWritten = args.key!.trim().slice(0, MAX_MEMORY_SUBJECT_CHARS);
-  return { taskKey: run.taskKey, ...(run.taskTitle ? { taskTitle: run.taskTitle } : {}), key, keyAsWritten, ...(args.subject ? { subject: args.subject } : {}), text: args.text };
+  const space = run.taskKey && args.kind !== "record" ? { taskKey: run.taskKey, ...(run.taskTitle ? { taskTitle: run.taskTitle } : {}) } : {};
+  return { ...space, key, keyAsWritten, ...(args.subject ? { subject: args.subject } : {}), text: args.text };
 }
 
 /** The entry remember keeps: its scope and place settled from the arguments and the turn, or why it cannot be kept. */
 function settle(args: RememberArgs, run: { taskKey?: string; taskTitle?: string }): NewMemory | string {
+  if (args.kind === "record") return "kind record files a fact under an identifier: give key (the ticket, order, email or name it is about). Nothing was saved.";
   if (!args.subject) return "subject is required (a short name for what it is about). Nothing was saved.";
   const domain = args.domain === undefined ? undefined : memoryDomain(args.domain);
   if (domain === null) return `domain "${args.domain}" is not a site's host (e.g. mail.google.com). Nothing was saved.`;

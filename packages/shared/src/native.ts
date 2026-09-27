@@ -8,6 +8,10 @@ export const NATIVE_HOST_NAME = "com.browsertodo.helper";
 /** Limits and options for one task run, sent by the extension with runTask. */
 export interface RunConfig {
   maxToolCalls: number;
+  /**
+   * The brain's own limit on a turn's wall time: the extension sends TURN_WALL_MINUTES (turn-time.ts) and enforces
+   * the user's limit (active time, waits left out) itself.
+   */
   maxTaskMinutes: number;
   jevEnabled: boolean;
   jevThreshold: number;
@@ -170,6 +174,13 @@ export type HelperMethods = {
    * the helper's runs folder. maxBytes: at most 256 KB (the default).
    */
   "helper.runLog": { params: { path: string; maxBytes?: number }; result: { text: string; truncated: boolean } };
+  /**
+   * The background memory writer on Claude Code (memory-writer.ts): one headless `claude -p` call on the cheapest
+   * model with this system prompt and prompt, on the user's own Claude Code login. text: the model's answer;
+   * costUsd: what Claude Code reports it cost. Rejects when Claude Code fails or takes longer than
+   * MEMORY_SUMMARIZE_TIMEOUT_MS.
+   */
+  "memory.summarize": { params: { system: string; prompt: string }; result: { text: string; costUsd?: number } };
 };
 
 /** Notifications the helper sends to the extension (no reply). */

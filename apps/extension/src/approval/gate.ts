@@ -25,6 +25,7 @@ import {
   isApprovalGated,
   type ApprovalGatedMethod,
   type ApprovalOutcome,
+  type AgentTabInfo,
   type ApprovalRequest,
   type BrowserMethod,
   type BrowserMethods,
@@ -34,6 +35,7 @@ import {
   type PageSnapshot,
 } from "@browsertodo/shared";
 import type { BrowserCaller } from "@browsertodo/core";
+import { normalizeId } from "../agent-tab.js";
 import { hostOf, type GateAction, type GateMethod, type TypedField } from "./consequence.js";
 import type { SystemOneLike } from "./jev-judge.js";
 import { judgeAction, judgeWithinTask } from "./judge.js";
@@ -84,6 +86,11 @@ export class ApprovalGate {
   private allowAll = false;
   /** The current tab's last page read. */
   private page: PageSnapshot | null = null;
+  /**
+   * The current tab's short id, as the calls' results say (a turn starts on t1; switch_tab, open_tabs shown, and
+   * the tab lists change it): a read that names this tab (read_page with `tabs`) is a read of the current tab.
+   */
+  private current = MAIN_TAB;
   private typed: TypedField[] = [];
 
   constructor(
@@ -91,6 +98,8 @@ export class ApprovalGate {
     /** The session using the slot now (null: none, e.g. `mcp-server --attach`, where the user drives their own Claude Code). */
     private readonly sessionOf: () => string | null,
     private readonly deps: GateDeps,
+    /** Called when the gate starts waiting for the user; returns what ends it (the turn's clock leaves the wait out). */
+    private readonly waiting?: () => () => void,
   ) {}
 
   readonly browser: BrowserCaller = {
@@ -119,6 +128,7 @@ export class ApprovalGate {
 
   private reset(): void {
     this.allowAll = false;
+    this.current = MAIN_TAB;
     this.page = null;
     this.typed = [];
   }
@@ -132,7 +142,8 @@ export class ApprovalGate {
     const request = approvalAsk(action, ask.why, ask.kind);
     const now = this.deps.now?.() ?? Date.now();
     const left = ctx.endsAt === undefined ? undefined : Math.max(0, ctx.endsAt - now - APPROVAL_TURN_MARGIN_MS);
-    const outcome = await this.deps.request(sessionId, request, left === undefined || left >= APPROVAL_TIMEOUT_MS ? undefined : { timeoutMs: left });
+    const waited = this.waiting?.();
+    const outcome = await this.deps.request(sessionId, request, left === undefined || left >= APPROVAL_TIMEOUT_MS ? undefined : { timeoutMs: left }).finally(() => waited?.());
     // An answer that comes after the turn ended (the slot moved on) does nothing.
     const still = this.sessionOf() === sessionId;
     if ((outcome === "allow_once" || outcome === "allow_task") && still) {
@@ -176,27 +187,45 @@ export class ApprovalGate {
     return action;
   }
 
+  /** A tab list says which tab is current: a different one than known means the page known is not its page. */
+  private follows(tabs: AgentTabInfo[] | undefined): void {
+    const now = tabs?.find((t) => t.current)?.id;
+    if (!now || now === this.current) return;
+    this.current = now;
+    this.page = null;
+    this.typed = [];
+  }
+
   /** Keeps what later actions need to be judged: the page read, and the fields typed into on it. */
   private observe(method: BrowserMethod, p: Record<string, unknown>, result: unknown): void {
     switch (method) {
       case "browser.readPage": {
-        // Another tab's read (read_page with tabs) says nothing about the tab the actions go to.
-        if (p.tab !== undefined) return;
+        // Another tab's read (read_page with tabs) says nothing about the tab the actions go to; the current tab's does.
+        if (typeof p.tab === "string" && normalizeId(p.tab) !== this.current) return;
         const snap = result as PageSnapshot;
         if (this.page && snap.url !== this.page.url) this.typed = [];
         this.page = snap;
         return;
       }
       case "browser.navigate":
+        this.page = null;
+        this.typed = [];
+        return;
       case "browser.switchTab":
+        this.current = (result as AgentTabInfo).id;
         this.page = null;
         this.typed = [];
         return;
       case "browser.openTabs":
         if (p.background === false) {
+          this.follows((result as { tabs: AgentTabInfo[] }).tabs);
           this.page = null;
           this.typed = [];
         }
+        return;
+      case "browser.listTabs":
+      case "browser.closeTabs":
+        this.follows((result as { tabs: AgentTabInfo[] }).tabs);
         return;
       case "browser.type":
       case "browser.paste": {
@@ -215,6 +244,9 @@ export class ApprovalGate {
     }
   }
 }
+
+/** The tab a run starts on (AgentTab: the main tab is t1 and current when a turn starts). */
+const MAIN_TAB = "t1";
 
 function isField(el: ElementInfo): boolean {
   return ["textbox", "searchbox", "combobox"].includes(el.role) || (el.tag === "input" && !["submit", "button", "checkbox", "radio", "image"].includes(el.type ?? "text")) || el.tag === "textarea";

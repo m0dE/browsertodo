@@ -40,6 +40,7 @@ function events(): EngineEvents & { log: string[] } {
     stopTask: async () => "",
     answerApproval: async () => "",
     endVoice: () => {},
+    useThisTab: async () => "",
     failed: (err) => void log.push(`failed:${String(err)}`),
   };
 }

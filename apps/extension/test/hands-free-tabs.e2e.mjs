@@ -6,7 +6,9 @@
 // Checked: hands-free started in tab A's panel; the user switches to tab B and opens B's panel. B's panel must not show
 // the live voice UI (bar listening, mic button live, composer "Listening…" placeholder, voice-live body class) but the
 // "elsewhere" notice naming tab A, with Go to tab, Use voice here and Stop. Use voice here moves the session to B (A's
-// panel goes quiet, the MIC badge moves to B); Stop there ends it in A.
+// panel goes quiet, the MIC badge moves to B); Stop there ends it in A. While the user looks at B, A's panel knows it:
+// what is said goes to A's chat with a note naming both tabs, and B's toolbar button has the grey MIC badge. Saying
+// "use this tab" there moves the session to B (B's open panel takes it over).
 //
 // Usage: pnpm build && node apps/extension/test/hands-free-tabs.e2e.mjs [--headed]
 import assert from "node:assert/strict";
@@ -43,8 +45,8 @@ const STUBS = `(() => {
   const send = chrome.runtime.sendMessage.bind(chrome.runtime);
   window.__sent = [];
   chrome.runtime.sendMessage = async (msg, ...rest) => {
-    if (msg?.type === "voice.transcribe") return { ok: true, data: { text: "" } };
-    if (msg?.type === "run.message" && msg.voice) { window.__sent.push(msg.text); return { ok: true, data: { sessionId: "s-hf", mode: "new" } }; }
+    if (msg?.type === "voice.transcribe") return { ok: true, data: { text: window.__transcript ?? "What is on this page?" } };
+    if (msg?.type === "run.message" && msg.voice) { window.__sent.push({ text: msg.text, tabId: msg.tabId ?? null, sessionId: msg.sessionId ?? null }); return { ok: true, data: { sessionId: "s-hf", mode: "new" } }; }
     const res = await send(msg, ...rest);
     return res?.ok ? { ...res, data: plus(res.data) } : res;
   };
@@ -127,6 +129,14 @@ const { context, sw, extensionId, profile } = ext;
 const devtoolsPort = await waitFor(() => Number(readFileSync(join(profile, "DevToolsActivePort"), "utf8").split("\n")[0]), "DevToolsActivePort");
 const isPanelOf = (tab) => (url) => URL.canParse(url) && new URL(url).pathname === "/sidepanel.html" && new URL(url).searchParams.get("tab") === String(tab);
 const badgeOf = (tabId) => sw.evaluate(async (t) => chrome.action.getBadgeText({ tabId: t }), tabId);
+/** A tab's badge: its text and colour ("live" red, "elsewhere" grey, see voice-session.ts VOICE_BADGES). */
+const badgeLook = (tabId) =>
+  sw.evaluate(async (t) => {
+    const text = await chrome.action.getBadgeText({ tabId: t });
+    if (!text) return "";
+    const [r, g, b] = await chrome.action.getBadgeBackgroundColor({ tabId: t });
+    return `${text}:${r === 200 && g === 35 && b === 63 ? "live" : r === 128 && g === 134 && b === 139 ? "elsewhere" : `${r},${g},${b}`}`;
+  }, tabId);
 const opened = [];
 
 /** Opens tab `tabId`'s own panel from `opener` (an extension page), stubs it (Plus) and waits until its mic is unlocked. */
@@ -180,15 +190,21 @@ try {
     return JSON.stringify(look);
   });
 
-  await step("switching to tab B (no panel of its own yet): A's panel hides, and stops claiming to listen for what is on screen", async () => {
+  await step("switching to tab B (no panel of its own yet): A's panel knows, what is said carries a note naming both tabs, B's button has the grey badge", async () => {
+    const before = await panelA.evaluate(`window.__sent.length`);
     await activate(ids.b);
     await waitFor(() => panelA.evaluate(`document.visibilityState === "hidden"`), "A's panel to hide");
-    await new Promise((r) => setTimeout(r, 1000));
+    await waitFor(() => panelA.evaluate(`document.getElementById("voice-bar").dataset.state === "elsewhere"`), "A's bar to say it listens elsewhere");
     const look = await panelA.evaluate(VOICE_LOOK);
-    const visible = (await sw.evaluate(() => chrome.runtime.getContexts({ contextTypes: ["SIDE_PANEL"] }))).map((c) => c.documentUrl);
-    const evidence = JSON.stringify({ aHidden: await panelA.evaluate(`document.visibilityState`), aLook: look, panels: visible, badges: { a: await badgeOf(ids.a), b: await badgeOf(ids.b) } });
-    // A's session goes on (it belongs to A), but A's panel knows the user looks at another tab now.
+    // Said while the user looks at tab B: to A's chat, with the note.
+    const said = await waitFor(() => panelA.evaluate(`window.__sent[${before}] ?? null`), "a message said while tab B shows", { timeout: 30_000 });
+    const badges = { a: await badgeLook(ids.a), b: await badgeLook(ids.b) };
+    const evidence = JSON.stringify({ said, tabA: ids.a, tabB: ids.b, aLook: look, badges });
     assert.equal(look.bar.state, "elsewhere", `A knows the user left its tab: ${evidence}`);
+    assert.equal(look.voiceLive, false, evidence);
+    assert.equal(said.tabId, ids.a, evidence);
+    assert.match(said.text, /^What is on this page\?\n\n\(The user is looking at another tab: Recipes B \(127\.0\.0\.1:\d+\)\. You work in Shop A \(127\.0\.0\.1:\d+\)\.\)$/, evidence);
+    assert.deepEqual(badges, { a: "MIC:live", b: "MIC:elsewhere" }, evidence);
     return evidence;
   });
 
@@ -200,7 +216,7 @@ try {
     await new Promise((r) => setTimeout(r, 1500));
     const look = await panelB.evaluate(VOICE_LOOK);
     await panelB.screenshot(join(shots, "hands-free-tabs-B.png"));
-    const badges = { a: await badgeOf(ids.a), b: await badgeOf(ids.b) };
+    const badges = { a: await badgeLook(ids.a), b: await badgeLook(ids.b) };
     const evidence = JSON.stringify({ look, badges });
     // Nothing live in B.
     assert.equal(look.voiceLive, false, `B is not live: ${evidence}`);
@@ -208,7 +224,8 @@ try {
     assert.notEqual(look.bar.state, "hearing", evidence);
     assert.ok(!/Listening/i.test(look.box.placeholder), `B's box does not say it listens: ${evidence}`);
     assert.notEqual(look.mic.state, "handsfree", `B's mic is not live: ${evidence}`);
-    assert.equal(badges.b, "", `no MIC badge on B: ${evidence}`);
+    // B's button: the grey badge (voice is on elsewhere), not the live one.
+    assert.deepEqual(badges, { a: "MIC:live", b: "MIC:elsewhere" }, evidence);
     // The notice naming A, with its buttons.
     assert.ok(look.bar.shown, `B shows a notice that voice is on in another tab: ${evidence}`);
     assert.equal(look.bar.state, "elsewhere", evidence);
@@ -222,7 +239,7 @@ try {
     await panelB.evaluate(`document.querySelector("#voice-bar .vb-use").click()`);
     await waitFor(() => panelB.evaluate(`document.body.classList.contains("voice-live")`), "B live");
     await waitFor(async () => !(await panelA.evaluate(VOICE_LOOK)).voiceLive, "A no longer live");
-    await waitFor(async () => (await badgeOf(ids.b)) === "MIC" && (await badgeOf(ids.a)) === "", "the badge to move to B");
+    await waitFor(async () => (await badgeLook(ids.b)) === "MIC:live" && (await badgeLook(ids.a)) === "", "the badge to move to B");
     return JSON.stringify({ a: await panelA.evaluate(VOICE_LOOK), b: await panelB.evaluate(VOICE_LOOK) });
   });
 
@@ -233,6 +250,26 @@ try {
     await waitFor(async () => !(await panelB.evaluate(VOICE_LOOK)).bar.shown && !(await panelA.evaluate(VOICE_LOOK)).bar.shown, "both bars gone");
     await waitFor(async () => (await badgeOf(ids.b)) === "" && (await badgeOf(ids.a)) === "", "no badge");
     return "ended";
+  });
+
+  await step("voice on in A again; on tab B the user says 'use this tab': it moves to B (B's open panel takes it over), one session", async () => {
+    await activate(ids.a);
+    await panelA.evaluate(`window.__pushToPanel({ type: "panel.voice" })`);
+    await waitFor(() => panelA.evaluate(`document.body.classList.contains("voice-live")`), "A live again", { timeout: 10_000 });
+    await activate(ids.b);
+    await waitFor(() => panelA.evaluate(`document.getElementById("voice-bar").dataset.state === "elsewhere"`), "A knows the user looks at B");
+    await panelA.evaluate(`window.__transcript = "Use this tab."`);
+    await waitFor(() => panelB.evaluate(`document.body.classList.contains("voice-live")`), "B to take the session over", { timeout: 30_000 });
+    await waitFor(async () => (await badgeLook(ids.b)) === "MIC:live" && (await badgeLook(ids.a)) === "", "the badge on B");
+    const a = await panelA.evaluate(VOICE_LOOK);
+    assert.equal(a.voiceLive, false, JSON.stringify(a));
+    assert.equal(await panelA.evaluate(`window.__sent.some((m) => /use this tab/i.test(m.text))`), false, "'use this tab' is not sent to the agent");
+    const session = await sw.evaluate(() => globalThis.__browsertodo.voiceSessions.view());
+    assert.equal(session.tabId, ids.b, JSON.stringify(session));
+    assert.equal(session.host, ids.b, JSON.stringify(session));
+    await panelB.evaluate(`document.querySelector("#voice-bar .vb-stop").click()`);
+    await waitFor(async () => (await badgeOf(ids.b)) === "", "stopped");
+    return JSON.stringify({ session, a });
   });
 } finally {
   for (const p of opened) p.close();

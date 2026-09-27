@@ -48,10 +48,22 @@ const CVC = new RegExp(`^${C}${v}[^aeiouwxy]$`);
 
 /** Words shorter than this are not stemmed. */
 const MIN_STEM_LENGTH = 3;
+/** Stems remembered (words repeat across entries; past it the memo starts over). */
+const MAX_MEMO = 50_000;
+const memo = new Map<string, string>();
 
 /** The word's stem ("reconciled" -> "reconcil", "flights" -> "flight"); a word that is not plain a-z as it is. */
 export function stem(word: string): string {
   if (word.length < MIN_STEM_LENGTH || !/^[a-z]+$/.test(word)) return word;
+  let s = memo.get(word);
+  if (s === undefined) {
+    if (memo.size >= MAX_MEMO) memo.clear();
+    memo.set(word, (s = porter(word)));
+  }
+  return s;
+}
+
+function porter(word: string): string {
   let w = word;
   const firstY = w[0] === "y";
   if (firstY) w = `Y${w.slice(1)}`;

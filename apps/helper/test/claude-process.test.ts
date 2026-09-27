@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentEvent } from "@browsertodo/shared";
-import { interjectionText, Interjections } from "@browsertodo/core";
+import { interjectionText, Interjections, raiseNote, THINKING_BUDGET_TOKENS, type ReasoningChange } from "@browsertodo/core";
 import { ClaudeCodeBrain, buildClaudeArgs } from "../src/brains/claude-code.js";
 import { apiBillingVarsIn, claudeEnv, resolveClaudePath } from "../src/claude-process.js";
 import { UserInput, type BrainContext } from "../src/brains/brain.js";
@@ -56,7 +56,8 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     const c = ctx(new AbortController().signal, log, events);
     await brain().run(c);
     const init = log.find((e) => e.type === "claude" && e.event.type === "system")!.event;
-    expect(init.args).toEqual(buildClaudeArgs({ ...c, model: "sonnet" }));
+    // No Reasoning setting given: the default, Fast (thinking off).
+    expect(init.args).toEqual(buildClaudeArgs({ ...c, model: "sonnet", thinking: false }));
     expect(init.cwd).toBe(dir);
     expect(init.nested).toBeNull();
     expect(init.child).toBeNull();
@@ -100,7 +101,7 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     const c = { ...ctx(new AbortController().signal, log, events), model: "claude-opus-5-5" };
     await brain().run(c);
     const init = log.find((e) => e.type === "claude" && e.event.type === "system")!.event;
-    expect(init.args).toEqual(buildClaudeArgs({ ...c, model: "claude-opus-5-5" }));
+    expect(init.args).toEqual(buildClaudeArgs({ ...c, model: "claude-opus-5-5", thinking: false }));
     expect(log.find((e) => e.type === "claude_start")).toMatchObject({ model: "claude-opus-5-5" });
     expect(events.find((e) => e.type !== "trace")).toEqual({ type: "status", text: "Claude Code started (claude-opus-5-5)" });
   });
@@ -147,6 +148,79 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     expect(texts).toEqual([`got: ${c.prompt} (and: ${interjectionText(["also add a hashtag"])})`]);
     expect(interjections.unseen).toBe(false);
     expect(routes).toEqual(["next_step"]);
+  });
+
+  /** A session's reasoning as the task session hands it over, with a trigger for its changes. */
+  function reasoningChannel(thinking: boolean) {
+    let listener: ((c: ReasoningChange) => void) | null = null;
+    return {
+      channel: { thinking, onChange: (fn: (c: ReasoningChange) => void) => void (listener = fn) },
+      change: (c: ReasoningChange) => listener?.(c),
+      subscribed: () => listener !== null,
+    };
+  }
+  const thinkingLines = (log: Record<string, any>[]) => log.filter((e) => e.type === "claude" && e.event.subtype === "fake_thinking").map((e) => e.event.max_thinking_tokens);
+
+  it("a raise in a Fast session turns thinking on and stops the running request, so the note starts a new turn that thinks; a lower turns it off for the next turn", async () => {
+    process.env.FAKE_CLAUDE_SLOW_MS = "400";
+    const log: Record<string, any>[] = [];
+    const events: AgentEvent[] = [];
+    const r = reasoningChannel(false);
+    const c = { ...ctx(new AbortController().signal, log, events), reasoning: r.channel };
+    const run = brain().run(c);
+    await vi.waitFor(() => expect(log.some((e) => e.type === "claude" && e.event.status === "requesting")).toBe(true));
+    r.change({ kind: "raise", thinking: true, why: "act failed 3 times in a row" });
+    r.change({ kind: "lower", thinking: false, why: "act worked" });
+    await run;
+    const init = log.find((e) => e.type === "claude" && e.event.type === "system" && e.event.subtype === "init")!.event;
+    expect(init.args).toEqual(buildClaudeArgs({ ...c, model: "sonnet", thinking: false }));
+    expect(thinkingLines(log)).toEqual([THINKING_BUDGET_TOKENS, null]);
+    expect(log.find((e) => e.type === "claude_interrupt")).toMatchObject({ reason: "reasoning raised" });
+    // The interrupted request's answer was dropped; the note was answered in the new turn. No error shown.
+    const texts = events.filter((e) => e.type === "assistant_text").map((e) => (e as { text: string }).text);
+    expect(texts).toEqual([`got: ${raiseNote("act failed 3 times in a row")}`]);
+    expect(events.some((e) => e.type === "error")).toBe(false);
+  });
+
+  it("a raise while a tool runs waits for the next request to stop it (never an action half done)", async () => {
+    process.env.FAKE_CLAUDE_TOOL = "1";
+    process.env.FAKE_CLAUDE_SLOW_MS = "300";
+    const log: Record<string, any>[] = [];
+    const events: AgentEvent[] = [];
+    const r = reasoningChannel(false);
+    const run = brain().run({ ...ctx(new AbortController().signal, log, events), reasoning: r.channel });
+    await vi.waitFor(() => expect(log.some((e) => e.type === "claude" && e.event.type === "assistant")).toBe(true));
+    r.change({ kind: "raise", thinking: true, why: "act failed 3 times in a row" });
+    // Sent at once; the stop waits for the tool's result.
+    expect(thinkingLines(log)).toEqual([]);
+    await vi.waitFor(() => expect(thinkingLines(log)).toEqual([THINKING_BUDGET_TOKENS]));
+    expect(log.some((e) => e.type === "claude_interrupt")).toBe(false);
+    await run;
+    const interruptAt = log.findIndex((e) => e.type === "claude_interrupt");
+    const toolResultAt = log.findIndex((e) => e.type === "claude" && e.event.type === "user" && Array.isArray(e.event.message?.content) && e.event.message.content[0]?.type === "tool_result");
+    expect(interruptAt).toBeGreaterThan(toolResultAt);
+  });
+
+  it("a session started thinking (Thorough) keeps it: no settings flag, and changes send nothing (Claude Code cannot turn it off there)", async () => {
+    const log: Record<string, any>[] = [];
+    const r = reasoningChannel(true);
+    const c = { ...ctx(new AbortController().signal, log, []), reasoning: r.channel };
+    await brain().run(c);
+    const init = log.find((e) => e.type === "claude" && e.event.type === "system" && e.event.subtype === "init")!.event;
+    expect(init.args).toEqual(buildClaudeArgs({ ...c, model: "sonnet" }));
+    r.change({ kind: "turn", thinking: false, why: "new turn (fast)" });
+    expect(thinkingLines(log)).toEqual([]);
+    expect(log.find((e) => e.type === "claude_thinking_kept")).toBeTruthy();
+  });
+
+  it("BROWSERTODO_THINKING (the brain's forced setting) wins over the Reasoning setting and ignores its changes", async () => {
+    const log: Record<string, any>[] = [];
+    const r = reasoningChannel(true);
+    const c = { ...ctx(new AbortController().signal, log, []), reasoning: r.channel };
+    await new ClaudeCodeBrain({ claudePath: process.execPath, model: "sonnet", thinking: false, prefixArgs: [FAKE] }).run(c);
+    const init = log.find((e) => e.type === "claude" && e.event.type === "system" && e.event.subtype === "init")!.event;
+    expect(init.args).toEqual(buildClaudeArgs({ ...c, model: "sonnet", thinking: false }));
+    expect(r.subscribed()).toBe(false);
   });
 
   it("closing the input (task_* called) ends stdin so claude exits", async () => {

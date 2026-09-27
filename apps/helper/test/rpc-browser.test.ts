@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { APPROVAL_TIMEOUT_MS } from "@browsertodo/shared";
+import { APPROVAL_TIMEOUT_MS, WAIT_CALL_LIMIT_MS, WAIT_SLICE_MS } from "@browsertodo/shared";
 import { BROWSER_RPC_TIMEOUT_MS, rpcBrowser, type RpcBrowser } from "../src/tool-router.js";
 import { TOOL_CALL_TIMEOUT_MS } from "../src/mcp-tools.js";
 
@@ -22,5 +22,10 @@ describe("browser calls to the extension", () => {
 
   it("a tool call's own limit allows one full approval wait on top of its browser calls", () => {
     expect(TOOL_CALL_TIMEOUT_MS).toBeGreaterThanOrEqual(BROWSER_RPC_TIMEOUT_MS + APPROVAL_TIMEOUT_MS);
+  });
+
+  it("wait_for fits: one slice inside a browser call's timeout, one call's whole wait inside the tool call's limit", () => {
+    expect(WAIT_SLICE_MS + 5000).toBeLessThan(BROWSER_RPC_TIMEOUT_MS);
+    expect(WAIT_CALL_LIMIT_MS + BROWSER_RPC_TIMEOUT_MS).toBeLessThanOrEqual(TOOL_CALL_TIMEOUT_MS);
   });
 });

@@ -58,6 +58,7 @@ export const ExtensionSettings = z.object({
   delayMinSec: z.number().min(0).max(3600).default(60),
   delayMaxSec: z.number().min(0).max(3600).default(180),
   maxToolCalls: z.number().int().min(5).max(500).default(60),
+  /** A turn's limit in ACTIVE minutes: waiting in wait_for or for an approval does not count (turn-time.ts). */
   maxTaskMinutes: z.number().min(1).max(120).default(10),
   /**
    * Due tasks that may run at the same time, each in its own tab (tasks that

@@ -22,6 +22,7 @@ import {
   CUSTOM_MODEL,
   formValues,
   modelOptions,
+  reasoningOptions,
   NUMBER_FIELDS,
   NUMBER_RULES,
   parseForm,
@@ -54,6 +55,7 @@ const SAVED_NOTE_MS = 1800;
 const form = $<HTMLFormElement>("form");
 const saveMsg = $("save-msg");
 const modelSelect = $<HTMLSelectElement>("model-select");
+const reasoningSelect = $<HTMLSelectElement>("f-reasoning");
 const input = (key: string) => $<HTMLInputElement>(`f-${key}`);
 initTabs();
 
@@ -66,6 +68,8 @@ for (const k of NUMBER_FIELDS) {
   input(k).max = String(NUMBER_RULES[k].max);
 }
 
+reasoningSelect.replaceChildren(...reasoningOptions().map((r) => h("option", { value: r.id }, r.label)));
+
 modelSelect.replaceChildren(
   ...modelOptions().map((m) => h("option", { value: m.id }, m.label)),
   h("option", { value: CUSTOM_MODEL }, "Custom…"),
@@ -75,7 +79,7 @@ modelSelect.replaceChildren(
 
 function readValues(): FormValues {
   const brain = (form.querySelector<HTMLInputElement>("input[name=brain]:checked")?.value ?? saved?.brain ?? "auto") as BrainMode;
-  const out: Record<string, unknown> = { brain };
+  const out: Record<string, unknown> = { brain, reasoning: reasoningSelect.value || saved?.reasoning };
   for (const k of NUMBER_FIELDS) out[k] = input(k).value;
   for (const k of TEXT_FIELDS) out[k] = input(k).value;
   for (const k of BOOL_FIELDS) out[k] = input(k).checked;
@@ -86,6 +90,7 @@ function fillForm(s: ExtensionSettings, only?: (keyof ExtensionSettings)[]): voi
   const v = formValues(s);
   const want = (k: keyof ExtensionSettings) => !only || only.includes(k);
   if (want("brain")) for (const r of form.querySelectorAll<HTMLInputElement>("input[name=brain]")) r.checked = r.value === v.brain;
+  if (want("reasoning")) reasoningSelect.value = v.reasoning;
   for (const k of NUMBER_FIELDS) if (want(k)) input(k).value = v[k];
   for (const k of TEXT_FIELDS) if (want(k)) input(k).value = v[k];
   for (const k of BOOL_FIELDS) if (want(k)) input(k).checked = v[k];
@@ -190,7 +195,7 @@ const renderSecrets = initSecretFields({ saved: () => saved, save: sendPatch });
 
 function draft(): Draft {
   const v = readValues();
-  return { brain: v.brain, jevEnabled: v.jevEnabled, cloudEnabled: v.cloudEnabled, anthropicModel: v.anthropicModel };
+  return { brain: v.brain, jevEnabled: v.jevEnabled, cloudEnabled: v.cloudEnabled, anthropicModel: v.anthropicModel, reasoning: v.reasoning };
 }
 
 /** Opens or closes a revealed block; closed blocks are inert (not focusable). */
@@ -240,6 +245,8 @@ function render(): void {
   const custom = modelSelect.value === CUSTOM_MODEL;
   input("anthropicModel").hidden = !custom;
   $("model-hint").textContent = v.model.hint;
+  $("reasoning-hint").textContent = v.reasoningHint;
+  reveal($("reasoning-raise"), v.showReasoningAutoRaise);
 
   $("jev-use-hint").textContent = v.jevUseHint;
   reveal($("jev-fields"), v.showJevFields);

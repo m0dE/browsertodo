@@ -56,6 +56,7 @@ const MEMORY_RULE = [
   "Use recall only to look up one specific fact you need now that the memory given may have left out (another site's playbook, an older task note); never as a first step by habit, and not when no memory was given for a fact you have not seen before.",
   "For a repeating TODO task (the task gives you its history in memory, or says it repeats), write what this run did in task_complete's memory_note, not with remember: the topic posted or who was answered, and what is pending, in plain words (no task ids), so the next run goes on instead of repeating.",
   "When a repeating task deals with many separate things, file what you learn about each under its identifier with remember (kind task, key: that one thing's address, ID, number or name; never a key for the task itself or its runs); before working on one, recall its key for what earlier runs learned.",
+  "Case file: when a repeating task's work on one such thing takes many steps or several turns (e.g. reproduce a problem, ask someone to fix it, wait, check, answer), keep its record as the case file: remember with its key the current step, how to reproduce it, what you asked of whom and what you promised, again at each milestone; when you come back to it, recall that key first and resume from the step it names.",
 ].join(" ");
 
 /**
@@ -104,6 +105,11 @@ export function buildSystemPrompt(opts: { tools: ToolName[]; jev: boolean; follo
   if (tools.includes("open_tabs")) {
     rules.push(
       "When a task needs several pages (e.g. several emails, search results, profiles), open them together with open_tabs (their links' href from read_page) and read them with one read_page call using `tabs`, instead of opening them and going back one by one. Use switch_tab to act in one of them. Close tabs you no longer need with close_tabs. Tabs you opened stay open for this chat until it ends: when one needs the user (e.g. to sign in), pause and ask them to do it in that tab, then carry on there.",
+    );
+  }
+  if (tools.includes("wait_for")) {
+    rules.push(
+      "When you must wait for something to happen on a page (a build or deploy to finish, a reply or status to change), call wait_for with what to look for (and the tab) instead of reading the page again and again: the browser watches it without you and answers when it happens, when the time is up or when the user writes. Give it a realistic number of minutes; when it answers \"still waiting\", call it again.",
     );
   }
   // act results already show the page after each batch, so with act the agent verifies once, at the end.

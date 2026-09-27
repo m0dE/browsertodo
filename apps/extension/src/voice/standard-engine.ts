@@ -119,6 +119,10 @@ export class StandardEngine implements HandsFreeEngine {
     // The panel picks the lines to say (narration.ts).
   }
 
+  note(_text: string): void {
+    // No narrator: the messages sent carry the note (sidepanel/hands-free.ts).
+  }
+
   tick(_now: number): void {}
 
   /** Starts the next utterance's dictation (with the audio just before, after a barge-in). */

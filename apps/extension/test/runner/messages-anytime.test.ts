@@ -30,6 +30,7 @@ function heldAtPrepare(h: Harness, held: Promise<void>): void {
     browser: h.browser,
     isAgentTab: async (tabId) => tabId === AGENT_TAB,
     screenshot: async () => ({ base64: btoa("JPG"), mimeType: "image/jpeg" }),
+    onWait: () => () => {},
   };
   h.deps.slots = { size: 1, take: () => slot, release: () => {}, endChat: async () => {} };
   h.runner = new Runner(h.deps);

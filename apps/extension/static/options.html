@@ -197,6 +197,16 @@
                   <small id="err-anthropicModel" class="field-error"></small>
                 </div>
               </div>
+              <div class="srow">
+                <label class="srow-label" for="f-reasoning"><b>Reasoning</b><small id="reasoning-hint"></small></label>
+                <div class="srow-control"><select id="f-reasoning" aria-describedby="reasoning-hint"></select></div>
+              </div>
+              <div class="reveal" id="reasoning-raise"><div class="reveal-inner">
+                <div class="srow">
+                  <label class="srow-label" for="f-reasoningAutoRaise"><b>Think harder when stuck</b><small>When a step keeps failing, or before giving up, Claude thinks before its next steps. Back to fast once a step works.</small></label>
+                  <div class="srow-control end"><span class="switch"><input id="f-reasoningAutoRaise" type="checkbox" role="switch" /></span></div>
+                </div>
+              </div></div>
             </div>
           </div>
 
@@ -422,6 +432,7 @@
           </div>
           <div class="group">
             <h2 class="group-title">What it remembers</h2>
+            <p class="group-hint mem-relevance">Each turn the agent is given only the memory relevant to it, plus the facts you set to “Always give”. It can search the rest when it needs it.</p>
             <p id="memory-msg" class="msg mem-msg" role="status"></p>
             <p id="memory-empty" class="group-hint" hidden>Nothing yet. As the agent works it saves lasting facts here: your preferences, which account is which, who people are, how sites work, and what repeating tasks did last time.</p>
             <div class="mem-search-row">

@@ -5,7 +5,9 @@
  * grouped by repeating task: its run notes and its records (filed by key),
  * with a count and "delete this task's memory". Episodes (a dated summary of
  * each chat and run) are listed by when they happened, with the sites and
- * things they involve; they are deleted, not edited. Facts can be pinned
+ * things they involve; they are deleted, not edited. The user's own records
+ * (filed by key in chats) are their own group, shown like a task's records;
+ * both long groups show a page at a time. Facts can be pinned
  * (given at every turn) and show what they said before they changed. A
  * search narrows every group to the entries that match. The page
  * (memory-section.ts) only renders this. Pure.
@@ -19,6 +21,16 @@ export const RECORDS_PAGE = 50;
 /** Episodes the Episodes group shows at first, and how many more each "Show more" adds. */
 export const EPISODES_PAGE = 20;
 
+/** The groups listed a page at a time (their entries can run into the hundreds), and the page of each. */
+const KIND_PAGE: Partial<Record<MemoryKind, number>> = { episode: EPISODES_PAGE, record: RECORDS_PAGE };
+
+/** What a kind's switch says while it is off, when "not given, not saved" does not say it right. */
+const KIND_OFF_HINT: Partial<Record<MemoryKind, string>> = {
+  episode: "Off: no episodes are written after chats and runs, and none are given to the agent",
+  record: "Off: records are neither filed nor given to the agent",
+};
+const DEFAULT_OFF_HINT = "Off: not given to the agent, not saved";
+
 /** The kinds of fact the user can pin (given at every turn); task history and episodes are not facts to pin. */
 export const PINNABLE_KINDS: readonly MemoryKind[] = ["preference", "account", "person", "playbook"];
 
@@ -27,10 +39,6 @@ export const PIN_TEXT = {
   pinned: { label: "Always give", hint: "Given to the agent at the start of every turn" },
   relevant: { label: "Only when relevant", hint: "Given to the agent when a turn is about it; it can also search for it" },
 } as const;
-
-/** What the page says about how memory reaches the agent (near the kinds' switches). */
-export const RELEVANCE_NOTE =
-  "Each turn the agent is given only the memory relevant to it, plus the facts you set to “Always give”. It can search the rest when it needs it.";
 
 export interface MemoryEntryView {
   id: string;
@@ -81,6 +89,8 @@ export interface MemoryKindView {
   on: boolean;
   /** Its entries, when they are not grouped by task. */
   entries: MemoryEntryView[];
+  /** Its entries are shown this many at a time ("Show more"); absent: all at once. */
+  page?: number;
   /** Task history: one group per repeating task, most recently changed first. */
   tasks: MemoryTaskView[];
   /** Entries shown in all (entries, or the tasks' notes and records). */
@@ -209,11 +219,12 @@ export function memoryPanel(
   for (const e of entries) if (grouped(e)) totals.set(e.taskKey!, (totals.get(e.taskKey!) ?? 0) + 1);
   const kinds = MEMORY_KINDS.map((kind): MemoryKindView => {
     const of = shown.filter((e) => e.kind === kind);
+    const page = KIND_PAGE[kind];
     return {
       kind,
       label: MEMORY_KIND_TEXT[kind].label,
       hint: MEMORY_KIND_TEXT[kind].hint,
-      offHint: kind === "episode" ? "Off: no episodes are written after chats and runs, and none are given to the agent" : "Off: not given to the agent, not saved",
+      offHint: KIND_OFF_HINT[kind] ?? DEFAULT_OFF_HINT,
       on: !settings.memoryKindsOff.includes(kind),
       entries:
         kind === "episode"
@@ -222,6 +233,7 @@ export function memoryPanel(
               .filter((e) => !grouped(e))
               .sort(pinnedThenNewest)
               .map((e) => entryView(e, now)),
+      ...(page ? { page } : {}),
       tasks: taskGroups(of.filter(grouped), now, totals),
       count: of.length,
     };

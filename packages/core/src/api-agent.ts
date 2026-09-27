@@ -13,6 +13,7 @@ import { createToolExecutor } from "./executor.js";
 import { agentError, CLAUDE_DECLINED, ENDED_WITHOUT_RESULT } from "./failures.js";
 import { Interjections } from "./interjections.js";
 import { buildSystemPrompt, buildTaskPrompt, FOLLOW_UP_PREFIX } from "./prompts.js";
+import { raiseNote, ReasoningGovernor, reasoningParams, reasoningTrace } from "./reasoning.js";
 import { isTaskEndTool, timeLimitReached, toolBudget, toolCallLimitExceeded, toolCallLimitReached, turnEndEvents } from "./turn-rules.js";
 import {
   buildRequest,
@@ -84,7 +85,7 @@ function startModelCall(streaming: boolean, doFetch: typeof fetch, onDelta: (id:
         }
       : undefined,
     /** interrupted: stopped for a message from the user (see request()). */
-    span(r: PostResult, extra: { model: string; attempt: number; messages: number }, interrupted = false): TraceDraft {
+    span(r: PostResult, extra: { model: string; attempt: number; messages: number; reasoning: string }, interrupted = false): TraceDraft {
       const data: NonNullable<TraceDraft["data"]> = { ...extra, result: interrupted ? "interrupted" : r.kind, streamed: streaming };
       if (headersMs !== undefined) data.responseMs = headersMs;
       if (firstTextMs !== undefined) data.firstTextMs = firstTextMs;
@@ -153,7 +154,10 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
       /* listeners must not break the loop */
     }
   });
-  const emit = (e: AgentEvent) => batcher.emit(e);
+  const emit = (e: AgentEvent) => {
+    reasoning.observe(e);
+    batcher.emit(e);
+  };
   const trace = (e: TraceDraft) => {
     try {
       opts.onTrace?.(e);
@@ -161,6 +165,14 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
       /* listeners must not break the loop */
     }
   };
+  /** The note that goes after the next tool results when a stuck Fast run's reasoning was raised. */
+  let raiseNotePending: string | null = null;
+  /** How much the model thinks: the Reasoning setting, raised while a Fast run is stuck (reasoning.ts). */
+  const reasoning = new ReasoningGovernor(opts.config, (change) => {
+    trace(reasoningTrace(change));
+    raiseNotePending = change.kind === "raise" ? raiseNote(change.why) : null;
+  });
+  const reasoningNow = () => (reasoning.raised ? "raised" : reasoning.thinking ? "thorough" : "fast");
 
   /** The running turn's task_* result sink (the executor is shared by every turn). */
   let onTaskEnd: (r: TaskRunResult) => void = () => {};
@@ -231,6 +243,8 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
 
   const runTurn = (config: RunConfig): AgentSession => {
     turnRunning = true;
+    reasoning.startTurn(config);
+    raiseNotePending = null;
     const controller = new AbortController();
     let ended = false;
     let resolveDone!: (r: TaskRunResult) => void;
@@ -267,7 +281,8 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
      * that is not streamed (the hosted AI) never shows where it is, so it is let finish.
      */
     const request = async (): Promise<MessagesResponse | "interrupted" | null> => {
-      const body = buildRequest({ model: opts.model, system, tools, messages, jev: jevOn });
+      const thinking = reasoningNow();
+      const body = buildRequest({ model: opts.model, system, tools, messages, jev: jevOn, reasoning: reasoningParams(opts.model, thinking) });
       for (let attempt = 0; ; attempt++) {
         const call = startModelCall(streaming, doFetch, (id, text) => batcher.delta(id, text));
         const thisRequest = new AbortController();
@@ -289,7 +304,7 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
           controller.signal.removeEventListener("abort", endRequest);
         }
         batcher.flush();
-        trace(call.span(r, { model: opts.model, attempt: attempt + 1, messages: messages.length }, interrupted));
+        trace(call.span(r, { model: opts.model, attempt: attempt + 1, messages: messages.length, reasoning: thinking }, interrupted));
         if (ended) return null;
         if (interrupted) return "interrupted";
         if (r.kind === "ok") return r.message;
@@ -337,6 +352,11 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
         const pending = takeUserText(route);
         route = "request";
         if (pending.length) messages[messages.length - 1]!.content.push(...pending);
+        // Raised: the note goes after the tool results, so the model reads why and thinks (the history stays append-only).
+        if (raiseNotePending && messages.at(-1)?.role === "user") {
+          messages.at(-1)!.content.push({ type: "text", text: raiseNotePending });
+          raiseNotePending = null;
+        }
         pruneImages();
         const msg = await request();
         if (msg === "interrupted") {
@@ -388,6 +408,12 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
           }
           if (budget === "refuse") {
             results.push(toolResultBlock(use.id, { text: toolCallLimitReached(max), isError: true }));
+            continue;
+          }
+          // A Fast run's first task_fail: one careful look first, with its reasoning raised (never after the tool limit).
+          const recheck = name === "task_fail" && toolCalls < max ? reasoning.beforeTaskFail() : null;
+          if (recheck) {
+            results.push(toolResultBlock(use.id, { text: recheck, isError: true }));
             continue;
           }
           const r = await executor.call(name, use.input);

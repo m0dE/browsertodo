@@ -279,6 +279,10 @@ const { step, finish } = createSuite("voice");
       await panel.send("Page.addScriptToEvaluateOnNewDocument", { source: HANDS_FREE_STUBS });
       await panel.send("Page.reload", {});
       await waitFor(() => panel.evaluate(() => document.querySelector("#now-actions .voice-mic")?.dataset.state === "idle"), "the panel on Plus (the mic unlocked)", { timeout: 15_000 });
+      // The user is on the panel's tab (the microphone page opened earlier is in front): else the bar says voice is on in
+      // another tab (hands-free-tabs.e2e.mjs).
+      const panelTab = await panel.evaluate(() => Number(new URLSearchParams(location.search).get("tab")));
+      await sw.evaluate((t) => chrome.tabs.update(t, { active: true }), panelTab);
       // The voice shortcut, as the background delivers it to the panel (panel-command.ts).
       await panel.evaluate(() => window.__pushToPanel({ type: "panel.voice" }));
       await waitFor(() => panel.evaluate(() => window.__phases.includes("listening")), "hands-free listening", { timeout: 10_000 });

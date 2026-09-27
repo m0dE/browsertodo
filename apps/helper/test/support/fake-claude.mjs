@@ -11,7 +11,8 @@
 // read; a message that arrives while a tool runs is read with the tool's result
 // (merged into the same turn: one result, its answer says "(and: ...)"); a
 // control_request "interrupt" stops the model's request (an error result
-// "error_during_execution"), and the next stdin message starts a new turn.
+// "error_during_execution"), and the next stdin message starts a new turn;
+// a set_max_thinking_tokens control_request is echoed as a system/fake_thinking line.
 import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
@@ -41,6 +42,8 @@ rl.on("line", (line) => {
   if (msg.type === "control_request") {
     out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id, response: { still_queued: [] } } });
     if (msg.request?.subtype === "interrupt" && current) current.interrupted = true;
+    // Shown so tests can see it (real Claude Code only acks it).
+    if (msg.request?.subtype === "set_max_thinking_tokens") out({ type: "system", subtype: "fake_thinking", max_thinking_tokens: msg.request.max_thinking_tokens });
     return;
   }
   inbox.push(msg.message.content);

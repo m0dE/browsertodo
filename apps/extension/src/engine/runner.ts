@@ -38,6 +38,7 @@ import { KeepAlive, RunnerStateStore, type RunnerState } from "./run/state.js";
 import { TurnRunner, type TabPage } from "./run/turn.js";
 import type { GateContext } from "../approval/gate.js";
 import type { MemoryService } from "../memory/service.js";
+import type { EpisodeWriter } from "../memory/episodes.js";
 
 export interface ResolvedBrain {
   brain: Brain | null;
@@ -62,6 +63,8 @@ export interface RunnerDeps {
   pageOf?(tabId?: number): Promise<TabPage | null>;
   /** The agent's long-term memory: given at each turn's start, and a repeating task's run note at its end. */
   memory?: Pick<MemoryService, "begin" | "runNote">;
+  /** The background memory writer: a conversation's episode and new facts, after it ends or goes idle. */
+  episodes?: Pick<EpisodeWriter, "ended">;
   media: { materialize(sessionId: string, sources: MediaSource[]): Promise<MaterializedMedia> };
   /** Resolves the brain for these settings; may (re)connect the helper. */
   resolveBrain(settings: ExtensionSettings): Promise<ResolvedBrain>;
@@ -134,6 +137,7 @@ export class Runner {
       now,
       log,
       changed,
+      ...(deps.episodes ? { episodes: deps.episodes } : {}),
       nextTurn: (sessionId, messages) => {
         const text = messages.map((m) => m.text).join("\n\n");
         this.message(sessionId, text, messages.some((m) => m.voice) ? { voice: true } : {}).catch((err: unknown) =>

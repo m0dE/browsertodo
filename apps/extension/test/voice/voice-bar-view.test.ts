@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { elapsedText, HEARING, VoiceActivity, voiceBarView, type VoiceBarInput } from "../../src/voice/voice-bar-view.js";
+import { elapsedText, HEARING, NOT_HERE_TEXT, remoteBarView, VoiceActivity, voiceBarView, type VoiceBarInput } from "../../src/voice/voice-bar-view.js";
 
 const base: VoiceBarInput = { phase: "listening", hearing: false, engine: "realtime", elapsedMs: 42_000, elsewhere: null, shortcut: "Ctrl+," };
 const view = (patch: Partial<VoiceBarInput>) => voiceBarView({ ...base, ...patch });
@@ -34,10 +34,26 @@ describe("the voice bar", () => {
     expect(view({ engine: null }).detail).toMatch(/^0:42 · /);
   });
 
-  it("on another tab it names the tab it listens in, with Go to tab and Use this tab, and no interrupt", () => {
+  it("on another tab it names the tab it listens in, with Go to tab and Use voice here, and no interrupt", () => {
     const v = view({ phase: "speaking", elsewhere: { title: "Inbox (3) - Gmail" } });
-    expect(v).toMatchObject({ state: "elsewhere", title: "Hands-free on in Inbox (3) - Gmail", detail: "Realtime · 0:42", elsewhere: true, interrupt: false, announce: "Hands-free on in Inbox (3) - Gmail" });
-    expect(view({ elsewhere: { title: null } }).title).toBe("Hands-free on in another tab");
+    expect(v).toMatchObject({ state: "elsewhere", title: "Voice is on in Inbox (3) - Gmail", detail: "Realtime · 0:42", elsewhere: true, interrupt: false, announce: "Voice is on in Inbox (3) - Gmail" });
+    expect(view({ elsewhere: { title: null } }).title).toBe("Voice is on in another tab");
+  });
+
+  it("in another tab's panel: where voice is on, with Go to tab, Use voice here and Stop, and nothing live", () => {
+    const v = remoteBarView({ title: "Shop A", engine: "standard" });
+    expect(v).toEqual({
+      state: "elsewhere",
+      title: "Voice is on in Shop A",
+      detail: `Standard · ${NOT_HERE_TEXT}`,
+      meter: "none",
+      announce: "Voice is on in Shop A",
+      interrupt: false,
+      elsewhere: true,
+      stopLabel: "Stop voice in that tab",
+      shortcut: null,
+    });
+    expect(remoteBarView({ title: null, engine: null })).toMatchObject({ title: "Voice is on in another tab", detail: NOT_HERE_TEXT });
   });
 
   it("Stop names the voice shortcut when there is one", () => {

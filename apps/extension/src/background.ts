@@ -27,19 +27,22 @@ import { MediaFiles } from "./engine/media-files.js";
 import { Runner, type ResolvedBrain } from "./engine/runner.js";
 import { SessionStore } from "./engine/sessions.js";
 import { TraceStore } from "./engine/trace-store.js";
-import { MemoryService, type MemoryTool } from "./memory/service.js";
+import { MEMORY_SEARCH_LIMIT, MemoryService, type MemoryTool } from "./memory/service.js";
 import { MemoryStore } from "./memory/store.js";
 import { MemorySync } from "./memory/sync.js";
+import { EPISODE_ALARM, EpisodeWriter } from "./memory/episodes.js";
+import { memorySummarizer } from "./memory/summarizers.js";
 import { testClaude, testCloud, testJev } from "./engine/settings-tests.js";
 import { UiHub } from "./engine/ui-hub.js";
 import { UiRouter, type ExtraRequest } from "./engine/ui-router.js";
 import { HelperLink } from "./helper-link.js";
 import { logger } from "./log.js";
 import { notify } from "./notify.js";
-import { PanelCommands, VOICE_BADGE } from "./panel-command.js";
-import { openTabPanel, StoredPanelTabs } from "./panel-tabs.js";
+import { PanelCommands } from "./panel-command.js";
+import { openTabPanel, panelTabOf, StoredPanelTabs } from "./panel-tabs.js";
 import { ALARM_NAME, DUE_ALARM, ensureAlarm, getRunnerId, handleStorageChange, loadSettings, migrateStoredSettings, saveSettings, saveSettingsPatch } from "./settings-store.js";
-import type { UiRequest } from "./ui-protocol.js";
+import type { UiPush, UiRequest } from "./ui-protocol.js";
+import { VOICE_BADGES, VoiceSessions } from "./voice-session.js";
 import { TabChats } from "./tab-chats.js";
 import { Vault } from "./vault.js";
 
@@ -104,7 +107,14 @@ const memorySync = new MemorySync({
   // "Add this computer's memory to <account>?" shows in the side panel and Settings.
   onQuestionChange: () => hub.pushState(),
 });
-const memory = new MemoryService({ store: memoryStore, sessions, settings: loadSettings, sync: memorySync });
+// Signed in and syncing, the account's semantic search adds meaning to what each turn is given (memory/search.ts).
+const memory = new MemoryService({
+  store: memoryStore,
+  sessions,
+  settings: loadSettings,
+  sync: memorySync,
+  semantic: (query, taskKey) => memorySync.search(query, { taskKey, limit: MEMORY_SEARCH_LIMIT }),
+});
 // remember / recall / forget (every brain): answered by the memory of that conversation.
 const memoryTool = (sessionId: string, tool: MemoryTool, args: unknown) => memory.tool(sessionId, tool, args);
 // Claude Code's browser calls name their task session: they are served in that session's tab.
@@ -225,6 +235,41 @@ async function pageOf(tabId?: number): Promise<{ tabId: number; url: string; tit
 
 // Each tab's own side panel, and the keyboard shortcut: open it with the cursor in the chat input (see panel-command.ts).
 const panelTabs = new StoredPanelTabs({ log: logger("panel") });
+// The hands-free session (which tab, which panel runs it, the tab the user looks at): every panel is told, and the
+// toolbar badges show it (see voice-session.ts).
+const DEFAULT_ACTION_TITLE = chrome.runtime.getManifest().action?.default_title ?? "BrowserTODO";
+const voiceSessions = new VoiceSessions({
+  broadcast: (session) => hub.push({ type: "voice.session", session }),
+  badge: (tabId, look) => {
+    const b = look ? VOICE_BADGES[look] : null;
+    void Promise.all(
+      b
+        ? [
+            chrome.action.setBadgeBackgroundColor({ tabId, color: b.color }),
+            chrome.action.setBadgeTextColor({ tabId, color: b.textColor }),
+            chrome.action.setBadgeText({ tabId, text: b.text }),
+            chrome.action.setTitle({ tabId, title: b.title ?? DEFAULT_ACTION_TITLE }),
+          ]
+        : [chrome.action.setBadgeText({ tabId, text: "" }), chrome.action.setTitle({ tabId, title: DEFAULT_ACTION_TITLE })],
+    ).catch((err: unknown) => logger("voice")(`badge on tab ${tabId}: ${errorMessage(err)}`));
+  },
+  storage: {
+    load: async () => (await chrome.storage.session.get("voiceSession")).voiceSession,
+    save: (value) => chrome.storage.session.set({ voiceSession: value }),
+  },
+  // After a worker restart: the panel page that ran it is still open.
+  alive: async (s) => {
+    const pages = await chrome.runtime.getContexts({ contextTypes: [chrome.runtime.ContextType.SIDE_PANEL, chrome.runtime.ContextType.TAB] });
+    return pages.some((c) => URL.canParse(c.documentUrl ?? "") && new URL(c.documentUrl!).pathname === "/sidepanel.html" && panelTabOf(new URL(c.documentUrl!).search) === s.host);
+  },
+  log: logger("voice"),
+});
+void Promise.all([
+  chrome.tabs.query({ active: true, windowType: "normal" }),
+  chrome.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null),
+])
+  .then(([tabs, focused]) => voiceSessions.seed(tabs.flatMap((t) => (t.id === undefined ? [] : [{ tabId: t.id, windowId: t.windowId }])), focused?.id ?? null))
+  .catch((err: unknown) => logger("voice")(`reading the active tabs failed: ${errorMessage(err)}`));
 const panelCommands = new PanelCommands({
   open: (tabId) => openTabPanel(tabId),
   // Disabling closes the tab's panel at once (close() animates and keeps the page); it goes out before the
@@ -232,18 +277,23 @@ const panelCommands = new PanelCommands({
   disable: (tabId) => chrome.sidePanel.setOptions({ tabId, enabled: false }),
   tabs: panelTabs,
   reportsClosed: !!chrome.sidePanel?.onClosed,
-  // Hands-free voice listening in a tab: its toolbar button says so.
-  badge: (tabId, on) =>
-    void Promise.all(
-      on
-        ? [
-            chrome.action.setBadgeBackgroundColor({ tabId, color: VOICE_BADGE.color }),
-            chrome.action.setBadgeTextColor({ tabId, color: VOICE_BADGE.textColor }),
-            chrome.action.setBadgeText({ tabId, text: VOICE_BADGE.text }),
-          ]
-        : [chrome.action.setBadgeText({ tabId, text: "" })],
-    ).catch((err: unknown) => logger("voice")(`badge on tab ${tabId}: ${errorMessage(err)}`)),
+  // Which panel runs hands-free voice: the background's one record of it.
+  voice: (session) => voiceSessions.set(session),
   log: logger(),
+});
+
+// The background memory writer (memory/episodes.ts): each conversation's episode and new facts, on the brain it used,
+// once a task run ends or a chat goes idle. Its queue lives in storage and an alarm wakes the worker for it.
+const episodes = new EpisodeWriter({
+  store: memoryStore,
+  sessions,
+  settings: loadSettings,
+  summarizer: (brain) => memorySummarizer(brain, { settings: loadSettings, hosted: () => account.session(), helper }),
+  alarms: {
+    set: async (when) => void (await chrome.alarms.create(EPISODE_ALARM, { when })),
+    clear: async () => void (await chrome.alarms.clear(EPISODE_ALARM)),
+  },
+  log: logger("memory"),
 });
 
 const runner = new Runner({
@@ -256,6 +306,7 @@ const runner = new Runner({
   sessions,
   pageOf,
   memory,
+  episodes,
   media: mediaFiles,
   resolveBrain: resolveForRun,
   core,
@@ -367,12 +418,14 @@ function onStart(): void {
   void chrome.sidePanel?.setOptions({ enabled: false }).catch(() => {});
   void chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   void runner.recover().catch(() => {});
+  void episodes.resume();
   void scheduleDueAlarm().catch(() => {});
 }
 
 chrome.runtime.onInstalled.addListener(() => onStart());
 chrome.runtime.onStartup.addListener(() => onStart());
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (episodes.onAlarm(alarm.name)) return;
   if (alarm.name === DUE_ALARM && accountNextDue !== null && accountNextDue <= Date.now()) accountNextDue = null;
   if (alarm.name === ALARM_NAME || alarm.name === DUE_ALARM) void runner.runDue("alarm");
 });
@@ -384,12 +437,17 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => void runner.onTabUpdated(tabId, changeInfo));
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => changeInfo.status === "loading" && panelCommands.tabLoading(tabId));
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => changeInfo.status === "loading" && voiceSessions.tabLoading(tabId));
+// What the user looks at, for hands-free voice (the panel running it is hidden on other tabs).
+chrome.tabs.onActivated.addListener(({ tabId, windowId }) => voiceSessions.tabActivated(tabId, windowId));
+chrome.windows.onFocusChanged.addListener((windowId) => voiceSessions.windowFocused(windowId), { windowTypes: ["normal"] });
+chrome.windows.onRemoved.addListener((windowId) => voiceSessions.windowRemoved(windowId));
 // A tab a running agent's page opened (target=_blank, window.open) joins that run's tabs.
 chrome.tabs.onCreated.addListener((tab) => void slots.adopt(tab).catch(() => {}));
 // A closed tab loses its chat (the session stays in History); a turn running there stops.
 chrome.tabs.onRemoved.addListener((tabId) => {
   panelCommands.tabRemoved(tabId);
+  voiceSessions.tabRemoved(tabId);
   void tabChats
     .unbind(tabId)
     .then((sessionId) => {
@@ -416,6 +474,8 @@ chrome.runtime.onConnect.addListener((port) => {
   if (port.sender?.id && port.sender.id !== chrome.runtime.id) return;
   if (hub.attach(port)) {
     panelCommands.attach(port);
+    // Where hands-free voice is on, before the panel's hello (a voice shortcut it gets then acts on it).
+    port.postMessage({ type: "voice.session", session: voiceSessions.view() } satisfies UiPush);
     maybeConnectHelper();
     // Credit and plan may have changed elsewhere (dashboard, another browser).
     void account.refresh().catch(() => {});
@@ -443,9 +503,11 @@ onStart();
   tabChats,
   memory,
   memorySync,
+  episodes,
   scheduleDueAlarm,
   panelCommands,
   panelTabs,
+  voiceSessions,
   /** The toolbar button's listener (the e2e shortcut presser points the button at the command handler instead). */
   onActionClicked,
   /** Runs use this brain instead of the real ones (null: back to the real ones). */

@@ -248,6 +248,7 @@ export class TaskRunner {
           emit: (e) => s.emit(e),
           input: s.input,
           interjections: s.interjections,
+          reasoning: s.reasoning,
           idle: () => s.onIdle(),
           task: { instructions: task.instructions, account: task.account, mediaPaths },
         })

@@ -35,6 +35,8 @@ export interface EngineEvents {
   answerApproval(allow: boolean): Promise<string>;
   /** The narrator ends the session (the user said goodbye). */
   endVoice(): void;
+  /** The user asks to move the session to the tab they look at (Realtime use_this_tab); what happened goes back to the narrator. */
+  useThisTab(): Promise<string>;
   /** The engine cannot go on (Realtime: a RealtimeFailure; Standard: a VoiceError). */
   failed(err: unknown): void;
 }
@@ -54,5 +56,7 @@ export interface HandsFreeEngine {
   setTranscribing(on: boolean): void;
   /** An event of the chat the session follows (Realtime tells the narrator). */
   agentEvent(ev: AgentEvent, now: number): void;
+  /** Something the narrator should know, not say (Realtime: which tab the user looks at). */
+  note(text: string): void;
   tick(now: number): void;
 }

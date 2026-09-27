@@ -87,9 +87,9 @@ describe("RealtimeClient: connecting", () => {
     expect(update.session.audio.input.turn_detection).toMatchObject({ type: "server_vad", create_response: true, interrupt_response: false });
     // The user's own words for the chat (the server's price includes them).
     expect(update.session.audio.input.transcription).toEqual({ model: "gpt-transcribe" });
-    expect(update.session.tools.map((t: { name: string }) => t.name)).toEqual(["send_to_agent", "cancel_request", "stop_task", "answer_approval", "end_voice"]);
+    expect(update.session.tools.map((t: { name: string }) => t.name)).toEqual(["send_to_agent", "cancel_request", "stop_task", "answer_approval", "use_this_tab", "end_voice"]);
     expect(update.session.tools.every((t: { type: string }) => t.type === "function")).toBe(true);
-    expect(NARRATOR_TOOLS).toHaveLength(5);
+    expect(NARRATOR_TOOLS).toHaveLength(6);
   });
 
   it("speaks in the default voice at normal speed, or the voice and speed from Settings (kept in OpenAI's range)", () => {

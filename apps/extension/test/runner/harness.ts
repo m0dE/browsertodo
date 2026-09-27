@@ -135,6 +135,8 @@ export interface Harness {
   prepared: { mode?: TabMode; tabId?: number }[];
   /** The one slot's browser calls (the API brain, post verification). */
   browser: BrowserCaller;
+  /** Starts a wait in the one slot (as a wait_for slice or an approval does); returns what ends it. */
+  slotWait(): () => void;
 }
 
 /** The one-slot harness's agent tab. */
@@ -156,6 +158,15 @@ function oneSlot(h: Harness): SlotPool {
     browser: h.browser,
     isAgentTab: async (tabId) => tabId === AGENT_TAB,
     screenshot: async () => ({ base64: btoa("JPG"), mimeType: "image/jpeg" }),
+    onWait: (start) => {
+      waits.add(start);
+      return () => void waits.delete(start);
+    },
+  };
+  const waits = new Set<() => () => void>();
+  h.slotWait = () => {
+    const ends = [...waits].map((start) => start());
+    return () => ends.forEach((end) => end());
   };
   return { size: 1, take: () => slot, release: () => {}, endChat: async () => {} };
 }
@@ -261,6 +272,7 @@ export class FakePool implements SlotPool {
         browser: { call: vi.fn(async () => ({})) as never },
         isAgentTab: async (tabId) => tabId === 100 + index,
         screenshot: async () => ({ base64: btoa("JPG"), mimeType: "image/jpeg" }),
+        onWait: () => () => {},
       };
       this.slots.set(index, s);
       return s;

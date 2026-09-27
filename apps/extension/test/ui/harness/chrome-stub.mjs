@@ -76,6 +76,12 @@ export function installChromeStub(data) {
       data.memory = (data.memory ?? []).filter((e) => e.id !== req.id);
       return { ok: true };
     },
+    "memory.pin": (req) => {
+      const { pinned: _p, ...rest } = (data.memory ?? []).find((e) => e.id === req.id);
+      const entry = { ...rest, ...(req.pinned ? { pinned: true } : {}), updatedAt: new Date().toISOString() };
+      data.memory = data.memory.map((e) => (e.id === req.id ? entry : e));
+      return { entry };
+    },
     "memory.clear": () => {
       const removed = (data.memory ?? []).length;
       data.memory = [];
@@ -294,6 +300,8 @@ export function installChromeStub(data) {
       onDetached: noEvent,
     },
     windows: { getCurrent: async () => ({ id: 1 }), update: async () => ({}), onFocusChanged: noEvent },
+    // A tab's own panel (sidepanel.html?tab=N) opens another tab's panel on Go to tab (panel-tabs.ts openTabPanel).
+    sidePanel: { setOptions: async () => {}, open: async () => {} },
   };
 }
 

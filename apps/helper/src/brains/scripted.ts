@@ -23,7 +23,7 @@
  * assistant_text event ("Scripted brain received: ...").
  */
 import { isXUrl, mcpToolName, pauseReasonForUrl, pollUntil, X_HOME_URL, xProfileUrl, type Sleep, type ToolName, type ToolResult } from "@browsertodo/shared";
-import { NOT_CONFIDENT, parseSnapshotText, type ParsedPage } from "@browsertodo/core";
+import { NOT_CONFIDENT, parseSnapshotText, TASK_FAIL_RECHECK, type ParsedPage } from "@browsertodo/core";
 import type { Brain, BrainContext } from "./brain.js";
 
 export type CallTool = (taskId: string, name: ToolName, args: unknown) => Promise<ToolResult>;
@@ -102,7 +102,9 @@ export class ScriptedBrain implements Brain {
       return call("act", { steps: [{ ...step, index: candidate.index }] });
     };
     const finish = async (name: "task_fail" | "task_pause", reason: string) => {
-      await call(name, { reason });
+      const r = await call(name, { reason });
+      // Like a model given one more look before giving up (TASK_FAIL_RECHECK): nothing else to try, so it fails again.
+      if (name === "task_fail" && r.isError && r.text === TASK_FAIL_RECHECK) await call(name, { reason });
     };
 
     try {

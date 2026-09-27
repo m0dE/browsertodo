@@ -8,8 +8,9 @@
  * The Realtime model is the narrator, not the browser agent: it hears the
  * user (server VAD, with barge-in), says short lines, is told what the agent
  * does (note(), see realtime-feed.ts) and hands requests to the agent through
- * its tools (send_to_agent, cancel_request, stop_task, end_voice), which the
- * side panel runs.
+ * its tools (send_to_agent, cancel_request, stop_task, use_this_tab,
+ * end_voice), which the side panel runs. Notes also say which tab it works
+ * in when the user looks at another one (it cannot see that tab).
  *
  * Input transcription is on (REALTIME_INPUT_TRANSCRIPTION_MODEL, which the
  * relay bills and the server's price includes): the user's own words, keyed
@@ -70,6 +71,7 @@ export const NARRATOR_INSTRUCTIONS = [
   "When the agent needs the user (a question, a login, a code), ask the user in your own words and pass their answer on with send_to_agent.",
   "If the user asks to stop the task, call stop_task. If they say goodbye or ask you to stop listening, call end_voice.",
   "When an update says an action needs the user's OK, ask them briefly; when they answer yes or no, call answer_approval (never send_to_agent for it).",
+  "You and the agent work in one browser tab. A note says when the user looks at another tab; neither of you can see that tab. While they do, if they ask about what they see or 'this page', don't pass it on: say in a few words that you work in the tab the note names, and that they can say 'use this tab' or press Use voice here. When they ask to use this tab or to switch here, call use_this_tab and tell them what it answered.",
   "Be friendly and brief. Speak the user's language.",
 ].join("\n");
 
@@ -110,6 +112,13 @@ export const NARRATOR_TOOLS = [
       properties: { allow: { type: "boolean", description: "true: allow it once; false: deny it" } },
       required: ["allow"],
     },
+  },
+  {
+    type: "function",
+    name: "use_this_tab",
+    description:
+      "Move the conversation to the browser tab the user is looking at now (they said 'use this tab', 'switch here'): what they say then goes to that tab's chat. The answer says whether it moved.",
+    parameters: { type: "object", properties: {}, required: [] },
   },
   {
     type: "function",

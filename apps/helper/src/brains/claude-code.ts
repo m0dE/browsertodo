@@ -10,8 +10,8 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { dirname } from "node:path";
-import { DeltaBatcher, MAX_ASSISTANT_TEXT, clipEventText, type AgentEvent } from "@browsertodo/shared";
-import { plainErrorText } from "@browsertodo/core";
+import { DEFAULT_REASONING, DeltaBatcher, MAX_ASSISTANT_TEXT, clipEventText, type AgentEvent } from "@browsertodo/shared";
+import { plainErrorText, raiseNote, THINKING_BUDGET_TOKENS } from "@browsertodo/core";
 import { claudeEnv, isolatedClaudeArgs, killTree } from "../claude-process.js";
 import { LineSplitter } from "../line-framing.js";
 import { ClaudeStreamTimer } from "./claude-timing.js";
@@ -72,6 +72,16 @@ function asStreamLine(value: unknown): StreamLine | null {
 /** One stream-json input line carrying a user message. */
 export function userMessageLine(text: string): string {
   return JSON.stringify({ type: "user", message: { role: "user", content: text } }) + "\n";
+}
+
+/**
+ * The stream-json control request that sets Claude Code's thinking from its next turn on (not the
+ * running one: measured with Claude Code 2.1.283, a change mid-turn waits for the next turn). In a
+ * session started with thinking off, a budget turns it on and null turns it off again; in one started
+ * with thinking on, neither 0 nor null turns it off (measured), so only the first case is used.
+ */
+export function thinkingLine(requestId: string, maxThinkingTokens: number | null): string {
+  return JSON.stringify({ type: "control_request", request_id: requestId, request: { subtype: "set_max_thinking_tokens", max_thinking_tokens: maxThinkingTokens } }) + "\n";
 }
 
 /** The stream-json control request that stops Claude Code's current model request (it answers with an error result, then reads stdin on). */
@@ -174,7 +184,10 @@ export class ClaudeCodeBrain implements Brain {
     private readonly opts: {
       claudePath: string;
       model: string;
-      /** false: extended thinking off (see NO_THINKING_SETTINGS). Default: Claude Code's own (on). */
+      /**
+       * Forces extended thinking on or off for every run (BROWSERTODO_THINKING). Unset: each session
+       * starts as its first turn's Reasoning setting says (BrainContext.reasoning) and follows its changes.
+       */
       thinking?: boolean;
       /** Extra leading args, for tests that run a fake claude script with node. */
       prefixArgs?: string[];
@@ -194,14 +207,16 @@ export class ClaudeCodeBrain implements Brain {
   run(ctx: BrainContext): Promise<void> {
     // The extension's model setting wins over BROWSERTODO_MODEL / "sonnet".
     const model = ctx.model?.trim() || this.opts.model;
+    const forced = this.opts.thinking;
+    const thinking = forced ?? ctx.reasoning?.thinking ?? DEFAULT_REASONING === "thorough";
     const args = buildClaudeArgs({
       systemPrompt: ctx.systemPrompt,
       mcpConfigPath: ctx.mcpConfigPath,
       allowedTools: ctx.allowedTools,
       model,
-      ...(this.opts.thinking === false ? { thinking: false } : {}),
+      ...(thinking ? {} : { thinking: false }),
     });
-    ctx.log({ type: "claude_start", claudePath: this.opts.claudePath, model, thinking: this.opts.thinking !== false, allowedTools: ctx.allowedTools });
+    ctx.log({ type: "claude_start", claudePath: this.opts.claudePath, model, thinking, allowedTools: ctx.allowedTools });
     return new Promise<void>((resolve, reject) => {
       if (ctx.signal.aborted) return resolve();
       let child: ChildProcess;
@@ -255,6 +270,43 @@ export class ClaudeCodeBrain implements Brain {
         ctx.log({ type: "claude_interrupt" });
         stdin.write(interruptLine(`interrupt-${++interrupts}`));
       };
+      /** A raise's note, waiting for the model's request to be stoppable (a raise takes effect in a new turn). */
+      let raising: string | null = null;
+      let thinkingRequests = 0;
+      const setThinking = (tokens: number | null) => {
+        if (!writable()) return;
+        ctx.log({ type: "claude_thinking", maxThinkingTokens: tokens });
+        stdin.write(thinkingLine(`thinking-${++thinkingRequests}`, tokens));
+      };
+      /** Stops the running request and sends the note as a new turn, which runs with thinking on. */
+      const raiseNow = () => {
+        if (raising === null || interrupted || !turn.interruptible || !writable()) return;
+        const note = raising;
+        raising = null;
+        interrupted = true;
+        ctx.log({ type: "claude_interrupt", reason: "reasoning raised" });
+        stdin.write(interruptLine(`interrupt-${++interrupts}`));
+        ctx.log({ type: "claude_user_message", kind: "reasoning", chars: note.length });
+        send(note);
+      };
+      // Only a session started without thinking can switch it (see thinkingLine); a forced setting never changes.
+      if (forced === undefined && !thinking) {
+        ctx.reasoning?.onChange((change) => {
+          if (change.kind === "raise") {
+            setThinking(THINKING_BUDGET_TOKENS);
+            raising = raiseNote(change.why);
+            raiseNow();
+          } else {
+            // Back to fast (a step worked) or a new turn's level: from the next turn on.
+            raising = null;
+            setThinking(change.thinking ? THINKING_BUDGET_TOKENS : null);
+          }
+        });
+      } else if (forced === undefined) {
+        ctx.reasoning?.onChange((change) => {
+          if (!change.thinking) ctx.log({ type: "claude_thinking_kept", why: `${change.why}: this session started with thinking on, which stays on` });
+        });
+      }
       send(ctx.prompt);
       ctx.input.onMessage((text) => {
         ctx.log({ type: "claude_user_message", kind: "followup", chars: text.length });
@@ -292,6 +344,7 @@ export class ClaudeCodeBrain implements Brain {
           if (read !== null) ctx.interjections.seen(read);
           // A request that started without the message written before its step would only read it after its tool.
           if (turn.missedInput && ctx.interjections.unread) interrupt();
+          raiseNow();
           // Claude Code repeats its init event for every turn; "started" is said once per session.
           const ev = asStreamLine(event);
           const isInit = ev?.type === "system" && ev.subtype === "init";
@@ -306,6 +359,8 @@ export class ClaudeCodeBrain implements Brain {
           if (isResult) {
             out.flush();
             interrupted = false;
+            // The turn ended before its request could be stopped: its next turn thinks anyway (the setting was sent).
+            raising = null;
             if (!turn.pendingInput && !ctx.input.closed && !sendInterjections("next_message")) {
               ctx.log({ type: "claude_turns_done" });
               if (this.persistent) ctx.idle?.();

@@ -2,15 +2,27 @@
  * The Claude models browsertodo offers: the side panel's model menu, the
  * options page's select and the hosted AI's allowlist (apps/api/src/pricing.ts
  * prices exactly these). Other ids still work with a local brain.
+ *
+ * thinking: how the Messages API controls the model's thinking (Anthropic's
+ * per-model table): "switchable" takes adaptive or disabled; "always" always
+ * thinks (disabled is a 400; effort is the lever); "budget" thinks only with
+ * a fixed budget_tokens (adaptive is a 400).
  */
 export const CLAUDE_MODELS = [
-  { id: "claude-sonnet-5", label: "Sonnet 5" },
-  { id: "claude-opus-5-5", label: "Opus 5.5" },
-  { id: "claude-fable-5-1", label: "Fable 5.1" },
-  { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+  { id: "claude-sonnet-5", label: "Sonnet 5", thinking: "switchable" },
+  { id: "claude-opus-5-5", label: "Opus 5.5", thinking: "always" },
+  { id: "claude-fable-5-1", label: "Fable 5.1", thinking: "always" },
+  { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5", thinking: "budget" },
 ] as const;
 
 export type ClaudeModelId = (typeof CLAUDE_MODELS)[number]["id"];
+export type ModelThinking = (typeof CLAUDE_MODELS)[number]["thinking"];
+
+/** How a model's thinking is controlled (see CLAUDE_MODELS), or null for a model browsertodo does not offer. */
+export function modelThinking(id: string): ModelThinking | null {
+  const known = resolveModel(id);
+  return known ? CLAUDE_MODELS.find((m) => m.id === known)!.thinking : null;
+}
 
 /** The model setting's default, and what the hosted AI runs for an id it does not offer. */
 export const DEFAULT_MODEL: ClaudeModelId = "claude-sonnet-5";

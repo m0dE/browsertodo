@@ -21,6 +21,7 @@ import type { TraceBook } from "./trace/trace-book.js";
 import type { MemorySyncStatus } from "./memory/sync.js";
 import type { RealtimeTicketResult, VoiceEnginesResult } from "./voice/realtime-access.js";
 import type { VoiceClipRequest, VoiceTranscribeResult } from "./voice/transcribe.js";
+import type { VoiceSessionView } from "./voice-session.js";
 import type { ApiKeyInfo, CreatedApiKey, CreditInfo, KeyRole, PlanId, PlanInfo } from "./account/types.js";
 
 export type { ApiKeyInfo, CreatedApiKey, CreditInfo, KeyRole, PlanId, PlanInfo };
@@ -383,7 +384,11 @@ export type UiPush =
    */
   | { type: "panel.focus"; draft?: string }
   /** The voice shortcut: hands-free voice on or off (as the mic button). */
-  | { type: "panel.voice" };
+  | { type: "panel.voice" }
+  /** The hands-free session (null: none is on), and the tab the user looks at: when it changes, and when a panel connects. */
+  | { type: "voice.session"; session: VoiceSessionView | null }
+  /** To the panel running the hands-free session: end it (Stop, or Use voice here, in another tab's panel). */
+  | { type: "voice.stop" };
 
 /** Typed helper for UI pages. */
 export async function uiRequest<R extends UiRequest>(req: R): Promise<UiResults[R["type"]]> {

@@ -127,7 +127,11 @@ export const PANEL_CASES = [
         await chip.click();
         await p.locator(".chat-empty .empty-title").click();
         const outside = await p.evaluate(() => document.getElementById("model-menu").hidden);
-        if (!escaped || !saved || !outside) fail(`model menu behaviour: escape=${escaped} saved=${saved} outside=${outside}`);
+        // Thorough reasoning: a switch like Jev's, saved with the settings.
+        await chip.click();
+        await p.click("#model-menu .mm-reasoning");
+        const thorough = await p.evaluate(() => window.__requests.some((r) => r.type === "settings.save" && r.settings.reasoning === "thorough"));
+        if (!escaped || !saved || !outside || !thorough) fail(`model menu behaviour: escape=${escaped} saved=${saved} outside=${outside} thorough=${thorough}`);
       }
       if (want("panel-composer-files", size, scheme)) {
         await p.setInputFiles("#now-files", [
@@ -1275,8 +1279,11 @@ export const PANEL_CASES = [
           credit: document.querySelector(".mm-credit")?.textContent,
           models: [...document.querySelectorAll(".mm-item[role=menuitemradio]")].length,
           jev: document.querySelector(".mm-jev").disabled,
+          reasoning: document.querySelector(".mm-reasoning")?.getAttribute("aria-checked"),
+          reasoningHint: document.querySelector(".mm-reasoning .mm-hint")?.textContent,
         }));
-        if (menu.head !== "BrowserTODO AI model" || menu.credit !== "$14.21 usage credit left" || menu.models !== 4 || menu.jev) fail(`hosted model menu ${JSON.stringify(menu)}`);
+        if (menu.head !== "BrowserTODO AI model" || menu.credit !== "$14.21 usage credit left" || menu.models !== 4 || menu.jev || menu.reasoning !== "false" || menu.reasoningHint !== "Off: thinks only when stuck")
+          fail(`hosted model menu ${JSON.stringify(menu)}`);
         await checkLayout(q, `model-menu-hosted ${label}`);
         await shoot(q, "panel-model-menu-hosted", size, scheme);
         reportErrors(q, `model-menu-hosted ${label}`);
@@ -2032,51 +2039,72 @@ export const PANEL_CASES = [
         await p.close();
       }
 
-      // The session belongs to the tab it started in: on another tab the bar says where it listens (Go to tab),
-      // what is said there still goes to its own tab's chat; the shortcut there moves it; closing its tab ends it.
+      // Tab 1's own side panel (as Chrome opens it: sidepanel.html?tab=1). The session belongs to tab 1; the background
+      // says which tab the user looks at (voice.session): on another tab the bar says where it listens (Go to tab, Use
+      // voice here), and what is said there goes to tab 1's chat with a note naming both tabs; closing its tab ends it.
+      // Then another tab's session seen from this panel: the notice, nothing live; Use voice here waits for it to end.
       if (want("panel-handsfree-elsewhere", size, scheme)) {
-        const p = await openPanel(ctx, "voice-chat", "#chat-log .ev-end", { edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
+        const p = await openPanel(ctx, "voice-chat", "#chat-log .ev-end", { search: "?tab=1", edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
+        // As in Chrome, tab 1's panel is on screen only while the user looks at tab 1.
+        await p.evaluate(() => Object.defineProperty(document, "visibilityState", { configurable: true, get: () => (window.__hidden ? "hidden" : "visible") }));
+        const session = (s) =>
+          p.evaluate(
+            (v) => {
+              window.__hidden = !!v && v.viewing !== 1;
+              window.__push({ type: "voice.session", session: v });
+              document.dispatchEvent(new Event("visibilitychange"));
+            },
+            s === null ? null : { tabId: 1, windowId: 1, host: 1, engine: "standard", viewing: 1, ...s },
+          );
+        const lastListening = () => p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.listening").at(-1));
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
+        const reported = await lastListening();
+        if (reported.listening !== true || reported.tabId !== 1 || reported.engine !== "standard") fail(`session reported ${JSON.stringify(reported)}`);
+        await session({ viewing: 1 });
         // A tab its chat lives in is the session's own: the plain bar there. Here the chat moved to the tab its
-        // task works in (as a run started from an extension page does), and the agent brought that tab to the front.
+        // task works in (as a run started from an extension page does), and the user looks at that tab.
         const home = await p.evaluate(() => window.__data.state);
         await p.evaluate(() => {
           const st = window.__data.state;
           window.__push({ type: "state", state: { ...st, tabChats: { 3: "s-voice" }, runningTabs: { "s-voice": [3] } } });
-          window.__activateTab(3);
         });
+        await session({ viewing: 3 });
         await p.waitForTimeout(100);
         if (await p.evaluate(() => document.getElementById("voice-bar").dataset.state === "elsewhere")) fail("the tab the chat moved to counts as another tab");
         await p.evaluate((st) => window.__push({ type: "state", state: st }), home);
-        await p.evaluate(() => window.__activateTab(2));
-        await p.waitForFunction(() => document.querySelector("#voice-bar[data-state=elsewhere] .vb-title")?.textContent.startsWith("Hands-free on in Inbox (1)"));
+        // The user switches to tab 2 (this panel would be hidden there): it knows.
+        await session({ viewing: 2 });
+        await p.waitForFunction(() => document.querySelector("#voice-bar[data-state=elsewhere] .vb-title")?.textContent.startsWith("Voice is on in Inbox (1)"));
         const away = await p.evaluate(() => ({
           label: document.querySelector("#voice-bar .vb-title").textContent,
           go: !!document.querySelector("#voice-bar .vb-go").offsetParent,
           use: !!document.querySelector("#voice-bar .vb-use").offsetParent,
           orb: !document.querySelector(".voice-orb").hidden,
-          chat: document.querySelector("#chat-log .chat-empty") !== null,
+          live: document.body.classList.contains("voice-live"),
         }));
-        if (away.label !== "Hands-free on in Inbox (1) - ada.lovelace@ex…" || !away.go || !away.use || away.orb || !away.chat) fail(`bar on another tab ${JSON.stringify(away)}`);
+        if (away.label !== "Voice is on in Inbox (1) - ada.lovelace@ex…" || !away.go || !away.use || away.orb || away.live) fail(`bar on another tab ${JSON.stringify(away)}`);
         await checkLayout(p, `handsfree-elsewhere ${label}`);
         await shoot(p, "panel-handsfree-elsewhere", size, scheme);
-        // Said while tab 2 is shown: it goes to tab 1's chat, and tab 2's box stays as it was.
+        // Said while tab 2 is in front: it goes to tab 1's chat, with the note naming both tabs.
         await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.message"), null, { timeout: 30_000 });
         const req = await p.evaluate(() => window.__requests.find((r) => r.type === "run.message"));
-        // To the chat by its id (it stays in the tab it lives in).
-        if (req.sessionId !== "s-voice" || req.tabId !== undefined || req.voice !== true || !/^Open Gmail/.test(req.text)) fail(`said on another tab, sent ${JSON.stringify(req)}`);
-        if ((await p.inputValue("#now-text")) !== "") fail(`the other tab's box got "${await p.inputValue("#now-text")}"`);
-        // Go to tab shows the session's tab (and its chat), where the bar is the plain one again.
+        if (req.sessionId !== "s-voice" || req.tabId !== undefined || req.voice !== true || !/^Open Gmail/.test(req.text) || !req.text.endsWith("(The user is looking at another tab: Hacker News. You work in Inbox (1) - ada.lovelace@example.com - Gmail.)"))
+          fail(`said on another tab, sent ${JSON.stringify(req)}`);
+        if ((await p.inputValue("#now-text")) !== "") fail(`the box got "${await p.inputValue("#now-text")}" while the user looked at another tab`);
+        // Go to tab asks for the session's tab; back there, the plain bar.
         await p.click("#voice-bar .vb-go");
-        await p.waitForFunction(() => document.getElementById("voice-bar").dataset.state !== "elsewhere");
         if (!(await p.evaluate(() => window.__requests.some((r) => r.type === "tab.focus" && r.tabId === 1)))) fail("Go to tab did not ask for tab 1");
-        // Use this tab (on another tab) moves the session there, and says so.
-        await p.evaluate(() => window.__activateTab(2));
+        await session({ viewing: 1 });
+        await p.waitForFunction(() => document.getElementById("voice-bar").dataset.state !== "elsewhere");
+        // Use voice here (on another tab) moves the session there, and says so.
+        await session({ viewing: 2 });
         await p.waitForSelector("#voice-bar[data-state=elsewhere]");
         await p.click("#voice-bar .vb-use");
         await p.waitForFunction(() => !document.querySelector("#voice-bar").hidden && document.getElementById("voice-bar").dataset.state !== "elsewhere");
         if ((await p.textContent("#now-notice .notice-text")) !== "Hands-free moved to this tab.") fail(`moved note "${await p.textContent("#now-notice")}"`);
+        if ((await lastListening()).tabId !== 2) fail(`the move is not reported ${JSON.stringify(await lastListening())}`);
+        await session({ tabId: 2, viewing: 2 });
         await checkLayout(p, `handsfree-moved ${label}`);
         // Closing another tab changes nothing; closing its tab ends it, with a note.
         await p.evaluate(() => window.__closeTab(1));
@@ -2084,16 +2112,50 @@ export const PANEL_CASES = [
         await p.evaluate(() => window.__closeTab(2));
         await p.waitForFunction(() => document.querySelector("#voice-bar").hidden);
         if ((await p.textContent("#now-notice .notice-text")) !== "Hands-free stopped: its tab was closed.") fail(`tab closed note "${await p.textContent("#now-notice")}"`);
-        // The voice key on another tab than the session's ends it (it never moves it).
+        if ((await lastListening()).listening !== false) fail("the end is not reported to the background");
+        await session(null);
+        // The voice key while the user looks at another tab ends it (it never moves it).
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
-        await p.evaluate(() => window.__activateTab(4));
+        await session({ viewing: 4 });
         await p.waitForSelector("#voice-bar[data-state=elsewhere]");
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await p.waitForFunction(() => document.querySelector("#voice-bar").hidden);
-        if (await p.evaluate(() => document.querySelector("#now-notice .notice-text")?.textContent === "Hands-free moved to this tab.")) fail("the voice key on another tab moved hands-free");
         if ((await p.getAttribute("#now-actions .voice-mic", "data-state")) !== "idle") fail("the voice key on another tab did not end hands-free");
-        if ((await p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.listening").at(-1)?.listening)) !== false) fail("the end is not reported to the background");
+        await session(null);
+
+        // Another tab's session (tab 5's panel runs it): this panel shows where, with nothing live.
+        await session({ tabId: 5, host: 5, viewing: 1 });
+        await p.waitForFunction(() => document.querySelector("#voice-bar[data-state=elsewhere] .vb-title")?.textContent === "Voice is on in Tab 5");
+        const remote = await p.evaluate(() => ({
+          detail: document.querySelector("#voice-bar .vb-detail").textContent,
+          meter: !!document.querySelector("#voice-bar .vb-meter").offsetParent,
+          go: !!document.querySelector("#voice-bar .vb-go").offsetParent,
+          use: !!document.querySelector("#voice-bar .vb-use").offsetParent,
+          stop: !!document.querySelector("#voice-bar .vb-stop").offsetParent,
+          mic: document.querySelector("#now-actions .voice-mic").dataset.state,
+          live: document.body.classList.contains("voice-live"),
+          placeholder: document.getElementById("now-text").placeholder,
+        }));
+        if (remote.detail !== "Standard · Not listening in this tab" || remote.meter || !remote.go || !remote.use || !remote.stop || remote.mic !== "idle" || remote.live || /Listening/i.test(remote.placeholder))
+          fail(`another tab's session ${JSON.stringify(remote)}`);
+        await checkLayout(p, `handsfree-remote ${label}`);
+        await shoot(p, "panel-handsfree-remote", size, scheme);
+        const voiceStops = () => p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.voiceStop").length);
+        await p.click("#voice-bar .vb-stop");
+        if ((await voiceStops()) !== 1) fail("Stop did not ask the background to end it");
+        // Use voice here: ends it there, and starts here only once it ended.
+        await p.click("#voice-bar .vb-use");
+        if ((await voiceStops()) !== 2) fail("Use voice here did not ask the background to end it");
+        await p.waitForTimeout(200);
+        if ((await p.getAttribute("#now-actions .voice-mic", "data-state")) !== "idle") fail("Use voice here started before the other session ended");
+        await session(null);
+        await waitPhase(p, "listening");
+        const moved = await lastListening();
+        // In the tab this panel shows (not tab 5), on the engine it ran on there.
+        if (moved.listening !== true || typeof moved.tabId !== "number" || moved.tabId === 5 || moved.engine !== "standard") fail(`Use voice here reported ${JSON.stringify(moved)}`);
+        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await p.waitForFunction(() => document.querySelector("#voice-bar").hidden);
         reportErrors(p, `handsfree-elsewhere ${label}`);
         await p.close();
       }

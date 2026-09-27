@@ -5,9 +5,9 @@
  * limits, the task_* result, user messages and stopping.
  */
 import { type Sleep, type AgentEvent, type MemoryToolName, type RunConfig, type ScheduledTask, type ScheduleTaskArgs, type TaskRunResult, type ToolName } from "@browsertodo/shared";
-import { createToolExecutor, Interjections, turnEndEvents, type BrowserCaller, type JevLike, type SecretRedactor } from "@browsertodo/core";
+import { createToolExecutor, Interjections, ReasoningGovernor, reasoningTrace, turnEndEvents, type BrowserCaller, type JevLike, type ReasoningChange, type SecretRedactor } from "@browsertodo/core";
 import type { RunLog } from "../logger.js";
-import { UserInput } from "../brains/brain.js";
+import { UserInput, type ReasoningChannel } from "../brains/brain.js";
 import type { ToolSession } from "../tool-router.js";
 import { sessionBrowser } from "./session-setup.js";
 import { checkToolCall, clearTurnTimers, createTurn, turnResult, type Turn } from "./turn.js";
@@ -46,6 +46,10 @@ export class TaskSession {
   readonly input = new UserInput();
   /** Messages the user types while a turn runs (see BrainContext.interjections). */
   readonly interjections: Interjections;
+  /** How much the model thinks: each turn's Reasoning setting, raised while a Fast run is stuck. The brain follows it. */
+  readonly reasoning: ReasoningChannel;
+  private readonly governor: ReasoningGovernor;
+  private reasoningListener: ((change: ReasoningChange) => void) | null = null;
   /** What the ToolRouter sees of this session. */
   readonly tools: ToolSession;
   turn: Turn | null = null;
@@ -61,6 +65,21 @@ export class TaskSession {
     this.sessionId = opts.sessionId;
     this.log = opts.log;
     this.persistent = opts.persistent;
+    // Each turn sets its own level (startTurn); until then, the defaults.
+    this.governor = new ReasoningGovernor({}, (change) => {
+      this.log.event({ type: "reasoning", ...change });
+      this.emit({ type: "trace", trace: { ...reasoningTrace(change), src: "helper" } });
+      this.reasoningListener?.(change);
+    });
+    const governor = this.governor;
+    this.reasoning = {
+      get thinking() {
+        return governor.thinking;
+      },
+      onChange: (fn) => {
+        this.reasoningListener = fn;
+      },
+    };
     this.interjections = new Interjections((route, waitedMs, count) =>
       this.emit({ type: "trace", trace: { t: Date.now() - Math.round(waitedMs), ms: waitedMs, cat: "user", name: "interjection", src: "helper", data: { route, count } } }),
     );
@@ -88,6 +107,7 @@ export class TaskSession {
 
   /** To the run log and the extension (helper.event), without any password the agent was given. */
   emit(raw: AgentEvent): void {
+    this.governor.observe(raw);
     const e = this.opts.secrets.redact(raw);
     if (e.type === "error" && this.turn) this.turn.lastError = e.text;
     // Live text deltas and timings only go to the extension; the run log keeps the final text.
@@ -102,6 +122,7 @@ export class TaskSession {
   /** A new turn with fresh limits; its time limit aborts the session. */
   startTurn(config: RunConfig): Turn {
     const turn = createTurn(config);
+    this.governor.startTurn(config);
     const minutes = config.maxTaskMinutes;
     turn.endsAt = Date.now() + minutes * 60_000;
     turn.timeLimit = setTimeout(() => {
@@ -221,6 +242,8 @@ export class TaskSession {
     if (!t) return "No task is running in this session right now. Stop and wait for the user's next message.";
     const { refusal, stop } = checkToolCall(t, name);
     if (stop) this.controller.abort(new Error("tool call limit"));
+    // A Fast run's first task_fail: one careful look first, with its reasoning raised (never after the tool limit).
+    if (!refusal && name === "task_fail" && t.toolCalls < t.config.maxToolCalls) return this.governor.beforeTaskFail();
     return refusal;
   }
 

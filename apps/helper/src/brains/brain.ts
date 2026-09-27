@@ -1,5 +1,5 @@
 import type { AgentEvent } from "@browsertodo/shared";
-import type { Interjections } from "@browsertodo/core";
+import type { Interjections, ReasoningChange } from "@browsertodo/core";
 import type { EventLogger } from "../logger.js";
 
 /**
@@ -51,6 +51,16 @@ export class UserInput {
   }
 }
 
+/**
+ * The session's reasoning (core ReasoningGovernor), as a brain follows it:
+ * whether the model thinks now, and each change while the session runs.
+ */
+export interface ReasoningChannel {
+  readonly thinking: boolean;
+  /** One listener per brain: a raise (a stuck Fast run), a lower (a step worked) or a new turn's level. */
+  onChange(fn: (change: ReasoningChange) => void): void;
+}
+
 export interface BrainContext {
   /** Pipe task id (the session id) used for tool calls. */
   taskId: string;
@@ -78,6 +88,8 @@ export interface BrainContext {
   interjections: Interjections;
   /** Persistent brains: the agent is waiting for input (its turn ended). Ends a turn that has no result yet. */
   idle?: () => void;
+  /** How much the model thinks (the Reasoning setting, raised while a Fast run is stuck). Absent: the brain's own default. */
+  reasoning?: ReasoningChannel;
   /**
    * Structured task data. Not needed by ClaudeCodeBrain (it reads `prompt`);
    * the ScriptedBrain uses it to run its deterministic script.

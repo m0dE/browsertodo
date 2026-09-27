@@ -6,7 +6,7 @@ export const ENV = {
   brain: "BROWSERTODO_BRAIN",
   /** Claude Code model when the extension names none. */
   model: "BROWSERTODO_MODEL",
-  /** "on": Claude Code thinks before its answers (its own default); "off": it answers at once. Default: see HelperConfig.thinking. */
+  /** "on": Claude Code thinks before its answers; "off": it answers at once. Unset: the extension's Reasoning setting (HelperConfig.thinking). */
   thinking: "BROWSERTODO_THINKING",
   /** Path of claude.exe, instead of looking it up. */
   claudePath: "BROWSERTODO_CLAUDE_PATH",

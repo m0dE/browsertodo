@@ -4,7 +4,8 @@
  * icon, a line under it (the engine, how long it has been on, what to do),
  * the live meter (the microphone's level, or the speaker while a line is
  * said), and which buttons show. On another tab it names the tab the session
- * listens in instead, with Go to tab and Use this tab.
+ * listens in instead, with Go to tab and Use voice here; in another tab's
+ * panel (remoteBarView) the same, with nothing live.
  *
  * "Hearing you…" comes from the microphone's level (VoiceActivity), the
  * same for both engines. The polite announcement for screen readers leaves
@@ -47,7 +48,7 @@ export interface VoiceBarView {
   announce: string;
   /** The line being said can be cut off (Interrupt). */
   interrupt: boolean;
-  /** Go to tab and Use this tab (the session listens in another tab). */
+  /** Go to tab and Use voice here (the session listens in another tab). */
   elsewhere: boolean;
   /** The Stop button's tooltip and accessible name. */
   stopLabel: string;
@@ -117,6 +118,20 @@ export function voiceBarView(input: VoiceBarInput): VoiceBarView {
     stopLabel,
     shortcut,
   };
+}
+
+/** Under the title in another tab's panel: the session runs elsewhere, this panel does not listen. */
+export const NOT_HERE_TEXT = "Not listening in this tab";
+
+/**
+ * The bar in a panel that runs no session while one runs for another tab (its panel reports it through the
+ * background): where, with Go to tab, Use voice here and Stop; no meter, no time, no shortcut (here it would move
+ * the session, not stop it).
+ */
+export function remoteBarView(input: { title: string | null; engine: VoiceEngineId | null }): VoiceBarView {
+  const title = elsewhereLabel(input.title);
+  const engine = input.engine ? `${ENGINE_NAMES[input.engine]} · ` : "";
+  return { state: "elsewhere", title, detail: `${engine}${NOT_HERE_TEXT}`, meter: "none", announce: title, interrupt: false, elsewhere: true, stopLabel: "Stop voice in that tab", shortcut: null };
 }
 
 /** How loud (the 0..1 meter level) counts as a voice, and how long "Hearing you…" stays after it. */

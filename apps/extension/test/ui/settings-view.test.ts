@@ -322,3 +322,26 @@ describe("storage round-trip", () => {
     expect(applySettingsPatch(stored, { anthropicApiKey: "set" }).anthropicApiKey).toBe("sk-real");
   });
 });
+
+describe("options: Reasoning", () => {
+  it("defaults to Fast with Think harder when stuck on; the switch shows only for Fast, and the hint follows the draft", () => {
+    expect(DEFAULT_SETTINGS.reasoning).toBe("fast");
+    expect(DEFAULT_SETTINGS.reasoningAutoRaise).toBe(true);
+    const fast = view({});
+    expect(fast.showReasoningAutoRaise).toBe(true);
+    expect(fast.reasoningHint).toMatch(/little thinking/);
+    const thorough = view({ draft: { reasoning: "thorough" } });
+    expect(thorough.showReasoningAutoRaise).toBe(false);
+    expect(thorough.reasoningHint).toMatch(/Thinks before steps/);
+    // No draft value: the saved setting.
+    expect(view({ settings: { reasoning: "thorough" } }).showReasoningAutoRaise).toBe(false);
+  });
+
+  it("the form keeps both fields: settings -> form -> settings", () => {
+    const s = { ...DEFAULT_SETTINGS, reasoning: "thorough" as const, reasoningAutoRaise: false };
+    const v = formValues(s);
+    expect(v.reasoning).toBe("thorough");
+    expect(v.reasoningAutoRaise).toBe(false);
+    expect(parseForm(v)).toMatchObject({ reasoning: "thorough", reasoningAutoRaise: false });
+  });
+});

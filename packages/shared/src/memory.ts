@@ -19,12 +19,14 @@ import { siteHost } from "./urls.js";
  * episode: a dated summary of one chat or one task run (what was asked, what was done, the sites and things
  *   involved, how it ended), written in the background after the chat goes idle or the run ends (never by the
  *   agent's remember). One per conversation: a later turn of the same chat rewrites it.
+ * record: what the user's chats learned about one thing, filed under its identifier (a ticket, an order, a customer's
+ *   email): remember with `key` outside a repeating task (a repeating task files its own records, kind task).
  */
-export const MemoryKind = z.enum(["preference", "account", "person", "playbook", "task", "episode"]);
+export const MemoryKind = z.enum(["preference", "account", "person", "playbook", "task", "episode", "record"]);
 export type MemoryKind = z.infer<typeof MemoryKind>;
 export const MEMORY_KINDS: readonly MemoryKind[] = MemoryKind.options;
 /** The kinds the agent's remember writes (episodes come from the background writer only). */
-export const RememberKind = z.enum(["preference", "account", "person", "playbook", "task"]);
+export const RememberKind = z.enum(["preference", "account", "person", "playbook", "task", "record"]);
 export type RememberKind = z.infer<typeof RememberKind>;
 
 /** Where an entry applies: everywhere, on one site (and its subdomains), or to one repeating task. */
@@ -34,6 +36,7 @@ export type MemoryScope = z.infer<typeof MemoryScope>;
 /** How each kind reads in Settings and in the agent's prompt, in the order both list them. */
 export const MEMORY_KIND_TEXT: Record<MemoryKind, { label: string; hint: string }> = {
   task: { label: "Task history", hint: "What earlier runs of a repeating task did, so the next run goes on from there" },
+  record: { label: "Records (by key)", hint: "What chats learned about one thing, filed under its identifier: a ticket, an order, a customer's email" },
   episode: { label: "Episodes", hint: "A dated summary of each chat and task run: what was asked, what was done, where, and how it ended" },
   playbook: { label: "Site playbooks", hint: "How to get things done on a site the agent worked on: addresses, buttons, pitfalls" },
   account: { label: "Accounts", hint: "Which account is which (never passwords)" },
@@ -67,16 +70,17 @@ export const MAX_MEMORY_ENTITY_CHARS = 80;
 /** Earlier values an entry keeps once replaced (newest first). */
 export const MAX_MEMORY_HISTORY = 3;
 
-// ---------------------------------------------------------------- a task's records, by key
+// ---------------------------------------------------------------- records, by key
 
 /*
- * A repeating task that deals with many separate things (whatever it works through: people, items, numbers) keeps
- * what it learns about each in a record filed under the thing's identifier, its key (remember with `key`). A record
- * is a task entry (kind and scope "task", its taskKey) with a `key`: its summary text and a few dated notes. Records
- * have their own limits, per task, so a task's records never push out the user's other memory (MAX_MEMORY_ENTRIES)
- * and one task's records never push out another's.
+ * Work that deals with many separate things (tickets, orders, customers, leads) keeps what it learns about each in a
+ * record filed under the thing's identifier, its key (remember with `key`): a summary and a few dated notes. A
+ * record lives in a space: a repeating task's own (kind and scope "task", its taskKey), or, from a chat, the user's
+ * (kind "record", scope "global", no taskKey). Each space has its own limit (MAX_TASK_RECORDS), apart from the
+ * rest of memory (MAX_MEMORY_ENTRIES), so records never push out other memory and one space never another's. In a
+ * repeating task, a key is looked up in the task's records first, then in the user's.
  */
-/** Records one task keeps; past it the task's least recently used record goes (other memory is not counted). */
+/** Records one space (a repeating task's, or the user's) keeps; past it its least recently used record goes. */
 export const MAX_TASK_RECORDS = 1000;
 /** Longest key (an identifier, as given). */
 export const MAX_RECORD_KEY_CHARS = 120;
@@ -154,7 +158,7 @@ const PastValueSchema = z.object({
   until: z.string().min(1).max(40),
 });
 
-/** A repeating task's record (filed under a key), not a fact of the user's own memory. */
+/** A record (filed under a key: a repeating task's, or the user's), not a fact. */
 export const isMemoryRecord = (e: { key?: string | undefined }): boolean => e.key !== undefined;
 
 /** The characters a record holds: its summary and its notes (MAX_RECORD_CHARS). */
@@ -181,9 +185,12 @@ export const MemoryEntrySchema = z.object({
   history: z.array(PastValueSchema).max(MAX_MEMORY_HISTORY).optional(),
   pinned: z.literal(true).optional(),
 }).superRefine((e, ctx) => {
+  if (e.kind === "record" && e.key === undefined) ctx.addIssue({ code: "custom", path: ["key"], message: "a record has a key" });
   if (e.kind === "episode" && (e.key !== undefined || e.scope !== "global")) ctx.addIssue({ code: "custom", path: ["kind"], message: "an episode is global and has no key" });
   if (e.key === undefined && e.notes === undefined) return;
-  if (e.scope !== "task" || e.kind !== "task" || !e.taskKey) ctx.addIssue({ code: "custom", path: ["key"], message: "a record belongs to one repeating task (kind and scope task)" });
+  const taskRecord = e.scope === "task" && e.kind === "task" && !!e.taskKey;
+  const userRecord = e.scope === "global" && e.kind === "record" && !e.taskKey;
+  if (!taskRecord && !userRecord) ctx.addIssue({ code: "custom", path: ["key"], message: "a record is a repeating task's (kind and scope task) or the user's (kind record, scope global)" });
   if (e.key === undefined) ctx.addIssue({ code: "custom", path: ["notes"], message: "only a record (with a key) has notes" });
   if (recordChars(e) > MAX_RECORD_CHARS) ctx.addIssue({ code: "custom", path: ["notes"], message: `a record holds at most ${MAX_RECORD_CHARS} characters` });
 });
@@ -262,7 +269,7 @@ export type MemorySearchResponse = z.infer<typeof MemorySearchResponse>;
 
 export const RememberArgs = z.object({
   kind: RememberKind.describe(
-    "preference: how the user wants things done. account: which account is which (an address, a /u/N index, a handle), never a password. person: who someone is to the user. playbook: how to get something done on one site (give domain). task: a note for the next run of this repeating task",
+    "preference: how the user wants things done. account: which account is which (an address, a /u/N index, a handle), never a password. person: who someone is to the user. playbook: how to get something done on one site (give domain). task: a note for the next run of this repeating task. record: a fact about one thing filed under its key (give key; with key the kind is settled for you)",
   ),
   subject: z
     .string()
@@ -283,7 +290,7 @@ export const RememberArgs = z.object({
     .max(MAX_RECORD_KEY_CHARS)
     .optional()
     .describe(
-      "Only for a repeating task that works through many separate things (kind task): the identifier of the one thing this fact is about (its email address, ID, number or name), never the task itself. Files it in this task's record for that key; the same key again adds a dated note to it. What a run did goes in task_complete's memory_note instead",
+      "For work through many separate things (tickets, orders, customers, leads): the identifier of the one thing this fact is about (its email address, ID, number or name), never the task itself. Files it in the record for that key (a repeating task's own records, else the user's); the same key again adds a dated note to it. What a run did goes in task_complete's memory_note instead",
     ),
   replaces: z
     .string()
@@ -303,7 +310,7 @@ export const RecallArgs = z.object({
     .max(200)
     .optional()
     .describe("Words to look for: a site, a person, an account, a topic. Time words narrow it to what happened then ('last spring', 'in March 2025', 'yesterday', 'before the price change')"),
-  key: z.string().trim().min(1).max(MAX_RECORD_KEY_CHARS).optional().describe("An identifier this task filed a record under (remember with key): returns that record"),
+  key: z.string().trim().min(1).max(MAX_RECORD_KEY_CHARS).optional().describe("An identifier a record was filed under (remember with key): returns that record (in a repeating task, its own record first)"),
 });
 export type RecallArgs = z.infer<typeof RecallArgs>;
 
@@ -315,7 +322,7 @@ export type ForgetArgs = z.infer<typeof ForgetArgs>;
 export const REMEMBER_DESCRIPTION =
   "Save a durable fact for later chats and runs: a preference, which account is which, who someone is, how a site works (playbook), or a note for this repeating task. Only facts that stay true and save time later; never page content, passwords, codes or keys. The user sees each saved fact with Undo.";
 export const RECALL_DESCRIPTION =
-  "Search your memory for facts not given at the start of the turn (older task notes, dated episodes of past chats and runs, another site's playbook, a person, what a fact was before it changed), or get this task's record for an identifier (key). Give query or key.";
+  "Search your memory for facts not given at the start of the turn (older task notes, dated episodes of past chats and runs, another site's playbook, a person, what a fact was before it changed), or get the record for an identifier (key). Give query or key.";
 export const FORGET_DESCRIPTION = "Delete a memory entry that turned out wrong or out of date (by its id). To correct one, remember it again with the same kind and subject.";
 
 /** RPC the helper calls on the extension for remember / recall / forget (Claude Code brain), with the task session's id. */

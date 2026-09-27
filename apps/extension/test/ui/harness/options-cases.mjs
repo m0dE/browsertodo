@@ -91,6 +91,12 @@ export const OPTION_CASES = [
     ["helper hidden under Auto", async () => !(await shown(p, "#helper-headline"))],
     ["hosted: plan inline with Get a plan", async () => /Free plan/.test(await p.textContent("#hosted-plan")) && (await shown(p, "#hosted-action"))],
     ["model select", async () => (await p.inputValue("#model-select")) === "claude-sonnet-5"],
+    ["Reasoning: Fast, with its hint", async () => (await p.inputValue("#f-reasoning")) === "fast" && /little thinking/.test(await p.textContent("#reasoning-hint"))],
+    ["Think harder when stuck: shown and on", async () => (await shown(p, "#f-reasoningAutoRaise")) && (await p.isChecked("#f-reasoningAutoRaise"))],
+  ]],
+  ["options-ai-thorough", "ok", "#ai", (d) => (d.state.settings.reasoning = "thorough"), (p) => [
+    ["Reasoning: Thorough, with its hint", async () => (await p.inputValue("#f-reasoning")) === "thorough" && /Thinks before steps/.test(await p.textContent("#reasoning-hint"))],
+    ["Think harder when stuck hidden (Thorough already thinks)", async () => !(await shown(p, "#f-reasoningAutoRaise"))],
   ]],
   // Auto takes the user's own Claude first: with the helper working it picks Local Claude Code even on a plan with credit.
   ["options-ai-auto-plus", "ok", "#ai", onPlus, (p) => [
@@ -548,6 +554,13 @@ export const OPTION_FLOWS = [
       check("custom field shown", await shown(p, "#f-anthropicModel"));
       await autoSaved(() => p.fill("#f-anthropicModel", "claude-test-model"));
       check("custom model saved", (await saves()).some((s) => s.anthropicModel === "claude-test-model"));
+
+      // Reasoning: Thorough saves by itself and hides "Think harder when stuck"; its switch saves too.
+      await autoSaved(() => p.click("#f-reasoningAutoRaise"));
+      check("auto-raise off saved", (await saves()).some((s) => s.reasoningAutoRaise === false));
+      await autoSaved(() => p.selectOption("#f-reasoning", "thorough"));
+      check("Thorough saved", (await saves()).some((s) => s.reasoning === "thorough"));
+      check("auto-raise hidden under Thorough", !(await shown(p, "#f-reasoningAutoRaise")));
 
       // Validation: out of range is explained and not saved; fixing it saves.
       await p.click("#tab-tasks");

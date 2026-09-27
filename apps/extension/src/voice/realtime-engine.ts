@@ -3,7 +3,7 @@
  * (PCM16 at 24 kHz, about every 100 ms), its speech plays back (PcmPlayer),
  * the chat's events go to it as notes (NarratorFeed; when it may speak is
  * narrator-policy.ts, one line at a time, after its audio here), and its tools reach
- * the panel (send_to_agent at once, stop_task and cancel_request, end_voice).
+ * the panel (send_to_agent at once, stop_task and cancel_request, use_this_tab, end_voice).
  * Each turn's own words (the input transcription) reach the panel paired with
  * the request sent for them (RealtimeTurns). Turn-taking and barge-in are
  * OpenAI's server VAD; local playback stops the moment the user speaks.
@@ -171,6 +171,10 @@ export class RealtimeEngine implements HandsFreeEngine {
     for (const n of this.feed.push(ev, now)) this.client?.note(n.text, n.speak);
   }
 
+  note(text: string): void {
+    this.client?.note(text, null);
+  }
+
   tick(_now: number): void {
     // Nothing is said on a clock: the narrator speaks for news only (narrator-policy.ts).
   }
@@ -205,6 +209,8 @@ export class RealtimeEngine implements HandsFreeEngine {
       case "answer_approval":
         if (typeof args.allow !== "boolean") return "Error: say whether the user allows it (allow: true or false).";
         return ev.answerApproval(args.allow);
+      case "use_this_tab":
+        return ev.useThisTab();
       case "end_voice":
         // After this reply: the narrator may say goodbye first.
         setTimeout(() => ev.endVoice(), 0);

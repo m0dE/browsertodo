@@ -202,6 +202,59 @@ describe("ApprovalGate per level", () => {
     expect(t.asked[0]).toMatchObject({ action: 'Click "Post"' });
   });
 
+  it("a read of the current tab by its id (read_page with tabs) names the element, before and after switch_tab", async () => {
+    const t = setup();
+    await t.call("browser.readPage", { tab: "t1" });
+    await t.call("browser.click", { index: 8 });
+    expect(t.asked[0]).toMatchObject({ action: 'Click "Post"' });
+    // switch_tab's result says which tab is current now: a read of t1 no longer describes it, one of "3" does.
+    const tabs = new ApprovalGate(
+      {
+        call: async (method) =>
+          (method === "browser.readPage" ? X_PAGE : method === "browser.switchTab" ? { id: "t3", url: X_PAGE.url, title: "", current: true } : { ok: true }) as never,
+      },
+      () => "s1",
+      { context: async () => ({ level: "ask_consequential" }), request: async (_s, ask) => (t.asked.push(ask), "allow_once") },
+    );
+    await tabs.browser.call("browser.switchTab", { tab: "t3" });
+    await tabs.browser.call("browser.readPage", { tab: "t1" });
+    await tabs.browser.call("browser.click", { index: 8 });
+    expect(t.asked[1]).toMatchObject({ action: "Click an element" });
+    await tabs.browser.call("browser.readPage", { tab: " 3" });
+    await tabs.browser.call("browser.click", { index: 8 });
+    expect(t.asked[2]).toMatchObject({ action: 'Click "Post"' });
+  });
+
+  it("a tab list that shows another current tab forgets the page read before", async () => {
+    const t = setup();
+    await t.call("browser.readPage", {});
+    const gate = new ApprovalGate(
+      {
+        call: async (method) =>
+          (method === "browser.readPage" ? X_PAGE : method === "browser.listTabs" ? { tabs: [{ id: "t1", url: "", title: "", current: false }, { id: "t2", url: "", title: "", current: true }] } : { ok: true }) as never,
+      },
+      () => "s1",
+      { context: async () => ({ level: "ask_consequential" }), request: async (_s, ask) => (t.asked.push(ask), "allow_once") },
+    );
+    await gate.browser.call("browser.readPage", {});
+    await gate.browser.call("browser.listTabs", {});
+    await gate.browser.call("browser.click", { index: 8 });
+    expect(t.asked[0]).toMatchObject({ action: "Click an element" });
+  });
+
+  it("the time the user takes to answer is reported as waiting (the turn's clock leaves it out)", async () => {
+    const log: string[] = [];
+    const gate = new ApprovalGate(
+      fakeBrowser().browser,
+      () => "s1",
+      { context: async () => ({ level: "ask_all" }), request: async () => (log.push("asked"), "allow_once") },
+      () => (log.push("wait"), () => log.push("end")),
+    );
+    await gate.browser.call("browser.readPage", {});
+    await gate.browser.call("browser.click", { index: 8 });
+    expect(log).toEqual(["wait", "asked", "end"]);
+  });
+
   it("uses Jev for what the rules are unsure about: a Reply icon Jev calls harmless runs", async () => {
     const jev: SystemOneLike = { systemOne: async () => ({ answers: { consequence: { choice: "none", confidence: 0.97 } } }) };
     const t = setup({ jev });

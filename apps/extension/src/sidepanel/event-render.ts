@@ -118,8 +118,9 @@ export function renderEvent(v: EventView, onContinue?: () => void, scheduled?: S
 }
 
 /**
- * A change to the agent's memory: "Remembered: <subject> · <text>" on one quiet line, with Undo. Undone, it says so
- * and keeps no button; a failed undo says why under the line and keeps Undo.
+ * A change to the agent's memory: "Remembered: <subject> · <text>" on one quiet line, with Undo ("replaced “<old>”"
+ * after the subject when it replaced another entry). Undone, it says so and keeps no button; a failed undo says why
+ * under the line and keeps Undo.
  */
 export function renderMemoryNote(v: MemoryNoteView, actions?: MemoryNoteActions): HTMLElement {
   const note = h(
@@ -131,6 +132,7 @@ export function renderMemoryNote(v: MemoryNoteView, actions?: MemoryNoteActions)
       svgIcon(13, MEMORY_ICON),
       h("span.mem-label", null, v.undone ? "Undone:" : `${v.label}:`),
       h("span.mem-subject", null, v.subject),
+      v.replaced ? h("span.mem-replaced", null, v.replaced.text) : null,
       h("span.mem-text", null, `· ${v.text}`),
     ),
   );
@@ -140,7 +142,7 @@ export function renderMemoryNote(v: MemoryNoteView, actions?: MemoryNoteActions)
   }
   if (!actions) return note;
   const problem = h("div.mem-note.bad", { hidden: true, role: "alert" });
-  const undo = h("button.small.ghost.mem-undo", { type: "button", title: v.label === "Forgot" ? "Keep this memory after all" : "Undo this change to memory" }, "Undo");
+  const undo = h("button.small.ghost.mem-undo", { type: "button", title: v.change === "forgot" ? "Keep this memory after all" : "Undo this change to memory" }, "Undo");
   undo.addEventListener("click", () => {
     problem.hidden = true;
     void busy(undo, () => actions.undo(v.changeId), (message) => {

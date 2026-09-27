@@ -59,7 +59,7 @@ export function createChecks({ browser, base, only, shots }) {
     opts.edit?.(data);
     for (const init of opts.init ?? []) await page.addInitScript(init);
     await page.addInitScript(installChromeStub, data);
-    await page.goto(`${base}/sidepanel.html`);
+    await page.goto(`${base}/sidepanel.html${opts.search ?? ""}`);
     await page.evaluate(() => localStorage.clear());
     await page.reload();
     try {

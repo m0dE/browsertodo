@@ -4,7 +4,9 @@
  * (off pauses it), a search, and "Forget everything" (asked twice). Task
  * history is grouped by repeating task (collapsed, with a count): its run
  * notes, its records filed by key, and "delete this task's memory" (asked
- * twice). The switches save with settings.save like the rest of the page;
+ * twice). Episodes are listed by date (a page at a time) with Delete only.
+ * Facts have "Always give" / "Only when relevant" (memory.pin) and show what
+ * they said before. The switches save with settings.save like the rest of the page;
  * the entries come from memory.list. What shows comes from memory-view.ts.
  */
 import { errorMessage, type ExtensionSettings, type MemoryEntry, type MemoryKind } from "@browsertodo/shared";
@@ -16,6 +18,7 @@ import {
   forgetTaskText,
   kindsOffAfter,
   memoryPanel,
+  PIN_TEXT,
   RECORDS_PAGE,
   syncText,
   type MemoryEntryView,
@@ -53,6 +56,8 @@ export function initMemorySection(opts: { onState(state: UiState): void }): Memo
   const openTasks = new Set<string>();
   const recordsShown = new Map<string, number>();
   let confirmingTask: string | null = null;
+  /** How many entries each paged group (episodes, the user's records) shows. */
+  const kindShown = new Map<MemoryKind, number>();
 
   async function save(patch: Partial<ExtensionSettings>): Promise<void> {
     try {
@@ -83,9 +88,11 @@ export function initMemorySection(opts: { onState(state: UiState): void }): Memo
     const toggle = h("input", { id, type: "checkbox", role: "switch", checked: k.on, "aria-describedby": `${id}-hint` });
     toggle.addEventListener("change", () => void save({ memoryKindsOff: kindsOffAfter(settings?.memoryKindsOff ?? [], k.kind, toggle.checked) }));
     const none = !loaded ? "Loading…" : searching ? "No matches." : "Nothing yet.";
-    const body = k.count
-      ? [...(k.entries.length ? [h("ul.mem-list", null, ...k.entries.map(row))] : []), ...k.tasks.map((t) => taskBlock(t, searching))]
-      : [h("p.mem-none", null, none)];
+    const body = !k.count
+      ? [h("p.mem-none", null, none)]
+      : k.page
+        ? pagedList(k, k.page)
+        : [...(k.entries.length ? [h("ul.mem-list", null, ...k.entries.map(row))] : []), ...k.tasks.map((t) => taskBlock(t, searching))];
     return h(
       "div.box.mem-kind",
       { "data-kind": k.kind, "data-on": String(k.on) },
@@ -101,23 +108,37 @@ export function initMemorySection(opts: { onState(state: UiState): void }): Memo
 
   const row = (e: MemoryEntryView) => (e.id === editing ? editor(e) : entryRow(e));
 
+  /** "Show 50 more of 70": adds a page to a long list; null when everything shows. */
+  function moreButton(hidden: number, page: number, onMore: () => void): HTMLElement | null {
+    if (hidden <= 0) return null;
+    const btn = h("button.small.ghost.mem-more", { type: "button" }, `Show ${Math.min(hidden, page)} more of ${hidden.toLocaleString("en-US")}`);
+    btn.addEventListener("click", () => {
+      onMore();
+      draw();
+    });
+    return h("div.mem-more-row", null, btn);
+  }
+
+  /** A group listed a page at a time (episodes by date, the user's records by key). */
+  function pagedList(k: MemoryKindView, page: number): HTMLElement[] {
+    const count = kindShown.get(k.kind) ?? page;
+    const shown = k.entries.slice(0, count);
+    const more = moreButton(k.entries.length - shown.length, page, () => kindShown.set(k.kind, count + page));
+    return [h("ul.mem-list", { class: k.kind === "record" ? "mem-records" : null }, ...shown.map(row)), ...(more ? [more] : [])];
+  }
+
   /** One repeating task's memory, collapsed with its count; open while a search finds something in it. */
   function taskBlock(t: MemoryTaskView, searching: boolean): HTMLElement {
     const shown = recordsShown.get(t.taskKey) ?? RECORDS_PAGE;
     const records = t.records.slice(0, shown);
-    const more = t.records.length - records.length;
-    const moreBtn = more > 0 ? h("button.small.ghost.mem-more", { type: "button" }, `Show ${Math.min(more, RECORDS_PAGE)} more of ${more.toLocaleString("en-US")}`) : null;
-    moreBtn?.addEventListener("click", () => {
-      recordsShown.set(t.taskKey, shown + RECORDS_PAGE);
-      draw();
-    });
+    const more = moreButton(t.records.length - records.length, RECORDS_PAGE, () => recordsShown.set(t.taskKey, shown + RECORDS_PAGE));
     const details = h(
       "details.mem-task",
       { "data-task": t.taskKey, open: searching || openTasks.has(t.taskKey) },
       h("summary.mem-task-head", null, h("span.mem-task-title", null, t.title), h("span.mem-count", null, t.countText)),
       ...(t.notes.length ? [h("p.mem-sub", null, "Run notes"), h("ul.mem-list", null, ...t.notes.map(row))] : []),
       ...(t.records.length ? [h("p.mem-sub", null, "Records by key"), h("ul.mem-list.mem-records", null, ...records.map(row))] : []),
-      ...(moreBtn ? [h("div.mem-more-row", null, moreBtn)] : []),
+      ...(more ? [more] : []),
       taskDelete(t),
     );
     details.addEventListener("toggle", () => {
@@ -159,10 +180,32 @@ export function initMemorySection(opts: { onState(state: UiState): void }): Memo
     return h("div.mem-task-foot", null, h("div.row", null, del, cancel), h("p.mem-question", { role: "status" }, text.question));
   }
 
+  /** "Always give" / "Only when relevant": whether the agent is given this fact at every turn. */
+  function pinControl(e: MemoryEntryView): HTMLSelectElement {
+    const choice = (pinned: boolean) => {
+      const t = pinned ? PIN_TEXT.pinned : PIN_TEXT.relevant;
+      return h("option", { value: pinned ? "pinned" : "relevant", title: t.hint, selected: e.pinned === pinned }, t.label);
+    };
+    const select = h("select.mem-pin", { id: `memory-pin-${e.id}`, "aria-label": `When to give ${e.subject}`, title: (e.pinned ? PIN_TEXT.pinned : PIN_TEXT.relevant).hint }, choice(false), choice(true));
+    select.addEventListener("change", async () => {
+      const pinned = select.value === "pinned";
+      select.disabled = true;
+      try {
+        const { entry } = await uiRequest({ type: "memory.pin", id: e.id, pinned });
+        entries = entries.map((x) => (x.id === entry.id ? entry : x));
+        flash(msg, pinned ? `“${e.subject}” is given at every turn.` : `“${e.subject}” is given only when relevant.`, "ok");
+      } catch (err) {
+        flash(msg, `Not saved: ${errorMessage(err)}`, "bad");
+      }
+      draw();
+    });
+    return select;
+  }
+
   function entryRow(e: MemoryEntryView): HTMLElement {
-    const edit = h("button.small.ghost", { type: "button", "aria-label": `Edit ${e.subject}` }, "Edit");
+    const edit = e.editable ? h("button.small.ghost", { type: "button", "aria-label": `Edit ${e.subject}` }, "Edit") : null;
     const del = h("button.small.ghost.mem-delete", { type: "button", "aria-label": `Delete ${e.subject}` }, "Delete");
-    edit.addEventListener("click", () => {
+    edit?.addEventListener("click", () => {
       editing = e.id;
       draw();
       document.getElementById(`memory-edit-subject-${e.id}`)?.focus();
@@ -180,18 +223,23 @@ export function initMemorySection(opts: { onState(state: UiState): void }): Memo
       ),
     );
     const notes = e.notes?.length ? h("ul.mem-notes", null, ...e.notes.map((n) => h("li", null, h("span.mem-note-when", null, n.when), " ", n.text))) : null;
+    const history = e.history?.length ? h("ul.mem-notes.mem-history", null, ...e.history.map((line) => h("li", null, line))) : null;
+    const chips = e.entities?.length ? h("div.mem-chips", null, ...e.entities.map((x) => h("span.chip.mem-chip", null, x))) : null;
     return h(
       "li.mem-entry",
-      { "data-id": e.id },
+      { "data-id": e.id, "data-pinned": e.pinned === undefined ? null : String(e.pinned) },
       h(
         "div.mem-main",
         null,
+        e.when ? h("span.mem-when", null, e.when) : null,
         h("div.mem-head", null, h("b.mem-subject", null, e.subject), e.where ? h("span.mem-where", { class: e.site ? "site" : null }, e.where) : null),
         h("p.mem-text", null, e.text),
         notes,
-        h("small.mem-meta", null, e.meta),
+        history,
+        chips,
+        e.meta ? h("small.mem-meta", null, e.meta) : null,
       ),
-      h("div.mem-actions", null, edit, del),
+      h("div.mem-actions", null, e.pinned === undefined ? null : pinControl(e), edit, del),
     );
   }
 

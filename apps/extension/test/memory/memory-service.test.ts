@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { memoryTaskKey, type ExtensionSettings, type MemoryKind, type SessionInfo } from "@browsertodo/shared";
 import { SessionStore } from "../../src/engine/sessions.js";
 import { MemoryService, isMemoryRequest } from "../../src/memory/service.js";
+import { RECORDS_LABEL } from "../../src/memory/select.js";
 import { MemoryStore } from "../../src/memory/store.js";
 import { MemoryKvDb } from "../memory-kv.js";
 import { memoryStorage } from "./fakes.js";
@@ -201,20 +202,42 @@ describe("a task's records (remember and recall with a key)", () => {
     expect((await memory.tool("q2", "recall", { key: "ADA.LEE@EXAMPLE.COM" })).text).toBe(
       "- [m1] key Ada.Lee@example.com: Prefers email; wrote about the March invoice. · 2026-09-26: Invoice resent.",
     );
-    expect((await memory.tool("q2", "recall", { key: "someone@example.com" })).text).toBe("This task has no record for key someone@example.com yet.");
+    expect((await memory.tool("q2", "recall", { key: "someone@example.com" })).text).toBe("There is no record for key someone@example.com yet.");
     expect((await memory.tool("q2", "recall", { query: "march invoice" })).text).toMatch(/^- \[m1\] key Ada/);
     // Given at a turn's start when the user's tab names the key.
     const given = await begin("q2", { tabUrl: "https://queue.example/items/77", tabTitle: "Reply to ada.lee@example.com" });
     expect(given?.entries.map((e) => e.id)).toEqual(["m1"]);
-    expect(given?.text).toMatch(/Task records \(by key\):\n- \[m1\] key Ada\.Lee@example\.com/);
+    expect(given?.text).toContain(`${RECORDS_LABEL}:\n- [m1] key Ada.Lee@example.com`);
   });
 
-  it("a key is only for a repeating task's records", async () => {
+  it("in a chat, a key files the fact in the user's records; the next chat gets it by key or when the page names it", async () => {
     await memory.begin("chat", { title: "hi", request: "hi" });
-    expect((await memory.tool("chat", "remember", { kind: "task", key: "48213", text: "Refund sent." })).text).toMatch(/not a repeating task/);
-    expect((await memory.tool("chat", "recall", { key: "48213" })).text).toMatch(/not a repeating task/);
+    expect((await memory.tool("chat", "remember", { kind: "task", key: "Ticket #4812", text: "Customer wants a refund." })).text).toMatch(/^Started the record \[m\w+\] for key Ticket #4812/);
+    await memory.tool("chat", "remember", { kind: "record", key: "ticket 4812", text: "Refund approved." });
+    const [record] = await store.list();
+    expect(record).toMatchObject({ kind: "record", scope: "global", key: "ticket 4812", text: "Customer wants a refund.", notes: [{ text: "Refund approved." }] });
+    expect(record!.taskKey).toBeUndefined();
+    expect((await memory.tool("chat", "recall", { key: "TICKET 4812" })).text).toContain("Refund approved.");
+    const next = await memory.begin("chat2", { title: "support", request: "Any news on ticket 4812?" });
+    expect(next?.text).toContain(`${RECORDS_LABEL}:\n- [${record!.id}] key Ticket #4812: Customer wants a refund.`);
+    const byTab = await memory.begin("chat3", { title: "support", request: "Reply to this one", tabUrl: "https://help.example/tickets/4812", tabTitle: "Ticket 4812 - Help desk" });
+    expect(byTab?.entries.map((e) => e.id)).toContain(record!.id);
+    // A repeating task finds the user's record too, when it has none of its own; its own comes first once it does.
     await begin("q1");
-    expect((await memory.tool("q1", "remember", { kind: "task", key: "48213", text: "Refund sent.", scope: "global" })).text).toMatch(/only for this task's records/);
+    expect((await memory.tool("q1", "recall", { key: "ticket 4812" })).text).toContain("Refund approved.");
+    await memory.tool("q1", "remember", { kind: "task", key: "ticket 4812", text: "Task's own note." });
+    expect((await memory.tool("q1", "recall", { key: "ticket 4812" })).text).toContain("Task's own note.");
+    // Turning Records off keeps them out of chats.
+    settings.memoryKindsOff = ["record"];
+    expect((await memory.tool("chat", "recall", { key: "ticket 4812" })).text).toMatch(/no record/);
+    expect((await memory.tool("chat", "remember", { kind: "record", key: "ticket 9", text: "x" })).text).toMatch(/turned off Records/);
+    settings.memoryKindsOff = [];
+  });
+
+  it("a record's key must be an identifier, and a record belongs to no site", async () => {
+    await begin("q1");
+    expect((await memory.tool("q1", "remember", { kind: "task", key: "48213", text: "Refund sent.", domain: "x.com" })).text).toMatch(/belongs to no site/);
+    expect((await memory.tool("q1", "remember", { kind: "record", text: "no key" })).text).toMatch(/give key/);
     expect((await memory.tool("q1", "remember", { kind: "task", key: "--", text: "Refund sent." })).text).toMatch(/no letters or digits/);
     expect((await memory.tool("q1", "remember", { kind: "person", text: "no subject" })).text).toMatch(/subject is required/);
     expect((await memory.tool("q1", "recall", {})).text).toMatch(/needs a query .* or a key/);

@@ -110,7 +110,7 @@ export function scenario(kind) {
     paused: false, pauseRetryMinutes: 15, accountApiBase: "https://app.browsertodo.com",
     voiceEngine: "realtime", speechVoice: "", speechRate: 1, realtimeVoice: "marin", realtimeSpeed: 1, realtimeCostNoticed: true, voiceSounds: true,
     automationLevel: "ask_consequential", scheduledAutomation: "full_within_task",
-    memoryPaused: false, memoryKindsOff: [],
+    memoryPaused: false, memoryKindsOff: [], reasoning: "fast", reasoningAutoRaise: true,
   };
   const state = {
     settings,

@@ -6,6 +6,7 @@ import { z } from "zod";
 import { ANTHROPIC_API_VERSION, ANTHROPIC_MESSAGES_URL, errorMessage, HOSTED_AI_UNAVAILABLE, toolArgsSchema, toolDescription, type ToolName, type ToolResult } from "@browsertodo/shared";
 import { errorDetail, isHostedAiUnavailable, outOfCreditError } from "./api-errors.js";
 import { MessageAccumulator, StreamError, readSse } from "./sse.js";
+import type { ReasoningParams, ThinkingParam } from "./reasoning.js";
 
 export const MAX_TOKENS = 4096;
 
@@ -54,6 +55,9 @@ export interface MessagesRequest {
   messages: MessageParam[];
   /** Server-sent events instead of one JSON response (see postMessages' stream option). */
   stream?: boolean;
+  /** The model's thinking for this request (reasoning.ts: reasoningParams). Absent: the model's default. */
+  thinking?: ThinkingParam;
+  output_config?: ReasoningParams["output_config"];
 }
 
 export interface MessagesResponse {
@@ -88,13 +92,15 @@ export function toolDefinitions(names: ToolName[], jev = false): AnthropicTool[]
   });
 }
 
-export function buildRequest(opts: { model: string; system: string; tools: ToolName[]; messages: MessageParam[]; jev?: boolean }): MessagesRequest {
+export function buildRequest(opts: { model: string; system: string; tools: ToolName[]; messages: MessageParam[]; jev?: boolean; reasoning?: ReasoningParams }): MessagesRequest {
+  const { max_tokens = MAX_TOKENS, ...thinking } = opts.reasoning ?? {};
   return {
     model: opts.model,
-    max_tokens: MAX_TOKENS,
+    max_tokens,
     system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
     tools: toolDefinitions(opts.tools, opts.jev === true),
     messages: opts.messages,
+    ...thinking,
   };
 }
 

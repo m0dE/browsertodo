@@ -24,9 +24,9 @@ function setup(opts: { openFails?: boolean; reportsClosed?: boolean } = {}) {
     if (opts.openFails) throw new Error("`sidePanel.open()` may only be called in response to a user gesture.");
   });
   const disable = vi.fn(async (t: number) => void calls.push(`disable ${t}`));
-  const badge = vi.fn();
-  const deps: PanelCommandDeps = { open, disable, tabs, badge, ...(opts.reportsClosed ? { reportsClosed: true } : {}) };
-  return { pc: new PanelCommands(deps), open, disable, badge, tabs, calls };
+  const voice = vi.fn();
+  const deps: PanelCommandDeps = { open, disable, tabs, voice, ...(opts.reportsClosed ? { reportsClosed: true } : {}) };
+  return { pc: new PanelCommands(deps), open, disable, voice, tabs, calls };
 }
 
 /** Tab `tabId`'s own panel that said hello; `focused`: its page has the keyboard focus. */
@@ -264,47 +264,66 @@ describe("PanelCommands: the toolbar button and closing", () => {
   });
 });
 
-describe("PanelCommands: the voice badge", () => {
-  it("on the tab a listening panel's session belongs to, moved with it, set again when the tab loads, gone when it stops or the panel closes", () => {
-    const { pc, badge } = setup();
+describe("PanelCommands: which panel runs hands-free voice", () => {
+  it("reports the session (its tab, window, panel and engine) when it starts, moves, changes engine, stops or its panel closes", () => {
+    const { pc, voice } = setup();
     const port = openPanel(pc, 3);
-    port.deliver({ type: "panel.listening", listening: true, tabId: 7 });
-    expect(badge.mock.calls).toEqual([[7, true]]);
-    // The same again (the panel says hello to a restarted background): nothing changes.
-    port.deliver({ type: "panel.listening", listening: true, tabId: 7 });
-    expect(badge).toHaveBeenCalledTimes(1);
-    // Chrome clears a tab's badge when it loads a page: set again, only there.
-    pc.tabLoading(8);
-    pc.tabLoading(7);
-    expect(badge.mock.calls.at(-1)).toEqual([7, true]);
-    expect(badge).toHaveBeenCalledTimes(2);
-    // Moved to another tab (Use this tab).
-    port.deliver({ type: "panel.listening", listening: true, tabId: 8 });
-    expect(badge.mock.calls.slice(2)).toEqual([[7, false], [8, true]]);
+    port.deliver({ type: "panel.listening", listening: true, tabId: 3 });
+    expect(voice.mock.calls).toEqual([[{ tabId: 3, windowId: WIN, host: 3, engine: null }]]);
+    // The same again (the panel says hello to a restarted background): nothing new.
+    port.deliver({ type: "panel.listening", listening: true, tabId: 3 });
+    expect(voice).toHaveBeenCalledTimes(1);
+    port.deliver({ type: "panel.listening", listening: true, tabId: 3, engine: "realtime" });
+    expect(voice.mock.calls.at(-1)).toEqual([{ tabId: 3, windowId: WIN, host: 3, engine: "realtime" }]);
+    // Moved to another tab ("use this tab"): the same panel runs it for tab 8.
+    port.deliver({ type: "panel.listening", listening: true, tabId: 8, engine: "realtime" });
+    expect(voice.mock.calls.at(-1)).toEqual([{ tabId: 8, windowId: WIN, host: 3, engine: "realtime" }]);
     port.deliver({ type: "panel.listening", listening: false });
-    expect(badge.mock.calls.at(-1)).toEqual([8, false]);
-    pc.tabLoading(8);
-    expect(badge).toHaveBeenCalledTimes(5);
-    // Closed while listening: cleared.
-    port.deliver({ type: "panel.listening", listening: true, tabId: 9 });
+    expect(voice.mock.calls.at(-1)).toEqual([null]);
+    // Closed while listening: over.
+    port.deliver({ type: "panel.listening", listening: true, tabId: 3, engine: "standard" });
     port.hostDisconnect();
-    expect(badge.mock.calls.slice(-2)).toEqual([[9, true], [9, false]]);
+    expect(voice.mock.calls.slice(-2)).toEqual([[{ tabId: 3, windowId: WIN, host: 3, engine: "standard" }], [null]]);
+    expect(voice).toHaveBeenCalledTimes(6);
   });
 
-  it("a badge stays while another panel still listens in that tab; listening without a tab sets none", () => {
-    const { pc, badge } = setup();
-    const a = openPanel(pc, 3);
-    const b = pageInTab(pc, false);
-    a.deliver({ type: "panel.listening", listening: true, tabId: 7 });
-    b.deliver({ type: "panel.listening", listening: true, tabId: 7 });
-    a.deliver({ type: "panel.listening", listening: false });
-    expect(badge.mock.calls.filter(([, on]) => !on)).toEqual([]);
-    b.hostDisconnect();
-    expect(badge.mock.calls.at(-1)).toEqual([7, false]);
+  it("the panel page opened as a tab runs it with no tab of its own; listening without a tab is no session", () => {
+    const { pc, voice } = setup();
+    const page = pageInTab(pc, false);
+    page.deliver({ type: "panel.listening", listening: true, tabId: 7 });
+    expect(pc.voiceSession()).toEqual({ tabId: 7, windowId: WIN, host: null, engine: null });
+    page.deliver({ type: "panel.listening", listening: false });
+    voice.mockClear();
     const c = openPanel(pc, 4, true, "", 5);
-    badge.mockClear();
     c.deliver({ type: "panel.listening", listening: true });
-    expect(badge).not.toHaveBeenCalled();
+    expect(voice).not.toHaveBeenCalled();
     expect(pc.listening(5)).toBe(true);
+  });
+
+  it("Stop or Use voice here in another tab's panel reaches the panel running it; with none, a kept session is over", () => {
+    const { pc, voice } = setup();
+    const a = openPanel(pc, 3);
+    const b = openPanel(pc, 4);
+    a.deliver({ type: "panel.listening", listening: true, tabId: 3, engine: "realtime" });
+    b.deliver({ type: "panel.voiceStop" });
+    expect(a.posted.at(-1)).toEqual({ type: "voice.stop" });
+    expect(b.posted.some((m) => (m as { type: string }).type === "voice.stop")).toBe(false);
+    a.deliver({ type: "panel.listening", listening: false });
+    expect(voice.mock.calls.at(-1)).toEqual([null]);
+    // Nobody listens (a session kept across a worker restart whose panel is gone): it is reported over at once.
+    voice.mockClear();
+    b.deliver({ type: "panel.voiceStop" });
+    expect(voice.mock.calls).toEqual([[null]]);
+  });
+
+  it("two panels listening at once (a moment during a hand-over): the one that started last is the session", () => {
+    const { pc } = setup();
+    const a = openPanel(pc, 3);
+    const b = openPanel(pc, 4);
+    a.deliver({ type: "panel.listening", listening: true, tabId: 3 });
+    b.deliver({ type: "panel.listening", listening: true, tabId: 4 });
+    expect(pc.voiceSession()?.host).toBe(4);
+    b.deliver({ type: "panel.listening", listening: false });
+    expect(pc.voiceSession()?.host).toBe(3);
   });
 });

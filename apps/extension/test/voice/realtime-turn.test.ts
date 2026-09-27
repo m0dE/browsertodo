@@ -262,6 +262,7 @@ function engineEvents(log: string[]): EngineEvents {
     stopTask: async () => (log.push("stopTask"), "Stopped the task."),
     answerApproval: async () => "Nothing is waiting for the user's OK.",
     endVoice: () => {},
+    useThisTab: async () => "The user is already looking at the tab you work in.",
     failed: (f) => void log.push(`failed:${(f as { kind: string }).kind}`),
   };
 }
@@ -364,6 +365,10 @@ class FakeEngine implements HandsFreeEngine {
   hush(): void {}
   setTranscribing(): void {}
   agentEvent(): void {}
+  notes: string[] = [];
+  note(text: string): void {
+    this.notes.push(text);
+  }
   tick(): void {
     this.ticks++;
   }
@@ -393,7 +398,8 @@ describe("the side panel's hands-free session on Realtime", () => {
       chatOf: () => null,
       tabsOf: () => [],
       send: vi.fn(() => new Promise<string>((r) => (finishSend = r))),
-      tabTitle: async () => "Inbox",
+      homeTab: 1,
+      tabPage: async () => ({ title: "Inbox", url: "https://mail.example.com/" }),
       goToTab: () => {},
       onSpeaking: () => {},
       keepSpoken: vi.fn(),
@@ -412,6 +418,7 @@ describe("the side panel's hands-free session on Realtime", () => {
       openBilling: () => {},
       signIn: () => {},
       onActive: () => {},
+      stopRemote: () => {},
       bar: new MiniElement("div") as unknown as HTMLElement,
       earcons: { play: () => {} },
       ...opts.patch,
@@ -522,14 +529,15 @@ describe("the side panel's hands-free session on Realtime", () => {
     vi.useFakeTimers();
     try {
       const played: string[] = [];
-      const active: [boolean, number | null][] = [];
+      const active: [boolean, number | null, VoiceEngineId | null][] = [];
       const bar = new MiniElement("div") as unknown as HTMLElement;
-      const t = panel({ patch: { bar, earcons: { play: (k) => void played.push(k) }, onActive: (on, tab) => void active.push([on, tab]) } });
+      const t = panel({ patch: { bar, earcons: { play: (k) => void played.push(k) }, onActive: (on, tab, engine) => void active.push([on, tab, engine]) } });
       t.hf.toggle("button");
       // Starting: the bar is up at once, no sound until the microphone is live.
       expect([bar.hidden, bar.dataset.state, played]).toEqual([false, "starting", []]);
       await vi.advanceTimersByTimeAsync(0);
-      expect([bar.dataset.state, played, active, t.hf.tab]).toEqual(["listening", ["start"], [[true, 1]], 1]);
+      // Reported when it starts, and again with its engine once that is open.
+      expect([bar.dataset.state, played, active, t.hf.tab]).toEqual(["listening", ["start"], [[true, 1, null], [true, 1, "realtime"]], 1]);
       expect(bar.textContent).toContain("Realtime · 0:00");
       t.engines[0]!.events.level(0.9);
       expect(bar.dataset.state).toBe("hearing");
@@ -538,7 +546,7 @@ describe("the side panel's hands-free session on Realtime", () => {
       expect(bar.dataset.state).toBe("listening");
       expect(bar.textContent).toContain("Realtime · 0:02");
       t.hf.toggle("button");
-      expect([bar.hidden, played, active.at(-1), t.hf.tab]).toEqual([true, ["start", "stop"], [false, null], null]);
+      expect([bar.hidden, played, active.at(-1), t.hf.tab]).toEqual([true, ["start", "stop"], [false, null, null], null]);
     } finally {
       vi.useRealTimers();
     }

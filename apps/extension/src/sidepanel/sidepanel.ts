@@ -18,6 +18,7 @@ import { initHistory } from "./history.js";
 import { openSettings } from "./open-settings.js";
 import { initAutonomyWarning } from "./autonomy-warning.js";
 import { connectBackground } from "./port.js";
+import type { PanelMessage } from "../panel-command.js";
 import { chatForTab, followChat, isBound, tabOfSession } from "./tab-chat.js";
 import { openTabPanel, panelTabOf } from "../panel-tabs.js";
 import { initPanelTabs, tabHasComposer, type TabName } from "./tabs.js";
@@ -175,10 +176,14 @@ const transcribe = panelTranscriber(
   () => composer.target()?.sessionId,
 );
 /**
- * A hands-free session is on (in tab `tabId`): the voice shortcut then reaches this panel, wherever the focus is, and
- * that tab's toolbar button shows the voice badge.
+ * A hands-free session is on (in tab `tabId`, on `engine`): the voice shortcut then reaches this panel, wherever the
+ * focus is, the other panels say where voice is on, and the toolbar badges show it (see voice-session.ts).
  */
-const reportListening = (listening: boolean, tabId: number | null) => port.send({ type: "panel.listening", listening, ...(tabId === null ? {} : { tabId }) });
+let listeningReport: Extract<PanelMessage, { type: "panel.listening" }> = { type: "panel.listening", listening: false };
+function reportListening(listening: boolean, tabId: number | null, engine: VoiceEngineId | null): void {
+  listeningReport = { type: "panel.listening", listening, ...(tabId === null ? {} : { tabId }), ...(engine === null ? {} : { engine }) };
+  port.send(listeningReport);
+}
 const voice = initVoiceInput({
   composer,
   mic: { ...micAccess, watch: (onChange) => watchMicPermission(onChange) },
@@ -214,13 +219,18 @@ const handsFree = initHandsFree({
   composer,
   notify: ({ key, ...tip }) => composer.notices.show({ key: key ?? VOICE_NOTICE, ...tip }),
   activeTab: () => activeTab,
+  homeTab: ownTab,
+  visible: () => document.visibilityState === "visible",
   chatOf: chatOfTab,
   tabsOf: (sessionId) => {
     const home = state ? tabOfSession(sessionId, state) : null;
     return [...(home === null ? [] : [home]), ...(state?.runningTabs?.[sessionId] ?? [])];
   },
   send: sendSpoken,
-  tabTitle: async (tabId) => (await chrome.tabs.get(tabId)).title ?? null,
+  tabPage: async (tabId) => {
+    const t = await chrome.tabs.get(tabId).catch(() => null);
+    return t ? { title: t.title ?? null, url: t.url ?? t.pendingUrl ?? null } : null;
+  },
   goToTab: (tabId) => void goToTab(tabId).catch((err: unknown) => composer.showError(err)),
   onSpeaking: (line) => chat.setSpeaking(line),
   keepSpoken: (sessionId, text) =>
@@ -268,6 +278,7 @@ const handsFree = initHandsFree({
   openBilling: billing,
   signIn: () => signIn(),
   onActive: reportListening,
+  stopRemote: () => port.send({ type: "panel.voiceStop" }),
   bar: $("voice-bar"),
   trace: panelTrace,
   log: (m) => console.info(`[browsertodo] ${m}`),
@@ -469,6 +480,13 @@ function onPush(msg: UiPush): void {
       if (state) voice.shortcut();
       else voicePending = true;
       break;
+    case "voice.session":
+      // Where hands-free voice is on, and the tab the user looks at (this panel's tab may be hidden).
+      handsFree.setSession(msg.session);
+      break;
+    case "voice.stop":
+      handsFree.stopHere();
+      break;
   }
 }
 
@@ -478,7 +496,7 @@ function hello(): void {
   port.send({ type: "panel.hello", windowId, ...(ownTab === null ? {} : { tabId: ownTab }) });
   reportDocumentFocus();
   // A background that restarted meanwhile learns it again (the voice shortcut stops a listening panel).
-  if (handsFree.active) reportListening(true, handsFree.tab);
+  if (handsFree.active && listeningReport.listening) port.send(listeningReport);
 }
 
 /** Whether this page has the keyboard focus, for the shortcut (see panel-command.ts), with the text in the box. */
@@ -486,6 +504,8 @@ function reportDocumentFocus(): void {
   port.send({ type: "panel.document", focused: document.hasFocus(), draft: composer.draft() });
 }
 window.addEventListener("focus", reportDocumentFocus);
+// A tab's own panel shows only with its tab: on screen, the user looks at that tab (hands-free voice).
+document.addEventListener("visibilitychange", () => handsFree.refresh());
 window.addEventListener("blur", reportDocumentFocus);
 
 /** The keyboard shortcuts as Chrome assigned them (null: none is set), for the new chat and the mic's tooltip. */

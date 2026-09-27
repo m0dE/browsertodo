@@ -4,7 +4,7 @@
  * brain's events into the session, and the checks on the result (X post
  * verification, failure classification). Next turns: conversation.ts.
  */
-import { automationPromptLine, bareToolName, effectiveLevel, errorMessage, isXStatusUrl, localTimeZone, traceStart, type AgentEvent, type AgentTask, type ExtensionSettings, type RunConfig, type SessionInfo, type TaskRunResult, type TraceCategory, type TraceValue, type UserTab } from "@browsertodo/shared";
+import { automationPromptLine, bareToolName, effectiveLevel, errorMessage, isXStatusUrl, localTimeZone, traceStart, TURN_WALL_MINUTES, type AgentEvent, type AgentTask, type ExtensionSettings, type RunConfig, type SessionInfo, type TaskRunResult, type TraceCategory, type TraceValue, type UserTab } from "@browsertodo/shared";
 import type { AgentSlot } from "../../agent-slots.js";
 import { SessionEndedError, type Brain, type BrainRun, type ContinuableBrain, type CoreApi } from "../brains.js";
 import type { LocalStore } from "../local-store.js";
@@ -13,7 +13,8 @@ import type { SessionStore } from "../sessions.js";
 import type { TabChatsLike } from "../../tab-chats.js";
 import { isRestrictedUrl, RESTRICTED_STATUS } from "../../restricted.js";
 import type { ForcedStop } from "./active.js";
-import { ABORT_GRACE_MS, safetyTimeoutMinutes } from "./deadline.js";
+import { timeLimitReached } from "@browsertodo/core";
+import { ABORT_GRACE_MS, ActiveClock, safetyTimeoutMinutes } from "./deadline.js";
 import { mediaSources, type FirstJob } from "./jobs.js";
 import type { MemoryRun, MemoryService } from "../../memory/service.js";
 
@@ -46,7 +47,7 @@ export interface ActiveSession {
   localTaskId: string | null;
   /** The instructions the agent got this turn (scheduled runs: approvals hold what they do not ask for). */
   instructions?: string;
-  /** When the brain's time limit ends this turn (epoch ms): an approval waits at most until shortly before. */
+  /** When the turn's wall-time ceiling ends it (epoch ms, TURN_WALL_MINUTES): an approval waits at most until shortly before. */
   turnEndsAt?: number;
 }
 
@@ -94,9 +95,12 @@ export function modelOf(settings: ExtensionSettings): string | undefined {
 export function runConfig(settings: ExtensionSettings, isRetry: boolean): RunConfig {
   const config: RunConfig = {
     maxToolCalls: settings.maxToolCalls,
-    maxTaskMinutes: settings.maxTaskMinutes,
+    // The brains' own timer is the wall ceiling; the user's limit counts active time, enforced by drive() (turn-time.ts).
+    maxTaskMinutes: TURN_WALL_MINUTES,
     jevEnabled: settings.jevEnabled,
     jevThreshold: settings.jevThreshold,
+    reasoning: settings.reasoning,
+    reasoningAutoRaise: settings.reasoningAutoRaise,
     isRetry,
   };
   if (settings.jevApiKey) config.jevApiKey = settings.jevApiKey;
@@ -294,7 +298,7 @@ export class TurnRunner {
    */
   async drive(active: ActiveSession, run: BrainRun, settings: ExtensionSettings, cleanups: Cleanup[], throwEnded = false): Promise<TaskRunResult> {
     active.run = run;
-    active.turnEndsAt = Date.now() + settings.maxTaskMinutes * 60_000;
+    active.turnEndsAt = Date.now() + TURN_WALL_MINUTES * 60_000;
     const forced = active.forced;
     if (forced) run.abort(forced.reason, forced.outcome);
     // What the user said while the run was starting (already in the thread; the brain's echo is dropped).
@@ -303,7 +307,7 @@ export class TurnRunner {
       void run.sendUserMessage(text).then((ok) => ok || this.deps.log(`the agent did not take a message sent while it started (${active.session.sessionId})`));
     }
     try {
-      return await withSafetyTimer(run, settings, cleanups, throwEnded);
+      return await withTimeLimits(run, active.slot, settings, cleanups, throwEnded);
     } finally {
       if (active.run === run) active.run = null;
     }
@@ -365,16 +369,26 @@ export function userTabOf(page: TabPage, picked: number): UserTab {
   return { url: page.url, title: page.title, access };
 }
 
-function withSafetyTimer(run: BrainRun, settings: ExtensionSettings, cleanups: Cleanup[], throwEnded: boolean): Promise<TaskRunResult> {
-  const minutes = safetyTimeoutMinutes(settings.maxTaskMinutes);
+/**
+ * The brain's result, or the turn stopped by its limits: the user's time limit in active time (the slot's waits
+ * left out, ActiveClock), and the safety timer on wall time. Either aborts the brain and waits ABORT_GRACE_MS for
+ * its result.
+ */
+function withTimeLimits(run: BrainRun, slot: AgentSlot, settings: ExtensionSettings, cleanups: Cleanup[], throwEnded: boolean): Promise<TaskRunResult> {
+  const minutes = safetyTimeoutMinutes();
   const safety = new Promise<TaskRunResult>((resolve) => {
-    const reason = `No result after ${minutes} minutes`;
-    const t1 = setTimeout(() => {
+    let stopped = false;
+    const stop = (reason: string) => {
+      if (stopped) return;
+      stopped = true;
       run.abort(reason, "failed");
       const t2 = setTimeout(() => resolve({ outcome: "failed", reason }), ABORT_GRACE_MS);
       cleanups.push(() => clearTimeout(t2));
-    }, minutes * 60_000);
-    cleanups.push(() => clearTimeout(t1));
+    };
+    const clock = new ActiveClock(settings.maxTaskMinutes * 60_000, () => stop(timeLimitReached(settings.maxTaskMinutes)));
+    const unwatch = slot.onWait(() => clock.wait());
+    const t1 = setTimeout(() => stop(`No result after ${minutes} minutes`), minutes * 60_000);
+    cleanups.push(() => clearTimeout(t1), () => clock.stop(), unwatch);
   });
   const done = run.done.catch((err: unknown): TaskRunResult => {
     if (throwEnded && err instanceof SessionEndedError) throw err;

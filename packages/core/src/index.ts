@@ -28,6 +28,25 @@ export { isTaskEndTool, timeLimitReached, toolBudget, toolCallLimitExceeded, too
 export { NOT_CONFIDENT } from "./act.js";
 /** Checks independently that an X post exists and shows the expected text. */
 export { verifyXPost } from "./verify.js";
+/** One Messages request (Anthropic or the hosted AI), for one-shot calls outside the agent loop (the memory writer). */
+export { postMessages, type MessagesRequest, type MessagesTransport, type PostResult } from "./anthropic.js";
+/** How much the model thinks: the stuck detector that raises a Fast run's reasoning, and each model's request settings. */
+export {
+  MAX_RAISES_PER_TURN,
+  OBSERVING_TOOLS,
+  raiseNote,
+  ReasoningGovernor,
+  reasoningOf,
+  reasoningParams,
+  reasoningTrace,
+  StuckDetector,
+  STUCK_LIMITS,
+  TASK_FAIL_RECHECK,
+  THINKING_BUDGET_TOKENS,
+  THINKING_MAX_TOKENS,
+  type ReasoningChange,
+  type ReasoningParams,
+} from "./reasoning.js";
 /** Claude API agent loop (Anthropic Messages API with tool use). */
 export { startApiAgent } from "./api-agent.js";
 /** Token counts of a Messages API usage object, as the trace records them (Claude Code reports the same shape). */

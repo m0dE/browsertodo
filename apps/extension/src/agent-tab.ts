@@ -462,7 +462,7 @@ function renumber(tabs: RunTab[], next: number): number {
 }
 
 /** "T2", " t2 " and "2" all mean t2. */
-function normalizeId(id: string): string {
+export function normalizeId(id: string): string {
   const s = id.trim().toLowerCase();
   return /^\d+$/.test(s) ? `t${s}` : s;
 }

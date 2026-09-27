@@ -5,6 +5,7 @@
  * stdout is the native messaging channel (4-byte LE length + UTF-8 JSON).
  * Nothing else may ever be written to it.
  */
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   DEFAULT_SETTINGS,
@@ -33,6 +34,7 @@ import { apiBillingVarsIn, CLAUDE_NOT_FOUND, resolveClaudePath } from "./claude-
 import { ScriptedBrain } from "./brains/scripted.js";
 import type { Brain } from "./brains/brain.js";
 import { SelfTestCache } from "./self-test.js";
+import { runMemorySummarize } from "./memory-summarize.js";
 import { pruneRuns, readRunLog } from "./run-log.js";
 import { removeHelperFile, writeHelperFile } from "./helper-file.js";
 
@@ -75,7 +77,7 @@ async function main(): Promise<void> {
     if (scripted) return new ScriptedBrain((t, n, a) => router.call(t, n, a));
     if (!claudePath) throw new Error(CLAUDE_NOT_FOUND);
     // Headless stream-json with stdin kept open: structured events, and follow-up turns in the same session.
-    return new ClaudeCodeBrain({ claudePath, model: config.model, thinking: config.thinking, persistent: true });
+    return new ClaudeCodeBrain({ claudePath, model: config.model, ...(config.thinking === null ? {} : { thinking: config.thinking }), persistent: true });
   };
   const runner = new TaskRunner({
     runsDir: config.runsDir,
@@ -176,6 +178,14 @@ async function main(): Promise<void> {
   });
   peer.handle("helper.getLog", ({ lines }) => ({ text: live.tail(lines) }));
   peer.handle("helper.runLog", ({ path, maxBytes }) => readRunLog(config.runsDir, path, maxBytes));
+  // The background memory writer on Claude Code: run in the helper's runs folder, so no project's files are read.
+  peer.handle("memory.summarize", async ({ system, prompt }) => {
+    if (!claudePath) throw new Error(scripted ? "The scripted brain has no memory writer" : CLAUDE_NOT_FOUND);
+    mkdirSync(config.runsDir, { recursive: true });
+    const r = await runMemorySummarize({ claudePath, system, prompt, cwd: config.runsDir });
+    logLine(`memory.summarize chars=${prompt.length}${r.costUsd === undefined ? "" : ` cost=$${r.costUsd.toFixed(4)}`}`);
+    return r;
+  });
 
   const decoder = new NativeDecoder();
   process.stdin.on("data", (chunk: Buffer) => {

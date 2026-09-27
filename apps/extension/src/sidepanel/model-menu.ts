@@ -52,6 +52,8 @@ export function initModelPicker(opts: {
   const menu = $("model-menu");
   let info: ModelChipInfo | null = null;
   let running = false;
+  /** The Reasoning setting (switched here like Jev; Settings > AI has the rest). */
+  let reasoning: Pick<ExtensionSettings, "reasoning" | "reasoningAutoRaise"> = { reasoning: "fast", reasoningAutoRaise: true };
 
   const items = () => [...menu.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
 
@@ -140,6 +142,30 @@ export function initModelPicker(opts: {
           h("span.mm-hint", null, info.hosted ? "Faster clicks and typing, included" : info.jevPossible ? "Faster clicks and typing" : "Add a Jev key in settings"),
         ),
         h("span.mm-switch", { "aria-hidden": "true", "data-on": String(jevOn) }),
+      ),
+    );
+    const thorough = reasoning.reasoning === "thorough";
+    rows.push(
+      h(
+        "button.mm-item.mm-reasoning",
+        {
+          type: "button",
+          role: "menuitemcheckbox",
+          "aria-checked": String(thorough),
+          tabindex: "-1",
+          onclick: () => void save({ reasoning: thorough ? "fast" : "thorough" }),
+        },
+        h(
+          "span.mm-text",
+          null,
+          h("span.mm-label", null, "Thorough reasoning"),
+          h(
+            "span.mm-hint",
+            null,
+            thorough ? "Thinks before steps; slower" : reasoning.reasoningAutoRaise ? "Off: thinks only when stuck" : "Off: acts at once",
+          ),
+        ),
+        h("span.mm-switch", { "aria-hidden": "true", "data-on": String(thorough) }),
       ),
     );
     const memory = opts.memory?.view();
@@ -251,6 +277,7 @@ export function initModelPicker(opts: {
   return {
     setState(state) {
       info = modelChip(state);
+      reasoning = { reasoning: state.settings.reasoning, reasoningAutoRaise: state.settings.reasoningAutoRaise };
       renderChip();
       if (!menu.hidden) {
         const focused = document.activeElement;

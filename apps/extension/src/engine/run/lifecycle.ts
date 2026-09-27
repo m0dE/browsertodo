@@ -14,6 +14,7 @@ import type { ActiveSessions, ForcedStop } from "./active.js";
 import { runNextTurn } from "./conversation.js";
 import { openTask, startHeartbeat, type FirstJob, type Job, type TurnJob } from "./jobs.js";
 import type { ResultRecorder } from "./record.js";
+import { episodeTrigger, type EpisodeWriter } from "../../memory/episodes.js";
 import { X_WAIT_STATUS } from "./scheduling.js";
 import { modelOf, runCleanups, typedTextsOf, type ActiveSession, type Cleanup, type QueuedMessage, type TurnRunner } from "./turn.js";
 
@@ -49,6 +50,8 @@ export interface LifecycleDeps {
   changed(): void;
   /** Messages the user sent after the session's run was over: they open its next turn (the session has ended). */
   nextTurn?(sessionId: string, messages: QueuedMessage[]): void;
+  /** The background memory writer: each turn's end queues the conversation's episode (absent: none). */
+  episodes?: Pick<EpisodeWriter, "ended">;
 }
 
 /** A session title: the instructions on one line, at most this many characters. */
@@ -198,6 +201,8 @@ export class Lifecycle {
       this.deps.changed();
       if (active.nextTurn.length) this.deps.nextTurn?.(sessionId, active.nextTurn.splice(0));
     }
+    // Written in the background: soon for a task run, once a chat has gone idle.
+    void this.deps.episodes?.ended(sessionId, episodeTrigger(job));
     if (!keepTabs && active.session.taskId) await this.endEarlierRuns(active.session.taskId, sessionId);
     this.deps.log(`session ${sessionId} ${result.outcome}${result.reason ? `: ${result.reason}` : ""}`);
     return { result, stop };

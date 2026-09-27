@@ -216,3 +216,20 @@ describe("trace report: streaming and Realtime", () => {
     expect(buildReport({ session, events: [], trace: newBook("s1") }).summary.narration).toBeNull();
   });
 });
+
+describe("trace report: reasoning", () => {
+  it("shows when a stuck Fast run's reasoning was raised and why, when it went back to fast, and each request's reasoning when not fast", () => {
+    const book = newBook("s1");
+    beginTurn(book, 1, T0, { brain: "claude-api", model: "claude-sonnet-5", jev: false, chars: 10 });
+    const tr = (e: Omit<TraceEvent, "src">) => addEvent(book, { src: "engine", ...e });
+    tr({ t: T0 + 100, ms: 900, cat: "model", name: "model.call", data: { model: "claude-sonnet-5", reasoning: "fast" } });
+    tr({ t: T0 + 1000, cat: "model", name: "reasoning.raise", data: { why: "act failed 3 times in a row", thinking: true } });
+    tr({ t: T0 + 1100, ms: 2000, cat: "model", name: "model.call", data: { model: "claude-sonnet-5", reasoning: "raised" } });
+    tr({ t: T0 + 3200, cat: "model", name: "reasoning.lower", data: { why: "act worked", thinking: false } });
+    const rows = buildReport({ session: { ...session, brain: "claude-api" }, events: [], trace: book, now: T0 + 5000 }).turns[0]!.rows;
+    expect(rows.filter((r) => r.name.startsWith("reasoning.")).map((r) => r.label)).toEqual(["Reasoning raised: act failed 3 times in a row", "Reasoning back to fast: act worked"]);
+    const calls = rows.filter((r) => r.name === "model.call").map((r) => r.detail);
+    expect(calls[0]).not.toContain("reasoning");
+    expect(calls[1]).toContain("reasoning raised");
+  });
+});

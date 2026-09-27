@@ -287,6 +287,13 @@ input[aria-invalid="true"] { border-color: var(--bad); }
 .mem-task .mem-entry { padding-left: 32px; }
 .mem-notes { list-style: none; margin: 2px 0 0; padding: 0 0 0 10px; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: 2px; font-size: var(--text-sm); overflow-wrap: anywhere; }
 .mem-note-when { color: var(--muted); }
+.mem-history { color: var(--muted); }
+.mem-when { color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.mem-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.mem-chip { max-width: 100%; white-space: normal; overflow-wrap: anywhere; font-weight: 400; }
+.mem-actions { align-items: center; }
+.mem-pin { width: auto !important; padding: 2px 6px !important; font-size: var(--text-sm); }
+.mem-entry[data-pinned="true"] .mem-pin { border-color: var(--accent); color: var(--accent); }
 .mem-more-row { padding: 6px 16px 8px 32px; border-top: 1px solid var(--border); }
 .mem-task-foot { display: flex; flex-direction: column; gap: 6px; padding: 10px 16px 12px 32px; border-top: 1px solid var(--border); }
 @media (max-width: 480px) {

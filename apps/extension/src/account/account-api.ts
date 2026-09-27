@@ -3,8 +3,11 @@ import {
   AuthResponse,
   MeBillingResponse,
   MEMORY_PATH,
+  MEMORY_SEARCH_PATH,
   MEMORY_SYNC_PATH,
+  MemorySearchResponse,
   MemorySyncResponse,
+  type MemorySearchInput,
   type MemorySyncInput,
   SESSION_HEADER,
   Task,
@@ -136,6 +139,11 @@ export class AccountApi {
   /** POST /v1/memory/sync: this browser's memory changes, and the account's since `since` (403 plan_required without the TODO list). */
   memorySync(input: MemorySyncInput): Promise<MemorySyncResponse> {
     return this.http.json(MemorySyncResponse, "POST", MEMORY_SYNC_PATH, input);
+  }
+
+  /** POST /v1/memory/search: the synced entries nearest in meaning to `query` (403 plan_required without the TODO list). */
+  memorySearch(input: MemorySearchInput): Promise<MemorySearchResponse> {
+    return this.http.json(MemorySearchResponse, "POST", MEMORY_SEARCH_PATH, input);
   }
 
   /** DELETE /v1/memory: forget everything the account keeps (any plan). */

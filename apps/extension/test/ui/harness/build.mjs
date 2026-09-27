@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const ENTRIES = { sidepanel: "src/sidepanel/sidepanel.ts", options: "src/options/options.ts", "mic-permission": "src/voice/mic-permission.ts", "pcm-worklet": "src/voice/pcm-worklet.ts" };
-const STATIC = ["sidepanel.html", "options.html", "ui.css", "sidepanel.css", "options.css", "mic-permission.html", "mic-permission.css"];
+const STATIC = ["sidepanel.html", "options.html", "ui.css", "sidepanel.css", "voice.css", "options.css", "mic-permission.html", "mic-permission.css"];
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
 
 /** Bundles and serves the UI pages. Returns { out (the build directory), base (the server's URL), close }. */

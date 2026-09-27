@@ -140,6 +140,11 @@ export interface Harness {
 /** The one-slot harness's agent tab. */
 export const AGENT_TAB = 7;
 
+/** The user's date and time a follow-up starts with (it moves minute by minute). */
+const CLOCK_LINE = /^The user's time: [^\n]*\n\n/;
+/** A follow-up message without its time line, for comparing its text. */
+export const withoutClock = (text: string): string => text.replace(CLOCK_LINE, "");
+
 /** One agent slot: one session runs at a time, in AGENT_TAB (or the tab it was started from). */
 function oneSlot(h: Harness): SlotPool {
   const slot: AgentSlot = {
@@ -152,7 +157,7 @@ function oneSlot(h: Harness): SlotPool {
     isAgentTab: async (tabId) => tabId === AGENT_TAB,
     screenshot: async () => ({ base64: btoa("JPG"), mimeType: "image/jpeg" }),
   };
-  return { size: 1, take: () => slot, release: () => {} };
+  return { size: 1, take: () => slot, release: () => {}, endChat: async () => {} };
 }
 
 export function harness(overrides: Partial<ExtensionSettings> = {}): Harness {
@@ -166,7 +171,8 @@ export function harness(overrides: Partial<ExtensionSettings> = {}): Harness {
     brain,
     store,
     sessions,
-    settings: { ...DEFAULT_SETTINGS, delayMinSec: 1, delayMaxSec: 2, ...overrides },
+    // Full autonomy: the prompts carry no approvals line unless a test sets a level (see approvals.test.ts).
+    settings: { ...DEFAULT_SETTINGS, delayMinSec: 1, delayMaxSec: 2, automationLevel: "full", ...overrides },
     notifications: [],
     sleeps: [],
     materialized: [],
@@ -263,6 +269,9 @@ export class FakePool implements SlotPool {
   release(index: number, sessionId: string): void {
     if (this.owner.get(index) === sessionId) this.owner.delete(index);
     this.log.push(`release ${index} ${sessionId}`);
+  }
+  async endChat(sessionId: string): Promise<void> {
+    this.log.push(`end chat ${sessionId}`);
   }
 }
 

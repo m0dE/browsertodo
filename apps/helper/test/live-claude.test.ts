@@ -72,7 +72,7 @@ describe.runIf(process.env.BROWSERTODO_LIVE_CLAUDE === "1")("live Claude Code th
       const first = x.posts.filter((p) => p.text.includes("live check from browsertodo"));
       expect(first).toHaveLength(1);
       expect(first[0]!.text).toContain("#bt2");
-      const mine = events.filter((e) => e.sessionId === "LIVE-1").map((e) => e.event);
+      const mine = events.filter((e) => e.sessionId === "LIVE-1").map((e) => e.event).filter((e) => e.type !== "trace");
       expect(mine[0]).toEqual({ type: "status", text: expect.stringMatching(/^Claude Code started \(/) });
       expect(mine.some((e) => e.type === "assistant_text")).toBe(true);
       expect(mine.some((e) => e.type === "tool_call" && e.name === "task_complete")).toBe(true);

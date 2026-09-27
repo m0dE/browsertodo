@@ -9,7 +9,7 @@
  * raw-view.ts, in place of the log until Back to chat) and, while conversations of
  * other tabs run, one chip each to switch to their tab. Which conversation
  * that is comes from sidepanel.ts (see tab-chat.ts); past runs live in the
- * Activity log tab (history.ts).
+ * History tab (history.ts).
  */
 import { errorMessage, type SessionInfo, type StampedAgentEvent } from "@browsertodo/shared";
 import { isContinuableOutcome } from "../continue.js";
@@ -26,14 +26,30 @@ import {
   openingTurn,
   pairHeard,
   sameWords,
+  scheduledView,
   spokenEchoes,
   turnError,
   turnPicks,
   type HeardPairs,
   type TurnContext,
 } from "./event-format.js";
-import { placeEvent, pruneContinue, renderEvent, renderOpening, renderSessionHead, renderSpoken, renderText } from "./event-render.js";
+import {
+  placeEvent,
+  pruneContinue,
+  renderEvent,
+  renderMemoryNote,
+  renderOpening,
+  renderScheduled,
+  renderSessionHead,
+  renderSpoken,
+  renderText,
+  type MemoryNoteActions,
+  type ScheduledCardActions,
+} from "./event-render.js";
+import { memoryNoteView } from "./memory-note.js";
 import { LiveTexts } from "./live-text.js";
+import { bindApprovalKeys, renderApproval, type ApprovalCardActions } from "./approval-card.js";
+import { approvalEnding, approvalView } from "./approval-view.js";
 import { MarkdownView } from "./markdown.js";
 import { renderSwitcher } from "./session-switcher.js";
 import { initRawView } from "./raw-view.js";
@@ -73,6 +89,8 @@ export interface ChatOptions {
   onShortcuts?(): void;
   /** What the panel knows about voice, for the Raw view's export. */
   voiceEnv?(): ReportEnv["voice"];
+  /** View in TODO on a scheduled card: the TODO tab, at that task. */
+  onOpenTask?(taskId: string): void;
 }
 
 /** The panel's keyboard shortcuts as the user reads them ("Ctrl+.", "Ctrl+,"); null: Chrome assigned none. */
@@ -144,17 +162,81 @@ export function initChat(opts: ChatOptions = {}): ChatView {
   let heard: HeardPairs = pairHeard([], null);
   const pairsNow = () => pairHeard(events, current ? openingText(current) : null);
 
+  /** The buttons of scheduled cards: View in TODO, and Undo (the card turns "undone" when its task_unscheduled arrives). */
+  const scheduledActions: ScheduledCardActions = {
+    view: (taskId) => opts.onOpenTask?.(taskId),
+    undo: async (taskId) => {
+      if (current) await uiRequest({ type: "chat.undoScheduled", sessionId: current.sessionId, taskId });
+    },
+  };
+  const undone = (taskId: string) => events.some((e) => e.type === "task_unscheduled" && e.taskId === taskId);
+
+  /** Undo on memory notes (the note turns "undone" when its memory_undone arrives). */
+  const memoryActions: MemoryNoteActions = {
+    undo: async (changeId) => {
+      if (current) await uiRequest({ type: "memory.undo", sessionId: current.sessionId, changeId });
+    },
+  };
+  const memoryUndone = (changeId: string) => events.some((e) => e.type === "memory_undone" && e.changeId === changeId);
+
+  /** An undone memory change's note, wherever it is in the log, now says so. */
+  function markMemoryUndone(changeId: string): void {
+    const ev = events.find((e) => e.type === "memory" && e.changeId === changeId);
+    const note = [...log.querySelectorAll<HTMLElement>(".ev-memory")].find((c) => c.dataset.changeId === changeId);
+    if (ev?.type === "memory" && note) note.replaceWith(renderMemoryNote(memoryNoteView(ev, true)));
+  }
+
+  /** The answers of approval cards (the card changes when its approval_resolved arrives); Alt+Y / Alt+T / Alt+N too. */
+  const approvalActions: ApprovalCardActions = {
+    answer: async (id, answer) => (current ? (await uiRequest({ type: "approval.answer", sessionId: current.sessionId, id, answer })).ok : false),
+  };
+  bindApprovalKeys(log);
+
+  /** Approval cards still waiting show how they ended once that is known (answered, timed out, or the turn ended). */
+  function refreshApprovals(): void {
+    for (const card of log.querySelectorAll<HTMLElement>(".ev-approval[data-state=pending]")) {
+      const id = card.dataset.approvalId ?? "";
+      const ev = events.find((e) => e.type === "approval_request" && e.request.id === id);
+      const ending = approvalEnding(events, id);
+      if (ev?.type === "approval_request" && ending) card.replaceWith(renderApproval(approvalView(ev, ending)));
+    }
+  }
+
+  /** An undone task's card, wherever it is in the log, now says so. */
+  function markUndone(taskId: string): void {
+    const ev = events.find((e) => e.type === "task_scheduled" && e.taskId === taskId);
+    const card = [...log.querySelectorAll<HTMLElement>(".ev-scheduled")].find((c) => c.dataset.taskId === taskId);
+    if (ev?.type === "task_scheduled" && card) card.replaceWith(renderScheduled(scheduledView(ev, true)));
+  }
+
   function renderOne(ev: StampedAgentEvent, i: number): void {
     // The brain chip under the first message already says which brain started.
     if (ev.type === "status" && isBrainStartLine(ev.text)) return;
+    // An undo changes its task's card (see markUndone); it shows nothing of its own.
+    if (ev.type === "task_unscheduled") return;
+    // An approval's ending changes its card (see refreshApprovals).
+    if (ev.type === "approval_resolved") return;
+    // An undo changes its memory note (see markMemoryUndone).
+    if (ev.type === "memory_undone") return;
     if (heard.placed.has(i)) return;
     const words = heard.messages.get(i);
     const e = words === undefined ? ev : events[words]!;
     const s = e.type === "task_end" && current?.sessionId === e.sessionId ? current : null;
     const canContinue = !!opts.onContinue && e.type === "task_end" && isContinuableOutcome(e.outcome) && s?.source !== "cloud";
-    const turn: TurnContext = e.type === "task_end" ? { picks: turnPicks(events, i), error: turnError(events, i) } : e.type === "spoken" ? { echo: spokenEchoes(events, i) } : {};
+    const turn: TurnContext =
+      e.type === "task_end"
+        ? { picks: turnPicks(events, i), error: turnError(events, i) }
+        : e.type === "spoken"
+          ? { echo: spokenEchoes(events, i) }
+          : e.type === "task_scheduled"
+            ? { undone: undone(e.taskId) }
+            : e.type === "approval_request"
+              ? { approval: approvalEnding(events, e.request.id) }
+              : e.type === "memory"
+                ? { memoryUndone: memoryUndone(e.changeId) }
+                : {};
     const view = describeEvent(e, turn);
-    const el = renderEvent(view, canContinue ? () => opts.onContinue?.(e.sessionId) : undefined);
+    const el = renderEvent(view, canContinue ? () => opts.onContinue?.(e.sessionId) : undefined, scheduledActions, approvalActions, memoryActions);
     if (e.type === "spoken") placeKept(el, e.text);
     else placeEvent(log, el, view);
   }
@@ -364,6 +446,19 @@ export function initChat(opts: ChatOptions = {}): ChatView {
         return;
       }
     }
+    if (ev.type === "task_unscheduled") {
+      markUndone(ev.taskId);
+      return;
+    }
+    if (ev.type === "approval_resolved") {
+      refreshApprovals();
+      return;
+    }
+    if (ev.type === "memory_undone") {
+      markMemoryUndone(ev.changeId);
+      return;
+    }
+    if (ev.type === "task_end") refreshApprovals();
     const follow = isNearBottom(log);
     log.querySelector(":scope > p.empty")?.remove();
     // The final text of a streamed block takes the place of its live text.

@@ -340,7 +340,7 @@ describe("createToolExecutor: Jev picks the elements", () => {
     const lines = list.split("\n");
     expect(lines[0]).toBe('button "Reply" ×5');
     expect(lines).toHaveLength(151);
-    expect(lines.at(-1)).toBe("(46 more elements not listed; scroll, or describe what you need)");
+    expect(lines.at(-1)).toBe("(46 more elements not listed, out of view; scroll, or describe what you need)");
     expect(list).toContain('button "b100" (offscreen)');
   });
 
@@ -360,7 +360,7 @@ describe("createToolExecutor: Jev picks the elements", () => {
     expect(r).toContain("===== Tab t2 =====");
     expect(r).toMatch(/no index numbers/);
     expect(r).not.toMatch(/^\[\d+\]/m);
-    expect(r).toContain("(20 more elements not listed; scroll, or describe what you need)");
+    expect(r).toContain("(20 more elements not listed, out of view; scroll, or describe what you need)");
   });
 
   it("refuses steps that name an index unless Jev just was not confident about them; nothing runs", async () => {
@@ -659,7 +659,7 @@ describe("createToolExecutor: several tabs", () => {
     const task = buildSystemPrompt({ tools: TOOL_NAMES, jev: true });
     expect(task).toContain("- open_tabs:");
     expect(task).toMatch(/open them together with open_tabs .* one read_page call using `tabs`/);
-    expect(task).toMatch(/tabs you opened are also closed when the task ends/);
+    expect(task).toMatch(/Tabs you opened stay open for this chat until it ends: .* ask them to do it in that tab/);
     expect(buildSystemPrompt({ tools: ["navigate", "read_page"], jev: false })).not.toContain("open_tabs");
   });
 });
@@ -719,5 +719,57 @@ describe("scroll reports what moved", () => {
 
   it("drivers that do not measure keep the old answer", async () => {
     expect((await scrollWith({}, { direction: "down", amount: 2 })).text).toBe("Scrolled down 2x.");
+  });
+});
+
+describe("createToolExecutor: schedule_task", () => {
+  const args = { task: "Open https://shop.example.com/orders/48213 and tell me whether it shipped.", schedule: { at: "2026-09-26T22:45:00-04:00" } };
+
+  it("hands the parsed task to scheduleTask and tells the model what was stored", async () => {
+    const x = new FakeX();
+    const got: unknown[] = [];
+    const exec = createToolExecutor({
+      browser: x.caller(),
+      jev: null,
+      jevThreshold: 0.8,
+      onEvent: () => {},
+      mediaPaths: [],
+      sleep: noSleep,
+      scheduleTask: async (a) => {
+        got.push(a);
+        return { taskId: "t9", instructions: a.task, when: "Once, today at 10:45 PM", nextRunAt: "2026-09-27T02:45:00.000Z" };
+      },
+    });
+    const r = await exec.call("schedule_task", { ...args, task: `  ${args.task}  ` });
+    expect(got).toEqual([args]);
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toMatch(/^Scheduled in the user's TODO list \(task t9\): "Open https:\/\/shop\.example\.com\/orders\/48213/);
+    expect(r.text).toContain("Once, today at 10:45 PM");
+    // Nothing happens in the browser.
+    expect(x.calls).toEqual([]);
+  });
+
+  it("a refusal reaches the model as an error with the extension's words", async () => {
+    const exec = createToolExecutor({
+      browser: new FakeX().caller(),
+      jev: null,
+      jevThreshold: 0.8,
+      onEvent: () => {},
+      mediaPaths: [],
+      sleep: noSleep,
+      scheduleTask: async () => {
+        throw new Error("Scheduling needs a paid plan. Nothing was scheduled.");
+      },
+    });
+    const r = await exec.call("schedule_task", args);
+    expect(r).toEqual({ isError: true, text: "schedule_task failed: Scheduling needs a paid plan. Nothing was scheduled." });
+  });
+
+  it("bad arguments and a session without a conversation are refused", async () => {
+    const { exec } = setup(new FakeX());
+    expect((await exec.call("schedule_task", { task: "x", schedule: {} })).text).toMatch(/Invalid arguments for schedule_task/);
+    const r = await exec.call("schedule_task", args);
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/no conversation to schedule from/);
   });
 });

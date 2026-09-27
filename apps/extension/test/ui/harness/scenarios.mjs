@@ -108,7 +108,9 @@ export function scenario(kind) {
     apiBase: "", runnerKey: "", maxConsecutiveFailures: 3, retryAfterMinutes: 10, intervalMinutes: 15,
     delayMinSec: 60, delayMaxSec: 180, maxToolCalls: 60, maxTaskMinutes: 10, maxParallelTasks: 2, jevEnabled: true, jevThreshold: 0.8,
     paused: false, pauseRetryMinutes: 15, accountApiBase: "https://app.browsertodo.com",
-    voiceEngine: "realtime", speechVoice: "", speechRate: 1, realtimeVoice: "marin", realtimeSpeed: 1, realtimeCostNoticed: true,
+    voiceEngine: "realtime", speechVoice: "", speechRate: 1, realtimeVoice: "marin", realtimeSpeed: 1, realtimeCostNoticed: true, voiceSounds: true,
+    automationLevel: "ask_consequential", scheduledAutomation: "full_within_task",
+    memoryPaused: false, memoryKindsOff: [],
   };
   const state = {
     settings,
@@ -193,7 +195,7 @@ export function scenario(kind) {
   });
   const tasks = [
     task("t2", "running", running.title, { account: "browsertodo" }),
-    task("t1", "pending", "Reply to new mentions with a short thank-you\nKeep it friendly.", { account: "browsertodo", notBefore: iso(95), repeat: { dailyAt: ["09:00", "18:00"] } }),
+    task("t1", "pending", "Reply to new mentions with a short thank-you\nKeep it friendly.", { account: "browsertodo", notBefore: iso(95), repeat: { cron: "0 9,18 * * *", tz: Intl.DateTimeFormat().resolvedOptions().timeZone } }),
     task("t3", "pending", "Post the photo of the week with the caption from the doc", { media: [{ id: "m1", name: "week38.jpg", type: "image/jpeg", size: 184000 }] }),
     task("t4", "pending", "Like the three newest posts from @anthropic", { retryAfter: iso(8), attempts: 1 }),
     task("t5", "paused", "Log in to example.com and download the September invoice", { pauseReason: "Needs a one-time code sent by SMS" }),
@@ -479,6 +481,77 @@ export function scenario(kind) {
       state.brain = { effective: "browsertodo", helper, hasApiKey: false, jevActive: true };
       settings.anthropicApiKey = "";
     }
+  }
+  if (kind === "scheduled" || kind === "scheduled-free") {
+    // Scheduling from the chat (schedule_task): the agent checked an order, then the user asked for a check-up
+    // later. On Plus the task is in the TODO list with a card (View in TODO, Undo); on Free the refusal's card.
+    const free = kind === "scheduled-free";
+    const check = "Open https://shop.example.com/orders/48213 and tell me whether order #48213 has shipped yet; if it has, give me the carrier and tracking number.";
+    const conv = {
+      sessionId: "s-sched", source: "adhoc", title: "Has my order #48213 shipped?", brain: "claude-api", jev: true,
+      model: "claude-sonnet-5", startedAt: iso(-1), endedAt: iso(0), firstStartedAt: iso(-6), outcome: "done", turns: 2,
+      summary: free ? "Could not schedule the check-up" : "Scheduled a check-up in 3 hours",
+    };
+    const sev = (minutes, e) => ({ ...e, ts: iso(minutes), sessionId: "s-sched" });
+    const turn2 = [
+      sev(-1, { type: "user_message", text: "k schedule a check up after 3 hours" }),
+      sev(-1, { type: "tool_call", id: "3", name: "schedule_task", args: { task: check, schedule: { at: iso(180) } } }),
+      ...(free
+        ? [
+            sev(-1, { type: "error", text: "Scheduling needs a paid plan." }),
+            sev(-1, { type: "tool_result", id: "3", name: "schedule_task", isError: true, text: "Scheduling needs a paid plan. Nothing was scheduled. Tell the user; the chat shows them a Choose a plan button. Do not retry." }),
+            sev(0, { type: "assistant_text", text: "I couldn't schedule that: scheduling needs a paid plan. You can pick one with the button above, then ask me again." }),
+          ]
+        : [
+            sev(-1, { type: "task_scheduled", taskId: "t-sched", instructions: check, schedule: { at: iso(180) } }),
+            sev(-1, { type: "tool_result", id: "3", name: "schedule_task", text: 'Scheduled in the user\'s TODO list (task t-sched): "Open https://shop.example.com/orders/48213…" · Once, today at 6:45 PM.' }),
+            sev(0, { type: "assistant_text", text: "Done. I'll check order #48213 again today at 6:45 PM; it's in your TODO list." }),
+          ]),
+      sev(0, { type: "task_end", outcome: "done", summary: conv.summary }),
+    ];
+    eventsBySession["s-sched"] = [
+      sev(-6, { type: "status", text: "Claude API (claude-sonnet-5) with Jev" }),
+      sev(-6, { type: "tool_call", id: "1", name: "navigate", args: { url: "https://shop.example.com/orders/48213" } }),
+      sev(-6, { type: "tool_result", id: "1", name: "navigate", text: "Opened https://shop.example.com/orders/48213 (title: Order #48213)" }),
+      sev(-5, { type: "tool_call", id: "2", name: "read_page", args: {} }),
+      sev(-5, { type: "tool_result", id: "2", name: "read_page", text: "Order #48213 · Status: Preparing to ship" }),
+      sev(-5, { type: "assistant_text", text: "Not yet: order #48213 is still **preparing to ship**." }),
+      sev(-5, { type: "task_end", outcome: "done", summary: "Order #48213 has not shipped yet" }),
+      ...turn2,
+    ];
+    state.running = null;
+    state.runningTabs = {};
+    state.tabChats = { "1": "s-sched" };
+    sessions.unshift(conv);
+    if (free) state.account = { ...state.account, plan: FREE, credit: money(0, 0) };
+    else {
+      tasksSource = "account";
+      tasks.splice(1, 0, task("t-sched", "pending", check, { notBefore: iso(180), createdAt: iso(-1), updatedAt: iso(-1) }));
+    }
+  }
+  if (kind === "approval") {
+    // "Ask before posting, sending or paying": the agent wrote the post; its Post click waits for the user's OK.
+    // An earlier approval in the thread (the Like it was allowed once) keeps one quiet line.
+    const post = "We just shipped browsertodo 0.3: approvals before anything is posted, sent or paid.\n\nhttps://browsertodo.example.com/blog/0-3";
+    const conv = {
+      sessionId: "s-appr", source: "adhoc", title: "Post the 0.3 launch note on X", brain: "claude-api", jev: true,
+      model: "claude-sonnet-5", startedAt: iso(-2), firstStartedAt: iso(-2), instructions: "Like the pinned post, then post the 0.3 launch note on X",
+    };
+    const aev = (minutes, e) => ({ ...e, ts: iso(minutes), sessionId: "s-appr" });
+    eventsBySession["s-appr"] = [
+      aev(-2, { type: "status", text: "Claude API (claude-sonnet-5) with Jev" }),
+      aev(-2, { type: "tool_call", id: "1", name: "act", args: { steps: [{ goal: "click Like on the pinned post" }] } }),
+      aev(-2, { type: "approval_request", request: { id: "ap-1", action: 'Click "Like"', site: "x.com", why: "publishes", kind: "publish", expiresAt: iso(8) } }),
+      aev(-2, { type: "approval_resolved", id: "ap-1", outcome: "allow_once" }),
+      aev(-2, { type: "tool_result", id: "1", name: "act", text: 'step 1: clicked [12] button "Like" (picked by Jev, 0.99, 91 ms)' }),
+      aev(-1, { type: "assistant_text", text: "Liked. Now writing the launch note." }),
+      aev(-1, { type: "tool_call", id: "2", name: "act", args: { steps: [{ goal: "type the post", text: post }, { goal: "click Post" }] } }),
+      aev(0, { type: "approval_request", request: { id: "ap-2", action: 'Click "Post"', site: "x.com", why: "publishes", kind: "publish", text: post, expiresAt: iso(10) } }),
+    ];
+    state.running = conv;
+    state.runningTabs = { "s-appr": [1] };
+    state.tabChats = { "1": "s-appr" };
+    sessions.unshift(conv);
   }
   if (kind === "details") {
     // The running task has long instructions with links, files and an account; a one-off chat has a multi-line message.

@@ -123,6 +123,8 @@ export function createFakeX() {
   let feed = {};
   let nextId = 1000;
   let notes = [];
+  /** Images made on /grok/imagine (a tab the composer's "Generate with Grok" opens, like X's). */
+  const images = [];
 
   const handler = (req, res) => {
     const url = new URL(req.url, "https://x.com");
@@ -165,17 +167,52 @@ export function createFakeX() {
       });
       return;
     }
+    if (req.method === "GET" && url.pathname === "/grok-compose") {
+      // X's composer: "Add photos or video" opens a menu whose "Generate with Grok" opens Grok in a NEW TAB.
+      return send(
+        200,
+        page(
+          "Compose post / X",
+          `<main><h1>Compose</h1><div role="textbox" contenteditable="true" aria-label="Post text"></div>
+<button id="media" aria-haspopup="menu" aria-label="Add photos or video">Media</button>
+<div id="media-menu" role="menu" hidden><div role="menuitem" tabindex="0" id="upload">Upload from computer</div><div role="menuitem" tabindex="0" id="grok">Generate with Grok</div></div>
+<script>
+const menu = document.getElementById("media-menu");
+document.getElementById("media").addEventListener("click", () => (menu.hidden = !menu.hidden));
+document.getElementById("grok").addEventListener("click", () => { menu.hidden = true; window.open("/grok/imagine", "_blank"); });
+</script></main>`,
+        ),
+      );
+    }
+    if (req.method === "GET" && url.pathname === "/grok/imagine") {
+      const prompt = url.searchParams.get("prompt");
+      if (prompt) images.push({ prompt, at: new Date().toISOString() });
+      return send(
+        200,
+        page(
+          prompt ? "Image ready / Grok" : "Imagine / Grok",
+          prompt
+            ? `<main><h1>Image ready</h1><p>Your image of ${esc(prompt)} is ready.</p><button>Use in post</button></main>`
+            : `<main><h1>Grok Imagine</h1><form><label>Describe the image <input name="prompt"></label><button>Generate</button></form></main>`,
+        ),
+      );
+    }
     if (req.method === "GET" && url.pathname === "/mail") {
-      // A tiny webmail inbox for "find something out" tasks.
-      const mails = [
+      // A tiny webmail inbox for "find something out" tasks; ?box=b is a second account's inbox.
+      const box = url.searchParams.get("box") === "b" ? "b" : null;
+      const mails = box ? [
+        { id: 11, from: "Nora Quinn", subject: "Board meeting moved", body: "The board meeting moved to Tuesday at 3 pm." },
+        { id: 12, from: "Omar Diaz", subject: "Contract signed", body: "The contract is signed; nothing more is needed from you." },
+      ] : [
         { id: 1, from: "Paul Lee", subject: "T2 return ready for review", body: "Hi, the 2025 T2 return is ready. Please sign the engagement letter and send the Q3 bank statements by Friday." },
         { id: 2, from: "Suzie", subject: "Lunch?", body: "Are you free Thursday?" },
         { id: 3, from: "Paul Lee", subject: "Invoice 1042", body: "Invoice 1042 for $1,200 is due at the end of the month." },
       ];
       const open = url.searchParams.get("open");
       const mail = mails.find((m) => String(m.id) === open);
-      const list = mails.map((m) => `<li><a href="/mail?open=${m.id}">${esc(m.from)}: ${esc(m.subject)}</a></li>`).join("");
-      return send(200, page("Inbox - Mail", `<main><h1>Inbox</h1><ul>${list}</ul>${mail ? `<article><h2>${esc(mail.subject)}</h2><p>From: ${esc(mail.from)}</p><p>${esc(mail.body)}</p></article>` : ""}</main>`));
+      const q = box ? `box=${box}&` : "";
+      const list = mails.map((m) => `<li><a href="/mail?${q}open=${m.id}">${esc(m.from)}: ${esc(m.subject)}</a></li>`).join("");
+      return send(200, page(box ? "Inbox (B) - Mail" : "Inbox - Mail", `<main><h1>Inbox</h1><ul>${list}</ul>${mail ? `<article><h2>${esc(mail.subject)}</h2><p>From: ${esc(mail.from)}</p><p>${esc(mail.body)}</p></article>` : ""}</main>`));
     }
     if (req.method === "GET" && url.pathname === "/account/access") {
       return send(200, page("Your account is locked / X", `<main><h1>Your account has been locked</h1><p>Verify your identity.</p></main>`));
@@ -224,6 +261,7 @@ export function createFakeX() {
     close: () => new Promise((resolve) => server.close(() => resolve())),
     feed: () => feed,
     notes: () => notes,
+    images: () => images,
   };
 }
 

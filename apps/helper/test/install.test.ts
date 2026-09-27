@@ -16,7 +16,7 @@ describe("install", () => {
   it("builds the native messaging manifest", () => {
     expect(buildManifest({ extensionId: ID, launcherPath: "C:\\Users\\me\\AppData\\Local\\browsertodo\\host\\browsertodo-host.cmd" })).toEqual({
       name: "com.browsertodo.helper",
-      description: "browsertodo local helper",
+      description: "BrowserTODO local helper",
       path: "C:\\Users\\me\\AppData\\Local\\browsertodo\\host\\browsertodo-host.cmd",
       type: "stdio",
       allowed_origins: [`chrome-extension://${ID}/`],

@@ -9,7 +9,7 @@ export async function notify(title: string, message: string): Promise<void> {
     await chrome.notifications.create({
       type: "basic",
       iconUrl: chrome.runtime.getURL("icons/icon128.png"),
-      title: `browsertodo: ${title}`,
+      title: `BrowserTODO: ${title}`,
       message: message.slice(0, 500),
       priority: 1,
     });

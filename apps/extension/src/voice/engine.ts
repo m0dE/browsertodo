@@ -31,6 +31,8 @@ export interface EngineEvents {
   userWords(words: string, sent: string | null): void;
   /** The narrator asks to stop the running task (stop_task, cancel_request); the answer goes back to it. */
   stopTask(): Promise<string>;
+  /** The user's answer to the approval the chat waits on (Realtime answer_approval); what happened goes back to the narrator. */
+  answerApproval(allow: boolean): Promise<string>;
   /** The narrator ends the session (the user said goodbye). */
   endVoice(): void;
   /** The engine cannot go on (Realtime: a RealtimeFailure; Standard: a VoiceError). */

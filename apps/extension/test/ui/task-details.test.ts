@@ -24,7 +24,7 @@ const task = (extra: Partial<DetailsTask> = {}): DetailsTask => ({
   failReason: null,
   createdAt: "2026-09-20T08:00:00Z",
   updatedAt: "2026-09-23T09:15:00Z",
-  repeat: { dailyAt: ["09:00", "18:00"] },
+  repeat: { cron: "0 9,18 * * *", tz: "UTC" },
   media: [{ id: "m1", name: "week38.jpg", type: "image/jpeg", size: 184000 }],
   ...extra,
 });
@@ -56,11 +56,11 @@ describe("detailsModel", () => {
     expect(m.textNote).toBeUndefined();
     expect(m.chip).toMatchObject({ label: "scheduled", tone: "muted" });
     expect(m.chip?.hint).toMatch(/Waits until/);
-    expect(labels(m)).toEqual(["Account", "Source", "Not before", "Repeats", "Attempts", "Last run by", "Created", "Updated", "Task id", "Run id"]);
+    expect(labels(m)).toEqual(["Account", "Source", "Next run", "Repeats", "Attempts", "Last run by", "Created", "Updated", "Task id", "Run id"]);
     expect(field(m, "Account")?.value).toBe("@browsertodo");
     expect(field(m, "Source")?.value).toBe("Your account's TODO list");
-    expect(field(m, "Not before")?.value).toBe("Sep 24, 2026, 1:30 PM");
-    expect(field(m, "Repeats")?.value).toBe("Every day at 09:00 and 18:00");
+    expect(field(m, "Next run")?.value).toBe("Sep 24, 2026, 1:30 PM");
+    expect(field(m, "Repeats")?.value).toBe("Daily at 9:00 AM and 6:00 PM");
     expect(field(m, "Attempts")?.value).toBe("0");
     expect(field(m, "Last run by")?.value).toBe("Claude API · claude-sonnet-5 · Jev on");
     expect(field(m, "Task id")).toMatchObject({ value: "t1", mono: true });
@@ -102,9 +102,10 @@ describe("detailsModel", () => {
     expect(field(m, "Result")).toMatchObject({ value: "Posted", href: "https://x.com/a/status/1" });
   });
 
-  it("a cloud task's repeat names its time zone; files known by id only are listed by id", () => {
-    const m = detailsModel({ task: task({ tz: "Europe/Berlin", media: undefined, mediaIds: ["med_1"] }), listSource: "account" }, NOW, WHEN);
-    expect(field(m, "Repeats")?.value).toBe("Every day at 09:00 and 18:00 (Europe/Berlin)");
+  it("a repeat in another zone names it; a one-off says when; files known by id only are listed by id", () => {
+    const m = detailsModel({ task: task({ repeat: { cron: "0 9,18 * * *", tz: "Europe/Berlin" }, media: undefined, mediaIds: ["med_1"] }), listSource: "account" }, NOW, WHEN);
+    expect(field(m, "Repeats")?.value).toBe("Daily at 9:00 AM and 6:00 PM (Europe/Berlin)");
+    expect(field(detailsModel({ task: task({ repeat: null }) }, NOW, WHEN), "Scheduled at")?.value).toBe("Sep 24, 2026, 1:30 PM");
     expect(m.files).toEqual([{ name: "med_1", detail: "" }]);
   });
 
@@ -160,9 +161,14 @@ describe("formatting", () => {
     expect(formatWhen(null)).toBe("");
   });
 
+  it("a task stored with the old { dailyAt } rule shows it in words (before the store migrates it)", () => {
+    const m = detailsModel({ task: task({ repeat: { dailyAt: ["09:00"] } as never }), listSource: "local" }, NOW, WHEN);
+    expect(field(m, "Repeats")?.value).toMatch(/^Daily at 9:00 AM/);
+  });
+
   it("repeat rules read as a sentence", () => {
-    expect(repeatSentence({ dailyAt: ["09:00"] })).toBe("Every day at 09:00");
-    expect(repeatSentence({ dailyAt: ["09:00", "12:00", "18:00"] }, "UTC")).toBe("Every day at 09:00, 12:00 and 18:00 (UTC)");
+    expect(repeatSentence({ cron: "0 9 * * *", tz: "UTC" }, { hour12: false, localZone: "UTC" })).toBe("Daily at 09:00");
+    expect(repeatSentence({ cron: "0 9,12,18 * * 1-5", tz: "Asia/Seoul" }, { hour12: true, localZone: "UTC" })).toBe("Every weekday at 9:00 AM, 12:00 PM and 6:00 PM (Asia/Seoul)");
     expect(repeatSentence(null)).toBe("");
   });
 });

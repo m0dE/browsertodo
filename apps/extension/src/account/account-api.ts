@@ -2,6 +2,10 @@
 import {
   AuthResponse,
   MeBillingResponse,
+  MEMORY_PATH,
+  MEMORY_SYNC_PATH,
+  MemorySyncResponse,
+  type MemorySyncInput,
   SESSION_HEADER,
   Task,
   TaskListResponse,
@@ -129,6 +133,16 @@ export class AccountApi {
   }
 
   /** GET /v1/billing/voice-engines (public): the hands-free voice engines and what a minute of each costs. */
+  /** POST /v1/memory/sync: this browser's memory changes, and the account's since `since` (403 plan_required without the TODO list). */
+  memorySync(input: MemorySyncInput): Promise<MemorySyncResponse> {
+    return this.http.json(MemorySyncResponse, "POST", MEMORY_SYNC_PATH, input);
+  }
+
+  /** DELETE /v1/memory: forget everything the account keeps (any plan). */
+  async forgetMemory(): Promise<void> {
+    await this.http.request("DELETE", MEMORY_PATH);
+  }
+
   voiceEngines(): Promise<VoiceEnginesResponse> {
     return this.http.json(VoiceEnginesResponse, "GET", VOICE_ENGINES_PATH, undefined, { auth: false });
   }

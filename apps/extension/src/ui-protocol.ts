@@ -6,16 +6,19 @@
  * messages on it.
  */
 import type {
+  ApprovalAnswer,
   BrainKind,
   ExtensionSettings,
   HelperInfo,
   LocalTask,
-  RepeatRule,
+  MemoryEntry,
+  RepeatSchedule,
   SessionInfo,
   StampedAgentEvent,
   TraceEvent,
 } from "@browsertodo/shared";
 import type { TraceBook } from "./trace/trace-book.js";
+import type { MemorySyncStatus } from "./memory/sync.js";
 import type { RealtimeTicketResult, VoiceEnginesResult } from "./voice/realtime-access.js";
 import type { VoiceClipRequest, VoiceTranscribeResult } from "./voice/transcribe.js";
 import type { ApiKeyInfo, CreatedApiKey, CreditInfo, KeyRole, PlanId, PlanInfo } from "./account/types.js";
@@ -31,12 +34,16 @@ export interface UiMediaUpload {
   dataBase64: string;
 }
 
-/** An edit of a task that is not running: only the fields given change (null clears). */
+/**
+ * An edit of a task that is not running: only the fields given change (null
+ * clears). A new repeat rule goes with its first time (notBefore; none: its
+ * next time); notBefore alone moves only the time.
+ */
 export interface TaskPatch {
   instructions?: string;
   account?: string | null;
   notBefore?: string | null;
-  repeat?: RepeatRule | null;
+  repeat?: RepeatSchedule | null;
 }
 
 export interface LocalMediaInfo {
@@ -118,6 +125,11 @@ export interface UiState {
   tabChats?: Record<string, string>;
   /** The tabs each running session acts in right now (session id -> tab ids, its main tab first). */
   runningTabs?: Record<string, number[]>;
+  /**
+   * Signed in to another account than this computer's memory was synced with: nothing is sent until the user
+   * answers "Add this computer's memory to <account>?" (memory.syncChoice). Absent: nothing to ask.
+   */
+  memoryQuestion?: { account: string };
 }
 
 export type UiRequest =
@@ -139,6 +151,8 @@ export type UiRequest =
       screen?: boolean;
       /** Correlation id of this message in the conversation's trace (the panel's own timings of it carry the same). */
       cid?: string;
+      /** The new chat was started with memory off (its SessionInfo.memoryOff). */
+      memoryOff?: true;
     }
   /** Run everything that is due now (local, then cloud if enabled). */
   | { type: "run.due" }
@@ -158,14 +172,35 @@ export type UiRequest =
    * tabId: the browser tab the message was sent from; the conversation
    * belongs to it (and a new one acts there). voice: the text was spoken.
    */
-  | { type: "run.message"; sessionId?: string; text: string; tabId?: number; screen?: boolean; voice?: boolean; cid?: string }
+  | { type: "run.message"; sessionId?: string; text: string; tabId?: number; screen?: boolean; voice?: boolean; cid?: string; memoryOff?: true }
   /**
    * The conversation is over: close its kept-open agent session (a running
    * turn keeps running). tabId: that tab has no conversation any more.
    */
   | { type: "run.newChat"; sessionId?: string; tabId?: number }
-  /** A run picked in the Activity log: the conversation now belongs to this browser tab (it leaves any other tab). */
+  /** A run picked in History: the conversation now belongs to this browser tab (it leaves any other tab). */
   | { type: "chat.bind"; sessionId: string; tabId: number }
+  /** Undo on a scheduled card: the task the agent put in the TODO list (schedule_task) is deleted, and the card says so. */
+  | { type: "chat.undoScheduled"; sessionId: string; taskId: string }
+  /** Undo on a "Remembered" note: that memory change is undone (the entry is as it was before), and the note says so. */
+  | { type: "memory.undo"; sessionId: string; changeId: string }
+  /** Memory on or off for one conversation (the composer's menu). */
+  | { type: "chat.setMemory"; sessionId: string; on: boolean }
+  /** Settings > Memory: every entry the agent keeps. */
+  | { type: "memory.list" }
+  /** The user's edit of an entry (refused when it holds a secret). */
+  | { type: "memory.edit"; id: string; subject: string; text: string }
+  | { type: "memory.delete"; id: string }
+  /** Settings > Memory: give this entry at the start of every turn (pinned), or only when it is relevant. */
+  | { type: "memory.pin"; id: string; pinned: boolean }
+  /** Delete everything one repeating task keeps (its run notes and records). */
+  | { type: "memory.deleteTask"; taskKey: string }
+  /** Forget everything. */
+  | { type: "memory.clear" }
+  /** The answer to "Add this computer's memory to <account>?" (UiState.memoryQuestion): add it, or keep it separate. */
+  | { type: "memory.syncChoice"; add: boolean }
+  /** The user's answer on an approval card (or by voice): the waiting action runs or is refused. */
+  | { type: "approval.answer"; sessionId: string; id: string; answer: ApprovalAnswer; by?: "voice" }
   /** Switch to a browser tab (another tab's chat): activates it and focuses its window. */
   | { type: "tab.focus"; tabId: number }
   /** Bring the agent's tab to the front: the session's, or the first agent tab. */
@@ -180,10 +215,12 @@ export type UiRequest =
       instructions: string;
       account?: string;
       notBefore?: string;
-      repeat?: RepeatRule;
+      repeat?: RepeatSchedule;
       media?: UiMediaUpload[];
     }
   | { type: "tasks.update"; id: string; patch: TaskPatch }
+  /** Run on a TODO row: that task now, whatever its time (a stopped one starts over). */
+  | { type: "tasks.run"; id: string }
   | { type: "tasks.delete"; id: string }
   | { type: "tasks.retry"; id: string }
   /** Account tasks only: pending or paused tasks stop without running. */
@@ -256,6 +293,22 @@ export interface UiResults {
   "run.message": { sessionId: string; mode: MessageMode };
   "run.newChat": { ok: boolean };
   "chat.bind": UiState;
+  "chat.undoScheduled": { ok: boolean };
+  "memory.undo": { ok: boolean };
+  "chat.setMemory": { session: SessionInfo };
+  /** sync: whether memory syncs with the account (absent: this build has no sync). */
+  "memory.list": { entries: MemoryEntry[]; sync?: MemorySyncStatus };
+  "memory.edit": { entry: MemoryEntry };
+  "memory.delete": { ok: boolean };
+  "memory.pin": { entry: MemoryEntry };
+  /** How many entries went. */
+  "memory.deleteTask": { removed: number };
+  /** How many entries were forgotten. */
+  "memory.clear": { removed: number };
+  /** Whether memory syncs now. */
+  "memory.syncChoice": { sync: MemorySyncStatus };
+  /** ok false: the request no longer waits (answered, timed out, its turn ended). */
+  "approval.answer": { ok: boolean };
   "tab.focus": { ok: boolean };
   "agent.show": { ok: boolean };
   "run.say": { ok: boolean };
@@ -266,6 +319,7 @@ export interface UiResults {
   "tasks.list": { tasks: (LocalTask & { media: LocalMediaInfo[] })[]; locked: boolean; source?: "local" | "account" };
   "tasks.add": { task: LocalTask };
   "tasks.update": { task: LocalTask };
+  "tasks.run": { sessionId: string };
   "tasks.delete": { ok: boolean };
   "tasks.retry": { task: LocalTask };
   "tasks.cancel": { task: LocalTask };

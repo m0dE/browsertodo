@@ -277,7 +277,8 @@ describe("AccountService: moving local tasks into the account", () => {
     expect(r).toEqual({ moved: 2, failed: 0, errors: [] });
     const creates = t.api.calls.filter((c) => c.path === "/v1/tasks").map((c) => c.body);
     expect(creates).toEqual([
-      { instructions: "Post gm", account: "alpha", notBefore: "2026-09-25T09:00:00.000Z", mediaIds: ["M1"], repeat: { dailyAt: ["09:00"] }, tz: "Asia/Seoul" },
+      // A task stored with the old { dailyAt } rule moves as cron in the browser's zone.
+      { instructions: "Post gm", account: "alpha", mediaIds: ["M1"], schedule: { at: "2026-09-25T09:00:00.000Z", repeat: { cron: "0 9 * * *", tz: "Asia/Seoul" } } },
       { instructions: "Check mail" },
     ]);
     expect(t.api.calls.find((c) => c.path === "/v1/media")!.body).toEqual({ file: { name: "m1.jpg", size: 3, type: "image/jpeg" } });

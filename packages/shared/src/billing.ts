@@ -16,12 +16,29 @@ export type PaidPlanId = z.infer<typeof PaidPlanId>;
 export const PlanStatus = z.enum(["active", "past_due", "canceled", "none"]);
 export type PlanStatus = z.infer<typeof PlanStatus>;
 
+/**
+ * Where the effective plan comes from: a Stripe subscription (or none, on Free), or a
+ * complimentary plan an admin gave (docs/BILLING-CONTRACT.md, "Complimentary plans").
+ */
+export const PlanSource = z.enum(["stripe", "complimentary"]);
+export type PlanSource = z.infer<typeof PlanSource>;
+
+/**
+ * The user's effective plan: the higher of the Stripe plan (in good standing) and an
+ * unexpired complimentary plan. Every feature check reads this.
+ */
 export const PlanInfo = z.object({
   id: PlanId,
   /** "none" for free. */
   status: PlanStatus,
   currentPeriodEnd: z.string().nullable(),
   cancelAtPeriodEnd: z.boolean(),
+  /** Absent from older servers: "stripe". */
+  source: PlanSource.optional(),
+  /** complimentary: when it ends (null = no end). */
+  compExpiresAt: z.string().nullable().optional(),
+  /** A Stripe subscription in good standing exists (the customer portal manages it); false for complimentary-only users. */
+  hasSubscription: z.boolean().optional(),
 });
 export type PlanInfo = z.infer<typeof PlanInfo>;
 
@@ -37,8 +54,8 @@ export const CreditInfo = z.object({
 });
 export type CreditInfo = z.infer<typeof CreditInfo>;
 
-/** GET /v1/me. */
-export const MeResponse = User.extend({ plan: PlanInfo, credit: CreditInfo });
+/** GET /v1/me. `isAdmin` is sent (true) only to admins (ADMIN_EMAILS): the dashboard then shows its Admin page. */
+export const MeResponse = User.extend({ plan: PlanInfo, credit: CreditInfo, isAdmin: z.literal(true).optional() });
 export type MeResponse = z.infer<typeof MeResponse>;
 
 export const PlanCatalogEntry = z.object({
@@ -285,3 +302,117 @@ export type DeleteAccountInput = z.infer<typeof DeleteAccountInput>;
 /** GET/PATCH /v1/me/settings (server addition: the monthly email report flag). */
 export const AccountSettings = z.object({ reportEmailEnabled: z.boolean() });
 export type AccountSettings = z.infer<typeof AccountSettings>;
+
+// ---- Admin (/v1/admin/*, the dashboard's Admin page) ----------------------------
+// Only admins reach these routes (ADMIN_EMAILS or the ADMIN_KEY); everyone else gets 404.
+// Not in the public OpenAPI document. docs/BILLING-CONTRACT.md, "Admin".
+
+/** A user's complimentary plan as stored (also after it expired: `active` false). */
+export const CompPlan = z.object({
+  plan: PaidPlanId,
+  startedAt: z.string(),
+  /** null = no end. */
+  expiresAt: z.string().nullable(),
+  /** The plan's monthly usage credit each period (as a paid plan gets); false = features only. */
+  monthlyCredit: z.boolean(),
+  note: z.string().nullable(),
+  grantedBy: z.string().nullable(),
+  active: z.boolean(),
+});
+export type CompPlan = z.infer<typeof CompPlan>;
+
+/** The Stripe side of a user, as the webhooks keep it. */
+export const StripePlanState = z.object({
+  plan: PlanId,
+  status: PlanStatus,
+  currentPeriodEnd: z.string().nullable(),
+  cancelAtPeriodEnd: z.boolean(),
+  customerId: z.string().nullable(),
+  subscriptionId: z.string().nullable(),
+});
+export type StripePlanState = z.infer<typeof StripePlanState>;
+
+/** One row of the admin user list. */
+export const AdminUserSummary = User.extend({
+  createdAt: z.string(),
+  /** Latest of sign-in, session use and hosted-AI use. */
+  lastActiveAt: z.string().nullable(),
+  /** Effective plan (what every feature check uses). */
+  plan: PlanInfo,
+  stripe: StripePlanState,
+  comp: CompPlan.nullable(),
+  /** Unexpired credit left (whole cents, rounded down; may be negative after an overdraw). */
+  creditCents: z.number(),
+  /** This UTC month's hosted-AI usage. */
+  usageCents: z.number(),
+  aiRequests: z.number().int(),
+});
+export type AdminUserSummary = z.infer<typeof AdminUserSummary>;
+
+/** Which users GET /v1/admin/users lists: everyone, complimentary plans (active or expired), or Stripe plans in good standing. */
+export const AdminUserFilter = z.enum(["all", "comp", "paid"]);
+export type AdminUserFilter = z.infer<typeof AdminUserFilter>;
+
+/** GET /v1/admin/users?q=&filter=&limit= (most recently active first). */
+export const AdminUserList = z.object({ users: z.array(AdminUserSummary), month: z.string(), limit: z.number().int() });
+export type AdminUserList = z.infer<typeof AdminUserList>;
+
+export const AdminAction = z.enum(["comp.give", "comp.update", "comp.remove", "credit.add"]);
+export type AdminAction = z.infer<typeof AdminAction>;
+
+export const AdminAuditEntry = z.object({
+  id: z.number().int(),
+  at: z.string(),
+  /** The admin's email, or "ADMIN_KEY". */
+  admin: z.string(),
+  action: z.string(),
+  targetUserId: z.string().nullable(),
+  targetEmail: z.string().nullable(),
+  before: z.unknown(),
+  after: z.unknown(),
+  note: z.string().nullable(),
+});
+export type AdminAuditEntry = z.infer<typeof AdminAuditEntry>;
+
+/** GET /v1/admin/audit?userId=&limit= (newest first). */
+export const AdminAuditList = z.object({ entries: z.array(AdminAuditEntry) });
+export type AdminAuditList = z.infer<typeof AdminAuditList>;
+
+/** GET /v1/admin/users/:id?month=YYYY-MM: the summary plus credit, the month's usage and the user's audit log. */
+export const AdminUserDetail = AdminUserSummary.extend({
+  credit: CreditInfo,
+  usage: UsageReport,
+  audit: z.array(AdminAuditEntry),
+});
+export type AdminUserDetail = z.infer<typeof AdminUserDetail>;
+
+const AdminNote = z.string().trim().max(500);
+/** An ISO 8601 instant (the dashboard sends the end of the chosen day, UTC). */
+const Instant = z.iso.datetime({ offset: true });
+
+/** PUT /v1/admin/users/:id/comp: give (or replace) a complimentary plan; a new monthly credit period starts now. */
+export const GiveCompInput = z.object({
+  plan: PaidPlanId,
+  /** null = no end. Must be in the future. */
+  expiresAt: Instant.nullable(),
+  note: AdminNote.optional(),
+  /** Default true: the plan's monthly usage credit, as a paid plan gets. */
+  monthlyCredit: z.boolean().default(true),
+});
+export type GiveCompInput = z.input<typeof GiveCompInput>;
+
+/** PATCH /v1/admin/users/:id/comp: change the end date (null = no end) or the note of an active complimentary plan. */
+export const UpdateCompInput = z
+  .object({ expiresAt: Instant.nullable().optional(), note: AdminNote.optional() })
+  .refine((v) => v.expiresAt !== undefined || v.note !== undefined, { message: "send expiresAt or note" });
+export type UpdateCompInput = z.infer<typeof UpdateCompInput>;
+
+/** Largest one-off credit an admin can add at once, in cents ($1,000). */
+export const ADMIN_CREDIT_MAX_CENTS = 100_000;
+
+/** POST /v1/admin/users/:id/credit: a one-off top-up that never expires (a ledger entry). */
+export const AdminCreditInput = z.object({
+  amountCents: z.number().int().positive().max(ADMIN_CREDIT_MAX_CENTS),
+  reason: z.string().trim().min(1).max(500),
+});
+export type AdminCreditInput = z.infer<typeof AdminCreditInput>;

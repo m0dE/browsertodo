@@ -4,7 +4,7 @@ import {
   hostedModel,
   OUT_OF_CREDIT,
   plural,
-  taskNextTime,
+  isDueNow,
   type BrainKind,
   type Chip,
   type LocalTask,
@@ -101,27 +101,26 @@ export function trimUrlEnd(url: string): string {
 type Timing = Pick<LocalTask, "status" | "notBefore" | "retryAfter">;
 
 /**
- * The TODO tab's Run now button: enabled when a task is due (or the cloud
- * queue may have one). account: the list is the signed-in account's.
+ * The TODO tab's "Run due (N)": N counts the tasks the next check would start
+ * (isDueNow, the scheduler's own test). Hidden when there are none, unless
+ * cloud sync (the runner-key queue) may have some. account: the list is the
+ * signed-in account's.
  */
-export function runNowButton(
+export function runDueButton(
   tasks: readonly Timing[],
   settings: { intervalMinutes: number; cloudEnabled: boolean } | null,
   now = Date.now(),
   account = false,
-): { disabled: boolean; title: string } {
-  const due = tasks.some((t) => {
-    if (t.status !== "pending") return false;
-    const next = taskNextTime(t);
-    return !next || Date.parse(next) <= now;
-  });
+): { hidden: boolean; count: number; label: string; title: string } {
+  const count = tasks.filter((t) => isDueNow(t, now, account ? "account" : "local")).length;
   const cloud = !account && !!settings?.cloudEnabled;
-  if (!due && !cloud) return { disabled: true, title: "Nothing is waiting to run" };
   const n = settings?.intervalMinutes;
   const every = n ? ` (every ${plural(n, "minute")})` : "";
   return {
-    disabled: false,
-    title: `Run the tasks whose time has come${cloud ? " and check the cloud queue" : ""}, instead of waiting for the next check${every}`,
+    hidden: count === 0 && !cloud,
+    count,
+    label: count ? `Run due (${count})` : "Run due",
+    title: `Run ${count ? `the ${plural(count, "task")} whose time has come` : "what is due"}${cloud ? " and check the cloud queue" : ""} now, instead of waiting for the next check${every}`,
   };
 }
 

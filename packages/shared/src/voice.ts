@@ -222,7 +222,7 @@ export const REALTIME_VOICES = ["marin", "cedar", "alloy", "ash", "ballad", "cor
 export const RealtimeVoiceId = z.enum(REALTIME_VOICES);
 export type RealtimeVoiceId = z.infer<typeof RealtimeVoiceId>;
 /** The narrator's voice unless the user picks another. */
-export const DEFAULT_REALTIME_VOICE: RealtimeVoiceId = "marin";
+export const DEFAULT_REALTIME_VOICE: RealtimeVoiceId = "ash";
 /** OpenAI's recommended voices (shown first, marked). */
 export const RECOMMENDED_REALTIME_VOICES: ReadonlySet<RealtimeVoiceId> = new Set(["marin", "cedar"]);
 

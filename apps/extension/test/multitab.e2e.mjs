@@ -8,11 +8,29 @@ import { driverCall, launchExtension } from "../../../test/e2e/lib/extension.mjs
 import { serveHtml } from "../../../test/e2e/lib/serve.mjs";
 import { createSuite, sleep } from "../../../test/e2e/lib/suite.mjs";
 
+/** Polls until check() is true (at most 5 s). */
+async function waitForValue(check) {
+  for (const end = Date.now() + 5000; Date.now() < end; await sleep(100)) if (await check()) return;
+  throw new Error("timed out");
+}
+
 const PAGES = 5;
 /** Server latency per page, like a real site (Gmail takes far longer). */
 const PAGE_DELAY_MS = 400;
 
+/** Forms submitted on the page a button opens in a new tab (like X's "Generate with Grok"). */
+const submitted = [];
 const site = await serveHtml(async (path) => {
+  if (path === "/compose") {
+    return `<!doctype html><title>Compose</title><h1>Compose</h1><button onclick="window.open('/generate', '_blank')">Generate with Grok</button>`;
+  }
+  if (path.startsWith("/generated")) {
+    submitted.push(new URL(path, "http://x").searchParams.get("prompt"));
+    return `<!doctype html><title>Generated</title><h1>Here is your image</h1>`;
+  }
+  if (path.startsWith("/generate")) {
+    return `<!doctype html><title>Generate image</title><h1>Generate an image</h1><form action="/generated" method="get"><label>Prompt <input name="prompt"></label><button>Generate</button></form>`;
+  }
   const m = /^\/mail\/(\d+)/.exec(path);
   if (!m) {
     const links = Array.from({ length: PAGES }, (_, i) => `<li><a href="/mail/${i + 1}">Message ${i + 1}</a></li>`).join("");
@@ -86,7 +104,7 @@ try {
     }, mainTab);
     assert.equal(out.mainActive, true);
     assert.deepEqual(out.active, [mainTab]);
-    assert.ok(out.groups.every((g) => g === "browsertodo"), JSON.stringify(out.groups));
+    assert.ok(out.groups.every((g) => g === "BrowserTODO"), JSON.stringify(out.groups));
     assert.equal(out.windows, 1, "all in the agent's window");
     assert.equal(out.attached, PAGES + 1);
     return `${out.attached} tabs attached, only the main tab active`;
@@ -137,6 +155,40 @@ try {
     });
     assert.deepEqual(attached, [mainTab]);
     return "main tab kept, debugger only on it";
+  });
+
+  await step("a button that opens a new tab: the tab joins the run, a result says so, and the agent works in it", async () => {
+    // A turn is running in slot 0 (only then does a page's new tab join the run).
+    await evalSw(() => globalThis.__browsertodo.slots.take(0, "e2e-newtab"));
+    await call("navigate", { url: `${base}/compose` });
+    const before = await tabCount();
+    let snap = await call("readPage");
+    const button = snap.elements.find((e) => e.name === "Generate with Grok");
+    const click = await call("click", { index: button.index });
+    // The page opens the tab after the click: the note comes with that result or the next one.
+    let note = click.note;
+    const t0 = Date.now();
+    while (!note && Date.now() - t0 < 3000) note = (await call("readPage")).note;
+    assert.match(note ?? "", /^A new tab opened from the page: (t\d+) "[^"]*" http:\/\/127\.0\.0\.1:\d+\/generate\. Your current tab is still the one you were in: use switch_tab t\d+/, note);
+    const id = /switch_tab (t\d+)/.exec(note)[1];
+    assert.equal(await tabCount(), before + 1);
+    const listed = await call("listTabs");
+    assert.ok(listed.tabs.some((t) => t.id === id), JSON.stringify(listed.tabs));
+    await call("switchTab", { tab: id });
+    snap = await call("readPage");
+    assert.equal(snap.title, "Generate image");
+    await call("type", { index: snap.elements.find((e) => e.name === "Prompt").index, text: "a red fox" });
+    snap = await call("readPage");
+    await call("click", { index: snap.elements.find((e) => e.name === "Generate").index });
+    await waitForValue(() => submitted.length > 0);
+    assert.deepEqual(submitted, ["a red fox"]);
+    const shot = await call("screenshot");
+    assert.equal(shot.mimeType, "image/jpeg");
+    await evalSw(() => globalThis.__browsertodo.slots.release(0, "e2e-newtab", { keepTabs: false }));
+    await sleep(300);
+    // A tab the page opened stays when the run ends (it may hold what the user wanted).
+    assert.equal(await tabCount(), before + 1);
+    return `${id} joined the run; form filled and sent there; screenshot ${shot.base64.length} chars`;
   });
 
   console.log(

@@ -1,0 +1,245 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import { memoryTaskKey, type ExtensionSettings, type MemoryKind, type SessionInfo } from "@browsertodo/shared";
+import { SessionStore } from "../../src/engine/sessions.js";
+import { MemoryService, isMemoryRequest } from "../../src/memory/service.js";
+import { MemoryStore } from "../../src/memory/store.js";
+import { MemoryKvDb } from "../memory-kv.js";
+import { memoryStorage } from "./fakes.js";
+
+const NOW = "2026-09-26T10:00:00.000Z";
+const session = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo => ({ sessionId: id, source: "adhoc", title: "Chat", brain: "claude-api", jev: false, startedAt: NOW, ...extra });
+const DAILY = { instructions: "Post one tip about Mecha Royale on X", account: "@mecharoyalecom" };
+
+let settings: Pick<ExtensionSettings, "memoryPaused" | "memoryKindsOff">;
+let sessions: SessionStore;
+let store: MemoryStore;
+let memory: MemoryService;
+let changes: number;
+
+beforeEach(async () => {
+  settings = { memoryPaused: false, memoryKindsOff: [] as MemoryKind[] };
+  sessions = new SessionStore(new MemoryKvDb(), { now: () => new Date(NOW) });
+  let ids = 0;
+  store = new MemoryStore({ storage: memoryStorage(), now: () => new Date(NOW), newId: () => `m${++ids}` });
+  changes = 0;
+  memory = new MemoryService({ store, sessions, settings: async () => settings, newChangeId: () => `c${++changes}` });
+  await sessions.create(session("chat"));
+  await sessions.create(session("run1", { source: "local", title: DAILY.instructions }));
+});
+
+const events = async (id: string) => {
+  await sessions.flush();
+  return sessions.eventsOf(id);
+};
+
+describe("remember", () => {
+  it("keeps a fact from a chat and notes it in the chat for Undo", async () => {
+    await memory.begin("chat", { title: "Check my inbox", request: "check my work inbox" });
+    const r = await memory.tool("chat", "remember", { kind: "account", subject: "Work email", text: "admin@runhq.io is the work Gmail, Google /u/2" });
+    expect(r).toEqual({ text: "Remembered [m1] Work email. The user sees it in the chat with Undo." });
+    const [entry] = await store.list();
+    expect(entry).toMatchObject({ scope: "global", source: { kind: "chat", sessionId: "chat", title: "Check my inbox" } });
+    expect(await events("chat")).toEqual([expect.objectContaining({ type: "memory", changeId: "c1", before: null, after: entry })]);
+  });
+
+  it("refuses secrets and says how to phrase it instead", async () => {
+    const r = await memory.tool("chat", "remember", { kind: "account", subject: "Bank", text: "password: hunter22" });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/Not saved: .*Site logins/);
+    expect(await store.list()).toEqual([]);
+    expect(await events("chat")).toEqual([]);
+  });
+
+  it("refuses a password the agent was handed this run, even in plain words", async () => {
+    const r = await memory.tool("chat", "remember", { kind: "account", subject: "Shop", text: "signs in with correcthorse" }, { knownSecret: (t) => t.includes("correcthorse") });
+    expect(r).toEqual({ text: expect.stringMatching(/password you were given/), isError: true });
+    expect(await store.list()).toEqual([]);
+  });
+
+  it("settles the scope: a playbook needs its site, task history needs a repeating task", async () => {
+    expect((await memory.tool("chat", "remember", { kind: "playbook", subject: "Compose", text: "C opens it" })).text).toMatch(/give its domain/);
+    expect((await memory.tool("chat", "remember", { kind: "playbook", subject: "Compose", text: "C opens it", domain: "gmail" })).text).toMatch(/not a site's host/);
+    expect((await memory.tool("chat", "remember", { kind: "task", subject: "Posted", text: "topic A" })).text).toMatch(/no repeating task here/);
+    await memory.tool("chat", "remember", { kind: "playbook", subject: "Compose", text: "C opens it", domain: "https://www.Mail.Google.com/mail/u/0" });
+    expect(await store.list()).toEqual([expect.objectContaining({ scope: "domain", domain: "mail.google.com" })]);
+  });
+
+  it("an update replaces the entry and the note keeps what it was", async () => {
+    await memory.tool("chat", "remember", { kind: "playbook", subject: "Compose", text: "top left", domain: "x.com" });
+    const r = await memory.tool("chat", "remember", { kind: "playbook", subject: "Compose", text: "moved to the left rail", domain: "x.com" });
+    expect(r.text).toMatch(/^Updated \[m1\]/);
+    const last = (await events("chat")).at(-1);
+    expect(last).toMatchObject({ type: "memory", before: { text: "top left" }, after: { text: "moved to the left rail" } });
+  });
+
+  it("does nothing while memory is paused, off in this chat, or the kind is off", async () => {
+    settings.memoryPaused = true;
+    expect(await memory.tool("chat", "remember", { kind: "preference", subject: "Tone", text: "calm" })).toEqual({ text: expect.stringMatching(/paused by the user/), isError: true });
+    settings.memoryPaused = false;
+    await memory.handle({ type: "chat.setMemory", sessionId: "chat", on: false });
+    expect((await memory.tool("chat", "remember", { kind: "preference", subject: "Tone", text: "calm" })).text).toMatch(/off in this chat/);
+    expect((await memory.tool("chat", "recall", { query: "tone" })).text).toMatch(/off in this chat/);
+    await memory.handle({ type: "chat.setMemory", sessionId: "chat", on: true });
+    settings.memoryKindsOff = ["preference"];
+    expect((await memory.tool("chat", "remember", { kind: "preference", subject: "Tone", text: "calm" })).text).toMatch(/turned off Preferences/);
+    expect(await store.list()).toEqual([]);
+  });
+});
+
+describe("recall and forget", () => {
+  it("recall lists matches with their ids and marks them used", async () => {
+    await memory.tool("chat", "remember", { kind: "person", subject: "Paul Lee", text: "The user's accountant" });
+    expect((await memory.tool("chat", "recall", { query: "who is Paul" })).text).toBe("- [m1] Paul Lee: The user's accountant");
+    expect((await store.get("m1"))?.lastUsedAt).toBe(NOW);
+    expect((await memory.tool("chat", "recall", { query: "zebra" })).text).toMatch(/Nothing in memory matches/);
+  });
+
+  it("forget removes an entry (named with or without brackets) and notes it", async () => {
+    await memory.tool("chat", "remember", { kind: "person", subject: "Paul Lee", text: "accountant" });
+    expect((await memory.tool("chat", "forget", { id: "[m1]" })).text).toMatch(/^Forgot \[m1\] Paul Lee/);
+    expect(await store.list()).toEqual([]);
+    expect((await memory.tool("chat", "forget", { id: "m1" })).isError).toBe(true);
+    expect((await events("chat")).at(-1)).toMatchObject({ type: "memory", after: null, before: { id: "m1" } });
+  });
+});
+
+describe("Undo on the chat's note", () => {
+  it("puts the entry back as it was before the change, once", async () => {
+    await memory.tool("chat", "remember", { kind: "preference", subject: "Tone", text: "calm" }); // c1
+    await memory.tool("chat", "remember", { kind: "preference", subject: "Tone", text: "cheerful" }); // c2
+    await memory.tool("chat", "forget", { id: "m1" }); // c3
+    await memory.handle({ type: "memory.undo", sessionId: "chat", changeId: "c3" });
+    expect((await store.get("m1"))?.text).toBe("cheerful");
+    await memory.handle({ type: "memory.undo", sessionId: "chat", changeId: "c2" });
+    expect((await store.get("m1"))?.text).toBe("calm");
+    await memory.handle({ type: "memory.undo", sessionId: "chat", changeId: "c1" });
+    expect(await store.list()).toEqual([]);
+    // Twice is harmless; another chat's change is refused.
+    expect(await memory.handle({ type: "memory.undo", sessionId: "chat", changeId: "c1" })).toEqual({ ok: true });
+    expect(await store.list()).toEqual([]);
+    await expect(memory.handle({ type: "memory.undo", sessionId: "run1", changeId: "c1" })).rejects.toThrow(/not made in this chat/);
+    expect((await events("chat")).filter((e) => e.type === "memory_undone")).toHaveLength(3);
+  });
+});
+
+describe("a repeating task's memory", () => {
+  it("the first run's note is given to the second run (a new task row with the same instructions)", async () => {
+    await memory.begin("run1", { task: DAILY, title: DAILY.instructions, request: DAILY.instructions });
+    await memory.runNote("run1", "Posted the tip about the new arena map. Next: the ranked season.");
+    const [note] = await store.list();
+    expect(note).toMatchObject({ kind: "task", scope: "task", subject: "Run note", taskKey: memoryTaskKey(DAILY.instructions, DAILY.account), taskTitle: DAILY.instructions });
+    expect((await events("run1")).at(-1)).toMatchObject({ type: "memory", after: { id: note!.id } });
+
+    await sessions.create(session("run2", { source: "local", title: DAILY.instructions }));
+    const given = await memory.begin("run2", { task: DAILY, title: DAILY.instructions, request: DAILY.instructions });
+    expect(given?.text).toMatch(/Task history:\n- \[m1\] 2026-09-26 Run note: Posted the tip about the new arena map/);
+    // A chat is not that task: it gets no run notes.
+    expect(await memory.begin("chat", { title: "hi", request: DAILY.instructions })).toBeUndefined();
+  });
+
+  it("no note for a chat, while memory is off, or with task history off; a secret-looking note is refused in the chat", async () => {
+    await memory.begin("chat", { title: "hi", request: "hi" });
+    await memory.runNote("chat", "did things");
+    await memory.begin("run1", { task: DAILY, title: DAILY.instructions, request: DAILY.instructions });
+    settings.memoryKindsOff = ["task"];
+    await memory.runNote("run1", "did things");
+    expect(await store.list()).toEqual([]);
+    settings.memoryKindsOff = [];
+    await memory.runNote("run1", "Signed in with the code 482913");
+    expect(await store.list()).toEqual([]);
+    expect((await events("run1")).at(-1)).toMatchObject({ type: "status", text: expect.stringMatching(/^Run note not saved: .*one-time code/) });
+  });
+});
+
+describe("begin", () => {
+  it("gives what applies to the turn and marks it used; nothing when paused or off in the chat", async () => {
+    await memory.tool("chat", "remember", { kind: "playbook", subject: "Work inbox", text: "Open /mail/u/2/ directly", domain: "mail.google.com" });
+    const got = await memory.begin("chat", { title: "Check", request: "any new mail?", tabUrl: "https://mail.google.com/mail/u/0/#inbox" });
+    expect(got?.entries.map((e) => e.id)).toEqual(["m1"]);
+    expect(got?.text).toMatch(/Site playbooks:\n- \[m1\] Work inbox \(mail.google.com\): Open/);
+    settings.memoryPaused = true;
+    expect(await memory.begin("chat", { title: "Check", request: "any new mail?", tabUrl: "https://mail.google.com/" })).toBeUndefined();
+  });
+});
+
+describe("Settings requests", () => {
+  it("list, edit (with the secret check), delete and forget everything", async () => {
+    await memory.tool("chat", "remember", { kind: "person", subject: "Paul Lee", text: "accountant" });
+    await memory.tool("chat", "remember", { kind: "preference", subject: "Tone", text: "calm" });
+    expect(isMemoryRequest({ type: "memory.list" })).toBe(true);
+    expect(isMemoryRequest({ type: "vault.list" })).toBe(false);
+    expect((await memory.handle({ type: "memory.list" })).entries).toHaveLength(2);
+    expect(await memory.handle({ type: "memory.edit", id: "m1", subject: "Paul Lee", text: "accountant since 2020" })).toMatchObject({ entry: { text: "accountant since 2020" } });
+    await expect(memory.handle({ type: "memory.edit", id: "m1", subject: "Paul Lee", text: "PIN: 4821" })).rejects.toThrow(/Not saved/);
+    expect(await memory.handle({ type: "memory.delete", id: "m1" })).toEqual({ ok: true });
+    expect(await memory.handle({ type: "memory.clear" })).toEqual({ removed: 1 });
+  });
+});
+
+// Examples only: a task that works through many separate things, each known by an identifier.
+describe("a task's records (remember and recall with a key)", () => {
+  const QUEUE = { instructions: "Work through the queue at https://queue.example and answer each item", account: null };
+  const begin = (id: string, extra: { request?: string; tabUrl?: string; tabTitle?: string } = {}) =>
+    memory.begin(id, { task: QUEUE, title: QUEUE.instructions, request: extra.request ?? QUEUE.instructions, ...extra });
+
+  beforeEach(async () => {
+    await sessions.create(session("q1", { source: "local", title: QUEUE.instructions }));
+    await sessions.create(session("q2", { source: "local", title: QUEUE.instructions }));
+  });
+
+  it("files facts under a key, and the next run gets them by key or when the page names it", async () => {
+    await begin("q1");
+    expect((await memory.tool("q1", "remember", { kind: "task", key: "Ada.Lee@example.com", text: "Prefers email; wrote about the March invoice." })).text).toBe(
+      "Started this task's record [m1] for key Ada.Lee@example.com. The user sees it in the chat with Undo.",
+    );
+    expect((await memory.tool("q1", "remember", { kind: "person", key: "ada.lee@example.com", text: "Invoice resent." })).text).toMatch(/^Added a note to this task's record \[m1\]/);
+    expect((await memory.tool("q1", "remember", { kind: "task", key: "ada.lee@example.com", text: "Invoice resent." })).text).toMatch(/^Already in this task's record/);
+    expect(await store.list()).toEqual([expect.objectContaining({ kind: "task", key: "ada.lee@example.com", notes: [expect.objectContaining({ text: "Invoice resent." })] })]);
+
+    // The next run (a new task row, same instructions): recall by key, however it is written.
+    await begin("q2");
+    expect((await memory.tool("q2", "recall", { key: "ADA.LEE@EXAMPLE.COM" })).text).toBe(
+      "- [m1] key Ada.Lee@example.com: Prefers email; wrote about the March invoice. · 2026-09-26: Invoice resent.",
+    );
+    expect((await memory.tool("q2", "recall", { key: "someone@example.com" })).text).toBe("This task has no record for key someone@example.com yet.");
+    expect((await memory.tool("q2", "recall", { query: "march invoice" })).text).toMatch(/^- \[m1\] key Ada/);
+    // Given at a turn's start when the user's tab names the key.
+    const given = await begin("q2", { tabUrl: "https://queue.example/items/77", tabTitle: "Reply to ada.lee@example.com" });
+    expect(given?.entries.map((e) => e.id)).toEqual(["m1"]);
+    expect(given?.text).toMatch(/Task records \(by key\):\n- \[m1\] key Ada\.Lee@example\.com/);
+  });
+
+  it("a key is only for a repeating task's records", async () => {
+    await memory.begin("chat", { title: "hi", request: "hi" });
+    expect((await memory.tool("chat", "remember", { kind: "task", key: "48213", text: "Refund sent." })).text).toMatch(/not a repeating task/);
+    expect((await memory.tool("chat", "recall", { key: "48213" })).text).toMatch(/not a repeating task/);
+    await begin("q1");
+    expect((await memory.tool("q1", "remember", { kind: "task", key: "48213", text: "Refund sent.", scope: "global" })).text).toMatch(/only for this task's records/);
+    expect((await memory.tool("q1", "remember", { kind: "task", key: "--", text: "Refund sent." })).text).toMatch(/no letters or digits/);
+    expect((await memory.tool("q1", "remember", { kind: "person", text: "no subject" })).text).toMatch(/subject is required/);
+    expect((await memory.tool("q1", "recall", {})).text).toMatch(/needs a query .* or a key/);
+    settings.memoryKindsOff = ["task"];
+    expect((await memory.tool("q1", "remember", { kind: "task", key: "48213", text: "Refund sent." })).text).toMatch(/turned off Task history/);
+    expect(await store.list()).toEqual([]);
+  });
+
+  it("another task never sees these records", async () => {
+    await begin("q1");
+    await memory.tool("q1", "remember", { kind: "task", key: "48213", text: "Refund sent." });
+    await memory.begin("run1", { task: DAILY, title: DAILY.instructions, request: "about 48213" });
+    expect((await memory.tool("run1", "recall", { key: "48213" })).text).toMatch(/no record/);
+    expect((await memory.tool("run1", "recall", { query: "48213 refund" })).text).toMatch(/Nothing in memory matches/);
+    expect(await memory.begin("run1", { task: DAILY, title: DAILY.instructions, request: "about 48213" })).toBeUndefined();
+  });
+
+  it("Settings deletes one task's memory, and answers the account question", async () => {
+    await begin("q1");
+    await memory.tool("q1", "remember", { kind: "task", key: "48213", text: "Refund sent." });
+    await memory.runNote("q1", "Answered 3 items.");
+    await memory.tool("chat", "remember", { kind: "preference", subject: "Tone", text: "calm" });
+    const taskKey = (await store.list())[0]!.taskKey!;
+    expect(await memory.handle({ type: "memory.deleteTask", taskKey })).toEqual({ removed: 2 });
+    expect((await store.list()).map((e) => e.subject)).toEqual(["Tone"]);
+    await expect(memory.handle({ type: "memory.syncChoice", add: true })).rejects.toThrow(/does not sync/);
+  });
+});

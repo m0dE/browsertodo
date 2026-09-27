@@ -13,7 +13,7 @@ export const RUN_LOG_MAX_BYTES = 256 * 1024;
 export function readRunLog(runsDir: string, path: string, maxBytes = RUN_LOG_MAX_BYTES): { text: string; truncated: boolean } {
   const full = resolve(path);
   const rel = relative(resolve(runsDir), full);
-  if (!path || rel.startsWith("..") || isAbsolute(rel)) throw new Error("not a browsertodo run log");
+  if (!path || rel.startsWith("..") || isAbsolute(rel)) throw new Error("not a BrowserTODO run log");
   const limit = Math.max(1, Math.min(RUN_LOG_MAX_BYTES, Math.trunc(maxBytes) || RUN_LOG_MAX_BYTES));
   const fd = openSync(full, "r");
   try {

@@ -222,5 +222,24 @@ export function snapshotPage(marks: PageMarks, maxText: number, maxElements: num
     .trim()
     .slice(0, maxText);
 
-  return { url: location.href, title: document.title, text: text, elements: elements, truncated: truncated };
+  // Frames of other sites (not other extensions'): shown, but their content cannot be read from this page.
+  var frames: { url: string; title: string }[] = [];
+  var iframes = document.querySelectorAll("iframe");
+  for (var f = 0; f < iframes.length && frames.length < 5; f++) {
+    var frame = iframes[f]!;
+    var src = frame.src || "";
+    if (!/^https?:/i.test(src) || !isVisible(frame)) continue;
+    var box = frame.getBoundingClientRect();
+    if (box.width < 40 || box.height < 40) continue;
+    var sameSite = false;
+    try {
+      sameSite = new URL(src).origin === location.origin;
+    } catch (e) {
+      /* not a URL */
+    }
+    if (!sameSite) frames.push({ url: src.slice(0, 200), title: clean(frame.title || frame.getAttribute("aria-label"), 80) });
+  }
+  var snap: PageSnapshot = { url: location.href, title: document.title, text: text, elements: elements, truncated: truncated };
+  if (frames.length) snap.frames = frames;
+  return snap;
 }

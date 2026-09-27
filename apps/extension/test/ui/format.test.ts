@@ -5,8 +5,6 @@ import {
   formatBytes,
   formatCents,
   formatRelative,
-  localInputToIso,
-  parseRepeatTimes,
   planName,
   planStatusText,
   repeatLabel,
@@ -71,30 +69,6 @@ describe("times", () => {
     expect(clockLabel(at(23, 0, -1), NOW)).toBe("yesterday 23:00");
     expect(clockLabel(at(8, 0, 6), NOW)).toBe("Sep 30 08:00");
   });
-  it("localInputToIso", () => {
-    const iso = localInputToIso("2026-09-25T09:30");
-    expect(iso).toBe(new Date(2026, 8, 25, 9, 30).toISOString());
-    expect(localInputToIso("")).toBeUndefined();
-    expect(localInputToIso("garbage")).toBeUndefined();
-  });
-});
-
-describe("parseRepeatTimes", () => {
-  it("normalizes, sorts and dedupes", () => {
-    expect(parseRepeatTimes("18:30, 9:00 09:00;7.15")).toEqual({ ok: true, times: ["07:15", "09:00", "18:30"] });
-  });
-  it("empty means no repeat", () => {
-    expect(parseRepeatTimes("  ")).toEqual({ ok: true, times: [] });
-  });
-  it("rejects bad times", () => {
-    expect(parseRepeatTimes("9:00, 24:00")).toEqual({ ok: false, error: '"24:00" is not a time like 09:30' });
-    expect(parseRepeatTimes("noon").ok).toBe(false);
-    expect(parseRepeatTimes("9:60").ok).toBe(false);
-  });
-  it("caps at 24 times", () => {
-    const many = Array.from({ length: 25 }, (_, i) => `${Math.floor(i / 2)}:${i % 2 ? "30" : "00"}`).join(",");
-    expect(parseRepeatTimes(many).ok).toBe(false);
-  });
 });
 
 describe("tasks", () => {
@@ -125,7 +99,8 @@ describe("tasks", () => {
     expect(finished.map((x) => x.id)).toEqual(["new-fail", "old-done"]);
   });
   it("labels", () => {
-    expect(repeatLabel({ dailyAt: ["09:00", "18:00"] })).toBe("daily at 09:00, 18:00");
+    expect(repeatLabel({ cron: "0 9,18 * * *", tz: "UTC" }, { hour12: true })).toBe("Daily at 9:00 AM and 6:00 PM");
+    expect(repeatLabel({ cron: "0 9 * * 1-5", tz: "UTC", end: "2026-12-31" }, { hour12: false, now: new Date("2026-09-24T00:00:00Z") })).toBe("Every weekday at 09:00, until Dec 31");
     expect(repeatLabel(null)).toBe("");
     expect(accountLabel("myhandle")).toBe("@myhandle");
     expect(accountLabel("@myhandle")).toBe("@myhandle");

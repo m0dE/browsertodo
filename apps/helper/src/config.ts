@@ -13,6 +13,14 @@ import { ENV } from "./env-names.js";
 /** Reported in helper.hello and by the MCP server: the version in apps/helper/package.json (bundled at build time). */
 export const HELPER_VERSION: string = helperPackage.version;
 
+/**
+ * Claude Code's thinking when BROWSERTODO_THINKING does not say. Off: on the
+ * benchmark kit (2026-09-27, 3 runs per task, Claude Code + Jev) it was as
+ * correct (15/15) and no slower on the four small tasks, and 2.6x faster on
+ * the heavy mail task (median 16.0 s vs 42.0 s; one thinking run spent 35 s
+ * before its first tool call). See test/bench/results/*-d-all-* and *-e-all-nothink-*.
+ */
+export const DEFAULT_THINKING: "on" | "off" = "off";
 /** Claude Code's model alias when neither the extension nor BROWSERTODO_MODEL names a model. */
 export const DEFAULT_CLAUDE_MODEL = "sonnet";
 
@@ -30,6 +38,8 @@ export interface HelperConfig {
   typesafeApiKey: string | null;
   brain: HelperBrain;
   model: string;
+  /** Claude Code's extended thinking (BROWSERTODO_THINKING). */
+  thinking: boolean;
   /** The merged environment (.env files, then process.env). */
   env: Record<string, string | undefined>;
 }
@@ -102,6 +112,7 @@ export function loadConfig(
     typesafeApiKey: key ? key : null,
     brain: env[ENV.brain] === "scripted" ? "scripted" : "claude",
     model: env[ENV.model]?.trim() || DEFAULT_CLAUDE_MODEL,
+    thinking: (env[ENV.thinking]?.trim().toLowerCase() || DEFAULT_THINKING) === "on",
     env,
   };
 }

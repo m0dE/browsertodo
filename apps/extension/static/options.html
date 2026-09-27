@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>browsertodo settings</title>
+    <title>BrowserTODO settings</title>
     <link rel="stylesheet" href="ui.css" />
     <link rel="stylesheet" href="options.css" />
   </head>
@@ -56,7 +56,7 @@
                   <p id="acct-note" class="note" hidden></p>
                   <div id="acct-billing" class="acct-billing">
                     <button id="acct-billing-open" type="button" class="primary billing-open">Choose a plan</button>
-                    <p class="hint">Plans, top-ups and invoices are on your browsertodo dashboard.</p>
+                    <p class="hint">Plans, top-ups and invoices are on your BrowserTODO dashboard.</p>
                   </div>
                   <div class="row">
                     <button id="acct-dashboard" type="button" class="small link">Usage on the dashboard</button>
@@ -87,7 +87,7 @@
                 <p id="keys-locked-text" class="hint"></p>
                 <div id="keys-billing" class="keys-gate">
                   <button id="keys-billing-open" type="button" class="primary billing-open">Choose a plan</button>
-                  <p class="hint">Plans, top-ups and invoices are on your browsertodo dashboard.</p>
+                  <p class="hint">Plans, top-ups and invoices are on your BrowserTODO dashboard.</p>
                 </div>
               </div>
               <div id="keys-body" class="keys-body" hidden>
@@ -200,16 +200,37 @@
             </div>
           </div>
 
+          <div class="group" id="automation-group">
+            <h2 class="group-title" id="h-automation">Automation</h2>
+            <p class="group-hint">What the chat agent may do without asking you. Actions that wait show a card in the chat with Allow and Deny.</p>
+            <!-- Filled from automation.ts by automation-section.ts. -->
+            <div class="box options" id="automation-levels" role="radiogroup" aria-labelledby="h-automation"></div>
+            <p id="automation-warning" class="note" data-tone="bad" role="status" hidden></p>
+            <h3 class="group-subtitle" id="h-scheduled-automation">Scheduled tasks (TODO list)</h3>
+            <div class="box options" id="scheduled-automation" role="radiogroup" aria-labelledby="h-scheduled-automation"></div>
+            <p id="automation-msg" class="msg" role="status"></p>
+          </div>
+
+          <!-- Inside the settings form, so no form of its own: automation-section.ts closes it with the answer. -->
+          <dialog id="automation-confirm" class="confirm-dialog" aria-labelledby="automation-confirm-title">
+            <h2 id="automation-confirm-title"></h2>
+            <div id="automation-confirm-body"></div>
+            <div class="row dialog-actions">
+              <button type="button" id="automation-confirm-cancel" class="small primary" autofocus></button>
+              <button type="button" id="automation-confirm-ok" class="small danger"></button>
+            </div>
+          </dialog>
+
           <div class="group" id="jev-group">
             <h2 class="group-title">Speed (Jev)</h2>
             <p class="group-hint">Optional. Jev handles simple clicks and typing faster than Claude. Without it, Claude does every step.</p>
             <div class="box">
               <div class="srow">
-                <label class="srow-label" for="f-jevEnabled"><b>Use Jev</b><small>Speeds up single steps when a key is available.</small></label>
+                <label class="srow-label" for="f-jevEnabled"><b>Use Jev</b><small id="jev-use-hint"></small></label>
                 <div class="srow-control end"><span class="switch"><input id="f-jevEnabled" type="checkbox" role="switch" /></span></div>
               </div>
               <div class="reveal" id="jev-fields"><div class="reveal-inner">
-                <div class="srow">
+                <div class="srow" id="jev-key-row">
                   <div class="srow-label"><b>Jev API key</b><small id="jev-source"></small></div>
                   <div class="srow-control"><div class="field secret" data-secret="jevApiKey"><span class="sr-only">Jev API key</span></div></div>
                 </div>
@@ -218,7 +239,7 @@
                   <div class="srow-control"><input id="f-jevThreshold" type="number" step="0.05" aria-describedby="err-jevThreshold" /><small id="err-jevThreshold" class="field-error"></small></div>
                 </div>
                 <div class="srow">
-                  <div class="srow-label"><b>Check Jev</b><small>Sends one test request.</small></div>
+                  <div class="srow-label"><b>Check Jev</b><small id="jev-test-hint"></small></div>
                   <div class="srow-control"><div class="row"><button id="test-jev" type="button" class="small">Test Jev</button><span id="test-jev-msg" class="msg" role="status"></span></div></div>
                 </div>
               </div></div>
@@ -227,7 +248,7 @@
 
           <div class="group" id="voice-group">
             <h2 class="group-title" id="h-voice">Voice</h2>
-            <p class="group-hint">Hands-free voice (<span id="voice-group-key">the voice shortcut</span>): talk to browsertodo while it works; it answers with short spoken summaries.</p>
+            <p class="group-hint">Hands-free voice (<span id="voice-group-key">the voice shortcut</span>): talk to BrowserTODO while it works; it answers with short spoken summaries.</p>
             <div class="box options" role="radiogroup" aria-labelledby="h-voice">
               <div class="opt" data-voice="realtime">
                 <label class="opt-head">
@@ -258,6 +279,12 @@
                 <div class="srow-control"><div class="row"><button id="speech-test" type="button" class="small">Test voice</button><span id="speech-test-msg" class="msg" role="status"></span></div></div>
               </div>
             </div>
+            <div class="box">
+              <div class="srow">
+                <label class="srow-label" for="voice-sounds"><b>Sounds</b><small>A short, soft sound when the microphone turns on and when it turns off.</small></label>
+                <div class="srow-control end"><span class="switch"><input id="voice-sounds" type="checkbox" role="switch" /></span></div>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -268,7 +295,7 @@
             <h2 class="group-title">Keyboard shortcuts</h2>
             <div class="box">
               <div class="srow">
-                <div class="srow-label"><b>Open browsertodo</b><small>Opens the side panel with the cursor in the chat, on any page while Chrome is in front.</small></div>
+                <div class="srow-label"><b>Open BrowserTODO</b><small>Opens the side panel with the cursor in the chat, on any page while Chrome is in front.</small></div>
                 <div class="srow-control shortcut"><kbd id="shortcut-key" class="shortcut-key">Not set</kbd><button id="shortcut-change" type="button" class="ghost small">Change</button></div>
               </div>
               <div class="srow">
@@ -374,6 +401,45 @@
                 </div>
               </div>
               <span id="vault-msg" class="msg" role="status"></span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Memory (memory-section.ts) -->
+        <section class="panel" id="panel-memory" role="tabpanel" aria-labelledby="tab-memory" tabindex="-1" hidden>
+          <div class="group" id="memory-group">
+            <h2 class="group-title">Memory</h2>
+            <p class="group-hint">What the agent keeps between chats and runs, so it doesn't have to find things out again. It never keeps passwords, codes or keys. The chat shows “Remembered” with Undo whenever it saves something.</p>
+            <div class="box">
+              <div class="srow">
+                <label class="srow-label" for="memory-on"><b>Use memory</b><small>Off pauses it for every chat and task. You can also turn it off for one chat in the chat's model menu.</small></label>
+                <div class="srow-control end"><span class="switch"><input id="memory-on" type="checkbox" role="switch" /></span></div>
+              </div>
+              <p id="memory-paused-note" class="mem-paused" role="status" hidden></p>
+              <p id="memory-sync" class="mem-sync" role="status" hidden></p>
+              <div id="memory-sync-actions" class="mem-sync-actions" hidden></div>
+            </div>
+          </div>
+          <div class="group">
+            <h2 class="group-title">What it remembers</h2>
+            <p id="memory-msg" class="msg mem-msg" role="status"></p>
+            <p id="memory-empty" class="group-hint" hidden>Nothing yet. As the agent works it saves lasting facts here: your preferences, which account is which, who people are, how sites work, and what repeating tasks did last time.</p>
+            <div class="mem-search-row">
+              <input id="memory-search" class="mem-search" type="search" placeholder="Search memory" aria-label="Search memory" spellcheck="false" autocomplete="off" hidden />
+              <span id="memory-found" class="mem-found" role="status" hidden></span>
+            </div>
+            <div id="memory-kinds" class="mem-kinds"></div>
+          </div>
+          <div class="group">
+            <h2 class="group-title">Forget everything</h2>
+            <div class="box pad">
+              <p class="hint">Deletes every memory, on this computer and in your account. The agent starts from nothing.</p>
+              <div class="row">
+                <button id="memory-forget" type="button" class="small danger">Forget everything</button>
+                <button id="memory-forget-cancel" type="button" class="small ghost" hidden>Cancel</button>
+              </div>
+              <!-- Below the buttons: asking must not move the button the second click confirms. -->
+              <p id="memory-forget-question" class="mem-question" role="status"></p>
             </div>
           </div>
         </section>

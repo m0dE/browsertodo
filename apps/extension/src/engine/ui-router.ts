@@ -2,7 +2,7 @@
  * Background side of ui-protocol.ts: answers every UiRequest. The pushes to
  * the side panel are in ui-hub.ts.
  */
-import { errorMessage, IssuableKeyRole, MAX_TRACE_TEXT, redactSettings, type ExtensionSettings, type HelperInfo, type HelperMethods, type TraceCategory, type TraceEvent, type TraceValue } from "@browsertodo/shared";
+import { ApprovalAnswer, errorMessage, IssuableKeyRole, MAX_TRACE_TEXT, redactSettings, type ExtensionSettings, type HelperInfo, type HelperMethods, type TraceCategory, type TraceEvent, type TraceValue } from "@browsertodo/shared";
 import type { AccountService } from "../account/account.js";
 import { LocalTodo, type TodoSource } from "../account/todo-source.js";
 import { HELPER_CALL_TIMEOUT_MS } from "../helper-link.js";
@@ -10,17 +10,20 @@ import type { BrainStatus, TraceEnv, UiRequest, UiResponse, UiResults, UiState }
 import { realtimeTicketForPanel, voiceEnginesForPanel, type RealtimeAccount } from "../voice/realtime-access.js";
 import { transcribeForPanel, type VoiceAccount } from "../voice/transcribe.js";
 import type { LocalStore } from "./local-store.js";
+import { TaskScheduler, type TodoAccess } from "./schedule-task.js";
+import { todoAllowed } from "../account/types.js";
 import { uploadToBlob } from "./local-store.js";
 import type { AdhocInput } from "./run/jobs.js";
 import type { Runner } from "./runner.js";
 import type { SessionStore } from "./sessions.js";
 import type { TestResult } from "./settings-tests.js";
 import { WrongPassphraseError, type Vault } from "../vault.js";
+import { isMemoryRequest, type MemoryService } from "../memory/service.js";
 
 /** The runner as the router uses it. */
 export type RouterRunner = Pick<
   Runner,
-  "running" | "runningSessions" | "state" | "runDue" | "runAdhoc" | "continueSession" | "message" | "newChat" | "stop" | "say" | "pauseSchedule" | "resumeSchedule"
+  "running" | "runningSessions" | "state" | "runDue" | "runTask" | "runAdhoc" | "continueSession" | "message" | "newChat" | "stop" | "say" | "pauseSchedule" | "resumeSchedule"
 >;
 
 export type RouterVault = Pick<Vault, "unlock" | "lock" | "list" | "set" | "delete" | "reset">;
@@ -53,7 +56,8 @@ export interface UiRouterDeps {
   brainStatus(settings: ExtensionSettings): BrainStatus;
   nextRunAt(): Promise<string | undefined>;
   testClaude(settings: ExtensionSettings): Promise<TestResult>;
-  testJev(settings: ExtensionSettings): Promise<TestResult>;
+  /** Tests the Jev that `brain` (the settings resolved) would use. */
+  testJev(settings: ExtensionSettings, brain: BrainStatus): Promise<TestResult>;
   testCloud(settings: ExtensionSettings): Promise<TestResult>;
   vault: RouterVault;
   /** The browsertodo account. Absent: no account features (always signed out). */
@@ -72,6 +76,12 @@ export interface UiRouterDeps {
   focusTab?(tabId: number): Promise<boolean>;
   /** Where conversations run (extension, browser, OS, helper), for the Raw view's export. */
   traceEnv?(): Promise<TraceEnv>;
+  /** Approval requests waiting for the user (approval/broker.ts). Absent: nothing waits, and answers are refused. */
+  approvals?: { answer(sessionId: string, id: string, answer: ApprovalAnswer, by?: "voice"): boolean };
+  /** The agent's memory: Settings > Memory, Undo on the chat's notes, memory off for a chat. Absent: refused. */
+  memory?: Pick<MemoryService, "handle">;
+  /** "Add this computer's memory to <account>?" while it waits for the user (UiState.memoryQuestion); null: nothing to ask. */
+  memoryQuestion?(): Promise<{ account: string } | null>;
 }
 
 /** The helper log's last lines for helper.getLog: by default, and at most. */
@@ -82,7 +92,26 @@ const MAX_LOG_LINES = 2000;
 export type ExtraRequest = { type: "helper.getLog"; lines: number };
 
 export class UiRouter {
-  constructor(private readonly deps: UiRouterDeps) {}
+  /**
+   * schedule_task: puts the agent's task in the TODO tab's list (the account's, on a plan with the TODO list)
+   * and answers the chat card's Undo. The brains call it for their session (engine/schedule-task.ts).
+   */
+  readonly scheduler: TaskScheduler;
+
+  constructor(private readonly deps: UiRouterDeps) {
+    this.scheduler = new TaskScheduler({
+      todo: () => this.todo(),
+      access: () => this.todoAccess(),
+      sessions: deps.sessions,
+    });
+  }
+
+  /** Whether there is a TODO list to schedule into, as the TODO tab judges it: signed in, on a plan with it. */
+  private async todoAccess(): Promise<TodoAccess> {
+    const view = await this.deps.account?.view();
+    if (!view?.signedIn) return "signed-out";
+    return todoAllowed(view.plan) ? "ok" : "no-plan";
+  }
 
   async getState(): Promise<UiState> {
     const d = this.deps;
@@ -106,6 +135,8 @@ export class UiRouter {
     if (account) state.account = account;
     if (d.tabChats) state.tabChats = await d.tabChats.all().catch(() => ({}));
     if (d.runningTabs) state.runningTabs = await d.runningTabs().catch(() => ({}));
+    const memoryQuestion = d.memoryQuestion ? await d.memoryQuestion().catch(() => null) : null;
+    if (memoryQuestion) state.memoryQuestion = memoryQuestion;
     if (settings.paused && rs.pausedReason) state.pausedReason = rs.pausedReason;
     if (rs.lastRunAt) state.lastRunAt = rs.lastRunAt;
     if (rs.lastError) state.lastError = rs.lastError;
@@ -144,6 +175,10 @@ export class UiRouter {
 
   private async dispatch(msg: UiRequest | ExtraRequest): Promise<unknown> {
     const d = this.deps;
+    if (isMemoryRequest(msg)) {
+      if (!d.memory) throw new Error("Memory is not available");
+      return d.memory.handle(msg);
+    }
     switch (msg.type) {
       case "state.get":
         return this.getState();
@@ -152,8 +187,12 @@ export class UiRouter {
         return this.getState();
       case "settings.testClaude":
         return d.testClaude(await d.loadSettings()) satisfies Promise<UiResults["settings.testClaude"]>;
-      case "settings.testJev":
-        return d.testJev(await d.loadSettings());
+      case "settings.testJev": {
+        // The account first, as for state.get: the brain status reads its cached session.
+        await d.account?.view().catch(() => undefined);
+        const settings = await d.loadSettings();
+        return d.testJev(settings, d.brainStatus(settings));
+      }
       case "settings.testCloud":
         return d.testCloud(await d.loadSettings());
       case "helper.connect":
@@ -170,6 +209,7 @@ export class UiRouter {
         const tab = optTab(msg.tabId);
         if (tab !== undefined) input.tabId = tab;
         if (msg.screen === true) input.screen = true;
+        if (msg.memoryOff === true) input.memoryOff = true;
         return d.runner.runAdhoc(input, optCid(msg.cid)) satisfies Promise<UiResults["run.adhoc"]>;
       }
       case "run.continue": {
@@ -192,6 +232,7 @@ export class UiRouter {
           ...(screen ? { screen } : {}),
           ...(voice ? { voice } : {}),
           ...(cid ? { cid } : {}),
+          ...(msg.memoryOff === true ? { memoryOff: true } : {}),
         }) satisfies Promise<UiResults["run.message"]>;
       }
       case "run.newChat": {
@@ -214,8 +255,28 @@ export class UiRouter {
         await d.tabChats.bind(tab, sessionId);
         return this.getState() satisfies Promise<UiResults["chat.bind"]>;
       }
+      case "chat.undoScheduled": {
+        const sessionId = optId(msg.sessionId);
+        const taskId = optId(msg.taskId);
+        if (!sessionId || !taskId) throw new Error("sessionId and taskId are required");
+        await this.scheduler.undo(sessionId, taskId);
+        return { ok: true } satisfies UiResults["chat.undoScheduled"];
+      }
+      case "approval.answer": {
+        const sessionId = optId(msg.sessionId);
+        const id = optId(msg.id);
+        const answer = ApprovalAnswer.safeParse(msg.answer);
+        if (!sessionId || !id || !answer.success) throw new Error("sessionId, id and answer are required");
+        const ok = d.approvals?.answer(sessionId, id, answer.data, msg.by === "voice" ? "voice" : undefined) ?? false;
+        return { ok } satisfies UiResults["approval.answer"];
+      }
       case "run.due":
         return d.runner.runDue("manual");
+      case "tasks.run": {
+        const id = optId(msg.id);
+        if (!id) throw new Error("id is required");
+        return d.runner.runTask(id) satisfies Promise<UiResults["tasks.run"]>;
+      }
       case "run.stop":
         return { ok: d.runner.stop(optId(msg.sessionId)) } satisfies UiResults["run.stop"];
       case "agent.show":

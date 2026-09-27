@@ -12,7 +12,8 @@ const HEARTBEAT_MS = 2 * 60_000;
 
 /** The cloud task API as the runner uses it (ApiClient). */
 export interface RunnerApi {
-  claim(runnerId: string): Promise<ClaimResponse | null>;
+  /** The next due task (null: none), or with taskId that task now (Run on its row). */
+  claim(runnerId: string, taskId?: string): Promise<ClaimResponse | null>;
   heartbeat(taskId: string, runnerId: string): Promise<unknown>;
   result(taskId: string, body: ResultInput): Promise<void>;
   uploadMedia(blob: Blob, filename: string): Promise<MediaInfo>;
@@ -33,6 +34,8 @@ export interface AdhocInput {
   screen?: boolean;
   /** The instructions were spoken (the session's first message is marked). */
   voice?: boolean;
+  /** The new chat was started with memory off (SessionInfo.memoryOff). */
+  memoryOff?: boolean;
 }
 
 export type LocalJob = { source: "local"; task: StoredLocalTask };

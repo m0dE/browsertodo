@@ -1,22 +1,18 @@
 import type { AgentEvent } from "@browsertodo/shared";
+import type { Interjections } from "@browsertodo/core";
 import type { EventLogger } from "../logger.js";
 
 /**
- * "message": typed while a turn runs (the brain may add its own framing).
- * "followup": the next user turn in a kept-open session, already framed by the runner.
- */
-export type UserMessageKind = "message" | "followup";
-
-/**
- * Messages the human types into a session. The brain subscribes. The task
- * runner closes it to end the session: after a task_* call for single-turn
- * brains (Claude Code's stdin is then closed so the process can exit), or
- * when a kept-open session is ended.
+ * The user's next turns in a kept-open session (already framed by the
+ * runner). The brain subscribes. The task runner closes it to end the
+ * session: after a task_* call for single-turn brains (Claude Code's stdin is
+ * then closed so the process can exit), or when a kept-open session is ended.
+ * Messages typed while a turn runs are not here: see BrainContext.interjections.
  */
 export class UserInput {
-  private listener: ((text: string, kind: UserMessageKind) => void) | null = null;
+  private listener: ((text: string) => void) | null = null;
   private readonly closeListeners: (() => void)[] = [];
-  private readonly queue: [string, UserMessageKind][] = [];
+  private readonly queue: string[] = [];
   private isClosed = false;
 
   get closed(): boolean {
@@ -24,17 +20,17 @@ export class UserInput {
   }
 
   /** Returns false when the input is already closed. */
-  push(text: string, kind: UserMessageKind = "message"): boolean {
+  push(text: string): boolean {
     if (this.isClosed) return false;
-    if (this.listener) this.listener(text, kind);
-    else this.queue.push([text, kind]);
+    if (this.listener) this.listener(text);
+    else this.queue.push(text);
     return true;
   }
 
   /** One subscriber; messages pushed before it subscribed are delivered right away. */
-  onMessage(fn: (text: string, kind: UserMessageKind) => void): void {
+  onMessage(fn: (text: string) => void): void {
     this.listener = fn;
-    for (const [t, k] of this.queue.splice(0)) fn(t, k);
+    for (const t of this.queue.splice(0)) fn(t);
   }
 
   onClose(fn: () => void): void {
@@ -71,8 +67,15 @@ export interface BrainContext {
   log: EventLogger;
   /** Sends an AgentEvent to the extension (helper.event) and the run log. */
   emit: (e: AgentEvent) => void;
-  /** Messages the human types (and, for persistent brains, follow-up turns). Closed: end gracefully. */
+  /** Follow-up turns (persistent brains). Closed: end gracefully. */
   input: UserInput;
+  /**
+   * Messages the user types while a turn runs. The tool executor hands them
+   * over with the next tool result and refuses task_* until the model read
+   * them; the brain delivers them itself when no tool result is coming (the
+   * model is only writing, or its turn ended).
+   */
+  interjections: Interjections;
   /** Persistent brains: the agent is waiting for input (its turn ended). Ends a turn that has no result yet. */
   idle?: () => void;
   /**

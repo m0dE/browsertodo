@@ -16,7 +16,7 @@
  * run and its checks), conversation.ts (next turns), record.ts (results),
  * state.ts (persisted state, keep-alive), deadline.ts (how long a run may take).
  */
-import { errorMessage, pauseReasonForUrl, SCREEN_HELP_TEXT, traceStart, type ExtensionSettings, type SessionInfo, type Sleep, type TraceValue } from "@browsertodo/shared";
+import { effectiveLevel, errorMessage, pauseReasonForUrl, SCREEN_HELP_TEXT, traceStart, type ExtensionSettings, type SessionInfo, type Sleep, type TraceValue } from "@browsertodo/shared";
 import type { SlotPool } from "../agent-slots.js";
 import { callSafely } from "../listeners.js";
 import type { TabChatsLike } from "../tab-chats.js";
@@ -31,11 +31,13 @@ import { ActiveSessions, pauseUrlStop, stopOf } from "./run/active.js";
 import { CONTINUE_TEXT, continueRefusal } from "./run/conversation.js";
 import { DueLoop } from "./run/due-loop.js";
 import { FailurePolicy } from "./run/failure-policy.js";
-import { turnJob, type AdhocInput, type AdhocJob, type RunnerApi, type TurnJob } from "./run/jobs.js";
+import { turnJob, type AdhocInput, type FirstJob, type RunnerApi, type TurnJob } from "./run/jobs.js";
 import { Lifecycle, type RunBrain } from "./run/lifecycle.js";
 import { ResultRecorder } from "./run/record.js";
 import { KeepAlive, RunnerStateStore, type RunnerState } from "./run/state.js";
 import { TurnRunner, type TabPage } from "./run/turn.js";
+import type { GateContext } from "../approval/gate.js";
+import type { MemoryService } from "../memory/service.js";
 
 export interface ResolvedBrain {
   brain: Brain | null;
@@ -58,6 +60,8 @@ export interface RunnerDeps {
   sessions: SessionStore;
   /** A browser tab's id, address and title (no tabId: the tab the user is looking at); see TurnDeps.pageOf. */
   pageOf?(tabId?: number): Promise<TabPage | null>;
+  /** The agent's long-term memory: given at each turn's start, and a repeating task's run note at its end. */
+  memory?: Pick<MemoryService, "begin" | "runNote">;
   media: { materialize(sessionId: string, sources: MediaSource[]): Promise<MaterializedMedia> };
   /** Resolves the brain for these settings; may (re)connect the helper. */
   resolveBrain(settings: ExtensionSettings): Promise<ResolvedBrain>;
@@ -86,8 +90,8 @@ export class Runner {
   private readonly live: ActiveSessions;
   /** Every job in flight (the due loop's and one-off ones). */
   private readonly jobs = new Set<Promise<unknown>>();
-  /** Conversations whose next turn is starting. */
-  private readonly startingTurns = new Set<string>();
+  /** Conversations whose next turn is starting, until its session exists (a message for it then goes into it). */
+  private readonly startingTurns = new Map<string, Promise<unknown>>();
   private reservations = 0;
   private readonly keepAlive: KeepAlive;
   private readonly runnerState: RunnerStateStore;
@@ -111,8 +115,10 @@ export class Runner {
       log,
       ...(deps.tabChats ? { tabChats: deps.tabChats } : {}),
       ...(deps.pageOf ? { pageOf: deps.pageOf } : {}),
+      ...(deps.memory ? { memory: deps.memory } : {}),
     });
     const recorder = new ResultRecorder({
+      ...(deps.memory ? { memory: deps.memory } : {}),
       localStore: deps.localStore,
       sessions: deps.sessions,
       patchState: (p) => this.runnerState.patch(p),
@@ -128,6 +134,12 @@ export class Runner {
       now,
       log,
       changed,
+      nextTurn: (sessionId, messages) => {
+        const text = messages.map((m) => m.text).join("\n\n");
+        this.message(sessionId, text, messages.some((m) => m.voice) ? { voice: true } : {}).catch((err: unknown) =>
+          this.log(`the next turn of ${sessionId} (messages sent while it closed) did not start: ${errorMessage(err)}`),
+        );
+      },
     });
     this.policy = new FailurePolicy({
       state: this.runnerState,
@@ -173,6 +185,21 @@ export class Runner {
     return this.live.all().map((a) => a.session);
   }
 
+  /**
+   * What the approval gate needs of a running session (approval/gate.ts): its
+   * automation level (scheduled runs have their own), the task's instructions,
+   * and when its turn's time limit ends.
+   */
+  async gateContext(sessionId: string): Promise<GateContext> {
+    const settings = await this.deps.loadSettings();
+    const a = this.live.get(sessionId);
+    return {
+      level: effectiveLevel(settings, a?.scheduled ?? false),
+      instructions: a?.instructions ?? a?.session.instructions ?? a?.session.title ?? "",
+      ...(a?.turnEndsAt ? { endsAt: a.turnEndsAt } : {}),
+    };
+  }
+
   /** Resolves when the due loop and every job have finished. */
   async idle(): Promise<void> {
     while (this.dueLoop.current || this.jobs.size) {
@@ -199,6 +226,36 @@ export class Runner {
   }
 
   /**
+   * "Run" on a TODO row: that task now, whatever its time, the way the due
+   * loop runs it (same lifecycle, results and repeat), in a free slot. A
+   * local task that stopped (failed, paused) starts over; an account task is
+   * claimed from the queue by id (the server starts a failed one over).
+   * Resolves once its session exists.
+   */
+  async runTask(taskId: string): Promise<{ sessionId: string }> {
+    const local = await this.deps.localStore.get(taskId);
+    if (!local) {
+      const api = (await this.deps.accountApi?.().catch(() => null)) ?? null;
+      if (!api) throw new Error("Log in with a plan that includes the TODO list to run this task");
+      const runnerId = await this.deps.getRunnerId();
+      return this.startOne(null, async () => {
+        const claim = await api.claim(runnerId, taskId);
+        if (!claim) throw new Error("That task cannot run now");
+        return { source: "cloud", claim, api, runnerId };
+      });
+    }
+    if (local.status === "running" || this.live.localRunning.has(taskId)) throw new Error("That task is already running");
+    // Held from now, so the due loop does not start it too; once its session is up, the session holds it.
+    this.live.localRunning.add(taskId);
+    try {
+      const task = local.status === "pending" ? local : await this.deps.localStore.retry(taskId);
+      return await this.startOne(null, async () => ({ source: "local", task }));
+    } finally {
+      if (!this.live.all().some((a) => a.localTaskId === taskId)) this.live.localRunning.delete(taskId);
+    }
+  }
+
+  /**
    * The user's message in a conversation (the side panel's box).
    * - The conversation's turn is running: typed into it ("inject").
    * - It ended: the next turn ("turn"; see run/conversation.ts).
@@ -213,7 +270,7 @@ export class Runner {
   async message(
     sessionId: string | null | undefined,
     text: string,
-    opts: { tabId?: number; screen?: boolean; voice?: boolean; cid?: string } = {},
+    opts: { tabId?: number; screen?: boolean; voice?: boolean; cid?: string; memoryOff?: boolean } = {},
   ): Promise<{ sessionId: string; mode: MessageMode }> {
     const screen = !!opts.screen && !text.trim();
     const t = screen ? SCREEN_HELP_TEXT : text.trim();
@@ -221,20 +278,27 @@ export class Runner {
     const tab = opts.tabId === undefined ? {} : { tabId: opts.tabId };
     const voice = !screen && !!opts.voice;
     if (!sessionId) {
-      const input: AdhocInput = { instructions: t, ...tab, ...(screen ? { screen } : {}), ...(voice ? { voice } : {}) };
+      const input: AdhocInput = { instructions: t, ...tab, ...(screen ? { screen } : {}), ...(voice ? { voice } : {}), ...(opts.memoryOff ? { memoryOff: true } : {}) };
       return { ...(await this.runAdhoc(input, opts.cid)), mode: "new" };
     }
     if (this.live.has(sessionId)) {
       if (screen) throw new Error("The agent is working on this page already; type a message, or Stop it first");
       if (opts.cid) this.deps.sessions.linkTrace(sessionId, opts.cid);
-      if (!(await this.say(t, sessionId, { voice }))) throw new Error("The agent did not take the message");
-      if (opts.tabId !== undefined) await this.turns.bindChat(opts.tabId, sessionId);
-      return { sessionId, mode: "inject" };
+      const mode = await this.deliver(t, sessionId, { voice });
+      if (!mode) throw new Error("The agent did not take the message");
+      if (opts.tabId !== undefined && mode === "inject") await this.turns.bindChat(opts.tabId, sessionId);
+      return { sessionId, mode };
     }
-    if (this.startingTurns.has(sessionId)) throw new Error("That conversation is already starting its next turn");
-    this.startingTurns.add(sessionId);
+    // Its next turn is starting: once its session exists, the message goes into that turn.
+    const starting = this.startingTurns.get(sessionId);
+    if (starting) {
+      await starting.catch(() => undefined);
+      return this.message(sessionId, text, opts);
+    }
+    const started = this.startOne(sessionId, () => turnJob(this.deps, sessionId, t, { screen, voice, ...tab }), opts.cid);
+    this.startingTurns.set(sessionId, started);
     try {
-      await this.startOne(sessionId, () => turnJob(this.deps, sessionId, t, { screen, voice, ...tab }), opts.cid);
+      await started;
     } finally {
       this.startingTurns.delete(sessionId);
     }
@@ -256,14 +320,16 @@ export class Runner {
   }
 
   /**
-   * New chat: the conversation is over. Its kept-open agent session is closed
-   * (a running turn is left alone; the UI just stops targeting it).
+   * New chat: the conversation is over. Its kept-open agent session and the
+   * tabs its agent opened are closed (a running turn is left alone; the UI
+   * just stops targeting it).
    */
   async newChat(sessionId?: string | null): Promise<{ ok: boolean }> {
     if (!sessionId || this.live.has(sessionId)) return { ok: true };
     const session = await this.deps.sessions.get(sessionId);
     if (!session) return { ok: false };
     this.live.slots.forget(sessionId);
+    await this.live.endChat(sessionId).catch((err: unknown) => this.log(`closing the tabs of ${sessionId} failed: ${errorMessage(err)}`));
     try {
       const { brain } = await this.deps.resolveBrain(await this.deps.loadSettings());
       if (brain?.kind === session.brain) await brain.end?.(sessionId);
@@ -291,12 +357,31 @@ export class Runner {
 
   /** Types into a running session (default: the one started last). voice: the text was spoken. */
   async say(text: string, sessionId?: string, opts: { voice?: boolean } = {}): Promise<boolean> {
+    return (await this.deliver(text, sessionId, opts)) !== null;
+  }
+
+  /**
+   * A message for a running session, whatever it is doing: into its brain's run ("inject"; held for the run
+   * while it starts), or, once the run is over and the session is closing, into its next turn ("turn", which
+   * starts when the session has ended). Null: no such session, or the run refused it.
+   */
+  private async deliver(text: string, sessionId: string | undefined, opts: { voice?: boolean }): Promise<"inject" | "turn" | null> {
     const a = sessionId ? this.live.get(sessionId) : this.live.last();
     const t = text.trim();
-    if (!a?.run || !t) return false;
+    if (!a || !t) return null;
+    const voice = !!opts.voice;
+    if (!a.run && a.runOver) {
+      // The next turn shows it as its own message.
+      a.nextTurn.push({ text: t, voice });
+      return "turn";
+    }
+    this.turns.emit(a, { type: "user_message", text: t, ...(voice ? { voice: true as const } : {}) });
+    if (!a.run) {
+      a.waiting.push(t);
+      return "inject";
+    }
     a.said.push(t);
-    this.turns.emit(a, { type: "user_message", text: t, ...(opts.voice ? { voice: true as const } : {}) });
-    return a.run.sendUserMessage(t);
+    return (await a.run.sendUserMessage(t)) ? "inject" : null;
   }
 
   async pauseSchedule(reason?: string): Promise<void> {
@@ -331,7 +416,7 @@ export class Runner {
     }
   }
 
-  /** The browser tab of a conversation was closed: its running turn stops (paused), the session stays in the Activity Log. */
+  /** The browser tab of a conversation was closed: its running turn stops (paused), the session stays in History. */
   onChatTabClosed(sessionId: string): boolean {
     const a = this.live.get(sessionId);
     if (!a || a.forced) return false;
@@ -350,7 +435,7 @@ export class Runner {
    * once its session exists (or is reopened). conversation: the session whose
    * next turn this is (it prefers the slot it used).
    */
-  private async startOne(conversation: string | null, makeJob: () => Promise<AdhocJob | TurnJob>, cid?: string): Promise<{ sessionId: string }> {
+  private async startOne(conversation: string | null, makeJob: () => Promise<FirstJob | TurnJob>, cid?: string): Promise<{ sessionId: string }> {
     const { slots } = this.live;
     // Reserved before anything async, so two quick starts never share a slot.
     const reservation = `starting:${++this.reservations}`;
@@ -361,7 +446,7 @@ export class Runner {
     this.hold();
     let settings: ExtensionSettings;
     let run: RunBrain;
-    let job: AdhocJob | TurnJob;
+    let job: FirstJob | TurnJob;
     // How long picking the brain took (it may connect the helper first), for the trace.
     const resolving = traceStart();
     let resolveMs = 0;

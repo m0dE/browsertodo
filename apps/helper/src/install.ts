@@ -36,7 +36,7 @@ export function isExtensionId(id: string): boolean {
 export function buildManifest(opts: { extensionId: string; launcherPath: string }) {
   return {
     name: NATIVE_HOST_NAME,
-    description: "browsertodo local helper",
+    description: "BrowserTODO local helper",
     path: opts.launcherPath,
     type: "stdio" as const,
     allowed_origins: [`chrome-extension://${opts.extensionId}/`],

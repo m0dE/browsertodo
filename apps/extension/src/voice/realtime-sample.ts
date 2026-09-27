@@ -60,7 +60,7 @@ export async function sayRealtimeSample(deps: SampleDeps): Promise<void> {
       speed: deps.speed,
       ...(deps.openSocket ? { open: deps.openSocket } : {}),
       handlers: {
-        onReady: () => client.note(`Say exactly: "${deps.text}"`, true),
+        onReady: () => client.note(`Say exactly: "${deps.text}"`, "result"),
         onAudio: (b64, itemId) => player.play(b64, itemId),
         onReplyDone: () => {
           replied = true;

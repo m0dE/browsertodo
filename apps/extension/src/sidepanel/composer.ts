@@ -22,13 +22,16 @@ import { initModelPicker } from "./model-menu.js";
 import { initNotices, type Notices } from "./notices.js";
 import { FollowUpSuggestion, suggestionDescription, type SuggestionOffer } from "./suggestion.js";
 import type { TabName } from "./tabs.js";
+import { ChatMemory } from "./chat-memory.js";
 
 export type ComposerMode = "new" | "conversation" | "running";
 
 /** The Chat placeholder: an empty send looks at the page. */
 export const SCREEN_PLACEHOLDER = "Figure out what to do based on the current screen";
+/** The placeholder while hands-free voice listens for this box's tab. */
+export const LISTENING_PLACEHOLDER = "Listening… just talk";
 /** The Send button's tooltip where an empty send looks at the page. */
-export const SCREEN_SEND_TITLE = "Describe a task, or press Enter to let browsertodo look at this page";
+export const SCREEN_SEND_TITLE = "Describe a task, or press Enter to let BrowserTODO look at this page";
 
 type EmptySendRequest = Extract<UiRequest, { type: "run.message" }> | Extract<UiRequest, { type: "run.adhoc" }>;
 
@@ -88,13 +91,15 @@ export interface ComposerView {
   showError(err: unknown): void;
   /** The notice line above the box (voice tips, hints, errors): one at a time, never over the box. */
   readonly notices: Notices;
+  /** Memory for the chat shown (the menu's switch); a new chat started elsewhere (voice) carries its choice too. */
+  readonly memory: ChatMemory;
 }
 
 /** The composer's own notices (progress, hints, failures of what it sent) go under this key: each replaces the last. */
 const NOTICE_KEY = "composer";
 
 const NEW_PLACEHOLDER = "Do this now, e.g. “Post ‘good morning’ on X”";
-const CHAT_PLACEHOLDER = "Message browsertodo…";
+const CHAT_PLACEHOLDER = "Message BrowserTODO…";
 const MAX_ROWS = 8;
 
 export function initComposer(opts: {
@@ -137,8 +142,27 @@ export function initComposer(opts: {
   const suggestion = new FollowUpSuggestion();
   /** The box's placeholder for the mode; the suggestion takes its place while it shows. */
   let placeholder = text.placeholder;
+  /** Hands-free voice listens for this tab (setDictating). */
+  let dictating = false;
   const files = filePicker(fileInput, filesList, () => queueMicrotask(() => render()));
-  const model = initModelPicker({ onState: opts.onState, onError: (text) => notices.show({ key: "model", level: "error", text }), onTopup: () => opts.onTopup?.() });
+  const memoryOff = $<HTMLButtonElement>("now-memory-off");
+  const memory = new ChatMemory({
+    tabId: () => opts.tabId?.() ?? null,
+    onChange: () => drawMemory(),
+    onError: (text) => notices.show({ key: "memory", level: "error", text }),
+  });
+  const model = initModelPicker({
+    onState: opts.onState,
+    onError: (text) => notices.show({ key: "model", level: "error", text }),
+    onTopup: () => opts.onTopup?.(),
+    memory: { view: () => memory.view(), toggle: () => void memory.toggle() },
+  });
+  /** The "memory off" button next to the model, and the menu's switch if it is open. */
+  function drawMemory(): void {
+    memoryOff.hidden = !memory.view().offBadge;
+    model.refresh();
+  }
+  memoryOff.addEventListener("click", () => void memory.toggle());
   // The attach control is a label around a hidden input; make it keyboard-operable.
   attach.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
@@ -166,7 +190,7 @@ export function initComposer(opts: {
     suggestionText.textContent = shown === null ? "" : suggestionDescription(shown);
     if (shown === null) text.removeAttribute("aria-describedby");
     else text.setAttribute("aria-describedby", suggestionText.id);
-    text.placeholder = shown === null ? placeholder : "";
+    text.placeholder = shown !== null ? "" : dictating ? LISTENING_PLACEHOLDER : placeholder;
   };
 
   /** Grow with the text (or the suggestion shown in it) up to MAX_ROWS lines, then scroll inside. */
@@ -265,7 +289,7 @@ export function initComposer(opts: {
         progress("Starting…");
         const media = await filesToUploads(files.files());
         // No account field here: the agent picks up accounts named in the text ("post this from @beta").
-        const { sessionId } = await uiRequest({ type: "run.adhoc", instructions: value, ...(media.length ? { media } : {}), ...tab(), ...sending.cid });
+        const { sessionId } = await uiRequest({ type: "run.adhoc", instructions: value, ...(media.length ? { media } : {}), ...tab(), ...sending.cid, ...memory.forNewChat() });
         sending.sent(sessionId, "new");
         clearInput();
         files.clear();
@@ -286,7 +310,7 @@ export function initComposer(opts: {
       submit,
       async () => {
         progress("Looking at the page…");
-        const { sessionId } = await uiRequest(next.request);
+        const { sessionId } = await uiRequest(next.request.type === "run.adhoc" ? { ...next.request, ...memory.forNewChat() } : next.request);
         settled();
         opts.onStarted(sessionId);
       },
@@ -327,6 +351,8 @@ export function initComposer(opts: {
     },
     setConversation(session) {
       shown = session;
+      memory.setConversation(session);
+      drawMemory();
       render();
     },
     target,
@@ -340,6 +366,7 @@ export function initComposer(opts: {
       text.scrollTop = text.scrollHeight;
     },
     setDictating(on) {
+      dictating = on;
       suggestion.setDictating(on);
       fit();
     },
@@ -370,11 +397,14 @@ export function initComposer(opts: {
     },
     setState(state) {
       model.setState(state);
+      memory.setPaused(state.settings.memoryPaused);
+      drawMemory();
     },
     showError(err) {
       showError(err);
     },
     notices,
+    memory,
   };
 
   render();

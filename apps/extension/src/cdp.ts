@@ -1,4 +1,13 @@
-import { errorMessage } from "@browsertodo/shared";
+import { delay, errorMessage } from "@browsertodo/shared";
+
+/**
+ * Chrome's answer while a tab's page is being swapped for another (a tab a
+ * page just opened, on its first navigation): the command did not run, and
+ * attaching again after a moment works.
+ */
+const NOT_ACTIVE_PAGE = /Not attached to an active page/i;
+/** Tries of a command that meets NOT_ACTIVE_PAGE, and the wait between them. */
+export const NOT_ACTIVE_RETRIES = { tries: 4, waitMs: 150 };
 
 /** Every command fails with this once the user canceled debugging from Chrome's infobar (failure classification reads it as final). */
 export const DEBUGGER_CANCELED = "The debugger was detached by the user (the Cancel button on Chrome's debugging bar)";
@@ -70,10 +79,19 @@ export class Cdp {
     return this.sendTo<T>(this.tabId, method, params);
   }
 
-  /** A command on any tab, attaching to it first when needed. */
+  /** A command on any tab, attaching to it first when needed (again, while its page is being swapped: see NOT_ACTIVE_PAGE). */
   async sendTo<T = Record<string, unknown>>(tabId: number, method: string, params?: Record<string, unknown>): Promise<T> {
-    await this.ensure(tabId);
-    return (await chrome.debugger.sendCommand({ tabId }, method, params)) as T;
+    for (let attempt = 1; ; attempt++) {
+      await this.ensure(tabId);
+      try {
+        return (await chrome.debugger.sendCommand({ tabId }, method, params)) as T;
+      } catch (err) {
+        if (attempt >= NOT_ACTIVE_RETRIES.tries || !NOT_ACTIVE_PAGE.test(errorMessage(err))) throw err;
+        this.attached.delete(tabId);
+        await chrome.debugger.detach({ tabId }).catch(() => {});
+        await delay(NOT_ACTIVE_RETRIES.waitMs);
+      }
+    }
   }
 
   /** Detaches from one tab (default: the current tab). */

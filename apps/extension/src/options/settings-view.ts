@@ -14,7 +14,7 @@ import {
   type BrainMode,
 } from "@browsertodo/shared";
 import { isPaidActive } from "../account/types.js";
-import { resolveBrain } from "../engine/brain-resolver.js";
+import { builtInJev, HOSTED_LABEL, resolveBrain } from "../engine/brain-resolver.js";
 import { brainLabel, modelLabel } from "../ui/labels.js";
 import type { AccountView, BrainStatus } from "../ui-protocol.js";
 
@@ -26,6 +26,7 @@ export const TABS = [
   { id: "ai", label: "AI" },
   { id: "tasks", label: "Tasks" },
   { id: "logins", label: "Site logins" },
+  { id: "memory", label: "Memory" },
   { id: "advanced", label: "Advanced" },
 ] as const;
 export type TabId = (typeof TABS)[number]["id"];
@@ -38,10 +39,13 @@ const TAB_ALIASES: Record<string, TabId> = {
   jev: "ai",
   speed: "ai",
   voice: "ai",
+  automation: "ai",
+  approvals: "ai",
   "api-keys": "keys",
   billing: "account",
   schedule: "tasks",
   vault: "logins",
+  memories: "memory",
   cloud: "advanced",
   "self-hosting": "advanced",
 };
@@ -55,7 +59,7 @@ export function tabFromHash(hash: string | null | undefined): TabId | null {
 }
 
 /** Links that name a section inside a tab -> that section's element id. */
-const SECTIONS: Record<string, string> = { jev: "jev-group", speed: "jev-group", voice: "voice-group" };
+const SECTIONS: Record<string, string> = { jev: "jev-group", speed: "jev-group", voice: "voice-group", automation: "automation-group", approvals: "automation-group" };
 
 /** "#jev" -> "jev-group": the section to scroll to once its tab shows; null for a tab's own link. */
 export function sectionFromHash(hash: string | null | undefined): string | null {
@@ -129,8 +133,15 @@ export interface SettingsView {
   showHelper: boolean;
   showModel: boolean;
   model: ModelChoice;
+  /** Jev's threshold and Test button (Jev on). */
   showJevFields: boolean;
-  /** Where Jev's key comes from, when that is not obvious. */
+  /** The Jev key field: Jev on, and the brain that runs does not bring its own Jev. */
+  showJevKey: boolean;
+  /** Under "Use Jev": what Jev needs with the brain that runs. */
+  jevUseHint: string;
+  /** Under "Test Jev": what the test sends. */
+  jevTestHint: string;
+  /** Under the key field: where Jev's key comes from, when that is not obvious. */
   jevNote: string | null;
   showCloudFields: boolean;
 }
@@ -226,13 +237,19 @@ export function settingsView(input: ViewInput): SettingsView {
     { value: "claude-api", label: "Claude API", detail: "Your Anthropic API key, straight from Chrome.", enabled: true },
   ];
 
-  // Jev: the hosted AI brings its own; else a key here, else the helper's own key.
-  let jevNote: string | null = null;
-  const hostedRuns = brain.effective === "browsertodo";
-  if (hostedRuns) jevNote = "BrowserTODO AI includes Jev, so it needs no key.";
-  else if (!settings.jevApiKey && brain.helper?.jevAvailable) {
-    jevNote = "With local Claude Code the helper uses its own Jev key (TYPESAFE_API_KEY in its .env file). A key entered here takes priority and also works with the Claude API.";
-  }
+  // Jev for the brain the draft would run: the hosted AI brings its own; else a key here, else the helper's own key.
+  const jevSource = builtInJev(chosen.effective, brain.helper);
+  const jevUseHint =
+    jevSource === "hosted"
+      ? `Included with ${HOSTED_LABEL}. Speeds up single steps.`
+      : jevSource === "helper"
+        ? "Speeds up single steps. Uses the helper's own Jev key unless you set one here."
+        : "Speeds up single steps. Needs a Jev key.";
+  const jevTestHint = jevSource === "hosted" ? `Sends one test request to ${HOSTED_LABEL}, billed to your usage credit.` : "Sends one test request.";
+  const jevNote =
+    jevSource === "helper" && !settings.jevApiKey
+      ? "With local Claude Code the helper uses its own Jev key (TYPESAFE_API_KEY in its .env file). A key entered here takes priority and also works with the Claude API."
+      : null;
 
   return {
     signedIn,
@@ -248,6 +265,9 @@ export function settingsView(input: ViewInput): SettingsView {
     showModel: true,
     model: modelChoice(draft),
     showJevFields: draft.jevEnabled,
+    showJevKey: draft.jevEnabled && jevSource !== "hosted",
+    jevUseHint,
+    jevTestHint,
     jevNote: draft.jevEnabled ? jevNote : null,
     showCloudFields: draft.cloudEnabled,
   };

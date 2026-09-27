@@ -9,7 +9,16 @@
  * Chrome. Our own texts are matched by their constants; foreign ones (HTTP,
  * network, Chrome) by pattern.
  */
-import { HOSTED_AI_UNAVAILABLE, HOSTED_AI_UNAVAILABLE_CODE, NOT_SET_UP, OUT_OF_CREDIT, PLAN_REQUIRED, PLAN_REQUIRED_MESSAGES } from "@browsertodo/shared";
+import {
+  HOSTED_AI_UNAVAILABLE,
+  HOSTED_AI_UNAVAILABLE_CODE,
+  NOT_SET_UP,
+  OUT_OF_CREDIT,
+  PLAN_REQUIRED,
+  PLAN_REQUIRED_MESSAGES,
+  SCHEDULE_PLAN_REQUIRED,
+  SCHEDULE_SIGN_IN,
+} from "@browsertodo/shared";
 import { CLAUDE_CODE_GONE, HOSTED_LABEL, HOSTED_NO_CREDIT, HOSTED_SIGN_IN, NO_AI } from "../engine/brain-resolver.js";
 import { HELPER_NOT_INSTALLED } from "../helper-link.js";
 
@@ -79,8 +88,18 @@ const RULES: Rule[] = [
     help: () => ({ message: "You're out of usage credit.", hint: "Top up, or use your own Claude.", fixes: [FIXES.topup, FIXES.ownClaude], retry: true }),
   },
   {
+    // schedule_task on a plan without the TODO list (engine/schedule-task.ts).
+    test: startsWith(SCHEDULE_PLAN_REQUIRED),
+    help: () => ({ message: SCHEDULE_PLAN_REQUIRED, fixes: [FIXES.plans], retry: false }),
+  },
+  {
     test: (t) => t.includes(PLAN_REQUIRED) || Object.values(PLAN_REQUIRED_MESSAGES).some((m) => t.includes(m)),
     help: (t) => ({ message: Object.values(PLAN_REQUIRED_MESSAGES).find((m) => t.includes(m)) ?? "This needs a paid plan.", fixes: [FIXES.plans], retry: false }),
+  },
+  {
+    // schedule_task while signed out: the TODO list is the account's.
+    test: startsWith(SCHEDULE_SIGN_IN),
+    help: () => ({ message: "You're not logged in.", hint: "Log in to schedule tasks.", fixes: [FIXES.login], retry: false }),
   },
   {
     test: startsWith(CLAUDE_CODE_GONE),

@@ -3,7 +3,7 @@
  * IndexedDB. Works with no cloud at all. The rules (input checks, repeats,
  * how a run changes a task) are in local-task-rules.ts.
  */
-import { MAX_MEDIA_PER_TASK, type RepeatRule, type TaskRunResult } from "@browsertodo/shared";
+import { isDueNow, MAX_MEDIA_PER_TASK, settleSchedule, type RepeatSchedule, type TaskRunResult } from "@browsertodo/shared";
 import { base64ToBytes } from "../base64.js";
 import { Listeners } from "../listeners.js";
 import type { LocalMediaInfo, TaskPatch, UiMediaUpload } from "../ui-protocol.js";
@@ -17,7 +17,7 @@ import {
   cleanInstructions,
   cleanRepeat,
   cleanTime,
-  nextOccurrence,
+  migrateStoredTask,
   nextOccurrenceTask,
   type StoredLocalTask,
 } from "./local-task-rules.js";
@@ -36,7 +36,8 @@ export interface NewLocalTask {
   instructions: string;
   account?: string | null;
   notBefore?: string | null;
-  repeat?: RepeatRule | null;
+  /** The current shape, or the old { dailyAt } (converted, in this browser's zone). */
+  repeat?: RepeatSchedule | { dailyAt: string[] } | null;
   media?: UiMediaUpload[];
 }
 
@@ -92,9 +93,7 @@ export class LocalStore {
   async add(input: NewLocalTask): Promise<StoredLocalTask> {
     const instructions = cleanInstructions(input.instructions);
     const account = cleanAccount(input.account);
-    const repeat = cleanRepeat(input.repeat);
-    let notBefore = cleanTime(input.notBefore);
-    if (!notBefore && repeat) notBefore = nextOccurrence(repeat.dailyAt, this.now()).toISOString();
+    const { notBefore, repeat } = settleSchedule(cleanTime(input.notBefore), cleanRepeat(input.repeat), this.now());
     const uploads = input.media ?? [];
     if (uploads.length > MAX_MEDIA_PER_TASK) throw new Error(`At most ${MAX_MEDIA_PER_TASK} files per task`);
     const mediaIds = await this.putMedia(uploads);
@@ -151,11 +150,14 @@ export class LocalStore {
     const clean: Partial<StoredLocalTask> = {};
     if (patch.instructions !== undefined) clean.instructions = cleanInstructions(patch.instructions);
     if (patch.account !== undefined) clean.account = cleanAccount(patch.account);
-    if (patch.notBefore !== undefined) clean.notBefore = cleanTime(patch.notBefore);
-    if (patch.repeat !== undefined) clean.repeat = cleanRepeat(patch.repeat);
+    const at = patch.notBefore === undefined ? undefined : cleanTime(patch.notBefore);
+    const repeat = patch.repeat === undefined ? undefined : cleanRepeat(patch.repeat);
     return this.updateOne(id, (t) => {
       if (t.status === "running") throw new Error("The task is running; stop it first");
-      return { ...t, ...clean, updatedAt: this.now().toISOString() };
+      // A schedule change is settled like a new task's (a rule without a first time runs at its next time).
+      const schedule =
+        at === undefined && repeat === undefined ? {} : settleSchedule(at === undefined ? t.notBefore : at, repeat === undefined ? t.repeat : repeat, this.now());
+      return { ...t, ...clean, ...schedule, updatedAt: this.now().toISOString() };
     });
   }
 
@@ -193,11 +195,9 @@ export class LocalStore {
     });
   }
 
-  /** Pending tasks whose notBefore and retryAfter have passed, oldest first. */
+  /** Pending tasks whose notBefore and retryAfter have passed (isDueNow, as the TODO tab counts them), oldest first. */
   async due(now = this.now()): Promise<StoredLocalTask[]> {
-    const t = now.getTime();
-    const passed = (iso: string | null) => !iso || Date.parse(iso) <= t;
-    return (await this.read()).filter((x) => x.status === "pending" && passed(x.notBefore) && passed(x.retryAfter)).sort(byCreated);
+    return (await this.read()).filter((x) => isDueNow(x, now.getTime())).sort(byCreated);
   }
 
   /** Earliest future time a pending task becomes due, or null. */
@@ -233,7 +233,7 @@ export class LocalStore {
       let next: StoredLocalTask | null = null;
       if ((task.status === "done" || task.status === "failed") && task.repeat && !task.nextId) {
         next = nextOccurrenceTask({ ...task, repeat: task.repeat }, this.newId(), now);
-        task = { ...task, nextId: next.id };
+        if (next) task = { ...task, nextId: next.id };
       }
       const updated = tasks.map((t) => (t.id === id ? task : t));
       return { tasks: next ? [...updated, next] : updated, result: { task, next } };
@@ -267,7 +267,7 @@ export class LocalStore {
   private async read(): Promise<StoredLocalTask[]> {
     const got = await this.storage().get(LOCAL_TASKS_KEY);
     const v = got[LOCAL_TASKS_KEY];
-    return Array.isArray(v) ? (v as StoredLocalTask[]) : [];
+    return Array.isArray(v) ? (v as StoredLocalTask[]).map(migrateStoredTask) : [];
   }
 
   private updateOne(id: string, fn: (t: StoredLocalTask) => StoredLocalTask): Promise<StoredLocalTask> {

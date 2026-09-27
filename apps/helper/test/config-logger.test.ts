@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, loadEnv, parseDotEnv } from "../src/config.js";
+import { DEFAULT_THINKING, loadConfig, loadEnv, parseDotEnv } from "../src/config.js";
 import { SecretRedactor } from "@browsertodo/core";
 import { LiveLog, LIVE_LOG_TAIL_MAX_BYTES, RunLog } from "../src/logger.js";
 import { encodeNativeMessage, MAX_NATIVE_OUT } from "../src/native-framing.js";
@@ -43,6 +43,12 @@ describe("config", () => {
     expect(withKey.typesafeApiKey).toBe("k");
     expect(withKey.brain).toBe("claude");
     expect(withKey.model).toBe("opus");
+  });
+
+  it("reads Claude Code's thinking switch (BROWSERTODO_THINKING), with DEFAULT_THINKING when unset", () => {
+    expect(loadConfig({ BROWSERTODO_HOME: dir, BROWSERTODO_THINKING: "off" }, { dotenvDirs: [] }).thinking).toBe(false);
+    expect(loadConfig({ BROWSERTODO_HOME: dir, BROWSERTODO_THINKING: " ON " }, { dotenvDirs: [] }).thinking).toBe(true);
+    expect(loadConfig({ BROWSERTODO_HOME: dir }, { dotenvDirs: [] }).thinking).toBe(DEFAULT_THINKING === "on");
   });
 
   it("defaults the base dir to %LOCALAPPDATA%\\browsertodo", () => {

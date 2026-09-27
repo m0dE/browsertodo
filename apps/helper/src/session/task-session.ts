@@ -4,8 +4,8 @@
  * closed); this class handles what happens inside one session: turns, their
  * limits, the task_* result, user messages and stopping.
  */
-import { type Sleep, type AgentEvent, type RunConfig, type TaskRunResult, type ToolName } from "@browsertodo/shared";
-import { createToolExecutor, turnEndEvents, type BrowserCaller, type JevLike, type SecretRedactor } from "@browsertodo/core";
+import { type Sleep, type AgentEvent, type MemoryToolName, type RunConfig, type ScheduledTask, type ScheduleTaskArgs, type TaskRunResult, type ToolName } from "@browsertodo/shared";
+import { createToolExecutor, Interjections, turnEndEvents, type BrowserCaller, type JevLike, type SecretRedactor } from "@browsertodo/core";
 import type { RunLog } from "../logger.js";
 import { UserInput } from "../brains/brain.js";
 import type { ToolSession } from "../tool-router.js";
@@ -27,6 +27,10 @@ export interface TaskSessionOptions {
   secrets: SecretRedactor;
   /** helper.event notifications. */
   notify: (sessionId: string, event: AgentEvent) => void;
+  /** schedule_task: the extension stores the task in the user's TODO list for this session's conversation. */
+  scheduleTask?: (sessionId: string, args: ScheduleTaskArgs) => Promise<ScheduledTask>;
+  /** remember / recall / forget: the extension's memory for this session's conversation. */
+  memory?: (sessionId: string, tool: MemoryToolName, args: unknown) => Promise<{ text: string; isError?: boolean }>;
   /** Single-turn brains: time the agent gets to exit after its task_* call. */
   finishGraceMs: number;
   /** Time a brain gets to return after an abort (or a close) before we stop waiting (or kill it). */
@@ -40,6 +44,8 @@ export class TaskSession {
   readonly persistent: boolean;
   readonly controller = new AbortController();
   readonly input = new UserInput();
+  /** Messages the user types while a turn runs (see BrainContext.interjections). */
+  readonly interjections: Interjections;
   /** What the ToolRouter sees of this session. */
   readonly tools: ToolSession;
   turn: Turn | null = null;
@@ -55,16 +61,23 @@ export class TaskSession {
     this.sessionId = opts.sessionId;
     this.log = opts.log;
     this.persistent = opts.persistent;
+    this.interjections = new Interjections((route, waitedMs, count) =>
+      this.emit({ type: "trace", trace: { t: Date.now() - Math.round(waitedMs), ms: waitedMs, cat: "user", name: "interjection", src: "helper", data: { route, count } } }),
+    );
     const executor = createToolExecutor({
+      interjections: this.interjections,
       browser: sessionBrowser(opts.browser, opts.sessionId, opts.runDir),
       jev: opts.jev,
       jevThreshold: opts.jevThreshold,
       onEvent: (e) => this.emit(e),
       onTrace: (trace) => this.emit({ type: "trace", trace: { ...trace, src: "helper" } }),
       onTaskEnd: (r) => this.recordFinish(r),
+      turnEndsAt: () => this.turn?.endsAt,
       mediaPaths: opts.mediaPaths,
       secrets: opts.secrets,
       ...(opts.sleep ? { sleep: opts.sleep } : {}),
+      ...(opts.scheduleTask ? { scheduleTask: (args: ScheduleTaskArgs) => opts.scheduleTask!(opts.sessionId, args) } : {}),
+      ...(opts.memory ? { memory: (tool: MemoryToolName, args: unknown) => opts.memory!(opts.sessionId, tool, args) } : {}),
     });
     this.tools = { taskId: opts.sessionId, allowedTools: opts.allowed, jev: opts.jev !== null, beforeCall: (name) => this.beforeCall(name), executor };
   }
@@ -90,6 +103,7 @@ export class TaskSession {
   startTurn(config: RunConfig): Turn {
     const turn = createTurn(config);
     const minutes = config.maxTaskMinutes;
+    turn.endsAt = Date.now() + minutes * 60_000;
     turn.timeLimit = setTimeout(() => {
       turn.timedOut = true;
       this.log.event({ type: "time_limit", minutes });
@@ -124,7 +138,11 @@ export class TaskSession {
     } finally {
       if (onAbort) this.controller.signal.removeEventListener("abort", onAbort);
       clearTurnTimers(turn);
-      if (this.turn === turn) this.turn = null;
+      if (this.turn === turn) {
+        this.turn = null;
+        // Said too late for this turn (it was stopped): not carried into the next one.
+        this.interjections.clear();
+      }
     }
   }
 
@@ -137,11 +155,15 @@ export class TaskSession {
     return result;
   }
 
-  /** Types a message into the running turn. False when there is no turn, it already has its result, or it is stopping. */
+  /**
+   * A message typed into the running turn: it reaches the model at its next
+   * read and the turn cannot end before (see BrainContext.interjections).
+   * False when there is no turn, it already has its result, or it is stopping.
+   */
   sendUserMessage(text: string): boolean {
-    if (!this.turn || this.turn.finish || this.aborted || !text.trim()) return false;
-    if (!this.input.push(text)) return false;
+    if (!this.turn || this.turn.finish || this.aborted || this.input.closed || !text.trim()) return false;
     this.emit({ type: "user_message", text });
+    this.interjections.add(text);
     return true;
   }
 

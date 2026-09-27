@@ -1,13 +1,34 @@
-/** DOM for one conversation log entry (Chat and the Activity log) (see event-format.ts for the pure view models). */
+/** DOM for one conversation log entry (Chat and the History tab) (see event-format.ts for the pure view models). */
 import { chipHint, plural, TASK_END_TOOLS, type SessionInfo } from "@browsertodo/shared";
-import { h } from "../ui/dom.js";
+import { busy, h } from "../ui/dom.js";
 import { renderErrorHelp } from "./error-view.js";
-import type { EventView, OpeningView } from "./event-format.js";
+import type { EventView, OpeningView, ScheduledView } from "./event-format.js";
+import { undoneText, type MemoryNoteView } from "./memory-note.js";
+import { renderApproval, type ApprovalCardActions } from "./approval-card.js";
 import { sessionHeadline } from "./format.js";
 import { MarkdownView } from "./markdown.js";
 
-/** onContinue: the run ended without finishing and can be continued (task_end cards). */
-export function renderEvent(v: EventView, onContinue?: () => void): HTMLElement {
+/** What a scheduled card's buttons do (the chat binds them; without them the card shows no buttons). */
+export interface ScheduledCardActions {
+  /** View in TODO: the TODO tab, scrolled to the task's row. */
+  view(taskId: string): void;
+  /** Undo: delete the task (the card then says it was undone). */
+  undo(taskId: string): Promise<void>;
+}
+
+/** What a memory note's Undo does (the chat binds it; without it the note shows no button). */
+export interface MemoryNoteActions {
+  /** Undo: the entry goes back to how it was before the change (the note then says so). */
+  undo(changeId: string): Promise<void>;
+}
+
+/**
+ * onContinue: the run ended without finishing and can be continued (task_end cards).
+ * scheduled: the buttons of a scheduled card.
+ * approval: the answers of an approval card (without them it shows no buttons).
+ * memory: Undo on a memory note.
+ */
+export function renderEvent(v: EventView, onContinue?: () => void, scheduled?: ScheduledCardActions, approval?: ApprovalCardActions, memory?: MemoryNoteActions): HTMLElement {
   switch (v.kind) {
     case "status":
       // The end-of-turn picks line is shown in the end card.
@@ -87,7 +108,92 @@ export function renderEvent(v: EventView, onContinue?: () => void): HTMLElement 
       );
     case "error":
       return renderErrorHelp(v.help);
+    case "scheduled":
+      return renderScheduled(v, scheduled);
+    case "approval":
+      return renderApproval(v, approval);
+    case "memory":
+      return renderMemoryNote(v, memory);
   }
+}
+
+/**
+ * A change to the agent's memory: "Remembered: <subject> · <text>" on one quiet line, with Undo. Undone, it says so
+ * and keeps no button; a failed undo says why under the line and keeps Undo.
+ */
+export function renderMemoryNote(v: MemoryNoteView, actions?: MemoryNoteActions): HTMLElement {
+  const note = h(
+    "div.ev-memory",
+    { class: v.undone ? "undone" : null, "data-change-id": v.changeId },
+    h(
+      "div.mem-line",
+      { title: v.title },
+      svgIcon(13, MEMORY_ICON),
+      h("span.mem-label", null, v.undone ? "Undone:" : `${v.label}:`),
+      h("span.mem-subject", null, v.subject),
+      h("span.mem-text", null, `· ${v.text}`),
+    ),
+  );
+  if (v.undone) {
+    note.append(h("div.mem-note", null, undoneText(v)));
+    return note;
+  }
+  if (!actions) return note;
+  const problem = h("div.mem-note.bad", { hidden: true, role: "alert" });
+  const undo = h("button.small.ghost.mem-undo", { type: "button", title: v.label === "Forgot" ? "Keep this memory after all" : "Undo this change to memory" }, "Undo");
+  undo.addEventListener("click", () => {
+    problem.hidden = true;
+    void busy(undo, () => actions.undo(v.changeId), (message) => {
+      problem.textContent = `Couldn't undo: ${message}`;
+      problem.hidden = false;
+    });
+  });
+  note.firstElementChild!.append(undo);
+  note.append(problem);
+  return note;
+}
+
+/**
+ * A task the agent put in the TODO list: "Scheduled: <task> · <when>" on one line, with View in TODO and Undo.
+ * Undone, it says so and keeps no buttons. A failed undo says why under the line and keeps Undo.
+ */
+export function renderScheduled(v: ScheduledView, actions?: ScheduledCardActions): HTMLElement {
+  const card = h(
+    "div.ev-scheduled",
+    { class: v.undone ? "undone" : null, "data-task-id": v.taskId },
+    h(
+      "div.sched-line",
+      { title: `${v.instructions}\n\n${v.when}` },
+      svgIcon(13, CLOCK_ICON),
+      h("span.sched-label", null, v.undone ? "Undone:" : "Scheduled:"),
+      h("span.sched-task", null, v.title),
+      h("span.sched-when", null, `· ${v.when}`),
+    ),
+  );
+  if (v.undone) {
+    card.append(h("div.sched-note", null, "Removed from your TODO list."));
+    return card;
+  }
+  if (!actions) return card;
+  const note = h("div.sched-note.bad", { hidden: true, role: "alert" });
+  const undo = h("button.small.sched-undo", { type: "button", title: "Delete this task from your TODO list" }, "Undo");
+  undo.addEventListener("click", () => {
+    note.hidden = true;
+    void busy(undo, () => actions.undo(v.taskId), (message) => {
+      note.textContent = `Couldn't undo: ${message}`;
+      note.hidden = false;
+    });
+  });
+  card.append(
+    h(
+      "div.sched-actions",
+      null,
+      h("button.small.sched-view", { type: "button", title: "Show this task in the TODO tab", onclick: () => actions.view(v.taskId) }, "View in TODO"),
+      undo,
+    ),
+    note,
+  );
+  return card;
 }
 
 /**
@@ -223,6 +329,11 @@ const MIC_ICON =
   '<rect x="5.75" y="1.75" width="4.5" height="8" rx="2.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3.25 7.75a4.75 4.75 0 0 0 9.5 0M8 12.5v1.75" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>';
 const SPEAKER_ICON =
   '<path d="M2.5 6h2.2L8 3.2v9.6L4.7 10H2.5z" fill="currentColor"/><path d="M10.5 5.5a3.5 3.5 0 0 1 0 5M12.4 3.6a6.2 6.2 0 0 1 0 8.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>';
+const CLOCK_ICON =
+  '<circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
+/** A bookmark: something kept for later. */
+const MEMORY_ICON =
+  '<path d="M4.5 2.25h7v11.5L8 11.2l-3.5 2.55z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>';
 const EYE_ICON =
   '<path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8Z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2" fill="currentColor"/>';
 

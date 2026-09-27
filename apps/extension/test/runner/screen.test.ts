@@ -9,7 +9,7 @@ import { Runner } from "../../src/engine/runner.js";
 import { MOVED_TAB_STATUS } from "../../src/engine/run/turn.js";
 import { RESTRICTED_STATUS } from "../../src/restricted.js";
 import { TabChats } from "../../src/tab-chats.js";
-import { parallel, setupRunnerTests } from "./harness.js";
+import { parallel, setupRunnerTests, withoutClock } from "./harness.js";
 
 setupRunnerTests();
 
@@ -64,7 +64,7 @@ describe("Runner: an empty message looks at the page", () => {
     expect(next).toEqual({ sessionId: first.sessionId, mode: "turn" });
     await h.runner.idle();
     await h.sessions.flush();
-    expect(h.brain.continues[0]!.text).toBe(buildFollowUpMessage({ text: SCREEN_HELP_TEXT, screenHelp: true, userTab: { url: "https://site.test/7", title: "Tab 7", access: "here" } }));
+    expect(withoutClock(h.brain.continues[0]!.text)).toBe(buildFollowUpMessage({ text: SCREEN_HELP_TEXT, screenHelp: true, userTab: { url: "https://site.test/7", title: "Tab 7", access: "here" } }));
     const users = (await h.sessions.eventsOf(first.sessionId)).filter((e) => e.type === "user_message");
     expect(users.map((e) => (e.type === "user_message" ? e.text : ""))).toEqual([SCREEN_HELP_TEXT]);
   });
@@ -116,7 +116,7 @@ describe("Runner: the agent is told which page the chat's tab shows", () => {
     h.brain.continueScript = () => ({ outcome: "done" });
     await h.runner.message(r.sessionId, "what's in it?", { tabId: 7 });
     await h.runner.idle();
-    const sent = h.brain.continues[0]!.text;
+    const sent = withoutClock(h.brain.continues[0]!.text);
     expect(sent).toBe(buildFollowUpMessage({ text: "what's in it?", userTab: { ...pages[7]!, access: "here" } }));
     expect(sent.indexOf("https://shop.test/cart")).toBeLessThan(sent.indexOf("what's in it?"));
   });
@@ -189,7 +189,7 @@ describe("Runner: the user's tab is a page Chrome keeps extensions out of", () =
     h.brain.continueScript = () => ({ outcome: "done" });
     await h.runner.message(r.sessionId, "and now?", { tabId: 7 });
     await h.runner.idle();
-    expect(h.brain.continues[0]!.text).toBe(buildFollowUpMessage({ text: "and now?", userTab: { ...pages[7]!, access: "restricted" } }));
+    expect(withoutClock(h.brain.continues[0]!.text)).toBe(buildFollowUpMessage({ text: "and now?", userTab: { ...pages[7]!, access: "restricted" } }));
     expect(await statuses(h, r.sessionId)).toContain(RESTRICTED_STATUS);
     // The brain's echo of what it got is not shown twice; the user's words are.
     const users = (await h.sessions.eventsOf(r.sessionId)).filter((e) => e.type === "user_message");

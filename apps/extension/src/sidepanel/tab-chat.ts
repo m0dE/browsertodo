@@ -1,7 +1,7 @@
 /**
- * A chat per browser tab: which conversation the Chat tab shows for the tab
- * that is active in the panel's window, and where another conversation
- * lives. Pure.
+ * A chat per browser tab: which conversation the Chat tab shows for the
+ * panel's tab (its own tab, or the active tab of its window for the panel
+ * page opened as a tab), and where another conversation lives. Pure.
  */
 import type { SessionInfo } from "@browsertodo/shared";
 
@@ -36,6 +36,22 @@ export function chatForTab(tab: number | null, s: TabChatState, local: TabChatLo
     if (tabs.includes(tab) && local.left?.get(tab) !== sessionId && !isBound(sessionId, s)) return sessionId;
   }
   return null;
+}
+
+/**
+ * The tab whose chat a tab's own side panel shows (see panel-tabs.ts), given the new state: `chatTab`, the one it
+ * shows now, until the agent moves the chat shown (`shown`) to a tab it works in (a chat whose tab shows a
+ * chrome:// page goes on in a new tab beside it): then that tab, so the panel keeps its conversation. The agent's
+ * doing: the chat runs in that tab, or it is the one last sent to from here (`sent`: a quick turn may be over by
+ * the time the state shows the move). A chat the user moved elsewhere is not followed.
+ */
+export function followChat(chatTab: number, shown: string | null, s: TabChatState, sent: { tab: number; sessionId: string } | null = null): number {
+  if (!shown || s.tabChats?.[String(chatTab)]) return chatTab;
+  const sentHere = sent?.sessionId === shown && sent.tab === chatTab;
+  for (const [tab, id] of Object.entries(s.tabChats ?? {})) {
+    if (id === shown && (sentHere || s.runningTabs?.[shown]?.includes(Number(tab)))) return Number(tab);
+  }
+  return chatTab;
 }
 
 /** The session is bound to some tab. */

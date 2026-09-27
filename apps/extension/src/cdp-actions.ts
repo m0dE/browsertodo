@@ -23,7 +23,9 @@ import {
 } from "./driver-common.js";
 import type { keyEvents } from "./keys.js";
 import { checkStateInPage, prepareTypingInPage, selectOptionInPage, setCheckedInPage, typeTargetInPage } from "./page-input.js";
+import { loadProbeInPage, waitForUsablePage, type LoadProbe } from "./page-load.js";
 import { snapshotExpression } from "./page-snapshot.js";
+import { waitInPage, type PageWait, type PageWaitArgs } from "./page-wait.js";
 import { isDebuggerBlocked } from "./restricted.js";
 import { sameProbe, scrollProbeExpression, scrollReport, type PageResult, type ScrollProbe } from "./scroll-probe.js";
 
@@ -44,23 +46,37 @@ export class CdpActions {
     private readonly sleep: Sleep,
   ) {}
 
-  /** Page.navigate, then waits for the load. onStarted: the navigation went through. */
-  async navigate(tabId: number, url: string, onStarted: () => void): Promise<R<"browser.navigate">> {
+  /**
+   * Page.navigate, then waits until the new page is usable (page-load.ts), not
+   * for its load event. onStarted: the navigation went through. leaving: the
+   * document it leaves (see leavingDocument).
+   */
+  async navigate(tabId: number, url: string, onStarted: () => void, leaving: number | null = null): Promise<R<"browser.navigate">> {
     const nav = await this.send<{ errorText?: string }>(tabId, "Page.navigate", { url });
     if (nav.errorText) throw new Error(`Navigation to ${url} failed: ${nav.errorText}`);
     onStarted();
-    const readyState = () =>
-      this.evaluate<string>(tabId, "document.readyState").catch((err: unknown) => {
-        if (isDebuggerBlocked(err)) throw err;
-        return "loading";
-      });
-    await pollUntil(async () => (await readyState()) === "complete", this.sleep);
-    await this.sleep(SETTLE_MS);
+    await waitForUsablePage(() => this.probe(tabId), { sleep: this.sleep, leaving });
     return this.evaluate<{ url: string; title: string }>(tabId, "({ url: location.href, title: document.title })");
+  }
+
+  /** How far the tab's page loaded; null while it cannot be read (navigating). */
+  probe(tabId: number): Promise<LoadProbe | null> {
+    return this.evaluate<LoadProbe>(tabId, `(${loadProbeInPage.toString()})()`).then(
+      (p) => p ?? null,
+      (err: unknown) => {
+        if (isDebuggerBlocked(err)) throw err;
+        return null;
+      },
+    );
   }
 
   readPage(tabId: number): Promise<PageSnapshot> {
     return this.evaluate<PageSnapshot>(tabId, snapshotExpression());
+  }
+
+  /** One slice of wait_for in the page (page-wait.ts); undefined when the page gave no answer. */
+  waitInPage(tabId: number, args: PageWaitArgs): Promise<PageResult<PageWait> | undefined> {
+    return this.evaluate<PageResult<PageWait> | undefined>(tabId, `(${waitInPage.toString()})(${JSON.stringify(args)})`);
   }
 
   async screenshot(tabId: number): Promise<Screenshot> {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentEvent } from "@browsertodo/shared";
+import { interjectionText, Interjections } from "@browsertodo/core";
 import { ClaudeCodeBrain, buildClaudeArgs } from "../src/brains/claude-code.js";
 import { apiBillingVarsIn, claudeEnv, resolveClaudePath } from "../src/claude-process.js";
 import { UserInput, type BrainContext } from "../src/brains/brain.js";
@@ -21,6 +22,7 @@ afterEach(() => {
   delete process.env.FAKE_CLAUDE_HANG;
   delete process.env.FAKE_CLAUDE_SLOW_MS;
   delete process.env.FAKE_CLAUDE_PARTIAL;
+  delete process.env.FAKE_CLAUDE_TOOL;
   for (const [k, v] of [["CLAUDECODE", saved.CLAUDECODE], ["CLAUDE_CODE_CHILD_SESSION", saved.CHILD]] as const) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -28,7 +30,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function ctx(signal: AbortSignal, log: Record<string, any>[], events: AgentEvent[], input = new UserInput()): BrainContext {
+function ctx(signal: AbortSignal, log: Record<string, any>[], events: AgentEvent[], input = new UserInput(), interjections = new Interjections()): BrainContext {
   return {
     taskId: "S1",
     prompt: 'Line one\nLine "two" with \\ backslash and trailing \\',
@@ -39,6 +41,7 @@ function ctx(signal: AbortSignal, log: Record<string, any>[], events: AgentEvent
     log: (e) => log.push(e),
     emit: (e) => events.push(e),
     input,
+    interjections,
   };
 }
 
@@ -102,19 +105,48 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     expect(events.find((e) => e.type !== "trace")).toEqual({ type: "status", text: "Claude Code started (claude-opus-5-5)" });
   });
 
-  it("injects user messages mid-turn into the same session", async () => {
-    process.env.FAKE_CLAUDE_SLOW_MS = "150";
+  it("a message typed while the model only thinks or writes goes to stdin and interrupts that request, so it is read at once, with no error shown", async () => {
+    process.env.FAKE_CLAUDE_SLOW_MS = "400";
     const log: Record<string, any>[] = [];
     const events: AgentEvent[] = [];
-    const input = new UserInput();
-    const run = brain().run(ctx(new AbortController().signal, log, events, input));
-    // Claude Code is up (its init line came) and still answering the first message.
-    await vi.waitFor(() => expect(log.some((e) => e.type === "claude")).toBe(true));
-    expect(input.push("also add a hashtag")).toBe(true);
+    const routes: string[] = [];
+    const interjections = new Interjections((route) => routes.push(route));
+    const run = brain().run(ctx(new AbortController().signal, log, events, new UserInput(), interjections));
+    // The model's request is running (Claude Code said "requesting").
+    await vi.waitFor(() => expect(log.some((e) => e.type === "claude" && e.event.status === "requesting")).toBe(true));
+    interjections.add("no, use page B");
+    expect(interjections.unseen).toBe(true);
     await run;
     const texts = events.filter((e) => e.type === "assistant_text").map((e) => (e as { text: string }).text);
-    expect(texts).toHaveLength(2);
-    expect(texts[1]).toBe("got: Message from the human (they are watching this run): also add a hashtag");
+    // The first answer was never written: the interrupted request was dropped.
+    expect(texts).toEqual([`got: ${interjectionText(["no, use page B"])}`]);
+    expect(events.some((e) => e.type === "error")).toBe(false);
+    expect(log.filter((e) => e.type === "claude_interrupt")).toHaveLength(1);
+    // Read (Claude Code echoed it), by way of the interrupt.
+    expect(interjections.unseen).toBe(false);
+    expect(routes).toEqual(["interrupt"]);
+  });
+
+  it("a message typed while a tool runs is no interrupt: Claude Code reads it with the tool's result, in the same turn", async () => {
+    process.env.FAKE_CLAUDE_TOOL = "1";
+    process.env.FAKE_CLAUDE_SLOW_MS = "300";
+    const log: Record<string, any>[] = [];
+    const events: AgentEvent[] = [];
+    const routes: string[] = [];
+    const interjections = new Interjections((route) => routes.push(route));
+    const c = ctx(new AbortController().signal, log, events, new UserInput(), interjections);
+    const run = brain().run(c);
+    await vi.waitFor(() => expect(log.some((e) => e.type === "claude" && e.event.type === "assistant")).toBe(true));
+    interjections.add("also add a hashtag");
+    // Written at once; not read before the tool's result.
+    expect(log.find((e) => e.type === "claude_user_message")).toMatchObject({ kind: "next_step" });
+    expect(interjections.unseen).toBe(true);
+    await run;
+    expect(log.some((e) => e.type === "claude_interrupt")).toBe(false);
+    const texts = events.filter((e) => e.type === "assistant_text").map((e) => (e as { text: string }).text);
+    expect(texts).toEqual([`got: ${c.prompt} (and: ${interjectionText(["also add a hashtag"])})`]);
+    expect(interjections.unseen).toBe(false);
+    expect(routes).toEqual(["next_step"]);
   });
 
   it("closing the input (task_* called) ends stdin so claude exits", async () => {
@@ -138,7 +170,7 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     const run = persistent.run(c);
     await vi.waitFor(() => expect(idle).toBe(1), { timeout: 10_000 });
     expect(input.closed).toBe(false);
-    input.push("Next message from the user: like it", "followup");
+    input.push("Next message from the user: like it");
     await vi.waitFor(() => expect(idle).toBe(2), { timeout: 10_000 });
     input.close();
     await run;

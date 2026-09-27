@@ -54,7 +54,8 @@ const voiceBundle = (
  */
 async function cdpPage(devtoolsPort, urlSuffix) {
   const targets = await (await fetch(`http://127.0.0.1:${devtoolsPort}/json/list`)).json();
-  const target = targets.find((t) => t.url.endsWith(urlSuffix) && t.type !== "service_worker" && !t.url.includes("#opener"));
+  // By path: a tab's side panel is sidepanel.html?tab=<id>.
+  const target = targets.find((t) => URL.canParse(t.url) && new URL(t.url).pathname.endsWith(urlSuffix) && t.type !== "service_worker" && !t.url.includes("#opener"));
   if (!target) return null;
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => ((ws.onopen = resolve), (ws.onerror = reject)));
@@ -130,10 +131,10 @@ const HANDS_FREE_STUBS = `(() => {
     speak(u) { window.__spoken.push(u.text); setTimeout(() => u.onend?.(), 300); },
     cancel() {}, getVoices: () => [], addEventListener() {}, removeEventListener() {},
   } });
-  // Every phase the hands-free pill shows, in order.
+  // Every phase the voice bar shows, in order.
   window.__phases = [];
   new MutationObserver(() => {
-    const bar = document.querySelector(".hf-pill");
+    const bar = document.querySelector("#voice-bar");
     const p = bar && !bar.hidden ? bar.dataset.phase : "off";
     if (window.__phases.at(-1) !== p) window.__phases.push(p);
   }).observe(document, { subtree: true, attributes: true, childList: true, attributeFilter: ["data-phase", "hidden"] });
@@ -168,7 +169,7 @@ async function launch({ allowed }) {
     panel.close();
     await ext.close();
   };
-  return { context, origin, panel, close };
+  return { context, origin, panel, sw, close };
 }
 
 const permissionIn = (page) => page.evaluate(async () => (await navigator.permissions.query({ name: "microphone" })).state);
@@ -213,7 +214,7 @@ const { step, finish } = createSuite("voice");
 
 // 2. After the user allowed the microphone on the permission page (the stored per-origin Allow).
 {
-  const { context, origin, panel, close } = await launch({ allowed: true });
+  const { context, origin, panel, sw, close } = await launch({ allowed: true });
   try {
     await step("the side panel sees the page's Allow and can open the microphone without a prompt", async () => {
       const state = await permissionIn(panel);
@@ -281,6 +282,15 @@ const { step, finish } = createSuite("voice");
       // The voice shortcut, as the background delivers it to the panel (panel-command.ts).
       await panel.evaluate(() => window.__pushToPanel({ type: "panel.voice" }));
       await waitFor(() => panel.evaluate(() => window.__phases.includes("listening")), "hands-free listening", { timeout: 10_000 });
+      // The voice bar at the top says so, and the toolbar button of the session's tab has the badge (the background's).
+      const bar = await panel.evaluate(() => {
+        const b = document.getElementById("voice-bar");
+        return { shown: !b.hidden, title: b.querySelector(".vb-title").textContent, tab: Number(b.dataset.tabs.split(",")[0]), stop: b.querySelector(".vb-stop").getAttribute("aria-label") };
+      });
+      assert.ok(bar.shown && /^(Listening|Hearing you…)$/.test(bar.title) && /^Stop hands-free/.test(bar.stop), `voice bar ${JSON.stringify(bar)}`);
+      const badgeOf = (tabId) => sw.evaluate(async (t) => chrome.action.getBadgeText({ tabId: t }), tabId);
+      assert.equal(await waitFor(async () => (await badgeOf(bar.tab)) || null, "the voice badge on the session's tab"), "MIC");
+      assert.equal(await sw.evaluate(async () => chrome.action.getBadgeText({})), "", "the badge is only on the session's tab");
       const sent = await waitFor(() => panel.evaluate(() => window.__adhoc[0]), "the utterance sent as a message", { timeout: 30_000 });
       assert.equal(sent, HEARD);
       const phases = await panel.evaluate(() => window.__phases);
@@ -297,7 +307,8 @@ const { step, finish } = createSuite("voice");
       // The shortcut again ends the session.
       await panel.evaluate(() => window.__pushToPanel({ type: "panel.voice" }));
       await waitFor(() => panel.evaluate(() => window.__phases.at(-1) === "off"), "hands-free to end");
-      return `phases ${JSON.stringify(await panel.evaluate(() => window.__phases))}; sent ${JSON.stringify(sent)}; said ${JSON.stringify(said)}`;
+      await waitFor(async () => (await badgeOf(bar.tab)) === "", "the voice badge to go");
+      return `badge MIC on tab ${bar.tab}, then cleared; phases ${JSON.stringify(await panel.evaluate(() => window.__phases))}; sent ${JSON.stringify(sent)}; said ${JSON.stringify(said)}`;
     });
   } finally {
     await close();

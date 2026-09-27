@@ -10,6 +10,8 @@ import { isStale, uiRequest, type UiState } from "../ui-protocol.js";
 import { createAccountMenu } from "../ui/account-menu.js";
 import { $, busy, closeMenusOnOutsideClick, find, flash, h } from "../ui/dom.js";
 import { initAccountSection } from "./account-section.js";
+import { initAutomationSection } from "./automation-section.js";
+import { initMemorySection } from "./memory-section.js";
 import { SaveQueue } from "./autosave.js";
 import { initSecretFields } from "./secret-field.js";
 import { initVaultSection } from "./vault-section.js";
@@ -239,9 +241,11 @@ function render(): void {
   input("anthropicModel").hidden = !custom;
   $("model-hint").textContent = v.model.hint;
 
+  $("jev-use-hint").textContent = v.jevUseHint;
   reveal($("jev-fields"), v.showJevFields);
-  const jevSource = $("jev-source");
-  jevSource.textContent = v.jevNote ?? "";
+  $("jev-key-row").hidden = !v.showJevKey;
+  $("jev-source").textContent = v.jevNote ?? "";
+  $("jev-test-hint").textContent = v.jevTestHint;
   reveal($("cloud-fields"), v.showCloudFields);
 }
 
@@ -249,6 +253,8 @@ function renderState(s: UiState): void {
   state = s;
   accountSection.render(s);
   voiceSection.render(s);
+  automationSection.render(s);
+  memorySection.render(s);
   accountMenu.render(s.account);
   const b = s.brain;
 
@@ -293,6 +299,8 @@ const accountMenu = createAccountMenu({
 $("head-acct").replaceWith(accountMenu.el);
 closeMenusOnOutsideClick("details.menu");
 const voiceSection = initVoiceSection({ onState: (s) => applyState(s) });
+const automationSection = initAutomationSection({ onState: (s) => applyState(s) });
+const memorySection = initMemorySection({ onState: (s) => applyState(s) });
 const hostedSignIn = $<HTMLButtonElement>("hosted-signin");
 hostedSignIn.addEventListener("click", () => accountSection.signIn(hostedSignIn, $("hosted-signin-msg")));
 // Get a plan / Top up under BrowserTODO AI: the dashboard's Billing page.

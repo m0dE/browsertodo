@@ -108,6 +108,21 @@ describe("AgentSlots: a run acts in the tab it belongs to", () => {
     expect(chrome.tabs.createCalls).toEqual([{ windowId, index: 3, active: false, url: "about:blank" }]);
   });
 
+  it("the replacement of the tab the user is looking at opens in front, unless that tab shows its own side panel", async () => {
+    const newTab = (await chrome.tabs.create({ windowId, url: "chrome://newtab/", active: true })).id;
+    chrome.tabs.createCalls.length = 0;
+    await new AgentSlots(new Cdp(), vault).take(0, "S").prepare({ mode: "current-tab", tabId: newTab });
+    expect(chrome.tabs.createCalls.at(-1)?.active).toBe(true);
+
+    await chrome.tabs.update(newTab, { active: true });
+    const panelTabs = new Set([newTab]);
+    const slots = new AgentSlots(new Cdp(), vault, undefined, undefined, undefined, (t) => panelTabs.has(t));
+    await slots.take(1, "T").prepare({ mode: "current-tab", tabId: newTab });
+    // The user stays with the panel (where the chat goes on): the agent works in a tab in the background.
+    expect(chrome.tabs.createCalls.at(-1)?.active).toBe(false);
+    expect((await chrome.tabs.get(newTab)).active).toBe(true);
+  });
+
   it("an origin tab that is gone falls back to the tab the user is looking at", async () => {
     const slots = new AgentSlots(new Cdp(), vault);
     expect(await slots.take(0, "S").prepare({ mode: "current-tab", tabId: 999 })).toBe(tabA);
@@ -119,16 +134,16 @@ describe("AgentSlots: a run acts in the tab it belongs to", () => {
     // A one-off in tab A used slot 0; its conversation belongs to A.
     await slots.take(0, "S").prepare({ mode: "current-tab", tabId: tabA });
     await chats.bind(tabA, "S");
-    slots.release(0, "S");
+    slots.release(0, "S", { keepTabs: true });
     const own = await slots.take(0, "T").prepare({ mode: "own-tab" });
     expect(own).not.toBe(tabA);
     expect(own).not.toBe(tabB);
     // Without a chat there, the slot's tab is reused as before.
     await chats.unbind(tabA);
-    slots.release(0, "T");
+    slots.release(0, "T", { keepTabs: true });
     await chrome.tabs.remove(own as number);
     await slots.take(0, "U").prepare({ mode: "current-tab", tabId: tabA });
-    slots.release(0, "U");
+    slots.release(0, "U", { keepTabs: true });
     expect(await slots.take(0, "V").prepare({ mode: "own-tab" })).toBe(tabA);
   });
 });

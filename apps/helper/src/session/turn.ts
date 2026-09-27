@@ -17,6 +17,8 @@ export interface Turn {
   idleEnd: boolean;
   lastError: string | null;
   toolCalls: number;
+  /** When the time limit ends the turn (epoch ms; set with the limit's timer). */
+  endsAt?: number;
   timeLimit?: ReturnType<typeof setTimeout>;
   graceTimer?: ReturnType<typeof setTimeout>;
   /** Resolves the turn's wait early (persistent brains: result recorded, or idle). */

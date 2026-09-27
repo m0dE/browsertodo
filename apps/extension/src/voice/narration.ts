@@ -7,6 +7,7 @@
 import type { AgentEvent } from "@browsertodo/shared";
 import { milestoneOf, MilestoneThrottle } from "./milestones.js";
 import { endLine, errorLine, planLine } from "./spoken-line.js";
+import { approvalLine } from "./approval-voice.js";
 
 export class Narration {
   private readonly milestones = new MilestoneThrottle();
@@ -33,6 +34,8 @@ export class Narration {
       case "error":
         this.erred = true;
         return errorLine(ev.text);
+      case "approval_request":
+        return approvalLine(ev.request);
       case "task_end": {
         const repeat = this.erred && !ev.spoken;
         this.newTurn();

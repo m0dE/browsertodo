@@ -284,8 +284,10 @@ describe("TaskRunner with ScriptedBrain", () => {
       brain: (r) => {
         router = r;
         return customBrain(async (ctx) => {
-          ctx.input.onMessage((t) => {
+          ctx.interjections.onAdd((t) => {
             got.push(t);
+            // Like Claude Code: the message goes in as a message of its own, the model reads it, then finishes.
+            ctx.interjections.seen(ctx.interjections.handOff("next_step")!);
             void router.call(ctx.taskId, "task_complete", { summary: `heard ${t}` });
           });
         }, "input");
@@ -298,6 +300,53 @@ describe("TaskRunner with ScriptedBrain", () => {
     expect(got).toEqual(["stop after this"]);
     expect(events.some((e) => e.event.type === "user_message")).toBe(true);
     expect(runner.sendUserMessage("S1", "too late")).toBe(false);
+  });
+
+  it("a mid-task 'no, use page B' redirects the turn: ending on page A before reading it is refused", async () => {
+    const x = new FakeX({ url: "https://mail.test/u/0" });
+    let router!: ToolRouter;
+    const results: string[] = [];
+    let messageSent!: () => void;
+    const sent = new Promise<void>((r) => (messageSent = r));
+    const { runner, events } = setup(x, {
+      brain: (r) => {
+        router = r;
+        // Like the Claude Code brain: a message typed mid-turn goes to the agent as a message of its own,
+        // which the model reads at its next step. This model had already written its answer about page A.
+        return customBrain(async (ctx) => {
+          let inbox: string | null = null;
+          ctx.interjections.onAdd(() => (inbox = ctx.interjections.handOff("next_step")));
+          const call = async (name: string, args: unknown = {}) => {
+            const out = await router.call(ctx.taskId, name as never, args);
+            results.push(out.text ?? "");
+            return out;
+          };
+          await call("navigate", { url: "https://mail.test/u/0" });
+          await call("read_page");
+          await sent;
+          const refused = await call("task_complete", { summary: "Summarised page A" });
+          expect(refused.isError).toBe(true);
+          // Its next step: it reads the message and follows it.
+          expect(inbox).toContain("no, use page B");
+          ctx.interjections.seen(inbox!);
+          await call("navigate", { url: "https://mail.test/u/2" });
+          await call("task_complete", { summary: "Summarised page B" });
+        }, "input");
+      },
+    });
+    const run = runner.run(params());
+    await vi.waitFor(() => expect(results).toHaveLength(2));
+    // The user speaks while the agent is on page A; the turn is not over, so the message is taken.
+    expect(runner.sendUserMessage("S1", "no, use page B")).toBe(true);
+    messageSent();
+    expect(await run).toMatchObject({ outcome: "done", summary: "Summarised page B" });
+    expect(results[2]).toBe("Not recorded: the user sent you a new message, so task_complete was not called. Read that message (it follows) and do what it asks before ending.");
+    expect(x.url).toBe("https://mail.test/u/2");
+    const mine = events.map((e) => e.event);
+    expect(mine.filter((e) => e.type === "task_end")).toEqual([expect.objectContaining({ outcome: "done", summary: "Summarised page B" })]);
+    expect(mine.filter((e) => e.type === "user_message")).toEqual([{ type: "user_message", text: "no, use page B" }]);
+    const traced = mine.flatMap((e) => (e.type === "trace" && e.trace.name === "interjection" ? [e.trace] : []));
+    expect(traced).toEqual([expect.objectContaining({ cat: "user", src: "helper", data: { route: "next_step", count: 1 } })]);
   });
 
   it("the scripted brain acknowledges user messages", async () => {
@@ -527,5 +576,57 @@ describe("TaskRunner: secrets, closing sessions, long-lived sessions", () => {
     for (let i = 0; i < 12; i++) expect((await runner.continueSession({ sessionId: "S1", text: `turn ${i}`, config: CONFIG })).outcome).toBe("done");
     expect(getEventListeners(signal, "abort").length).toBe(before);
     runner.endSession("S1");
+  });
+});
+
+describe("TaskRunner: memory tools", () => {
+  it("offers remember / recall / forget to Claude Code and sends them to the extension with the session's id", async () => {
+    const x = new FakeX();
+    const asked: unknown[] = [];
+    let seen: BrainContext | undefined;
+    const args = { kind: "account", subject: "Work email", text: "admin@runhq.io is Google /u/2" };
+    const { runner } = setup(x, {
+      memory: async (sessionId, tool, a) => {
+        asked.push([sessionId, tool, a]);
+        return { text: "Remembered [m1] Work email." };
+      },
+      brain: (r) =>
+        customBrain(async (ctx) => {
+          seen = ctx;
+          const res = await r.call("S1", "remember", args);
+          await r.call("S1", "task_complete", { summary: res.isError ? `error: ${res.text}` : res.text ?? "", memory_note: "Checked the work inbox." });
+        }),
+    });
+    const result = await runner.run(params());
+    expect(asked).toEqual([["S1", "remember", args]]);
+    expect(result).toMatchObject({ outcome: "done", summary: "Remembered [m1] Work email.", memoryNote: "Checked the work inbox." });
+    expect(seen!.allowedTools).toEqual(expect.arrayContaining(["mcp__browsertodo__remember", "mcp__browsertodo__recall", "mcp__browsertodo__forget"]));
+    expect(seen!.systemPrompt).toMatch(/Memory: /);
+  });
+});
+
+describe("TaskRunner: schedule_task", () => {
+  it("offers it to Claude Code and sends it to the extension with the session's id; its answer is the tool result", async () => {
+    const x = new FakeX();
+    const asked: unknown[] = [];
+    let seen: BrainContext | undefined;
+    const args = { task: "Open https://shop.example.com/orders/48213 and tell me whether it shipped.", schedule: { at: "2026-09-26T22:45:00-04:00" } };
+    const { runner, router } = setup(x, {
+      scheduleTask: async (sessionId, a) => {
+        asked.push([sessionId, a]);
+        return { taskId: "t9", instructions: a.task, when: "Once, today at 10:45 PM", nextRunAt: null };
+      },
+      brain: (r) =>
+        customBrain(async (ctx) => {
+          seen = ctx;
+          const res = await r.call("S1", "schedule_task", args);
+          await r.call("S1", "task_complete", { summary: res.isError ? `error: ${res.text}` : "scheduled" });
+        }),
+    });
+    const result = await runner.run(params());
+    expect(asked).toEqual([["S1", args]]);
+    expect(result).toMatchObject({ outcome: "done", summary: "scheduled" });
+    expect(seen!.allowedTools).toContain("mcp__browsertodo__schedule_task");
+    expect(seen!.systemPrompt).toMatch(/Scheduling: when the user asks/);
   });
 });

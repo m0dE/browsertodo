@@ -33,6 +33,14 @@ describe("ScriptedBrain helpers", () => {
 });
 
 describe("ClaudeCodeBrain helpers", () => {
+  it("turns Claude Code's extended thinking off with its settings when asked", () => {
+    const base = { systemPrompt: "rules", mcpConfigPath: "C:\run\mcp-config.json", allowedTools: ["mcp__browsertodo__task_complete"], model: "sonnet" };
+    const off = buildClaudeArgs({ ...base, thinking: false });
+    expect(off.slice(off.indexOf("--settings"), off.indexOf("--settings") + 2)).toEqual(["--settings", '{"alwaysThinkingEnabled":false}']);
+    expect(buildClaudeArgs(base)).not.toContain("--settings");
+    expect(buildClaudeArgs({ ...base, thinking: true })).not.toContain("--settings");
+  });
+
   it("builds the exact claude arguments (stream-json in and out, prompt on stdin)", () => {
     expect(
       buildClaudeArgs({
@@ -49,6 +57,7 @@ describe("ClaudeCodeBrain helpers", () => {
       "stream-json",
       "--verbose",
       "--include-partial-messages",
+      "--replay-user-messages",
       "--strict-mcp-config",
       "--mcp-config",
       "C:\\run\\mcp-config.json",

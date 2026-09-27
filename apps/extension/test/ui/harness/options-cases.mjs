@@ -103,22 +103,37 @@ export const OPTION_CASES = [
     d.state.settings.brain = "browsertodo";
     d.state.brain = { ...d.state.brain, effective: "browsertodo" };
   }, (p) => [
-    ["browsertodo AI enabled and checked", async () => (await p.isChecked(radio("browsertodo"))) && (await p.isEnabled(radio("browsertodo")))],
+    ["BrowserTODO AI enabled and checked", async () => (await p.isChecked(radio("browsertodo"))) && (await p.isEnabled(radio("browsertodo")))],
     ["credit inline", async () => /\$15\.40 usage credit left/.test(await p.textContent("#hosted-credit"))],
     ["no buy action on a paid plan with credit", async () => !(await shown(p, "#hosted-action"))],
     ["no problem note", async () => !(await shown(p, "#brain-problem"))],
+    // BrowserTODO AI brings its own Jev: nothing may ask for the user's Jev key.
+    ["no Jev key field (hosted brings its own Jev)", async () => !(await shown(p, "[data-secret=jevApiKey]"))],
+    ["Use Jev does not ask for a key", async () => !/key/i.test(await p.textContent("label[for=f-jevEnabled]"))],
+  ]],
+  // Auto that resolves to BrowserTODO AI (no helper, no Claude API key): same rule, no Jev key asked for.
+  ["options-ai-auto-hosted", "ok", "#ai", (d) => {
+    onPlus(d);
+    d.state.settings.brain = "auto";
+    d.state.settings.anthropicApiKey = "";
+    d.state.brain = { effective: "browsertodo", helper: null, helperError: "Helper not installed", hasApiKey: false, jevActive: true };
+  }, (p) => [
+    ["Auto checked", () => p.isChecked(radio("auto"))],
+    ["Auto picks BrowserTODO AI", async () => /picks BrowserTODO AI/.test(await p.textContent("#auto-pick"))],
+    ["no Jev key field (hosted brings its own Jev)", async () => !(await shown(p, "[data-secret=jevApiKey]"))],
+    ["Use Jev does not ask for a key", async () => !/key/i.test(await p.textContent("label[for=f-jevEnabled]"))],
   ]],
   ["options-ai-hosted-signedout", "opt-signedout", "#ai", (d) => {
     d.state.settings.brain = "browsertodo";
     d.state.brain = { ...d.state.brain, effective: null, note: "Sign in to use BrowserTODO AI" };
   }, (p) => [
-    ["browsertodo AI disabled", async () => !(await p.isEnabled(radio("browsertodo")))],
+    ["BrowserTODO AI disabled", async () => !(await p.isEnabled(radio("browsertodo")))],
     ["still shown as the saved choice", () => p.isChecked(radio("browsertodo"))],
     ["log in button", () => shown(p, "#hosted-signin")],
     ["signed-out problem explained", async () => /Logged out/.test(await p.textContent("#brain-problem"))],
   ]],
   ["options-ai-signedout", "opt-signedout", "#ai", () => {}, (p) => [
-    ["browsertodo AI disabled", async () => !(await p.isEnabled(radio("browsertodo")))],
+    ["BrowserTODO AI disabled", async () => !(await p.isEnabled(radio("browsertodo")))],
     ["log in button", () => shown(p, "#hosted-signin")],
     ["no credit shown", async () => !(await shown(p, "#hosted-in"))],
   ]],
@@ -164,8 +179,8 @@ export const OPTION_CASES = [
           return window.scrollY > 0 && top >= 0 && (Math.abs(top - 56) < 40 || atEnd);
         }),
       )],
-    ["order: Brain, Model, Jev, Voice", async () =>
-      (await p.evaluate(() => [...document.querySelectorAll("#panel-ai > .group > h2")].map((e) => e.textContent).join(" | "))) === "Brain | Model | Speed (Jev) | Voice"],
+    ["order: Brain, Model, Automation, Jev, Voice", async () =>
+      (await p.evaluate(() => [...document.querySelectorAll("#panel-ai > .group > h2")].map((e) => e.textContent).join(" | "))) === "Brain | Model | Automation | Speed (Jev) | Voice"],
     ["Jev key shown", () => shown(p, "[data-secret=jevApiKey]")],
     ["threshold shown", () => shown(p, "#f-jevThreshold")],
   ]],
@@ -191,6 +206,7 @@ export const OPTION_CASES = [
     ["Realtime speed range", async () => JSON.stringify(await p.evaluate(() => { const r = document.getElementById("speech-rate"); return [r.type, r.min, r.max, r.step, r.value]; })) === JSON.stringify(["range", "0.25", "1.5", "0.05", "1"])],
     ["speed shown", async () => (await p.textContent("#speech-rate-value")) === "1.0×" && (await p.textContent("#speech-rate-hint")) === "0.25× to 1.5×; 1.0× is normal."],
     ["test cost", () => eventually(async () => (await p.textContent("#speech-test-hint")) === "Says a sample line with this voice and speed (uses about 1¢ of usage credit).")],
+    ["Sounds on by default", () => p.isChecked("#voice-sounds")],
   ]],
   // Voice with Standard selected: the browser's voices and speed range.
   ["options-voice-standard", "opt-paid", "#voice", (d) => (d.state.settings = { ...d.state.settings, voiceEngine: "standard", speechRate: 1.4 }), (p) => [
@@ -200,6 +216,24 @@ export const OPTION_CASES = [
     ["Standard speed range", async () => JSON.stringify(await p.evaluate(() => { const r = document.getElementById("speech-rate"); return [r.min, r.max, r.step, r.value]; })) === JSON.stringify(["0.5", "2", "0.1", "1.4"])],
     ["speed shown", async () => (await p.textContent("#speech-rate-value")) === "1.4×" && (await p.textContent("#speech-rate-hint")) === "0.5× to 2.0×; 1.0× is normal."],
     ["local test", async () => (await p.textContent("#speech-test-hint")) === "Says a sample line with this voice and speed, on this computer."],
+  ]],
+  // Settings > AI > Automation: the three chat levels (the middle one by default) and the scheduled-task choice;
+  // full autonomy on shows its warning and the level in the warning colour.
+  ["options-automation", "ok", "#automation", () => {}, (p) => [
+    ["three levels, the middle one checked", async () =>
+      (await p.locator("#automation-levels .opt b").allTextContents()).join(" | ") === "Ask before every action | Ask before posting, sending or paying | Full autonomy (dangerous)" &&
+      (await p.isChecked("input[name=automationLevel][value=ask_consequential]"))],
+    ["scheduled tasks do what they say", () => p.isChecked("input[name=scheduledAutomation][value=full_within_task]")],
+    ["no warning", async () => !(await shown(p, "#automation-warning"))],
+    ["the section is in view", () => p.evaluate(() => { const r = document.getElementById("automation-group").getBoundingClientRect(); return r.top >= 0 && r.top < innerHeight; })],
+  ]],
+  ["options-automation-full", "ok", "#automation", (d) => (d.state.settings.automationLevel = "full"), (p) => [
+    ["full checked", () => p.isChecked("input[name=automationLevel][value=full]")],
+    ["warning shown", async () => (await shown(p, "#automation-warning")) && /Full autonomy is on/.test(await p.textContent("#automation-warning"))],
+    ["full in the warning colour", () => p.evaluate(() => {
+      const row = document.querySelector('.opt[data-automation="full"]');
+      return getComputedStyle(row).boxShadow.includes("inset") && row.hasAttribute("data-dangerous");
+    })],
   ]],
   ["options-tasks", "ok", "#tasks", () => {}, (p) => [
     // Both shortcuts, as Chrome assigned them, each with Change.
@@ -276,7 +310,7 @@ export const OPTION_CASES = [
   ["options-account-free", "opt-free", "#account", () => {}, (p) => [
     ["signed in", () => shown(p, "#acct-in")],
     ["one billing button: Choose a plan", async () => (await billingButtons(p)).join() === "Choose a plan"],
-    ["says where plans are", async () => /Plans, top-ups and invoices are on your browsertodo dashboard\./.test(await p.textContent("#acct-billing"))],
+    ["says where plans are", async () => /Plans, top-ups and invoices are on your BrowserTODO dashboard\./.test(await p.textContent("#acct-billing"))],
     ["no subscribe, top-up or portal buttons", async () => (await p.locator("#panel-account button").allTextContents()).every((t) => !/Subscribe|Top up \$|\$\d|Manage billing|Change plan/.test(t))],
     ["API keys are not on the Account tab", async () => (await p.locator("#panel-account #keys-card").count()) === 0],
   ]],
@@ -323,6 +357,40 @@ export const OPTION_CASES = [
 ];
 
 export const OPTION_FLOWS = [
+  // Automation: turning on full autonomy asks first (Keep asking saves nothing); confirmed, it saves and warns; the
+  // other choices save at once.
+  {
+    name: "options-automation-confirm",
+    size: { w: 1280 },
+    scheme: "light",
+    async run({ openOptions, optChecks, optShot }) {
+      const p = await openOptions({ w: 1280, h: 1000 }, "light", "ok", "#automation");
+      const saved = () => p.evaluate(() => window.__requests.filter((r) => r.type === "settings.save").map((r) => r.settings));
+      const checks = [];
+      const check = (what, ok) => checks.push([what, async () => ok]);
+      await p.click("input[name=automationLevel][value=full]");
+      check("the dialog opens", await eventually(() => p.evaluate(() => document.getElementById("automation-confirm").open)));
+      check("it says what full autonomy does", /post, send messages, pay, delete/.test(await p.textContent("#automation-confirm")));
+      await optShot(p, "options-automation-confirm", { w: 1280, h: 1000 }, "light");
+      await p.click("#automation-confirm-cancel");
+      check("Keep asking closes it", await eventually(() => p.evaluate(() => !document.getElementById("automation-confirm").open)));
+      check("nothing saved", (await saved()).length === 0);
+      check("the middle level checked again", await eventually(() => p.isChecked("input[name=automationLevel][value=ask_consequential]")));
+      await p.click("input[name=automationLevel][value=full]");
+      await p.waitForFunction(() => document.getElementById("automation-confirm").open);
+      await p.click("#automation-confirm-ok");
+      check("confirmed: saved", await eventually(async () => (await saved()).some((s) => s.automationLevel === "full")));
+      check("confirmed: the warning shows", await eventually(() => shown(p, "#automation-warning")));
+      await p.click("input[name=automationLevel][value=ask_all]");
+      check("a safer level saves at once", await eventually(async () => (await saved()).some((s) => s.automationLevel === "ask_all")));
+      check("no dialog for it", !(await p.evaluate(() => document.getElementById("automation-confirm").open)));
+      check("the warning goes", await eventually(async () => !(await shown(p, "#automation-warning"))));
+      await p.click("input[name=scheduledAutomation][value=ask_consequential]");
+      check("scheduled choice saved", await eventually(async () => (await saved()).some((s) => s.scheduledAutomation === "ask_consequential")));
+      await optChecks(p, "automation confirm", checks);
+      await p.ctx.close();
+    },
+  },
   // Voice: picking Standard and a speed saves them; a stored "speed" tab (the old Speed tab) reopens as AI.
   {
     name: "options-voice-choice",
@@ -354,6 +422,10 @@ export const OPTION_FLOWS = [
       await p.selectOption("#speech-voice", { index: 0 });
       check("Standard voice saved", await eventually(async () => (await saved()).some((s) => s.speechVoice === "")));
       check("Realtime voice kept", !(await saved()).some((s) => "realtimeVoice" in s && s.realtimeVoice !== "cedar"));
+      // Sounds: the start and stop sounds turn off, and back on.
+      await p.click("#voice-sounds");
+      check("Sounds off saved", await eventually(async () => (await saved()).some((s) => s.voiceSounds === false)));
+      check("Sounds unchecked after the save", !(await p.isChecked("#voice-sounds")));
       await p.evaluate(() => localStorage.setItem("browsertodo.options.tab", "speed"));
       await p.goto(p.url().replace(/#.*$/, ""));
       await p.waitForSelector("#helper-headline:not(:empty)", { state: "attached" });

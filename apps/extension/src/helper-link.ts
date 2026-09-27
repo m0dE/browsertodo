@@ -7,10 +7,12 @@ import {
   type HelperMethods,
   type HelperNotifications,
   type RpcMessage,
+  type MemoryMethods,
+  type ScheduleMethods,
 } from "@browsertodo/shared";
 import { Listeners } from "./listeners.js";
 
-export type HelperPeer = RpcPeer<HelperMethods, BrowserMethods>;
+export type HelperPeer = RpcPeer<HelperMethods, BrowserMethods & ScheduleMethods & MemoryMethods>;
 
 export interface HelperLinkOptions {
   /** Registers the browser.* and vault.* handlers on each new peer. */
@@ -158,7 +160,7 @@ export class HelperLink {
       this.lastErrorText = helperErrorText(errorMessage(err));
       throw new Error(this.lastErrorText);
     }
-    const peer: HelperPeer = new RpcPeer<HelperMethods, BrowserMethods>((msg) => port.postMessage(msg), "e");
+    const peer: HelperPeer = new RpcPeer<HelperMethods, BrowserMethods & ScheduleMethods & MemoryMethods>((msg) => port.postMessage(msg), "e");
     this.opts.registerHandlers(peer);
     for (const deliver of this.deliveries) deliver(peer);
     this.port = port;

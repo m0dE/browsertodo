@@ -76,8 +76,14 @@ class Parent extends MiniNode {
     }
     return out;
   }
+  /** Markup assigned as innerHTML (an icon's SVG paths): kept as it is, not parsed, and not part of textContent. */
+  markup = "";
   get innerHTML(): string {
-    return this.childNodes.map((n) => (n instanceof MiniText ? esc(n.data) : (n as MiniElement).outerHTML)).join("");
+    return this.markup || this.childNodes.map((n) => (n instanceof MiniText ? esc(n.data) : (n as MiniElement).outerHTML)).join("");
+  }
+  set innerHTML(html: string) {
+    this.childNodes = [];
+    this.markup = html;
   }
 }
 
@@ -143,6 +149,7 @@ export class MiniElement extends Parent {
 export function installMiniDom(): void {
   (globalThis as any).document = {
     createElement: (tag: string) => new MiniElement(tag.toLowerCase()),
+    createElementNS: (_ns: string, tag: string) => new MiniElement(tag.toLowerCase()),
     createTextNode: (t: string) => new MiniText(t),
     createDocumentFragment: () => new MiniFragment(),
     addEventListener: () => {},

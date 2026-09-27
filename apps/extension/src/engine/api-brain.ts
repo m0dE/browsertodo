@@ -5,7 +5,7 @@
  * (browsertodo, see hosted-brain.ts).
  */
 import type { AgentSession, ApiAgentOptions, BrowserCaller, JevLike } from "@browsertodo/core";
-import { errorMessage, type AgentEvent, type ExtensionSettings } from "@browsertodo/shared";
+import { errorMessage, type AgentEvent, type ExtensionSettings, type MemoryToolName, type ScheduledTask, type ScheduleTaskArgs } from "@browsertodo/shared";
 import { callSafely } from "../listeners.js";
 import { endedRun, failedRun, type Brain, type BrainContinueOptions, type BrainRun, type BrainStartOptions, type CoreApi } from "./brains.js";
 
@@ -69,6 +69,10 @@ export class ApiBrain implements Brain {
       onSessionsChanged?: () => void;
       /** Default: the Anthropic API key in the settings. */
       backend?: ApiBackend;
+      /** schedule_task for a conversation (the TODO list's TaskScheduler). Absent: the tool is refused. */
+      scheduleTask?: (sessionId: string, args: ScheduleTaskArgs) => Promise<ScheduledTask>;
+      /** remember / recall / forget for a conversation (the extension's memory). Absent: the tools are refused. */
+      memoryTool?: (sessionId: string, tool: MemoryToolName, args: unknown) => Promise<{ text: string; isError?: boolean }>;
     },
   ) {
     this.backend = deps.backend ?? claudeApiBackend(deps.core, deps.fetch);
@@ -95,6 +99,8 @@ export class ApiBrain implements Brain {
           // Model calls and tool spans for the conversation's trace (recorded here, in the engine).
           onTrace: (trace) => route.sink({ type: "trace", trace: { ...trace, src: "engine" } }),
           ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}),
+          ...(this.deps.scheduleTask ? { scheduleTask: (args: ScheduleTaskArgs) => this.deps.scheduleTask!(opts.sessionId, args) } : {}),
+          ...(this.deps.memoryTool ? { memory: (tool: MemoryToolName, args: unknown) => this.deps.memoryTool!(opts.sessionId, tool, args) } : {}),
         }),
       };
       if (conv.agent.continueWith) this.keep(opts.sessionId, conv);

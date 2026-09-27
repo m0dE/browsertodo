@@ -116,7 +116,7 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
     userTurn(socket, "in1", "r1");
     callSend(socket, "Open Gmail");
     await flush();
-    c.note("Agent update (problem): the page did not load.", true);
+    c.note("Agent update (problem): the page did not load.", "error");
     replyDone(socket, "r1");
     expect(socket.replies()).toEqual([{ type: "response.create" }]);
   });
@@ -129,6 +129,36 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
     socket.event({ type: "input_audio_buffer.speech_started", item_id: "in2" });
     replyDone(socket, "r1");
     expect(socket.replies()).toEqual([]);
+  });
+
+  it("the server never cuts a reply off for the user's voice: the client does, and never while it calls send_to_agent", async () => {
+    const onTool = vi.fn(() => "Sent to the agent.");
+    const { socket } = client({ onTool });
+    // OpenAI's own barge-in cancels the reply mid-call (measured: the arguments end cut off, as invalid JSON).
+    expect(socket.sent[0]!.session.audio.input.turn_detection).toMatchObject({ type: "server_vad", create_response: true, interrupt_response: false });
+    userTurn(socket, "in1", "r1");
+    socket.event({ type: "response.output_item.added", response_id: "r1", item: { type: "function_call", name: "send_to_agent" } });
+    // The user talks on while the call is being written: it is let finish.
+    socket.event({ type: "input_audio_buffer.speech_started", item_id: "in2" });
+    expect(socket.sent.filter((e) => e.type === "response.cancel")).toEqual([]);
+    callSend(socket, "Open Gmail");
+    await flush();
+    expect(onTool).toHaveBeenCalledWith("send_to_agent", { text: "Open Gmail" }, "in1");
+    // Its output goes back, then the rest of the reply (the acknowledgement) is cancelled: the user has the floor.
+    const sent = socket.sent.map((e) => e.type);
+    expect(sent.indexOf("response.cancel")).toBeGreaterThan(sent.lastIndexOf("conversation.item.create"));
+    expect(socket.replies()).toEqual([]);
+  });
+
+  it("the user talking over the narrator's speech cancels that reply at once", () => {
+    const { socket } = client();
+    userTurn(socket, "in1", "r1");
+    socket.event({ type: "response.output_audio.delta", item_id: "a1", delta: "AAAA" });
+    socket.event({ type: "input_audio_buffer.speech_started", item_id: "in2" });
+    expect(socket.sent.filter((e) => e.type === "response.cancel")).toHaveLength(1);
+    // Its done event (cancelled) ends it; the user's next turn gets its reply as usual.
+    socket.event({ type: "response.done", response: { id: "r1", status: "cancelled", output: [] } });
+    expect(socket.sent.filter((e) => e.type === "response.cancel")).toHaveLength(1);
   });
 
   it("names the user's input item: with the tool call, with their words, and when its reply is done", async () => {
@@ -230,6 +260,7 @@ function engineEvents(log: string[]): EngineEvents {
     forward: (t) => void log.push(`forward:${t}`),
     userWords: (w, s) => void log.push(`words:${w}|${s}`),
     stopTask: async () => (log.push("stopTask"), "Stopped the task."),
+    answerApproval: async () => "Nothing is waiting for the user's OK.",
     endVoice: () => {},
     failed: (f) => void log.push(`failed:${(f as { kind: string }).kind}`),
   };
@@ -349,13 +380,13 @@ const ENGINES: VoiceEnginesResponse = {
 describe("the side panel's hands-free session on Realtime", () => {
   beforeAll(installMiniDom);
 
-  function panel(opts: { costNoticed?: boolean; holdRealtime?: boolean } = {}) {
+  function panel(opts: { costNoticed?: boolean; holdRealtime?: boolean; patch?: Partial<HandsFreeDeps> } = {}) {
     const engines: FakeEngine[] = [];
     const tips: (VoiceTip & { key?: string })[] = [];
     const box = { draft: vi.fn(() => "half-typed note"), setDraft: vi.fn() };
     let finishSend!: (id: string) => void;
     const deps: HandsFreeDeps = {
-      voice: { state: "idle", attachHandsFree: () => {}, showHandsFree: () => {}, setLevel: () => {}, showTip: () => {}, ensureMic: async () => true },
+      voice: { state: "idle", attachHandsFree: () => {}, showHandsFree: () => {}, setLevel: () => {}, showTip: () => {}, ensureMic: async () => true, shortcutLabel: null },
       composer: box,
       notify: (tip) => void tips.push(tip),
       activeTab: () => 1,
@@ -377,10 +408,13 @@ describe("the side panel's hands-free session on Realtime", () => {
         return e;
       },
       stopTask: async () => "Stopped the task.",
+      answerApproval: async () => true,
       openBilling: () => {},
       signIn: () => {},
       onActive: () => {},
-      host: new MiniElement("div") as unknown as HTMLElement,
+      bar: new MiniElement("div") as unknown as HTMLElement,
+      earcons: { play: () => {} },
+      ...opts.patch,
     };
     const hf = initHandsFree(deps);
     return { hf, deps, engines, tips, box, finish: (id: string) => finishSend(id) };
@@ -419,6 +453,33 @@ describe("the side panel's hands-free session on Realtime", () => {
     }
   });
 
+  it("requests said one after another before the first one's chat exists all go to that chat, the first at once", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = panel();
+      t.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(0);
+      const rt = t.engines[0]!;
+      rt.events.forward("Open Gmail");
+      rt.events.forward("and find the invoice from Acme");
+      await vi.advanceTimersByTimeAsync(0);
+      // The second waits for the chat the first is starting (it would start a second one).
+      expect(t.deps.send).toHaveBeenCalledTimes(1);
+      expect(t.deps.send).toHaveBeenLastCalledWith("Open Gmail", { tabId: 1, sessionId: null });
+      t.finish("s-new");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.deps.send).toHaveBeenCalledTimes(2);
+      expect(t.deps.send).toHaveBeenLastCalledWith("and find the invoice from Acme", { tabId: 1, sessionId: "s-new" });
+      // Once the chat is known, a request goes out at once, even while an earlier one is still on its way.
+      rt.events.forward("and print it");
+      expect(t.deps.send).toHaveBeenCalledTimes(3);
+      expect(t.deps.send).toHaveBeenLastCalledWith("and print it", { tabId: 1, sessionId: "s-new" });
+      t.hf.toggle("button");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("an engine replaced while it started (the cost notice's Use Standard) gets the clock: the session goes on", async () => {
     vi.useFakeTimers();
     try {
@@ -452,6 +513,53 @@ describe("the side panel's hands-free session on Realtime", () => {
       expect(t.engines[0]!.ticks).toBe(0);
       expect(t.hf.active).toBe(false);
       expect(t.hf.phase).toBe("off");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the voice bar shows while it is on (Hearing you… with a voice on the microphone); the tab goes to the background; a sound marks the microphone going live and off", async () => {
+    vi.useFakeTimers();
+    try {
+      const played: string[] = [];
+      const active: [boolean, number | null][] = [];
+      const bar = new MiniElement("div") as unknown as HTMLElement;
+      const t = panel({ patch: { bar, earcons: { play: (k) => void played.push(k) }, onActive: (on, tab) => void active.push([on, tab]) } });
+      t.hf.toggle("button");
+      // Starting: the bar is up at once, no sound until the microphone is live.
+      expect([bar.hidden, bar.dataset.state, played]).toEqual([false, "starting", []]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect([bar.dataset.state, played, active, t.hf.tab]).toEqual(["listening", ["start"], [[true, 1]], 1]);
+      expect(bar.textContent).toContain("Realtime · 0:00");
+      t.engines[0]!.events.level(0.9);
+      expect(bar.dataset.state).toBe("hearing");
+      expect(bar.textContent).toContain("Hearing you…");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(bar.dataset.state).toBe("listening");
+      expect(bar.textContent).toContain("Realtime · 0:02");
+      t.hf.toggle("button");
+      expect([bar.hidden, played, active.at(-1), t.hf.tab]).toEqual([true, ["start", "stop"], [false, null], null]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("no sounds when Settings turned them off, or when it stopped before the microphone was live", async () => {
+    vi.useFakeTimers();
+    try {
+      const played: string[] = [];
+      const earcons = { play: (k: string) => void played.push(k) };
+      const quiet = panel({ patch: { earcons, settings: () => ({ voiceEngine: "realtime", realtimeCostNoticed: true, voiceSounds: false }) as ExtensionSettings } });
+      quiet.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(quiet.hf.phase).toBe("listening");
+      quiet.hf.toggle("button");
+      const early = panel({ holdRealtime: true, patch: { earcons } });
+      early.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(0);
+      early.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(HANDS_FREE.tickMs);
+      expect(played).toEqual([]);
     } finally {
       vi.useRealTimers();
     }

@@ -1,13 +1,16 @@
 /**
- * The pure rules of local tasks: checking what the user entered, the daily
- * repeat schedule, and how the end of a run changes a task.
+ * The pure rules of local tasks: checking what the user entered, the repeat
+ * schedule (packages/shared schedule.ts, the same rules as the API's), and
+ * how the end of a run changes a task.
  */
 import {
+  LegacyRepeatRule,
+  legacyToRepeat,
+  localTimeZone,
   MAX_ACCOUNT_CHARS,
   MAX_INSTRUCTIONS_CHARS,
-  nextOccurrenceInZone,
-  normalizeRepeat,
-  RepeatRule,
+  nextOccurrence,
+  RepeatSchedule,
   type LocalTask,
   type TaskRunResult,
 } from "@browsertodo/shared";
@@ -22,14 +25,6 @@ export type StoredLocalTask = LocalTask & {
   /** Id of the next occurrence this (repeating) task already spawned. */
   nextId?: string | null;
 };
-
-/**
- * The next local wall-clock time from dailyAt ("HH:MM", the browser's time
- * zone) strictly after `after`.
- */
-export function nextOccurrence(dailyAt: string[], after: Date): Date {
-  return nextOccurrenceInZone(dailyAt, after, Intl.DateTimeFormat().resolvedOptions().timeZone);
-}
 
 export function cleanInstructions(text: unknown): string {
   const t = typeof text === "string" ? text.trim() : "";
@@ -52,11 +47,24 @@ export function cleanTime(t: unknown): string | null {
   return d.toISOString();
 }
 
-export function cleanRepeat(r: unknown): RepeatRule | null {
+/** A repeat rule as given: the current shape, or the old { dailyAt } (in this browser's zone). */
+export function cleanRepeat(r: unknown): RepeatSchedule | null {
   if (r === null || r === undefined) return null;
-  const parsed = RepeatRule.safeParse(r);
-  if (!parsed.success) throw new Error("Repeat times must be HH:MM (24 h), 1 to 24 of them");
-  return normalizeRepeat(parsed.data);
+  const legacy = LegacyRepeatRule.safeParse(r);
+  if (legacy.success) return legacyToRepeat(legacy.data, localTimeZone());
+  const parsed = RepeatSchedule.safeParse(r);
+  if (!parsed.success) throw new Error(`Repeat rule: ${parsed.error.issues[0]?.message ?? "not valid"}`);
+  return parsed.data;
+}
+
+/**
+ * A task as stored before repeat rules became cron ({ dailyAt }, in the
+ * browser's zone) in the current shape; others as they are. The store reads
+ * every task through this, so the next write saves them migrated.
+ */
+export function migrateStoredTask(t: StoredLocalTask): StoredLocalTask {
+  const legacy = LegacyRepeatRule.safeParse(t.repeat);
+  return legacy.success ? { ...t, repeat: legacyToRepeat(legacy.data, localTimeZone()) } : t;
 }
 
 export const byCreated = (a: StoredLocalTask, b: StoredLocalTask) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0);
@@ -86,15 +94,22 @@ export function afterRun(t: StoredLocalTask, result: TaskRunResult, now: Date, r
   }
 }
 
-/** The next occurrence of a repeating task that just ended done or failed (pending, at its next time). */
-export function nextOccurrenceTask(t: StoredLocalTask & { repeat: RepeatRule }, id: string, now: Date): StoredLocalTask {
+/**
+ * The next occurrence of a repeating task that just ended done or failed:
+ * pending at its rule's next time (one run fewer when counted), or null when
+ * the rule is over (end date, run count).
+ */
+export function nextOccurrenceTask(t: StoredLocalTask & { repeat: RepeatSchedule }, id: string, now: Date): StoredLocalTask | null {
+  const next = nextOccurrence(t.repeat, now);
+  if (!next) return null;
   const nowIso = now.toISOString();
   return {
     ...t,
     id,
     status: "pending",
     attempts: 0,
-    notBefore: nextOccurrence(t.repeat.dailyAt, now).toISOString(),
+    notBefore: next.at.toISOString(),
+    repeat: next.repeat,
     retryAfter: null,
     resultSummary: null,
     resultUrl: null,

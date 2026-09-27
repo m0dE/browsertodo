@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { LegacyRepeatRule, legacyToRepeat, RepeatSchedule, ScheduleInput, TaskSchedule } from "./schedule.js";
+import { TimeZone } from "./zoned-time.js";
 
 /** Lifecycle of a task stored in the cloud API. */
 export const TaskStatus = z.enum(["pending", "running", "done", "failed", "paused", "cancelled"]);
@@ -8,8 +10,6 @@ export const MAX_INSTRUCTIONS_CHARS = 8000;
 export const MAX_BATCH_TASKS = 100;
 /** Files one task can carry (images, videos, documents the agent uses). */
 export const MAX_MEDIA_PER_TASK = 10;
-/** Times a day a repeating task can run. */
-export const MAX_REPEAT_TIMES = 24;
 /** Length of a task's account label. */
 export const MAX_ACCOUNT_CHARS = 100;
 /** Lengths of a reported result's fields (ResultInput). */
@@ -20,40 +20,34 @@ export const MAX_RESULT_REASON = 4000;
 /** An X-style handle or any account label the agent should switch to. */
 const Account = z.string().trim().min(1).max(MAX_ACCOUNT_CHARS);
 
-/**
- * Repeat rule: run again every day at these local times ("HH:MM", 24 h).
- * Local tasks use the browser's time zone; cloud tasks use the task's `tz`.
- */
-export const RepeatRule = z.object({
-  dailyAt: z.array(z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)).min(1).max(MAX_REPEAT_TIMES),
-});
-export type RepeatRule = z.infer<typeof RepeatRule>;
+const NotBefore = z.iso.datetime({ offset: true });
 
-/** True when `tz` is an IANA time zone name this runtime knows (e.g. "America/New_York"). */
-export function isValidTimeZone(tz: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: tz });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** An IANA time zone name. */
-export const TimeZone = z.string().min(1).max(64).refine(isValidTimeZone, "unknown IANA time zone");
-
-/** Body of POST /v1/tasks and each item of POST /v1/tasks/batch. */
-export const CreateTaskInput = z.object({
+const TaskFields = z.object({
   instructions: z.string().trim().min(1).max(MAX_INSTRUCTIONS_CHARS),
   account: Account.optional(),
   mediaIds: z.array(z.string().min(1)).max(MAX_MEDIA_PER_TASK).optional(),
-  notBefore: z.iso.datetime({ offset: true }).optional(),
   priority: z.number().int().min(-1000).max(1000).optional(),
-  /** Cloud only: when the task ends done or failed, the next occurrence is created. null = no repeat. */
-  repeat: RepeatRule.nullable().optional(),
-  /** IANA time zone for `repeat`. Default "UTC". */
+  /** When it runs: once at `at` (default: as soon as possible), and again by `repeat`. See schedule.ts. */
+  schedule: ScheduleInput.optional(),
+  /** Legacy, still accepted: the same as schedule.at. */
+  notBefore: NotBefore.optional(),
+  /** Legacy, still accepted: { dailyAt: ["09:00"] }, converted to schedule.repeat. null = no repeat. */
+  repeat: LegacyRepeatRule.nullable().optional(),
+  /** Legacy, still accepted: the IANA time zone of `repeat` (default "UTC"). */
   tz: TimeZone.nullable().optional(),
 });
+
+const LEGACY_SCHEDULE_FIELDS = ["notBefore", "repeat", "tz"] as const;
+
+/** `schedule` replaces notBefore, repeat and tz: a request uses one or the other. */
+function oneScheduleShape(t: { schedule?: unknown } & Partial<Record<(typeof LEGACY_SCHEDULE_FIELDS)[number], unknown>>, ctx: z.RefinementCtx) {
+  if (t.schedule === undefined) return;
+  const legacy = LEGACY_SCHEDULE_FIELDS.filter((k) => t[k] !== undefined);
+  if (legacy.length) ctx.addIssue({ code: "custom", path: ["schedule"], message: `use schedule or ${legacy.join(", ")}, not both` });
+}
+
+/** Body of POST /v1/tasks and each item of POST /v1/tasks/batch. */
+export const CreateTaskInput = TaskFields.superRefine(oneScheduleShape);
 export type CreateTaskInput = z.infer<typeof CreateTaskInput>;
 
 export const BatchCreateInput = z.object({
@@ -62,14 +56,35 @@ export const BatchCreateInput = z.object({
 export type BatchCreateInput = z.infer<typeof BatchCreateInput>;
 
 /**
- * Body of PATCH /v1/tasks/:id. Only allowed while pending or paused.
- * `account: null` and `notBefore: null` clear them (omit a field to keep it).
+ * Body of PATCH /v1/tasks/:id. Only allowed while pending or paused. Omit a
+ * field to keep it; `account: null` clears it. `schedule` replaces the whole
+ * schedule (null: once, as soon as possible); the legacy fields change one
+ * part each (`notBefore: null` clears it; `tz` alone moves the repeat rule).
  */
-export const UpdateTaskInput = CreateTaskInput.extend({
+export const UpdateTaskInput = TaskFields.extend({
   account: Account.nullable(),
-  notBefore: z.iso.datetime({ offset: true }).nullable(),
-}).partial();
+  notBefore: NotBefore.nullable(),
+  schedule: ScheduleInput.nullable(),
+})
+  .partial()
+  .superRefine(oneScheduleShape);
 export type UpdateTaskInput = z.infer<typeof UpdateTaskInput>;
+
+/**
+ * The schedule a create or update asks for: `at` and `repeat` as given
+ * (undefined: not given, keep), legacy fields converted. `retz`: a legacy
+ * update that sends only `tz` (the task's repeat rule moves to that zone).
+ */
+export function requestedSchedule(input: Pick<UpdateTaskInput, "schedule" | "notBefore" | "repeat" | "tz">): {
+  at: string | null | undefined;
+  repeat: RepeatSchedule | null | undefined;
+  retz?: string | null;
+} {
+  if (input.schedule !== undefined) return { at: input.schedule?.at ?? null, repeat: input.schedule?.repeat ?? null };
+  const at = input.notBefore;
+  if (input.repeat === undefined) return input.tz === undefined ? { at, repeat: undefined } : { at, repeat: undefined, retz: input.tz };
+  return { at, repeat: input.repeat === null ? null : legacyToRepeat(input.repeat, input.tz) };
+}
 
 /** Metadata for an uploaded media file. */
 export const MediaInfo = z.object({
@@ -100,10 +115,8 @@ export const Task = z.object({
   failReason: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
-  /** Daily repeat rule (cloud tasks; optional so older producers still validate). */
-  repeat: RepeatRule.nullable().optional(),
-  /** IANA time zone of the repeat rule. */
-  tz: z.string().nullable().optional(),
+  /** When it runs: `at` (the same as notBefore) and the repeat rule. Optional so older producers still validate. */
+  schedule: TaskSchedule.nullable().optional(),
   /** Owning user id; null for legacy (admin-owned) cloud tasks. */
   ownerId: z.string().nullable().optional(),
 });
@@ -129,6 +142,12 @@ export type TaskEvent = z.infer<typeof TaskEvent>;
 /** Body of POST /v1/runner/claim. */
 export const ClaimInput = z.object({
   runnerId: z.string().min(1).max(100),
+  /**
+   * Claim this task now, whatever its time ("Run" on its row): pending, paused
+   * or failed (it starts over). 404 when not in scope, 409 when it cannot run.
+   * Without it: the next due task, or 204.
+   */
+  taskId: z.string().min(1).max(100).optional(),
 });
 export type ClaimInput = z.infer<typeof ClaimInput>;
 
@@ -213,13 +232,14 @@ export const ApiError = z.object({ error: z.string(), details: z.unknown().optio
 export type ApiError = z.infer<typeof ApiError>;
 
 /**
- * A task stored in the extension (no cloud needed). Same shape as a cloud
- * Task plus a repeat rule. mediaIds refer to files stored in the extension.
- * When a repeating task finishes, the extension creates the next occurrence
- * as a new pending task and keeps the finished one as history.
+ * A task stored in the extension (no cloud needed), and the TODO tab's row:
+ * a cloud Task with its repeat rule at the top (notBefore is its `at`).
+ * mediaIds refer to files stored in the extension. When a repeating task
+ * finishes, the extension creates the next occurrence as a new pending task
+ * and keeps the finished one as history.
  */
-export const LocalTask = Task.extend({
-  repeat: RepeatRule.nullable(),
+export const LocalTask = Task.omit({ schedule: true }).extend({
+  repeat: RepeatSchedule.nullable(),
 });
 export type LocalTask = z.infer<typeof LocalTask>;
 

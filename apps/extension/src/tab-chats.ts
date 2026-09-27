@@ -5,7 +5,7 @@
  * conversation. Kept in chrome.storage.session (tabId -> sessionId), so a
  * restarted service worker finds it again; it is gone when the browser
  * restarts, like the tabs themselves. A closed tab loses its binding, while
- * the session stays in the Activity Log.
+ * the session stays in History.
  */
 import { Listeners } from "./listeners.js";
 import { tabExists } from "./chrome-tabs.js";

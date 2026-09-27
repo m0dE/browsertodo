@@ -11,10 +11,10 @@
  * (once). The batch stops at the first step Jev is not sure about and
  * returns candidates for that step only, so the model can pick one.
  */
-import { errorMessage, stopwatch, traceStart, traceText, type AgentEvent, type BrowserMethod, type BrowserMethods, type ElementInfo, type ElementPicks, type PageSnapshot, type Sleep, type ToolArgsOf, type ToolResult, type TraceDraft } from "@browsertodo/shared";
+import { errorMessage, isApprovalRefusal, stopwatch, traceStart, traceText, type AgentEvent, type BrowserMethod, type BrowserMethods, type ElementInfo, type ElementPicks, type PageSnapshot, type Sleep, type ToolArgsOf, type ToolResult, type TraceDraft } from "@browsertodo/shared";
 import { OutOfCreditError } from "./api-errors.js";
 import type { JevDecision, JevLike } from "./types.js";
-import { formatCompact, formatElement, formatSnapshot } from "./page-format.js";
+import { formatCompact, formatElement, formatPageChange, formatSnapshot } from "./page-format.js";
 
 /** Marker in act results when a step was not executed. */
 export const NOT_CONFIDENT = "not confident";
@@ -60,6 +60,8 @@ export interface ActContext {
   gate?: ActGate;
   /** One "act.step" span per step: its parts (reading the page, Jev, the action and the settle wait). */
   trace?: (e: TraceDraft) => void;
+  /** True when the user sent a message meanwhile: the remaining steps are not run (the message may change them). */
+  interrupted?: () => boolean;
 }
 
 /** What one act step spent its time on, and who picked its element. */
@@ -165,15 +167,27 @@ export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult
   const gate = ctx.gate ?? createActGate();
   const jevOn = jev !== null;
   let timing: StepTiming = { readMs: 0, performMs: 0, ran: false };
+  /** The page as the call's first step read it, before anything was done. */
+  let before: PageSnapshot | null = null;
   const readPage = async () => {
     const took = stopwatch();
     try {
-      return await browser("browser.readPage", {});
+      const snap = await browser("browser.readPage", {});
+      before ??= snap;
+      return snap;
     } finally {
       timing.readMs += took();
     }
   };
-  const pageText = async () => formatSnapshot(await readPage(), { words: jevOn });
+  /**
+   * The page after the steps. Jev mode: only what changed since the first step (the model has
+   * the page from before). With index steps, the whole list: indices may have shifted.
+   */
+  const pageText = async () => {
+    const start = before;
+    const after = await readPage();
+    return jevOn && start && start !== after ? formatPageChange(start, after) : formatSnapshot(after, { words: jevOn });
+  };
   /**
    * Does the step on the element, then lets the page settle: sets a checkbox (checked), fills a field
    * or chooses a dropdown's option (text), else clicks. Returns what was done, as "<verb> ELEMENT<after>".
@@ -242,11 +256,22 @@ export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult
   for (let i = 0; i < steps.length; i++) {
     const n = i + 1;
     const step = steps[i]!;
+    if (i > 0 && ctx.interrupted?.()) {
+      return { text: `${lines.join("\n")}\nStopped before step ${n}: the user sent a new message (it follows). Steps ${n}-${steps.length} were not run.\n\n${await pageText()}` };
+    }
     const span = traceStart();
     timing = { readMs: 0, performMs: 0, ran: false };
     try {
       const hasText = step.text !== undefined && step.text !== "";
-      const couldNotUse = async (index: number, e: unknown, d?: JevDecision) => stop(n, `"${step.goal}": could not use element [${index}]: ${errorMessage(e)}`, await readPage(), d);
+      const couldNotUse = async (index: number, e: unknown, d?: JevDecision): Promise<ToolResult> => {
+        const message = errorMessage(e);
+        // The user did not approve the step: that is final. No candidates to pick again, nothing after it runs.
+        if (isApprovalRefusal(message)) {
+          const rest = steps.length > n ? ` Steps ${n + 1}-${steps.length} were not run.` : "";
+          return { text: `${[...lines, `step ${n}: "${step.goal}": ${message}`].join("\n")}${rest}`, isError: true };
+        }
+        return stop(n, `"${step.goal}": could not use element [${index}]: ${message}`, await readPage(), d);
+      };
       if (step.index !== undefined) {
         // The model knows the element (Jev off, or Jev was unsure about this step): run it directly.
         try {

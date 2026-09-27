@@ -1,4 +1,4 @@
-/** The side panel's tabs (Chat | TODO | Activity log) and the one opened last. */
+/** The side panel's tabs (Chat | TODO | History) and the one opened last. */
 import { $ } from "../ui/dom.js";
 
 export type TabName = "chat" | "todo" | "history";
@@ -15,7 +15,7 @@ export function savedTab(value: string | null | undefined): TabName {
   return RENAMED[value] ?? "chat";
 }
 
-/** The composer sits under Chat and TODO; the Activity log is read-only. */
+/** The composer sits under Chat and TODO; the History tab is read-only. */
 export const tabHasComposer = (tab: TabName): boolean => tab !== "history";
 
 const LAST_TAB_KEY = "browsertodo.panel.tab";

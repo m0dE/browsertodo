@@ -1,6 +1,6 @@
 /** Pure helpers for the MCP server entry (importable without starting it). */
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { TOOL_NAMES, type ToolName, type ToolResult } from "@browsertodo/shared";
+import { APPROVAL_TIMEOUT_MS, TOOL_NAMES, type ToolName, type ToolResult } from "@browsertodo/shared";
 
 /**
  * Pipe task id of the attached session: the user's own Claude Code running
@@ -8,8 +8,12 @@ import { TOOL_NAMES, type ToolName, type ToolResult } from "@browsertodo/shared"
  */
 export const INTERACTIVE_TASK_ID = "interactive";
 
-/** Long enough for act / switch_x_account, which make several 60 s browser calls. */
-export const TOOL_CALL_TIMEOUT_MS = 5 * 60_000;
+/**
+ * Long enough for act / switch_x_account, which make several 60 s browser
+ * calls, plus one approval the user may take up to APPROVAL_TIMEOUT_MS to
+ * give (a second long wait in the same call can still run out).
+ */
+export const TOOL_CALL_TIMEOUT_MS = 5 * 60_000 + APPROVAL_TIMEOUT_MS;
 /** tool.list is answered from memory: a helper that takes longer is not answering. */
 export const TOOL_LIST_TIMEOUT_MS = 5000;
 

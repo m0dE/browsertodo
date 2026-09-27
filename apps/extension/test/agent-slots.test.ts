@@ -25,7 +25,7 @@ beforeEach(async () => {
 const groupTitle = (tabId: number) => chrome.tabGroups.byId.get(chrome.tabs.byId.get(tabId)!.groupId)?.title;
 
 describe("AgentSlots", () => {
-  it("gives each slot its own agent tab in the browsertodo group, remembered per slot", async () => {
+  it("gives each slot its own agent tab in the BrowserTODO group, remembered per slot", async () => {
     await slots.take(0, "A").prepare({ mode: "own-tab" });
     await slots.take(1, "B").prepare({ mode: "own-tab" });
     const [a, b] = [await slots.get(0).tab.tabId(), await slots.get(1).tab.tabId()];
@@ -40,7 +40,7 @@ describe("AgentSlots", () => {
     const stored = await chrome.storage.session.get(["agentTabId", "agentTabId.1"]);
     expect(stored).toEqual({ agentTabId: a, "agentTabId.1": b });
     // Reusing a slot reuses its tab.
-    slots.release(1, "B");
+    slots.release(1, "B", { keepTabs: true });
     await slots.take(1, "C").prepare({ mode: "own-tab" });
     expect(await slots.get(1).tab.tabId()).toBe(b);
   });
@@ -55,7 +55,7 @@ describe("AgentSlots", () => {
     expect(await tabOf("A")).toBe(await slots.get(0).tab.tabId());
     expect(await tabOf("B")).toBe(await slots.get(1).tab.tabId());
     expect(await tabOf(undefined)).toBe(await slots.get(0).tab.tabId());
-    slots.release(1, "B");
+    slots.release(1, "B", { keepTabs: true });
     expect(() => slots.browserFor("B")).toThrow(/no browser tab right now/);
     expect(slots.slotOf("A")).toBe(0);
     expect(slots.slotOf("B")).toBeNull();
@@ -68,8 +68,8 @@ describe("AgentSlots", () => {
     const b = await slots.get(1).tab.tabId();
     expect(b).not.toBe(userTab);
     // Once A's run is over, the user's tab is free again.
-    slots.release(0, "A");
-    slots.release(1, "B");
+    slots.release(0, "A", { keepTabs: true });
+    slots.release(1, "B", { keepTabs: true });
     await chrome.tabs.update(userTab, { active: true });
     await slots.take(1, "C").prepare({ mode: "current-tab" });
     expect(await slots.get(1).tab.tabId()).toBe(userTab);

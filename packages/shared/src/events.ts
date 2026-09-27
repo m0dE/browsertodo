@@ -1,4 +1,7 @@
+import type { ApprovalOutcome, ApprovalRequest } from "./automation.js";
+import type { MemoryEntry } from "./memory.js";
 import type { TaskOutcome, TaskSource } from "./task.js";
+import type { ScheduleInput } from "./schedule.js";
 import type { TraceEvent } from "./trace.js";
 
 /**
@@ -71,6 +74,33 @@ export type AgentEvent =
    */
   | { type: "heard"; text: string; sent?: string }
   /**
+   * The agent put a task in the user's TODO list from the chat
+   * (schedule_task): the chat shows it as a card with View in TODO and Undo.
+   * schedule: as the agent asked for it (the card says it in words when shown,
+   * so "today" stays true). Written by the extension, never by a brain.
+   */
+  | { type: "task_scheduled"; taskId: string; instructions: string; schedule: ScheduleInput }
+  /** The user undid a task_scheduled from its card (the task was deleted). Written by the extension. */
+  | { type: "task_unscheduled"; taskId: string }
+  /**
+   * An action waits for the user's OK (the automation level, automation.ts):
+   * the chat shows it as a card with Allow once, Allow for this task and
+   * Deny. Written by the extension, never by a brain.
+   */
+  | { type: "approval_request"; request: ApprovalRequest }
+  /** How that approval request ended (by: answered by voice). Written by the extension. */
+  | { type: "approval_resolved"; id: string; outcome: ApprovalOutcome; by?: "voice" }
+  /**
+   * The agent's memory changed from this conversation (remember, forget, a task's run note): the chat shows
+   * "Remembered: ..." with Undo. before / after: the entry before and after the change (null: it did not exist /
+   * it was forgotten); Undo puts `before` back. replaced: an entry it replaced under another subject (remember's
+   * `replaces`), which Undo puts back too. auto: saved by the background writer after the conversation, not by the
+   * agent. Written by the extension, never by a brain.
+   */
+  | { type: "memory"; changeId: string; before: MemoryEntry | null; after: MemoryEntry | null; replaced?: MemoryEntry; auto?: true }
+  /** The user undid that memory change from its note. Written by the extension. */
+  | { type: "memory_undone"; changeId: string }
+  /**
    * Timing for the conversation's trace (trace.ts): a model call, a tool's
    * duration, Claude Code's start. Never shown in the chat or stored with the
    * events: the extension keeps it in the conversation's trace.
@@ -135,6 +165,8 @@ export interface SessionInfo {
   model?: string;
   /** Claude Code sessions: the helper's run log of the latest turn (see helper.runLog). */
   logPath?: string;
+  /** The user turned memory off for this conversation: the agent is given none and saves none in it. */
+  memoryOff?: true;
 }
 
 /** Streamed text deltas are sent at most this often per stream (ms). */

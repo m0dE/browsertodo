@@ -8,7 +8,7 @@
 
 export const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 /** Shown when there is no Google client ID at all: none built in and no account server to ask. */
-export const SIGN_IN_NOT_SET_UP = "Google sign-in isn't available in this version of browsertodo";
+export const SIGN_IN_NOT_SET_UP = "Google sign-in isn't available in this version of BrowserTODO";
 
 export class SignInError extends Error {
   constructor(message: string) {

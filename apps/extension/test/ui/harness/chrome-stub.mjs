@@ -58,6 +58,64 @@ export function installChromeStub(data) {
       data.state = { ...data.state, tabChats: { ...rest, [req.tabId]: req.sessionId } };
       return data.state;
     },
+    // Undo on a scheduled card: the task leaves the list, and the background pushes the conversation's task_unscheduled.
+    "chat.undoScheduled": (req) => {
+      data.tasks = data.tasks.filter((t) => t.id !== req.taskId);
+      const event = { type: "task_unscheduled", taskId: req.taskId, ts: new Date().toISOString(), sessionId: req.sessionId };
+      setTimeout(() => window.__push({ type: "event", event }), 0);
+      return { ok: true };
+    },
+    // Memory (Settings > Memory, the chat's notes and switch): data.memory is what the agent keeps.
+    "memory.list": () => ({ entries: data.memory ?? [], ...(data.memorySync ? { sync: data.memorySync } : {}) }),
+    "memory.edit": (req) => {
+      const entry = { ...(data.memory ?? []).find((e) => e.id === req.id), subject: req.subject, text: req.text, updatedAt: new Date().toISOString() };
+      data.memory = data.memory.map((e) => (e.id === req.id ? entry : e));
+      return { entry };
+    },
+    "memory.delete": (req) => {
+      data.memory = (data.memory ?? []).filter((e) => e.id !== req.id);
+      return { ok: true };
+    },
+    "memory.clear": () => {
+      const removed = (data.memory ?? []).length;
+      data.memory = [];
+      return { removed };
+    },
+    "memory.deleteTask": (req) => {
+      const before = (data.memory ?? []).length;
+      data.memory = (data.memory ?? []).filter((e) => e.taskKey !== req.taskKey);
+      return { removed: before - data.memory.length };
+    },
+    // "Add this computer's memory to <account>?": answered, the question goes (and the new state is pushed).
+    "memory.syncChoice": (req) => {
+      const account = data.state.memoryQuestion?.account ?? data.memorySync?.account ?? "";
+      data.memorySync = req.add ? { state: "on", lastSyncAt: new Date().toISOString() } : { state: "separate", account };
+      const { memoryQuestion: _q, ...rest } = data.state;
+      data.state = rest;
+      setTimeout(() => window.__push({ type: "state", state: data.state }), 0);
+      return { sync: data.memorySync };
+    },
+    // Undo on a memory note: the background pushes the conversation's memory_undone.
+    "memory.undo": (req) => {
+      const event = { type: "memory_undone", changeId: req.changeId, ts: new Date().toISOString(), sessionId: req.sessionId };
+      setTimeout(() => window.__push({ type: "event", event }), 0);
+      return { ok: true };
+    },
+    // Memory on or off for one chat: the session changes (and is pushed, as the background does).
+    "chat.setMemory": (req) => {
+      const cur = data.sessions.find((s) => s.sessionId === req.sessionId);
+      const { memoryOff: _off, ...rest } = cur;
+      const session = req.on ? rest : { ...rest, memoryOff: true };
+      data.sessions = data.sessions.map((s) => (s.sessionId === req.sessionId ? session : s));
+      setTimeout(() => window.__push({ type: "session", session }), 0);
+      return { session };
+    },
+    // An approval card's answer: the background pushes how the request ended (approval_resolved).
+    "approval.answer": (req) => {
+      const event = { type: "approval_resolved", id: req.id, outcome: req.answer, ...(req.by ? { by: req.by } : {}), ts: new Date().toISOString(), sessionId: req.sessionId };
+      setTimeout(() => window.__push({ type: "event", event }), 0);
+      return { ok: true };
+    },
     "tab.focus": (req) => {
       setTimeout(() => window.__activateTab(req.tabId), 0);
       return { ok: true };
@@ -97,6 +155,9 @@ export function installChromeStub(data) {
       return { ok: true };
     },
     "tasks.add": () => ({ task: data.tasks[0] }),
+    "tasks.update": (req) => ({ task: { ...data.tasks.find((t) => t.id === req.id), ...req.patch } }),
+    // Run on a row: the task runs now (a new session for it, bound to nothing).
+    "tasks.run": (req) => ({ sessionId: `s-run-${req.id}` }),
     "tasks.delete": () => ({ ok: true }),
     "tasks.retry": () => ({ task: data.tasks[0] }),
     "sessions.list": (req) => ({ sessions: data.sessions.filter((s) => req.taskId === undefined || s.taskId === req.taskId) }),
@@ -212,8 +273,8 @@ export function installChromeStub(data) {
     },
     commands: {
       getAll: async () => [
-        { name: "open-chat", shortcut: data.shortcut, description: "Open browsertodo" },
-        { name: "voice", shortcut: data.voiceShortcut, description: "Talk to browsertodo" },
+        { name: "open-chat", shortcut: data.shortcut, description: "Open BrowserTODO" },
+        { name: "voice", shortcut: data.voiceShortcut, description: "Talk to BrowserTODO" },
       ],
     },
     tabs: {

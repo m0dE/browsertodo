@@ -14,6 +14,8 @@ import {
   toolsFor,
   type AgentEvent,
   type BrowserMethods,
+  type MemoryMethods,
+  type ScheduleMethods,
   type HelperMethods,
   type HelperNotifications,
   type RpcMessage,
@@ -23,7 +25,7 @@ import { HELPER_VERSION, loadConfig } from "./config.js";
 import { LiveLog, redirectConsole, summarize } from "./logger.js";
 import { encodeNativeMessage, FrameTooLargeError, MAX_NATIVE_OUT, NativeDecoder } from "./native-framing.js";
 import { pipePathFor, startPipeServer, type PipeServer } from "./pipe-server.js";
-import { rpcBrowser, ToolRouter, type InteractiveTools } from "./tool-router.js";
+import { BROWSER_RPC_TIMEOUT_MS, rpcBrowser, ToolRouter, type InteractiveTools } from "./tool-router.js";
 import { INTERACTIVE_TASK_ID } from "./mcp-tools.js";
 import { TaskRunner } from "./task-runner.js";
 import { ClaudeCodeBrain } from "./brains/claude-code.js";
@@ -59,7 +61,7 @@ async function main(): Promise<void> {
     }
     process.stdout.write(frame);
   };
-  const peer = new RpcPeer<BrowserMethods, HelperMethods>(writeFrame, "h");
+  const peer = new RpcPeer<BrowserMethods & ScheduleMethods & MemoryMethods, HelperMethods>(writeFrame, "h");
   const notify = <K extends keyof HelperNotifications>(method: K, params: HelperNotifications[K]) => peer.notify(method, params);
   const browser = rpcBrowser(peer);
 
@@ -73,7 +75,7 @@ async function main(): Promise<void> {
     if (scripted) return new ScriptedBrain((t, n, a) => router.call(t, n, a));
     if (!claudePath) throw new Error(CLAUDE_NOT_FOUND);
     // Headless stream-json with stdin kept open: structured events, and follow-up turns in the same session.
-    return new ClaudeCodeBrain({ claudePath, model: config.model, persistent: true });
+    return new ClaudeCodeBrain({ claudePath, model: config.model, thinking: config.thinking, persistent: true });
   };
   const runner = new TaskRunner({
     runsDir: config.runsDir,
@@ -84,6 +86,10 @@ async function main(): Promise<void> {
     makeJev,
     makeBrain,
     notify: (sessionId, event: AgentEvent) => notify("helper.event", { sessionId, event }),
+    // schedule_task: the extension stores the task in the TODO list of that session's conversation.
+    scheduleTask: (sessionId, args) => peer.call("todo.scheduleTask", { sessionId, args }, { timeoutMs: BROWSER_RPC_TIMEOUT_MS }),
+    // remember / recall / forget: the extension keeps the memory of that session's conversation.
+    memory: (sessionId, tool, args) => peer.call("memory.call", { sessionId, tool, args }, { timeoutMs: BROWSER_RPC_TIMEOUT_MS }),
     onSessionsChanged: (open) => notify("helper.sessions", { open }),
     live,
   });
@@ -208,7 +214,7 @@ async function main(): Promise<void> {
 
 main().catch((e) => {
   try {
-    process.stderr.write(`browsertodo host failed: ${e instanceof Error ? e.stack : String(e)}\n`);
+    process.stderr.write(`BrowserTODO host failed: ${e instanceof Error ? e.stack : String(e)}\n`);
   } finally {
     process.exit(1);
   }

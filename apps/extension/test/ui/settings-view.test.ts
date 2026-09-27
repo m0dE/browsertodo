@@ -67,7 +67,7 @@ describe("tabs", () => {
     expect(tabFromHash(null)).toBeNull();
   });
   it("arrow keys move and wrap; Home and End go to the ends; other keys do nothing", () => {
-    expect(TABS.map((t) => t.label)).toEqual(["Account", "API keys", "AI", "Tasks", "Site logins", "Advanced"]);
+    expect(TABS.map((t) => t.label)).toEqual(["Account", "API keys", "AI", "Tasks", "Site logins", "Memory", "Advanced"]);
     expect(nextTab("account", "ArrowRight")).toBe("keys");
     expect(nextTab("keys", "ArrowRight")).toBe("ai");
     expect(nextTab("ai", "ArrowLeft")).toBe("keys");
@@ -188,11 +188,28 @@ describe("model, Jev and cloud", () => {
     expect(view({ draft: { jevEnabled: true } }).showJevFields).toBe(true);
     expect(view({ draft: { jevEnabled: false } }).showJevFields).toBe(false);
   });
-  it("Jev note: the helper's own key, or included with BrowserTODO AI; none when off", () => {
+  it("Jev note: the helper's own key; none when off", () => {
     expect(view({ helper: HELPER }).jevNote).toMatch(/TYPESAFE_API_KEY/);
     expect(view({ helper: HELPER, settings: { jevApiKey: "j" } }).jevNote).toBeNull();
-    expect(view({ account: PLUS, effective: "browsertodo" }).jevNote).toMatch(/includes Jev/);
     expect(view({ helper: HELPER, draft: { jevEnabled: false } }).jevNote).toBeNull();
+  });
+  it("BrowserTODO AI (chosen, or picked by Auto) includes Jev: no key field, no key in the copy", () => {
+    for (const brain of ["browsertodo", "auto"] as const) {
+      const v = view({ account: PLUS, draft: { brain } });
+      expect(v.showJevKey).toBe(false);
+      expect(v.showJevFields).toBe(true);
+      expect(v.jevUseHint).toMatch(/Included with BrowserTODO AI/);
+      expect(`${v.jevUseHint} ${v.jevTestHint} ${v.jevNote ?? ""}`).not.toMatch(/key/i);
+    }
+  });
+  it("the Claude API needs a Jev key here; local Claude Code may use the helper's", () => {
+    const api = view({ account: PLUS, draft: { brain: "claude-api" } });
+    expect(api.showJevKey).toBe(true);
+    expect(api.jevUseHint).toMatch(/Jev key/);
+    const cc = view({ helper: HELPER, draft: { brain: "claude-code" } });
+    expect(cc.showJevKey).toBe(true);
+    expect(cc.jevUseHint).toMatch(/helper's own Jev key/);
+    expect(view({ draft: { brain: "claude-api", jevEnabled: false } }).showJevKey).toBe(false);
   });
   it("cloud fields only when cloud sync is on", () => {
     expect(view({ draft: { cloudEnabled: true } }).showCloudFields).toBe(true);

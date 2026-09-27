@@ -4,7 +4,7 @@
  * (checks, recording, cleanup) and give back what it held. A new session runs
  * its first turn (runFirst); an ended conversation its next turn (runTurn).
  */
-import { errorMessage, isXTask, MAX_INSTRUCTIONS_CHARS, type ExtensionSettings, type SessionInfo, type TaskRunResult } from "@browsertodo/shared";
+import { errorMessage, isXTask, MAX_INSTRUCTIONS_CHARS, type ExtensionSettings, type SessionInfo, type TaskOutcome, type TaskRunResult } from "@browsertodo/shared";
 import { lastTurnEvents } from "../../continue.js";
 import type { BrainStatus } from "../../ui-protocol.js";
 import type { Brain } from "../brains.js";
@@ -15,7 +15,7 @@ import { runNextTurn } from "./conversation.js";
 import { openTask, startHeartbeat, type FirstJob, type Job, type TurnJob } from "./jobs.js";
 import type { ResultRecorder } from "./record.js";
 import { X_WAIT_STATUS } from "./scheduling.js";
-import { modelOf, runCleanups, typedTextsOf, type ActiveSession, type Cleanup, type TurnRunner } from "./turn.js";
+import { modelOf, runCleanups, typedTextsOf, type ActiveSession, type Cleanup, type QueuedMessage, type TurnRunner } from "./turn.js";
 
 /** The brain a job runs with, and what the side panel says about it. */
 export interface RunBrain {
@@ -47,6 +47,8 @@ export interface LifecycleDeps {
   log(message: string): void;
   /** Something the UI shows changed. */
   changed(): void;
+  /** Messages the user sent after the session's run was over: they open its next turn (the session has ended). */
+  nextTurn?(sessionId: string, messages: QueuedMessage[]): void;
 }
 
 /** A session title: the instructions on one line, at most this many characters. */
@@ -96,6 +98,7 @@ export class Lifecycle {
           info.instructions = task.instructions.slice(0, MAX_INSTRUCTIONS_CHARS);
           if (task.account) info.account = task.account;
           if (job.input.voice) info.voice = true;
+          if (job.input.memoryOff) info.memoryOff = true;
         }
         const active = activate(info, isXTask(task), job.source === "local" ? job.task.id : null);
         await this.deps.sessions.create(info);
@@ -155,7 +158,7 @@ export class Lifecycle {
       active = await l.open((info, x, localTaskId) => (active = live.activate(info, opts.slotIndex, x, opts.scheduled, localTaskId)));
     } catch (err) {
       // Nothing ran: give the slot (and the X turn, and the local task) back.
-      if (active) live.deactivate(active);
+      if (active) live.deactivate(active, keepsTabs(job, "failed", null));
       else live.abandon(opts.slotIndex, sessionId, l.localTaskId);
       opts.onSessionCreated?.();
       throw err;
@@ -172,6 +175,8 @@ export class Lifecycle {
       result = await l.drive(active, cleanups);
     } catch (err) {
       result = { outcome: "failed", reason: errorMessage(err) };
+    } finally {
+      active.runOver = true;
     }
     return this.finish(active, job, result, l.settings, cleanups);
   }
@@ -181,17 +186,36 @@ export class Lifecycle {
     const sessionId = active.session.sessionId;
     const stop = active.forced;
     let result = stop ? { ...raw, outcome: stop.outcome, reason: stop.reason } : raw;
+    let keepTabs = true;
     try {
       result = await this.deps.turns.check(active, result);
       await this.deps.recorder.recordTask(active, job, result, settings);
       await runCleanups(cleanups);
       await this.deps.recorder.endSession(sessionId, result);
     } finally {
-      this.deps.live.deactivate(active);
+      keepTabs = keepsTabs(job, result.outcome, stop);
+      this.deps.live.deactivate(active, keepTabs);
       this.deps.changed();
+      if (active.nextTurn.length) this.deps.nextTurn?.(sessionId, active.nextTurn.splice(0));
     }
+    if (!keepTabs && active.session.taskId) await this.endEarlierRuns(active.session.taskId, sessionId);
     this.deps.log(`session ${sessionId} ${result.outcome}${result.reason ? `: ${result.reason}` : ""}`);
     return { result, stop };
+  }
+
+  /**
+   * A TODO run of the task is over: tabs its earlier runs kept open while
+   * they waited for the user close now (nobody went on in them as a chat).
+   */
+  private async endEarlierRuns(taskId: string, sessionId: string): Promise<void> {
+    const { live, sessions } = this.deps;
+    try {
+      for (const s of await sessions.list(undefined, taskId)) {
+        if (s.sessionId !== sessionId && s.endedAt && (s.turns ?? 1) === 1 && !live.has(s.sessionId)) await live.endChat(s.sessionId);
+      }
+    } catch (err) {
+      this.deps.log(`closing the tabs of earlier runs of ${taskId} failed: ${errorMessage(err)}`);
+    }
   }
 
   /** X tasks take turns: wait (interruptible by stop) until no other X task runs. */
@@ -210,6 +234,17 @@ export class Lifecycle {
     }
     xTurn.take(id);
   }
+}
+
+/**
+ * Whether the tabs the agent opened stay open after the turn. A chat's do
+ * (the user may sign in or follow up in them; New Chat closes them). A TODO
+ * run's (local or cloud: no chat follows it) close when it ends, unless it
+ * paused for the user (not stopped by them).
+ */
+function keepsTabs(job: Job, outcome: TaskOutcome, stop: ForcedStop | null): boolean {
+  if (job.source === "adhoc" || job.source === "turn") return true;
+  return outcome === "paused" && (stop === null || stop.kind === "pause-url");
 }
 
 function titleOf(instructions: string): string {

@@ -174,12 +174,12 @@ describe("mcp-server.js --attach", () => {
     try {
       const r = spawnSync(process.execPath, [MCP_JS, "--attach"], { env: { ...process.env, BROWSERTODO_HOME: home }, encoding: "utf8", timeout: 20_000 });
       expect(r.status).toBe(1);
-      expect(r.stderr).toMatch(/helper is not running: open Chrome with the browsertodo extension/);
+      expect(r.stderr).toMatch(/helper is not running: open Chrome with the BrowserTODO extension/);
       // a stale helper.json (dead pid) is treated the same
       writeFileSync(join(home, "helper.json"), JSON.stringify({ pipe: "\\.\pipe\nope", pid: 999_999_99, startedAt: "" }));
       const r2 = spawnSync(process.execPath, [MCP_JS, "--attach"], { env: { ...process.env, BROWSERTODO_HOME: home }, encoding: "utf8", timeout: 20_000 });
       expect(r2.status).toBe(1);
-      expect(r2.stderr).toMatch(/open Chrome with the browsertodo extension/);
+      expect(r2.stderr).toMatch(/open Chrome with the BrowserTODO extension/);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

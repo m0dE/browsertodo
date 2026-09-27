@@ -6,7 +6,7 @@
  * The account's list is a paid feature: on a plan without it the list comes
  * back `locked` (the kept tasks are read-only; writes answer plan_required).
  */
-import type { CreateTaskInput, LocalTask, RepeatRule, Task } from "@browsertodo/shared";
+import { LegacyRepeatRule, legacyToRepeat, type CreateTaskInput, type LocalTask, type RepeatSchedule, type Task } from "@browsertodo/shared";
 import type { LocalMediaInfo, TaskPatch } from "../ui-protocol.js";
 import { uploadToBlob, type LocalStore, type NewLocalTask } from "../engine/local-store.js";
 import type { AccountApi, AccountTaskList } from "./account-api.js";
@@ -19,25 +19,33 @@ export interface TodoList {
   locked: boolean;
 }
 
+/** A repeat rule as the account takes it: an old { dailyAt } rule runs in timeZone. */
+function accountRepeat(repeat: RepeatSchedule | LegacyRepeatRule | null | undefined, timeZone: string): RepeatSchedule | null {
+  if (!repeat) return null;
+  const legacy = LegacyRepeatRule.safeParse(repeat);
+  return legacy.success ? legacyToRepeat(legacy.data, timeZone) : (repeat as RepeatSchedule);
+}
+
 /**
  * A task for the account from a local task's fields (a new one, or one
- * moving in): its files are uploaded first; a repeat runs in timeZone.
+ * moving in): its files are uploaded first. An old { dailyAt } repeat runs
+ * in timeZone; a current rule carries its own zone.
  */
 export async function accountTaskInput(
   api: Pick<AccountApi, "uploadMedia">,
-  t: { instructions: string; account?: string | null; notBefore?: string | null; repeat?: RepeatRule | null },
+  t: { instructions: string; account?: string | null; notBefore?: string | null; repeat?: RepeatSchedule | LegacyRepeatRule | null },
   files: { name: string; blob: Blob }[],
   timeZone: string,
 ): Promise<CreateTaskInput> {
   const mediaIds: string[] = [];
   for (const f of files) mediaIds.push((await api.uploadMedia(f.blob, f.name)).id);
   const account = t.account?.trim();
+  const repeat = accountRepeat(t.repeat, timeZone);
   return {
     instructions: t.instructions,
     ...(account ? { account } : {}),
-    ...(t.notBefore ? { notBefore: t.notBefore } : {}),
     ...(mediaIds.length ? { mediaIds } : {}),
-    ...(t.repeat?.dailyAt.length ? { repeat: { dailyAt: t.repeat.dailyAt }, tz: timeZone } : {}),
+    ...(t.notBefore || repeat ? { schedule: { ...(t.notBefore ? { at: t.notBefore } : {}), ...(repeat ? { repeat } : {}) } } : {}),
   };
 }
 
@@ -53,16 +61,16 @@ export interface TodoSource {
 
 /** An account task in the TODO row shape. Files are known by id only (the list does not carry their names). */
 export function accountRow(t: Task): TodoRow {
-  return {
-    ...t,
-    repeat: t.repeat ?? null,
-    media: t.mediaIds.map((id, i) => ({ id, name: `file ${i + 1}`, type: "", size: 0 })),
-  };
+  return { ...asLocal(t), media: t.mediaIds.map((id, i) => ({ id, name: `file ${i + 1}`, type: "", size: 0 })) };
 }
 
-const asLocal = (t: Task): LocalTask => ({ ...t, repeat: t.repeat ?? null });
+/** An account task in the row shape: its repeat rule at the top (notBefore is its schedule's `at`). */
+function asLocal(t: Task): LocalTask {
+  const { schedule, ...rest } = t;
+  return { ...rest, repeat: schedule?.repeat ?? null };
+}
 
-/** The signed-in account's tasks. repeat runs in the browser's IANA time zone. */
+/** The signed-in account's tasks. An old { dailyAt } repeat given to it runs in the browser's IANA time zone. */
 export class AccountTodo implements TodoSource {
   readonly kind = "account" as const;
 
@@ -91,11 +99,9 @@ export class AccountTodo implements TodoSource {
     if (patch.instructions !== undefined) body.instructions = patch.instructions;
     // null (or an empty account) clears it on the server.
     if (patch.account !== undefined) body.account = patch.account?.trim() || null;
-    if (patch.notBefore !== undefined) body.notBefore = patch.notBefore ?? null;
-    if (patch.repeat !== undefined) {
-      body.repeat = patch.repeat;
-      if (patch.repeat) body.tz = this.timeZone;
-    }
+    // A new repeat rule replaces the whole schedule (with the first time given beside it); a time alone moves just the time.
+    if (patch.repeat !== undefined) body.schedule = { at: patch.notBefore ?? null, repeat: accountRepeat(patch.repeat, this.timeZone) };
+    else if (patch.notBefore !== undefined) body.notBefore = patch.notBefore ?? null;
     const task = await this.api.updateTask(id, body);
     this.onChange();
     return asLocal(task);

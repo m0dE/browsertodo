@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { REALTIME_CLOSE, REALTIME_PROTOCOL, REALTIME_TOKEN_PROTOCOL_PREFIX } from "@browsertodo/shared";
+import { DEFAULT_REALTIME_VOICE, REALTIME_CLOSE, REALTIME_PROTOCOL, REALTIME_TOKEN_PROTOCOL_PREFIX } from "@browsertodo/shared";
 import { base64ToBytes } from "../../src/base64.js";
 import { errorHelp } from "../../src/sidepanel/error-help.js";
 import {
@@ -84,18 +84,18 @@ describe("RealtimeClient: connecting", () => {
     expect(update.session.model).toBeUndefined(); // the server picks the model
     expect(update.session.audio.input.format).toEqual({ type: "audio/pcm", rate: REALTIME_SAMPLE_RATE });
     expect(update.session.audio.output.format).toEqual({ type: "audio/pcm", rate: REALTIME_SAMPLE_RATE });
-    expect(update.session.audio.input.turn_detection).toMatchObject({ type: "server_vad", create_response: true, interrupt_response: true });
+    expect(update.session.audio.input.turn_detection).toMatchObject({ type: "server_vad", create_response: true, interrupt_response: false });
     // The user's own words for the chat (the server's price includes them).
     expect(update.session.audio.input.transcription).toEqual({ model: "gpt-transcribe" });
-    expect(update.session.tools.map((t: { name: string }) => t.name)).toEqual(["send_to_agent", "cancel_request", "stop_task", "end_voice"]);
+    expect(update.session.tools.map((t: { name: string }) => t.name)).toEqual(["send_to_agent", "cancel_request", "stop_task", "answer_approval", "end_voice"]);
     expect(update.session.tools.every((t: { type: string }) => t.type === "function")).toBe(true);
-    expect(NARRATOR_TOOLS).toHaveLength(4);
+    expect(NARRATOR_TOOLS).toHaveLength(5);
   });
 
   it("speaks in the default voice at normal speed, or the voice and speed from Settings (kept in OpenAI's range)", () => {
     const { socket } = setup();
     socket().open();
-    expect((socket().sent[0] as { session: Record<string, any> }).session.audio.output).toMatchObject({ voice: "marin", speed: 1 });
+    expect((socket().sent[0] as { session: Record<string, any> }).session.audio.output).toMatchObject({ voice: DEFAULT_REALTIME_VOICE, speed: 1 });
     for (const [speed, sent] of [[1.2, 1.2], [9, 1.5], [0.1, 0.25]] as const) {
       let s!: FakeSocket;
       new RealtimeClient({ url: "wss://x/v1/ai/realtime", token: "t", voice: "cedar", speed, open: (u, p) => (s = new FakeSocket(u, p)), handlers: {} }).connect();
@@ -120,7 +120,7 @@ describe("RealtimeClient: connecting", () => {
   it("sends nothing before the socket is open", () => {
     const { client, socket } = setup();
     client.appendAudio(new Int16Array([1]));
-    client.note("Agent update: x", true);
+    client.note("Agent update: x", "result");
     expect(socket().sent).toEqual([]);
   });
 });
@@ -133,16 +133,16 @@ describe("RealtimeClient: the feed, the narrator's replies and its tools", () =>
     return s;
   };
 
-  it("a note is a system message item; respond asks for a reply, but never while one is being made", () => {
+  it("a note is a system message item; a line to say asks for a reply, and news waits for the reply being made", () => {
     const { client, socket } = ready();
-    client.note("Agent update (progress): Opening x.com.", true);
+    client.note("Agent update (progress): Opening x.com.", "milestone");
     expect(socket().sent).toEqual([
       { type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: "Agent update (progress): Opening x.com." }] } },
       { type: "response.create" },
     ]);
     socket().event({ type: "response.created", response: { id: "r1" } });
-    client.note("Agent update (progress): Typing.", true);
-    client.note("Agent update: more", true);
+    client.note("Agent update (finished): Posted.", "result");
+    client.note("Agent update (problem): more", "error");
     expect(socket().types()).toEqual(["conversation.item.create", "response.create", "conversation.item.create", "conversation.item.create"]);
     // One reply for both, once the current one is done.
     socket().event({ type: "response.done", response: { id: "r1", status: "completed", output: [] } });
@@ -154,7 +154,7 @@ describe("RealtimeClient: the feed, the narrator's replies and its tools", () =>
     const onUserSpeech = vi.fn();
     const { client, socket } = ready({ onUserSpeech });
     socket().event({ type: "response.created", response: { id: "r1" } });
-    client.note("Agent update: x", true);
+    client.note("Agent update: x", "result");
     socket().event({ type: "input_audio_buffer.speech_started", audio_start_ms: 100, item_id: "u1" });
     expect(onUserSpeech).toHaveBeenCalledTimes(1);
     socket().event({ type: "response.done", response: { id: "r1", status: "cancelled", output: [] } });
@@ -343,7 +343,7 @@ describe("RealtimeClient: timing trace", () => {
       const { client, socket } = setup({ onTrace: (e) => traces.push(e) });
       socket().open();
       socket().event({ type: "session.updated" });
-      client.note("The agent finished.", true);
+      client.note("The agent finished.", "result");
       vi.advanceTimersByTime(700);
       socket().event({ type: "response.created" });
       socket().event({ type: "response.done", response: {} });

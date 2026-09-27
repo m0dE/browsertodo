@@ -290,6 +290,8 @@ export function installChromeFake() {
     },
     scripting: {
       calls: [] as { tabId: number; frameIds?: number[]; func: (...a: any[]) => unknown; args: unknown[] }[],
+      /** Documents the default load reading has handed out (each reading is a new one). */
+      documents: 0,
       /** Test hook deciding each injection's result (the page function's return value). */
       respond: ((_func: (...a: any[]) => unknown, _args: unknown[]): unknown => ({ ok: true, value: true })) as (
         func: (...a: any[]) => unknown,
@@ -299,7 +301,12 @@ export function installChromeFake() {
         if (!fake.tabs.byId.has(inj.target.tabId)) throw new Error(`No tab with id: ${inj.target.tabId}.`);
         const args = inj.args ?? [];
         fake.scripting.calls.push({ tabId: inj.target.tabId, frameIds: inj.target.frameIds, func: inj.func, args });
-        return [{ frameId: 0, documentId: "doc", result: fake.scripting.respond(inj.func, args) }];
+        const result = fake.scripting.respond(inj.func, args);
+        // A page's load reading (page-load.ts) the test did not answer itself: a complete page, a new document each time.
+        if (inj.func.name === "loadProbeInPage" && !(result && typeof result === "object" && "doc" in result)) {
+          return [{ frameId: 0, documentId: "doc", result: { doc: ++fake.scripting.documents, state: "complete", controls: 1, text: 1, foreignFrame: false } }];
+        }
+        return [{ frameId: 0, documentId: "doc", result }];
       },
     },
     tabGroups: {
@@ -379,7 +386,10 @@ export function installChromeFake() {
       commands: [] as { tabId: number; method: string; params?: unknown }[],
       /** Test hook deciding each command's result. */
       respond: ((_method: string, _params: unknown): unknown => ({})) as (method: string, params: any) => unknown,
+      /** How many attaches were tried. */
+      attachCalls: 0,
       async attach(target: { tabId: number }, _version: string) {
+        fake.debugger.attachCalls++;
         if (fake.debugger.blocked.has(target.tabId)) throw new Error(FOREIGN_FRAME_ERROR);
         const refused = fake.debugger.refused.get(target.tabId);
         if (refused) throw new Error(refused);

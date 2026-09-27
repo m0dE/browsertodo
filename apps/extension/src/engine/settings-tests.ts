@@ -1,6 +1,10 @@
 /** The options page's Test buttons. Each resolves { ok, detail } and never throws. */
 import { ANTHROPIC_API_BASE, ANTHROPIC_API_VERSION, errorMessage, type ExtensionSettings, type PageSnapshot } from "@browsertodo/shared";
+import type { JevLike } from "@browsertodo/core";
+import type { BrainStatus } from "../ui-protocol.js";
+import { builtInJev, HOSTED_LABEL, HOSTED_SIGN_IN } from "./brain-resolver.js";
 import type { CoreApi } from "./brains.js";
+import { hostedJevEndpoint } from "./hosted-brain.js";
 
 export interface TestResult {
   ok: boolean;
@@ -45,22 +49,46 @@ const TEST_SNAPSHOT: PageSnapshot = {
   truncated: false,
 };
 
-/** One tiny Jev decision on a two-element page. */
-export async function testJev(settings: ExtensionSettings, core: Pick<CoreApi, "createJev">, fetchFn?: typeof fetch): Promise<TestResult> {
-  if (!settings.jevApiKey) return { ok: false, detail: "No Jev key set" };
+export interface TestJevDeps {
+  core: Pick<CoreApi, "createJev">;
+  /** The signed-in account's session (BrowserTODO AI's Jev), or null. */
+  hosted: { token: string; apiBase: string } | null;
+  fetch?: typeof fetch;
+}
+
+/**
+ * One tiny Jev decision on a two-element page, with the Jev the resolved
+ * brain would use: BrowserTODO AI's own through the account server, else the
+ * key set here. The helper's own key (local Claude Code) cannot be reached from here.
+ */
+export async function testJev(settings: ExtensionSettings, brain: Pick<BrainStatus, "effective" | "helper">, deps: TestJevDeps): Promise<TestResult> {
+  const fetchOpt = deps.fetch ? { fetch: deps.fetch } : undefined;
+  const source = builtInJev(brain.effective, brain.helper);
+  if (source === "hosted") {
+    if (!deps.hosted) return { ok: false, detail: HOSTED_SIGN_IN };
+    return askJev(`${HOSTED_LABEL}'s Jev`, deps.core.createJev(deps.hosted.token, { endpoint: hostedJevEndpoint(deps.hosted.apiBase), ...fetchOpt }));
+  }
+  if (!settings.jevApiKey) {
+    return source === "helper"
+      ? { ok: false, detail: "No Jev key set here: local Claude Code uses the helper's own key, which this test cannot reach" }
+      : { ok: false, detail: "No Jev key set" };
+  }
+  return askJev("Jev", deps.core.createJev(settings.jevApiKey, fetchOpt));
+}
+
+async function askJev(name: string, jev: JevLike): Promise<TestResult> {
   const started = Date.now();
   try {
-    const jev = core.createJev(settings.jevApiKey, fetchFn ? { fetch: fetchFn } : undefined);
     const d = await jev.decide({ goal: "click the Subscribe button", snapshot: TEST_SNAPSHOT });
     const ms = Date.now() - started;
     const target = d.index === null ? "no element" : `element ${d.index}`;
     const right = d.operation === "click" && d.index === 1;
     return {
       ok: true,
-      detail: `Jev answered in ${ms} ms: ${d.operation} ${target} (confidence ${d.confidence.toFixed(2)})${right ? "" : " (unexpected choice)"}`,
+      detail: `${name} answered in ${ms} ms: ${d.operation} ${target} (confidence ${d.confidence.toFixed(2)})${right ? "" : " (unexpected choice)"}`,
     };
   } catch (err) {
-    return { ok: false, detail: `Jev test failed: ${errorMessage(err)}` };
+    return { ok: false, detail: `${name} test failed: ${errorMessage(err)}` };
   }
 }
 

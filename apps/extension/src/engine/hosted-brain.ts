@@ -24,6 +24,9 @@ export interface HostedDeps {
   fetch?: typeof fetch;
 }
 
+/** The account server's Jev proxy (billed to the account). */
+export const hostedJevEndpoint = (apiBase: string) => `${apiBase.replace(/\/+$/, "")}/v1/ai/jev`;
+
 export function hostedBackend(deps: HostedDeps): ApiBackend {
   const backend: ApiBackend = {
     kind: "browsertodo",
@@ -35,7 +38,7 @@ export function hostedBackend(deps: HostedDeps): ApiBackend {
       const headers = { [SESSION_HEADER]: sessionId };
       let jev: JevLike | null = null;
       if (settings.jevEnabled) {
-        const inner = deps.core.createJev(s.token, { endpoint: `${base}/v1/ai/jev`, headers, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
+        const inner = deps.core.createJev(s.token, { endpoint: hostedJevEndpoint(s.apiBase), headers, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
         jev = {
           async decide(input) {
             try {

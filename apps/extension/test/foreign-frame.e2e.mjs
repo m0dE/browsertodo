@@ -17,6 +17,17 @@ import { serveHtml } from "../../../test/e2e/lib/serve.mjs";
 import { createSuite } from "../../../test/e2e/lib/suite.mjs";
 import { driverPage, fillSignupForm, findIndex, OTHER_PAGE } from "../../../test/fixtures/driver-page.mjs";
 
+/** Width and height from a JPEG's frame header. */
+function jpegSize(buf) {
+  for (let i = 2; i < buf.length; ) {
+    const marker = buf[i + 1];
+    const len = buf.readUInt16BE(i + 2);
+    if (marker >= 0xc0 && marker <= 0xc3) return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
+    i += 2 + len;
+  }
+  return null;
+}
+
 const injector = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "iframe-injector");
 const NOTE = "(Using fallback mode: another extension's frame on this page blocks Chrome's debugger. Clicks and typing are simulated.)";
 
@@ -27,8 +38,11 @@ const fixture = ({ clean = false, delay = 0 } = {}) =>
     heading: `${clean ? "Clean" : "Mail"} fixture`,
     head: `${clean ? '<meta name="no-inject">' : ""}${delay ? `<meta name="inject-delay" content="${delay}">` : ""}`,
   });
-const PAGES = { "/other": OTHER_PAGE, "/clean": fixture({ clean: true }), "/late": fixture({ delay: 1500 }) };
-const site = await serveHtml((path) => PAGES[path] ?? fixture());
+/** A heavy page: usable at once, but its load event waits HEAVY_LOAD_MS for a slow resource (like Gmail's). */
+const HEAVY_LOAD_MS = 3500;
+const heavy = driverPage({ title: "Heavy mail page", heading: "Heavy fixture", head: '<img src="/slow" width="1" height="1" alt="">' });
+const PAGES = { "/other": OTHER_PAGE, "/clean": fixture({ clean: true }), "/late": fixture({ delay: 1500 }), "/heavy": heavy };
+const site = await serveHtml((path) => (path === "/slow" ? new Promise((r) => setTimeout(() => r(""), HEAVY_LOAD_MS)) : (PAGES[path] ?? fixture())));
 const { base } = site;
 
 const { step, finish } = createSuite("foreign-frame");
@@ -113,6 +127,17 @@ try {
     const out = join(tmpdir(), "browsertodo-foreign-shot.jpg");
     writeFileSync(out, buf);
     return `${buf.length} bytes -> ${out}`;
+  });
+
+  await step("a screenshot of a wide window is scaled to 1280 px wide", async () => {
+    await page.setViewportSize({ width: 2400, height: 1300 });
+    const shot = await call("screenshot");
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const buf = Buffer.from(shot.base64, "base64");
+    const size = jpegSize(buf);
+    assert.equal(size.width, 1280, JSON.stringify(size));
+    assert.equal(size.height, Math.round((1300 * 1280) / 2400));
+    return `${size.width}x${size.height}, ${Math.round(buf.length / 1024)} KB`;
   });
 
   await step("click in fallback runs the page's handler (untrusted)", async () => {
@@ -212,6 +237,24 @@ try {
     await call("click", { index: findIndex(s, (e) => e.testId === "incButton") });
     assert.match((await call("readPage")).text, /Count: 1 trusted: false/);
     return "fell back after target_closed";
+  });
+
+  await step("navigate in fallback mode to a heavy page returns once it is usable, not after its load event", async () => {
+    assert.equal((await mode()).fallback, true);
+    const times = [];
+    for (const path of ["/heavy", "/", "/heavy"]) {
+      const started = Date.now();
+      const nav = await call("navigate", { url: `${base}${path}` });
+      times.push(Date.now() - started);
+      assert.equal(nav.url, `${base}${path}`);
+    }
+    const snap = await call("readPage");
+    assert.equal(snap.title, "Heavy mail page");
+    assert.ok(snap.elements.some((e) => e.name === "Increment"), "the page is usable");
+    // Still in fallback (the page has the other extension's frame again): no debugger attach for Chrome to drop.
+    assert.equal((await mode()).fallback, true);
+    assert.ok(times[0] < HEAVY_LOAD_MS && times[2] < HEAVY_LOAD_MS, `navigate took ${times.join(", ")} ms; the load event comes after ${HEAVY_LOAD_MS} ms`);
+    return `navigate times (heavy, light, heavy): ${times.join(", ")} ms`;
   });
 } finally {
   await ext.close();

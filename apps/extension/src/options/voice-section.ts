@@ -3,10 +3,11 @@
  * Standard, each with its cost a minute from the account server), and the
  * selected engine's voice and speed with a Test button: Realtime's are
  * OpenAI's voices (a short relay session says the sample), Standard's the
- * browser's. Saves by itself, like the rest of the page; voice-view.ts
- * decides what shows.
+ * browser's. Sounds: the soft sound when the microphone turns on and off.
+ * Saves by itself, like the rest of the page; voice-view.ts decides what
+ * shows.
  */
-import { errorMessage, type ExtensionSettings, type VoiceEngine, type VoiceEngineId } from "@browsertodo/shared";
+import { DEFAULT_REALTIME_VOICE, errorMessage, type ExtensionSettings, type VoiceEngine, type VoiceEngineId } from "@browsertodo/shared";
 import { VOICE_COMMAND, readShortcut } from "../shortcut.js";
 import { uiRequest, type UiState } from "../ui-protocol.js";
 import { $, find, flash, h } from "../ui/dom.js";
@@ -28,6 +29,7 @@ export function initVoiceSection(opts: { onState(state: UiState): void }): Voice
   const rateValue = $("speech-rate-value");
   const testBtn = $<HTMLButtonElement>("speech-test");
   const testMsg = $("speech-test-msg");
+  const sounds = $<HTMLInputElement>("voice-sounds");
   let state: UiState | null = null;
   let engines: VoiceEngine[] | null | "loading" = "loading";
   /** What the voice select was last filled with (refilled only when that changes). */
@@ -81,6 +83,7 @@ export function initVoiceSection(opts: { onState(state: UiState): void }): Voice
     const note = $("voice-note");
     note.hidden = !v.note;
     note.textContent = v.note ?? "";
+    sounds.checked = s.voiceSounds;
     drawPicker(s);
   }
 
@@ -92,6 +95,7 @@ export function initVoiceSection(opts: { onState(state: UiState): void }): Voice
   voiceSelect.addEventListener("change", () => void save(voicePatch(engine(), { voice: voiceSelect.value })));
   rate.addEventListener("input", () => (rateValue.textContent = speedText(Number(rate.value))));
   rate.addEventListener("change", () => void save(voicePatch(engine(), { speed: Number(rate.value) })));
+  sounds.addEventListener("change", () => void save({ voiceSounds: sounds.checked }));
 
   const speaker = new Speaker(() => ({ voice: voiceSelect.value, rate: Number(rate.value) || 1 }));
   async function testRealtime(): Promise<void> {
@@ -102,7 +106,7 @@ export function initVoiceSection(opts: { onState(state: UiState): void }): Voice
         if ("error" in r) throw new VoiceError(r.error);
         return r;
       },
-      voice: s?.realtimeVoice ?? "marin",
+      voice: s?.realtimeVoice ?? DEFAULT_REALTIME_VOICE,
       speed: Number(rate.value) || 1,
       text: SPEECH_SAMPLE,
     });

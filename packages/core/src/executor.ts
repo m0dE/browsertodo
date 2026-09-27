@@ -11,7 +11,9 @@ import {
   isXSite,
   OUT_OF_CREDIT,
   picksText,
+  scheduledTaskText,
   siteHost,
+  TASK_END_TOOLS,
   TOOL_NAMES,
   ToolArgs,
   type AgentEvent,
@@ -25,12 +27,15 @@ import {
   traceStart,
   traceText,
   type TraceDraft,
+  type TraceValue,
 } from "@browsertodo/shared";
 import type { BrowserCaller, ToolExecutor, ToolExecutorOptions } from "./types.js";
 import { createActGate, runAct } from "./act.js";
+import { unreadInterjection, type Interjections } from "./interjections.js";
 import { formatScroll, formatSnapshot, formatTabs, formatTabSnapshots } from "./page-format.js";
 import { mapStrings, SecretRedactor } from "./redact.js";
 import { switchXAccount } from "./x-account.js";
+import { runWaitFor } from "./wait.js";
 
 /** Answer of task_* tools when the executor has no task to end (mcp-server --attach). */
 export const NO_TASK_TO_END = "no task to end in an attached session";
@@ -40,6 +45,32 @@ const err = (text: string): ToolResult => ({ text, isError: true });
 /** Tools that do not change the page: the steps Jev left to the model stay open across them. */
 const KEEPS_PENDING = new Set<string>(["act", "read_page", "screenshot", "list_tabs"]);
 
+/**
+ * Tools that may wait for a page to load (up to the driver's navigation timeout, 30 s), and which message from the
+ * user ends that wait (the load goes on in the browser), so the model reads it now rather than after the load:
+ * - "waiting": one it has not read, even one sent before the tool started (navigate and open_tabs start a load
+ *   it need not see finish before it reads the message);
+ * - "new": one sent while the tool runs (read_page is quick unless the page is still loading; a message already
+ *   waiting is read right after it anyway).
+ */
+const WAITS_FOR_LOAD: Partial<Record<ToolName, "waiting" | "new">> = { navigate: "waiting", open_tabs: "waiting", read_page: "new" };
+
+/** Result of navigate when a message from the user ended its wait for the page. */
+export const PAGE_STILL_LOADING = (url: string) =>
+  `Opening ${url}: the page was still loading when the user sent you a message (it follows), so this did not wait for it. read_page shows how far it got.`;
+/** Result of open_tabs when a message from the user ended its wait for the tabs. */
+export const TABS_STILL_LOADING = (count: number) =>
+  `Opening ${count} tab(s): they were still loading when the user sent you a message (it follows), so this did not wait for them. list_tabs shows them.`;
+/** Result of read_page when a message from the user ended its wait for a page still loading. */
+export const READ_STILL_LOADING = "The page was still loading when the user sent you a message (it follows), so it was not read. Call read_page again to read it.";
+
+/** What a tool says when a message from the user ended its wait for a page. */
+function stillLoadingText(name: ToolName, args: unknown): string {
+  if (name === "navigate") return PAGE_STILL_LOADING((args as ToolArgsOf<"navigate">).url);
+  if (name === "open_tabs") return TABS_STILL_LOADING((args as ToolArgsOf<"open_tabs">).urls.length);
+  return READ_STILL_LOADING;
+}
+
 /** The status line at the end of a turn with Jev on: who picked act's elements. Null when nothing was picked. */
 export function picksEvent(picks: ElementPicks): AgentEvent | null {
   if (picks.jev + picks.claude === 0) return null;
@@ -47,16 +78,17 @@ export function picksEvent(picks: ElementPicks): AgentEvent | null {
 }
 
 /** A task_* result with the agent's follow-up suggestion and spoken line, when it gave them. */
-function withExtras(r: TaskRunResult, extras: { suggestion?: string | undefined; spoken?: string | undefined }): TaskRunResult {
+function withExtras(r: TaskRunResult, extras: { suggestion?: string | undefined; spoken?: string | undefined; memory_note?: string | undefined }): TaskRunResult {
   const out = { ...r };
   if (extras.suggestion) out.suggestion = extras.suggestion;
   if (extras.spoken) out.spoken = extras.spoken;
+  if (extras.memory_note) out.memoryNote = extras.memory_note;
   return out;
 }
 
 /** The trace of one tool call: how long it took and how big its answer was (what the model reads). */
-function toolSpan(span: { t: number; elapsed: () => number }, id: string, name: string, args: unknown, result: ToolResult): TraceDraft {
-  const data: NonNullable<TraceDraft["data"]> = { tool: name, id, args: traceText(args), chars: result.text?.length ?? 0 };
+function toolSpan(span: { t: number; elapsed: () => number }, id: string, name: string, args: unknown, result: ToolResult, extra?: Record<string, TraceValue>): TraceDraft {
+  const data: NonNullable<TraceDraft["data"]> = { tool: name, id, args: traceText(args), chars: result.text?.length ?? 0, ...extra };
   // base64 is 4 characters per 3 bytes.
   if (result.image) data.imageKB = Math.round((result.image.base64.length * 3) / 4 / 1024);
   if (result.isError) {
@@ -71,8 +103,23 @@ function pathKey(p: string): string {
   return p.trim().replace(/\\/g, "/").replace(/\/+/g, "/").toLowerCase();
 }
 
+/**
+ * The tool's result, or `stillLoading` as soon as the model has a message from the user it has not read (the tool's
+ * work goes on; how it ends shows in the page the model reads next).
+ */
+async function untilUserSpeaks(work: Promise<ToolResult>, spoken: ReturnType<Interjections["spoken"]>, stillLoading: () => string): Promise<ToolResult> {
+  try {
+    return await Promise.race([work, spoken.when.then(() => ({ text: stillLoading() }))]);
+  } finally {
+    spoken.cancel();
+    // Not awaited any more: a later failure must not be an unhandled rejection.
+    work.catch(() => undefined);
+  }
+}
+
 export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
   const sleep = opts.sleep ?? delay;
+  const now = opts.now ?? Date.now;
   const secrets = opts.secrets ?? new SecretRedactor();
   /** Allowed upload paths by pathKey, to the exact path the task listed. */
   const allowedMedia = new Map(opts.mediaPaths.map((p) => [pathKey(p), p]));
@@ -107,13 +154,20 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
   };
   const noted: BrowserCaller = { call: browser };
 
+  /** `value` holds a password get_credential handed out in this run. */
+  const containsKnownSecret = (value: unknown) => {
+    const text = JSON.stringify(value);
+    return secrets.redact(text) !== text;
+  };
+
   const endTask = (r: TaskRunResult, reply: string): ToolResult => {
     if (!opts.onTaskEnd) return err(`${NO_TASK_TO_END}. Just tell the human what happened.`);
     opts.onTaskEnd(r);
     return { text: reply };
   };
 
-  async function run(name: ToolName, a: unknown): Promise<ToolResult> {
+  /** extra: what the call adds to its trace span (wait_for: why and after how long it stopped waiting). */
+  async function run(name: ToolName, a: unknown, extra: { trace?: Record<string, TraceValue> }): Promise<ToolResult> {
     switch (name) {
       case "navigate": {
         const r = await browser("browser.navigate", { url: (a as ToolArgsOf<"navigate">).url });
@@ -215,6 +269,17 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
         secrets.add(r.password);
         return { text: `username: ${r.username}\npassword: ${r.password}` };
       }
+      case "wait_for": {
+        const w = await runWaitFor(a as ToolArgsOf<"wait_for">, {
+          browser,
+          sleep,
+          now,
+          ...(opts.interjections ? { interjections: opts.interjections } : {}),
+          ...(opts.turnEndsAt ? { turnEndsAt: opts.turnEndsAt } : {}),
+        });
+        extra.trace = w.trace;
+        return w.result;
+      }
       case "switch_x_account":
         return switchXAccount(noted, (a as ToolArgsOf<"switch_x_account">).handle, { sleep });
       case "act":
@@ -226,13 +291,29 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
           emit,
           gate,
           ...(trace ? { trace } : {}),
+          ...(opts.interjections ? { interrupted: () => opts.interjections!.unseen } : {}),
           // The hosted Jev and the hosted AI share one credit: pause the task, like a 402 from the Messages API does.
           outOfCredit: () => endTask({ outcome: "paused", reason: OUT_OF_CREDIT }, "Task paused: the account is out of usage credit. Stop now."),
         });
+      case "schedule_task": {
+        if (!opts.scheduleTask) return err("schedule_task is not available here: there is no conversation to schedule from. Tell the user to ask in the BrowserTODO chat.");
+        return { text: scheduledTaskText(await opts.scheduleTask(a as ToolArgsOf<"schedule_task">)) };
+      }
+      case "remember":
+      case "recall":
+      case "forget": {
+        if (!opts.memory) return err(`${name} is not available here: memory belongs to a BrowserTODO chat or task.`);
+        // A password get_credential handed out in this run is never kept (the secrets live here, in the executor).
+        if (name === "remember" && containsKnownSecret(a)) return err("Not saved: it contains a password you were given. Memory never keeps passwords.");
+        const r = await opts.memory(name, a);
+        return r.isError ? err(r.text) : { text: r.text };
+      }
       case "task_complete": {
         const { summary, url, ...extras } = a as ToolArgsOf<"task_complete">;
         const r: TaskRunResult = { outcome: "done", summary };
         if (url) r.url = url;
+        // A run note holding a password the agent was given is dropped (memory never keeps passwords).
+        if (extras.memory_note && containsKnownSecret(extras.memory_note)) delete extras.memory_note;
         return endTask(withExtras(r, extras), "Task recorded as done. Stop now.");
       }
       case "task_fail": {
@@ -261,6 +342,7 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
       const shownArgs = mapStrings(args ?? {}, (s) => clipEventText(s));
       emit({ type: "tool_call", id, name, args: shownArgs });
       let result: ToolResult;
+      const extra: { trace?: Record<string, TraceValue> } = {};
       try {
         if (!(TOOL_NAMES as string[]).includes(name)) {
           result = err(`Unknown tool ${String(name)}.`);
@@ -269,8 +351,14 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
           if (!parsed.success) {
             const msg = parsed.error.issues.map((i) => `${i.path.join(".") || "args"}: ${i.message}`).join("; ");
             result = err(`Invalid arguments for ${name}: ${msg}`);
+          } else if (TASK_END_TOOLS.includes(name) && opts.interjections?.unseen) {
+            // The user spoke after the model decided to end: the turn goes on with their message.
+            result = err(unreadInterjection(name));
+          } else if (WAITS_FOR_LOAD[name] && opts.interjections) {
+            const spoken = opts.interjections.spoken(WAITS_FOR_LOAD[name] === "new");
+            result = await untilUserSpeaks(run(name, parsed.data, extra), spoken, () => stillLoadingText(name, parsed.data));
           } else {
-            result = await run(name, parsed.data);
+            result = await run(name, parsed.data, extra);
           }
         }
       } catch (e) {
@@ -286,7 +374,7 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
       if (text !== undefined) ev.text = clipEventText(text);
       if (result.isError) ev.isError = true;
       emit(ev);
-      trace?.(toolSpan(span, id, name, shownArgs, result));
+      trace?.(toolSpan(span, id, name, shownArgs, result, extra.trace));
       return result;
     },
   };

@@ -76,20 +76,28 @@ export class ActiveSessions {
     this.slots.bind(slotIndex, sessionId);
     if (localTaskId) this.localRunning.add(localTaskId);
     const slot = this.pool.take(slotIndex, sessionId);
-    const active: ActiveSession = { session, slot, run: null, forced: null, said: [], typed: [], x, scheduled, localTaskId };
+    const active: ActiveSession = { session, slot, run: null, forced: null, said: [], waiting: [], runOver: false, nextTurn: [], typed: [], x, scheduled, localTaskId };
     this.byId.set(sessionId, active);
     return active;
   }
 
-  /** The session ended: its slot, X turn and local task are free again. */
-  deactivate(active: ActiveSession): void {
+  /**
+   * The session ended: its slot, X turn and local task are free again.
+   * keepTabs: the tabs its agent opened stay open for its next turn (see SlotPool.release).
+   */
+  deactivate(active: ActiveSession, keepTabs: boolean): void {
     const sessionId = active.session.sessionId;
     if (this.byId.get(sessionId) === active) this.byId.delete(sessionId);
     const index = this.slots.release(sessionId);
-    if (index !== null) this.pool.release(index, sessionId);
+    if (index !== null) this.pool.release(index, sessionId, { keepTabs });
     this.xTurn.release(sessionId);
     if (active.localTaskId) this.localRunning.delete(active.localTaskId);
     this.ended.notify();
+  }
+
+  /** The chat is over (New Chat): the tabs its agent opened close (see SlotPool.endChat). */
+  endChat(sessionId: string): Promise<void> {
+    return this.pool.endChat(sessionId);
   }
 
   /** A session that never became active: gives back the slot, X turn and local task taken for it. */

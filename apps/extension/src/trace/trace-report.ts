@@ -7,7 +7,7 @@
  * with secrets redacted and page content cut short. Pure.
  */
 import { mapStrings, REDACTED } from "@browsertodo/core";
-import { SECRET_SETTING_KEYS, type AgentEvent, type SessionInfo, type StampedAgentEvent, type TraceEvent, type TraceValue } from "@browsertodo/shared";
+import { describeSchedule, localTimeZone, redactSecrets, SECRET_SETTING_KEYS, type AgentEvent, type SessionInfo, type StampedAgentEvent, type TraceEvent, type TraceValue } from "@browsertodo/shared";
 import { TRACE_CAPS, type TokenTotals, type TraceBook, type TurnTotals } from "./trace-book.js";
 
 /**
@@ -119,6 +119,20 @@ export interface TraceSummary {
   dropped: number;
   /** False for conversations from before traces were kept: only the events' times are known. */
   traced: boolean;
+  /** What the Realtime narrator said (null: it did not reply in this conversation). */
+  narration: NarrationAudit | null;
+}
+
+/** The narrator's replies by kind (speech: its answers to the user; ack, milestone, result, question, error: lines it was asked for). */
+export interface NarrationAudit {
+  replies: number;
+  byKind: Record<string, number>;
+  /** Audio it sent, in ms (what was cut off here included). */
+  spokenMs: number;
+  /** Replies cancelled (the user talked over them, or noise's). */
+  cancelled: number;
+  /** User turns that were noise (an empty transcript of a short sound): nothing said. */
+  noise: number;
 }
 
 export interface TraceReport {
@@ -307,6 +321,22 @@ function eventRow(e: StampedAgentEvent, t: number, span: TraceEvent | undefined,
       return { ...base, label: "Your words (voice, as transcribed)", text: clip(e.text, TEXT_LIMITS.message), ...(e.sent ? { detail: clip(`sent as: ${e.sent}`, 200) } : {}) };
     case "error":
       return { ...base, label: "Error", text: clip(e.text, TEXT_LIMITS.status), error: true };
+    case "task_scheduled":
+      return {
+        ...base,
+        label: "Scheduled in TODO",
+        text: clip(e.instructions, TEXT_LIMITS.status),
+        detail: `${describeSchedule(e.schedule, { now: new Date(e.ts), timeZone: localTimeZone() })} · task ${e.taskId}`,
+      };
+    case "task_unscheduled":
+      return { ...base, label: "Schedule undone", text: `task ${e.taskId}` };
+    case "memory": {
+      const entry = (e.after ?? e.before)!;
+      const label = !e.before ? "Remembered" : e.after ? "Memory updated" : "Memory forgotten";
+      return { ...base, label, text: clip(`${entry.subject}: ${entry.text}`, TEXT_LIMITS.status), detail: `${entry.kind} · ${entry.id}${entry.domain ? ` · ${entry.domain}` : ""}` };
+    }
+    case "memory_undone":
+      return { ...base, label: "Memory change undone", text: `change ${e.changeId}` };
     case "task_end": {
       const text = e.summary ?? e.reason ?? "";
       const row: Omit<TraceRow, "rel"> = { ...base, label: `Result: ${e.outcome}`, text: clip(text, TEXT_LIMITS.answer) };
@@ -518,7 +548,7 @@ function voiceRow(row: Omit<TraceRow, "rel">, name: string, d: Record<string, Tr
       );
       break;
     case "voice.user_words":
-      row.detail = join(s(d.model), d.failed === true && "failed", num(d.chars) !== undefined && `${d.chars} chars`, num(d.inTokens) !== undefined && `tokens in ${d.inTokens} → out ${s(d.outTokens)}`);
+      row.detail = join(s(d.model), d.failed === true && "failed", d.noise === true && "noise (nothing said)", num(d.chars) !== undefined && `${d.chars} chars`, num(d.inTokens) !== undefined && `tokens in ${d.inTokens} → out ${s(d.outTokens)}`);
       break;
     case "voice.tts":
       row.detail = join(msPart("started after", d.startMs), d.started === false && "never started", num(d.chars) !== undefined && `${d.chars} chars`, d.cut === true && "cut off");
@@ -527,8 +557,9 @@ function voiceRow(row: Omit<TraceRow, "rel">, name: string, d: Record<string, Tr
       row.detail = join(s(d.model), msPart("socket open", d.openMs), msPart("session ready", d.readyMs));
       break;
     case "voice.narrator":
-      row.label = `Voice: narrator reply (${d.trigger === "speech" ? "to speech" : "to an update"})`;
+      row.label = `Voice: narrator reply (${NARRATOR_KIND_LABELS[s(d.kind)] ?? (d.trigger === "speech" ? "to speech" : "to an update")})`;
       row.detail = join(
+        msPart("spoke", d.spokenMs),
         msPart("committed", d.commitMs),
         msPart("started", d.createdMs),
         msPart("first audio", d.firstAudioMs),
@@ -541,7 +572,33 @@ function voiceRow(row: Omit<TraceRow, "rel">, name: string, d: Record<string, Tr
   }
 }
 
+/** The narrator reply's kind (voice.narrator data.kind) as the Raw view names it. */
+const NARRATOR_KIND_LABELS: Record<string, string> = {
+  speech: "to speech",
+  ack: "acknowledgement",
+  milestone: "milestone",
+  result: "result",
+  question: "question",
+  error: "problem",
+};
+
 // ---------------------------------------------------------------- summary
+
+/** What the narrator said, from the voice.narrator and voice.user_words rows (null: no narrator reply). */
+export function narrationAudit(rows: readonly TraceRow[]): NarrationAudit | null {
+  const replies = rows.filter((r) => r.name === "voice.narrator");
+  if (!replies.length) return null;
+  const a: NarrationAudit = { replies: replies.length, byKind: {}, spokenMs: 0, cancelled: 0, noise: 0 };
+  for (const r of replies) {
+    const d = r.data ?? {};
+    const kind = typeof d.kind === "string" ? d.kind : d.trigger === "speech" ? "speech" : "update";
+    a.byKind[kind] = (a.byKind[kind] ?? 0) + 1;
+    if (typeof d.spokenMs === "number") a.spokenMs += d.spokenMs;
+    if (d.status === "cancelled") a.cancelled++;
+  }
+  a.noise = rows.filter((r) => r.name === "voice.user_words" && r.data?.noise === true).length;
+  return a;
+}
 
 /** Rows that can be the bottleneck (containers like whole turns and sums are left out). */
 function slowCandidate(r: TraceRow): number | null {
@@ -573,6 +630,7 @@ function summarize(turns: TurnReport[], book: TraceBook | null): TraceSummary {
     slowest: [],
     dropped: book?.dropped ?? 0,
     traced: !!book,
+    narration: narrationAudit(turns.flatMap((t) => t.rows)),
   };
   for (const t of turns) {
     s.totalMs += t.ms;
@@ -652,6 +710,7 @@ export function summaryLines(s: TraceSummary): { label: string; value: string; h
       about: "From the message (or the voice before it) to the first thing the agent showed: text, a tool call or the result",
     },
     ...speechLine(s),
+    ...narrationLine(s),
     { label: "Model", value: durationText(s.modelMs), hint: plural(s.modelCalls, "call"), about: "Model calls, each from the request to its last token" },
     { label: "Tools", value: durationText(s.toolMs), hint: `${plural(s.toolCalls, "call")}, Jev ${durationText(s.jevMs)}`, about: `Tool calls in the browser; Jev's ${plural(s.jevPicks, "pick")} are part of them` },
     { label: "Voice", value: durationText(s.voiceMs), hint: "waited", about: "Time spent waiting on voice: transcription, the sending window, the message going out, speech starting, the narrator's first audio" },
@@ -661,6 +720,24 @@ export function summaryLines(s: TraceSummary): { label: string; value: string; h
       value: `${n(s.tokens.in)} → ${n(s.tokens.out)}`,
       hint: `+${n(s.tokens.cacheRead)} cached${s.costUsd ? ` · $${s.costUsd.toFixed(4)}` : ""}`,
       about: `Input → output tokens of the model calls; ${n(s.tokens.cacheRead)} more read from the cache, ${n(s.tokens.cacheWrite)} written to it${s.costUsd ? `; Claude Code's own cost figure $${s.costUsd.toFixed(4)}` : ""}`,
+    },
+  ];
+}
+
+/** "Narrator": what the Realtime narrator said, by kind, and for how long. */
+function narrationLine(s: TraceSummary): { label: string; value: string; hint: string; about: string }[] {
+  const a = s.narration;
+  if (!a) return [];
+  const kinds = Object.entries(a.byKind)
+    .map(([k, n]) => `${n} ${k}`)
+    .join(", ");
+  const extra = [a.cancelled && `${a.cancelled} cancelled`, a.noise && `${a.noise} noise`].filter(Boolean).join(", ");
+  return [
+    {
+      label: "Narrator",
+      value: `${durationText(a.spokenMs)} spoken`,
+      hint: `${a.replies} ${a.replies === 1 ? "reply" : "replies"}: ${kinds}${extra ? `; ${extra}` : ""}`,
+      about: "The Realtime narrator's replies by kind (speech: answers to the user; ack, milestone, result, question, error: lines it was asked for) and the audio it sent",
     },
   ];
 }
@@ -685,7 +762,7 @@ function speechLine(s: TraceSummary): { label: string; value: string; hint: stri
 export function reportText(report: TraceReport, session: SessionInfo, env: ReportEnv): string {
   const s = report.summary;
   const out: string[] = [];
-  out.push(`browsertodo trace · ${session.title}`);
+  out.push(`BrowserTODO trace · ${session.title}`);
   out.push(join(`session ${session.sessionId}`, session.brain, session.model, session.jev ? "Jev on" : "Jev off", `${s.turns} turns`));
   out.push(envLine(env));
   if (!s.traced) out.push("(No timing trace: this conversation is from before traces were kept. Times come from its events.)");
@@ -742,7 +819,7 @@ export function exportJson(report: TraceReport, session: SessionInfo, env: Repor
     version: 1,
     exportedAt: exportedAt.toISOString(),
     about:
-      "Timing trace of one browsertodo conversation. t: epoch ms; rel: ms since the turn's first event; ms: duration; wait: the part the user waited. " +
+      "Timing trace of one BrowserTODO conversation. t: epoch ms; rel: ms since the turn's first event; ms: duration; wait: the part the user waited. " +
       "Secrets are redacted and page content is cut short.",
     env: { ...env, caps: TRACE_CAPS, slowMs: SLOW_MS },
     session: {
@@ -783,29 +860,9 @@ export function exportJson(report: TraceReport, session: SessionInfo, env: Repor
 //
 // Passwords the agent was given are redacted where they are recorded (the tool executor's SecretRedactor, like the
 // chat's events); what is left to catch here are keys and tokens that reached a text some other way (a URL, a
-// page, a message), and fields named after secrets.
+// page, a message; the patterns are shared with memory, packages/shared secret-text.ts), and fields named after secrets.
 
-/** Secrets in free text: API keys, bearer and session tokens, JWTs, key=value secrets in URLs, passwords. */
-const SECRET_PATTERNS: [RegExp, string][] = [
-  [/\bsk-ant-[A-Za-z0-9_-]{8,}/g, REDACTED],
-  [/\bsk-[A-Za-z0-9_-]{16,}/g, REDACTED],
-  [/\bbt_[A-Za-z0-9_]{12,}/g, REDACTED],
-  [/\bAIza[0-9A-Za-z_-]{20,}/g, REDACTED],
-  [/\b(?:ghp|gho|github_pat|xox[abpr])_[A-Za-z0-9_-]{10,}/g, REDACTED],
-  [/\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g, REDACTED],
-  [/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, `$1 ${REDACTED}`],
-  [/\b(api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|id[_-]?token|token|session[_-]?token|session[_-]?id|sid|secret|client[_-]?secret|password|passwd|pwd|code|sig|signature|auth)=([^&\s"'#]+)/gi, `$1=${REDACTED}`],
-  [/\b(password|passwd|passphrase|pwd)(\s*[:=]\s*)("[^"]*"|\S+)/gi, `$1$2${REDACTED}`],
-  // A long unbroken run of token characters (a key or token of some other kind).
-  [/[A-Za-z0-9+/_-]{64,}={0,2}/g, REDACTED],
-];
-
-/** `text` with secrets replaced by REDACTED. */
-export function redactSecrets(text: string): string {
-  let out = text;
-  for (const [re, to] of SECRET_PATTERNS) out = out.replace(re, to);
-  return out;
-}
+export { redactSecrets };
 
 /** Object keys whose values are secrets, whatever they hold (the settings' own secret keys among them). */
 const SECRET_KEYS = new Set(

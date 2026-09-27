@@ -7,11 +7,12 @@
  */
 import type { BrowserCaller } from "@browsertodo/core";
 import type { Screenshot } from "@browsertodo/shared";
-import { AgentTab, type TabMode } from "./agent-tab.js";
+import { AgentTab, closeChatTabs, type TabMode } from "./agent-tab.js";
 import type { Cdp } from "./cdp.js";
 import { Driver } from "./driver.js";
 import { createBrowserCaller, tracedBrowser, type BrowserCallTrace, type VaultLike } from "./engine/browser-caller.js";
 import { isRestrictedError } from "./restricted.js";
+import { ApprovalGate, type GateDeps } from "./approval/gate.js";
 
 /** What the runner needs of a slot (see RunnerDeps.slots). */
 export interface AgentSlot {
@@ -36,8 +37,13 @@ export interface SlotPool {
   readonly size: number;
   /** The slot with this index, now used by this session (its browser calls go there). */
   take(index: number, sessionId: string): AgentSlot;
-  /** The session's turn ended: its browser calls are refused, tabs it opened are closed. */
-  release(index: number, sessionId: string): void;
+  /**
+   * The session's turn ended: its browser calls are refused. keepTabs: the
+   * tabs it opened stay open for its next turn (a chat); else they close.
+   */
+  release(index: number, sessionId: string, opts: { keepTabs: boolean }): void;
+  /** The chat is over (New Chat): the tabs its turns opened close. */
+  endChat(sessionId: string): Promise<void>;
 }
 
 interface Slot extends AgentSlot {
@@ -45,7 +51,14 @@ interface Slot extends AgentSlot {
   driver: Driver;
   /** The session using the slot right now. */
   sessionId: string | null;
+  /** Holds actions until the automation level allows them (null: no gate). */
+  gate: ApprovalGate | null;
+  /** The last turn's tab cleanup (release): the next prepare in any slot waits for it. */
+  ending: Promise<unknown>;
 }
+
+/** The approval gate's needs (approval/gate.ts), and how a turn's waiting requests end with it. */
+export type SlotApprovals = GateDeps & { end(sessionId: string): void };
 
 export class AgentSlots implements SlotPool {
   readonly size = MAX_SLOTS;
@@ -58,33 +71,52 @@ export class AgentSlots implements SlotPool {
     private readonly isChatTab?: (tabId: number) => Promise<boolean>,
     /** Each browser call of a session, timed, for its conversation's trace. */
     private readonly onBrowserCall?: (sessionId: string, call: Parameters<BrowserCallTrace>[0]) => void,
+    /** Approvals before actions (the automation level). Absent: nothing waits. */
+    private readonly approvals?: SlotApprovals,
+    /** Tabs with their own side panel open: a run never takes the user away from one. */
+    private readonly showsPanel?: (tabId: number) => boolean,
   ) {}
 
   /** Slot n, created on first use. Slot 0 is the first agent tab. */
   get(index: number): Slot {
     const existing = this.slots.get(index);
     if (existing) return existing;
-    const isChatTab = this.isChatTab;
-    const tab = new AgentTab(index, { isTaken: (tabId) => this.takenByOther(index, tabId), ...(isChatTab ? { isChatTab } : {}) });
+    const { isChatTab, showsPanel } = this;
+    const tab = new AgentTab(index, {
+      isTaken: (tabId) => this.takenByOther(index, tabId),
+      ...(isChatTab ? { isChatTab } : {}),
+      ...(showsPanel ? { showsPanel } : {}),
+    });
     const driver = new Driver(this.cdp, tab, { knownTabs: () => this.allTabIds() });
     const cdp = this.cdp;
+    const cleanedUp = () => this.cleanedUp();
     const onCall = this.onBrowserCall;
     const plain = createBrowserCaller(driver, this.vault);
+    // Calls made for a session are timed in its trace.
+    const traced = onCall
+      ? tracedBrowser(plain, () => (driver.inFallback ? "fallback" : "cdp"), (call) => {
+          if (slot.sessionId) onCall(slot.sessionId, call);
+        })
+      : plain;
+    // The gate is outside the timing: a browser call's time never includes the user deciding.
+    const gate = this.approvals ? new ApprovalGate(traced, () => slot.sessionId, this.approvals) : null;
     const slot: Slot = {
       index,
       tab,
       driver,
       sessionId: null,
-      // Calls made for a session are timed in its trace.
-      browser: onCall
-        ? tracedBrowser(plain, () => (driver.inFallback ? "fallback" : "cdp"), (call) => {
-            if (slot.sessionId) onCall(slot.sessionId, call);
-          })
-        : plain,
+      gate,
+      ending: Promise.resolve(),
+      browser: gate?.browser ?? traced,
       async prepare(opts) {
         cdp.reset();
+        // A chat's tabs are parked by its last turn's release, maybe in another slot.
+        await cleanedUp();
         // The run's tab is picked once; the driver keeps using it for the whole turn.
-        const tabId = await tab.prepare(opts.mode ?? "own-tab", opts.tabId === undefined ? {} : { tabId: opts.tabId });
+        const tabId = await tab.prepare(opts.mode ?? "own-tab", {
+          ...(opts.tabId === undefined ? {} : { tabId: opts.tabId }),
+          ...(slot.sessionId ? { owner: slot.sessionId } : {}),
+        });
         // Never brought to the front: the user may be using another tab (only "Show Tab" does that).
         // A page Chrome keeps extensions out of does not end the run: its tools say so, other tabs work.
         await driver.ready().catch((err: unknown) => {
@@ -102,15 +134,31 @@ export class AgentSlots implements SlotPool {
   take(index: number, sessionId: string): AgentSlot {
     const s = this.get(index);
     s.sessionId = sessionId;
+    // "Allow for this task" lasts one turn.
+    s.gate?.release();
     return s;
   }
 
-  release(index: number, sessionId: string): void {
+  release(index: number, sessionId: string, opts: { keepTabs: boolean }): void {
     const s = this.slots.get(index);
     if (!s || s.sessionId !== sessionId) return;
     s.sessionId = null;
-    // Tabs the agent opened with open_tabs go away with the turn; the main tab stays for the next one.
-    void s.driver.closeOpenedTabs().catch(() => 0);
+    // Approvals still waiting end with the turn (their actions are not done).
+    s.gate?.release();
+    this.approvals?.end(sessionId);
+    // A chat's tabs stay open for it (the user may sign in or follow up there); an unattended run's go away. The main tab stays.
+    s.ending = (opts.keepTabs ? s.tab.park(sessionId) : s.driver.closeOpenedTabs()).catch(() => 0);
+  }
+
+  /**
+   * Closes the tabs a chat's turns opened, except ones another run or chat
+   * uses now. Not while a turn of it runs (its tabs are that turn's).
+   */
+  async endChat(sessionId: string): Promise<void> {
+    if (this.slotUsedBy(sessionId)) return;
+    await this.cleanedUp();
+    const inUse = new Set(await this.allTabIds());
+    await closeChatTabs(sessionId, async (tabId) => inUse.has(tabId) || !!(await this.isChatTab?.(tabId)));
   }
 
   /**
@@ -141,10 +189,28 @@ export class AgentSlots implements SlotPool {
     return (await this.slotUsedBy(sessionId)?.tab.tabIds()) ?? [];
   }
 
+  /**
+   * A new tab: when a page of a running session's tabs opened it, that
+   * session's slot takes it (see AgentTab.adopt). A tab the user opens from
+   * their tab while no turn runs there stays theirs.
+   */
+  async adopt(tab: { id?: number; openerTabId?: number }): Promise<void> {
+    if (tab.id === undefined || tab.openerTabId === undefined) return;
+    for (const s of this.slots.values()) {
+      if (s.sessionId === null) continue;
+      if (await s.tab.adopt(tab.id, tab.openerTabId)) return;
+    }
+  }
+
   /** Every tab of every slot. */
   async allTabIds(): Promise<number[]> {
     const ids = await Promise.all([...this.slots.values()].map((s) => s.tab.tabIds()));
     return ids.flat();
+  }
+
+  /** Every slot's last turn cleanup is done. */
+  private async cleanedUp(): Promise<void> {
+    await Promise.all([...this.slots.values()].map((s) => s.ending));
   }
 
   private slotUsedBy(sessionId: string): Slot | undefined {

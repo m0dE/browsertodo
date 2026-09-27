@@ -1,7 +1,8 @@
 /**
  * The Realtime hands-free engine: the microphone streams to the narrator
  * (PCM16 at 24 kHz, about every 100 ms), its speech plays back (PcmPlayer),
- * the chat's events go to it as notes (NarratorFeed), and its tools reach
+ * the chat's events go to it as notes (NarratorFeed; when it may speak is
+ * narrator-policy.ts, one line at a time, after its audio here), and its tools reach
  * the panel (send_to_agent at once, stop_task and cancel_request, end_voice).
  * Each turn's own words (the input transcription) reach the panel paired with
  * the request sent for them (RealtimeTurns). Turn-taking and barge-in are
@@ -54,7 +55,17 @@ export class RealtimeEngine implements HandsFreeEngine {
 
   constructor(private readonly deps: RealtimeEngineDeps) {
     const ev = deps.events;
-    this.player = deps.player ?? new PcmPlayer(REALTIME_SAMPLE_RATE, { onStart: () => ev.narrating(), onIdle: () => !this.stopped && ev.said() });
+    this.player =
+      deps.player ??
+      new PcmPlayer(REALTIME_SAMPLE_RATE, {
+        onStart: () => ev.narrating(),
+        onIdle: () => {
+          if (this.stopped) return;
+          ev.said();
+          // A line waiting for the narrator to finish may start now.
+          this.client?.playbackIdle();
+        },
+      });
     this.turns = new RealtimeTurns((words, sent) => !this.stopped && ev.userWords(words, sent));
   }
 
@@ -99,6 +110,9 @@ export class RealtimeEngine implements HandsFreeEngine {
           },
           onTool: (name, args, inputId) => this.tool(name, args, inputId),
           onUserWords: (inputId, text) => this.turns.words(inputId, text),
+          playing: () => this.player.playing,
+          // Noise's reply: what of it plays stops.
+          onNoise: () => this.cutOff(),
           onTurnDone: (inputId) => {
             this.turns.replied(inputId);
             // A turn that sent nothing: its timings stay with the session's chat.
@@ -154,11 +168,11 @@ export class RealtimeEngine implements HandsFreeEngine {
   }
 
   agentEvent(ev: AgentEvent, now: number): void {
-    for (const n of this.feed.push(ev, now)) this.client?.note(n.text, n.respond);
+    for (const n of this.feed.push(ev, now)) this.client?.note(n.text, n.speak);
   }
 
-  tick(now: number): void {
-    for (const n of this.feed.tick(now)) this.client?.note(n.text, n.respond);
+  tick(_now: number): void {
+    // Nothing is said on a clock: the narrator speaks for news only (narrator-policy.ts).
   }
 
   /** Stops local playback; the narrator's memory keeps only what was heard. */
@@ -180,12 +194,17 @@ export class RealtimeEngine implements HandsFreeEngine {
         if (!text) return "Error: say what to send (text).";
         ev.forward(text);
         this.turns.sent(inputId, text);
+        // Its acknowledgement is the narrator's line for now: milestones for it wait NARRATOR_MILESTONE_GAP_MS.
+        this.feed.request(Date.now());
         return "Sent to the agent. Its updates will follow.";
       }
       // The request already went out: taking it back stops its task.
       case "cancel_request":
       case "stop_task":
         return ev.stopTask();
+      case "answer_approval":
+        if (typeof args.allow !== "boolean") return "Error: say whether the user allows it (allow: true or false).";
+        return ev.answerApproval(args.allow);
       case "end_voice":
         // After this reply: the narrator may say goodbye first.
         setTimeout(() => ev.endVoice(), 0);

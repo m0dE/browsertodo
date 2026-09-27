@@ -4,8 +4,8 @@
 //
 // Owner's report: "a lot of the time when the extension is already open, when I press ctrl+. it doesn't focus the
 // input field." Chrome gives a side panel the keyboard focus only when it creates the panel's page, so with the
-// focus in the page the shortcut recreates the panels (see panel-command.ts); the chat, the text in the box and
-// other windows' panels must survive that.
+// focus in the page the shortcut recreates the tab's panel (see panel-command.ts; each tab has its own); the chat and
+// the text in the box must survive that, and other tabs' panels are left as they are.
 //
 // The shortcut is pressed through shortcutPresser: the command handler in a real user gesture of the service
 // worker (CDP Extensions.triggerAction -> action.onClicked, dispatched like chrome.commands.onCommand), since
@@ -75,7 +75,7 @@ try {
         for (const v of chrome.extension.getViews()) {
           if (v.location.pathname !== "/sidepanel.html" || (await v.chrome.windows.getCurrent()).id !== w) continue;
           const d = v.document;
-          if (what === "activity-log") {
+          if (what === "history") {
             d.getElementById("tab-btn-history").click();
             d.getElementById("tab-btn-history").focus();
           } else if (what === "type") {
@@ -127,10 +127,10 @@ try {
     return `focused ${ms} ms after the handler; ${JSON.stringify({ hasFocus: panel.hasFocus, active: panel.active })}`;
   });
 
-  await step("focus in the panel (on the Activity Log tab): the shortcut focuses the input in Chat, without reloading the panel", async () => {
+  await step("focus in the panel (on the History tab): the shortcut focuses the input in Chat, without reloading the panel", async () => {
     await inPanel("mark", "kept");
-    await inPanel("activity-log");
-    await waitFor(async () => (await panelOf())?.active === "tab-btn-history", "the Activity Log tab to have the focus");
+    await inPanel("history");
+    await waitFor(async () => (await panelOf())?.active === "tab-btn-history", "the History tab to have the focus");
     assert.equal(await press(WEB), "focused");
     const { panel } = await inputHasRealFocus("the input to have the focus");
     assert.equal(panel.mark, "kept", "the same panel page");
@@ -186,15 +186,15 @@ try {
     return "voice";
   });
 
-  await step("on the Activity Log with the focus in the web page: the shortcut focuses the input in Chat", async () => {
-    await inPanel("activity-log");
+  await step("on History with the focus in the web page: the shortcut focuses the input in Chat", async () => {
+    await inPanel("history");
     await userClicksIntoPage();
     assert.equal(await press(WEB), "reopened");
     const { ms } = await inputHasRealFocus("the input to have the real keyboard focus after the shortcut");
     return `focused ${ms} ms after the handler`;
   });
 
-  await step("another window's panel is opened again with the text its box had (Chrome closes every window's panel)", async () => {
+  await step("another window's tab has its own panel, left as it is when this tab's panel is recreated", async () => {
     const web2 = await context.newPage();
     await web2.goto(WEB2);
     const { id: tab2 } = await tabOf(WEB2);
@@ -202,17 +202,17 @@ try {
     assert.equal(await press(WEB2), "opened");
     await inputHasRealFocus("window 2's panel input to have the focus", w2);
     await inPanel("type", "window 2 draft", w2);
+    await inPanel("mark", "window 2 page", w2);
     // Back to window 1, its focus in the page.
     await userClicksIntoPage();
     assert.equal(await press(WEB), "reopened");
     const { ms } = await inputHasRealFocus("window 1's input to have the real keyboard focus");
-    const other = await waitFor(async () => {
-      const p = await panelOf(w2);
-      return p?.draft === "window 2 draft" ? p : null;
-    }, "window 2's panel back with its text", { timeout: 3000 });
+    const other = await panelOf(w2);
+    assert.equal(other.mark, "window 2 page", "window 2's panel page was not recreated");
+    assert.equal(other.draft, "window 2 draft");
     const contexts = await sw.evaluate(async () => (await chrome.runtime.getContexts({ contextTypes: ["SIDE_PANEL"] })).length);
-    assert.equal(contexts, 2, "both windows have their panel");
-    return `window 1 focused ${ms} ms after the handler; window 2's box ${JSON.stringify(other.draft)}`;
+    assert.equal(contexts, 2, "each tab has its panel");
+    return `window 1 focused ${ms} ms after the handler; window 2's page kept, its box ${JSON.stringify(other.draft)}`;
   });
 } finally {
   await ext.close();

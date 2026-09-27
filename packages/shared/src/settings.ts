@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { DEFAULT_MODEL } from "./models.js";
+import { DEFAULT_REASONING, ReasoningLevel } from "./reasoning.js";
+import { MemoryKind } from "./memory.js";
+import { AutomationLevel, DEFAULT_AUTOMATION_LEVEL, DEFAULT_SCHEDULED_AUTOMATION, ScheduledAutomation } from "./automation.js";
 import { DEFAULT_REALTIME_VOICE, REALTIME_SPEED, RealtimeVoiceId, STANDARD_SPEED, VoiceEngineId } from "./voice.js";
 
 /** The browsertodo account server. */
@@ -32,6 +35,10 @@ export const ExtensionSettings = z.object({
   brain: BrainMode.default("auto"),
   anthropicApiKey: z.string().default(""),
   anthropicModel: z.string().default(DEFAULT_MODEL),
+  /** How much Claude thinks before it acts, for every brain (reasoning.ts). */
+  reasoning: ReasoningLevel.default(DEFAULT_REASONING),
+  /** Fast only: when a run gets stuck (a step keeps failing, the same action repeats), its next steps think. */
+  reasoningAutoRaise: z.boolean().default(true),
   /** Jev speeds up single steps. Used only when a key is set and jevEnabled. */
   jevApiKey: z.string().default(""),
   /**
@@ -80,6 +87,16 @@ export const ExtensionSettings = z.object({
   realtimeSpeed: z.number().min(REALTIME_SPEED.min).max(REALTIME_SPEED.max).default(REALTIME_SPEED.default),
   /** The one-time notice of what Realtime voice costs was shown. */
   realtimeCostNoticed: z.boolean().default(false),
+  /** Hands-free voice makes a short soft sound when the microphone goes live and when it stops. */
+  voiceSounds: z.boolean().default(true),
+  /** How much the chat agent does without asking (automation.ts); enforced before each browser action. */
+  automationLevel: AutomationLevel.default(DEFAULT_AUTOMATION_LEVEL),
+  /** The same for scheduled runs of the TODO list (automation.ts). */
+  scheduledAutomation: ScheduledAutomation.default(DEFAULT_SCHEDULED_AUTOMATION),
+  /** Memory is paused: the agent is given none and saves none (Settings > Memory). What is kept stays. */
+  memoryPaused: z.boolean().default(false),
+  /** Kinds of memory turned off: not given to the agent, not saved (memory.ts). */
+  memoryKindsOff: z.array(MemoryKind).default([]),
 });
 export type ExtensionSettings = z.infer<typeof ExtensionSettings>;
 

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_SETTINGS, type ExtensionSettings, type HelperInfo, type SessionInfo } from "@browsertodo/shared";
+import { DEFAULT_SETTINGS, SCHEDULE_PLAN_REQUIRED, SCHEDULE_SIGN_IN, type ExtensionSettings, type HelperInfo, type SessionInfo } from "@browsertodo/shared";
 import { fakePort, installChromeFake, type FakePort } from "./chrome-fake.js";
 import { resolveBrain } from "../src/engine/brain-resolver.js";
 import { MemoryKvDb } from "./memory-kv.js";
@@ -41,6 +41,7 @@ function setup() {
     resumeSchedule: vi.fn(async () => {
       settings = { ...settings, paused: false };
     }),
+    runTask: vi.fn(async (_id: string) => ({ sessionId: "S-task" })),
   } satisfies RouterRunner;
   const helper = {
     info: null as HelperInfo | null,
@@ -74,7 +75,8 @@ function setup() {
     brainStatus: (s) => resolveBrain({ settings: s, helper: helper.info, helperError: helper.lastError }),
     nextRunAt: async () => "2026-09-24T10:15:00.000Z",
     testClaude: async () => ({ ok: true, detail: "Key accepted" }),
-    testJev: async () => ({ ok: false, detail: "No Jev key set" }),
+    // Echoes the resolved brain it was given: the router must pass the settings' brain status.
+    testJev: async (_s, brain) => ({ ok: false, detail: `No Jev key set (brain: ${brain.effective ?? "none"})` }),
     testCloud: async () => ({ ok: true, detail: "Connected" }),
     vault,
   };
@@ -115,7 +117,7 @@ describe("UiRouter", () => {
   it("settings tests pass through", async () => {
     const t = setup();
     expect(await t.req({ type: "settings.testClaude" })).toEqual({ ok: true, detail: "Key accepted" });
-    expect(await t.req({ type: "settings.testJev" })).toEqual({ ok: false, detail: "No Jev key set" });
+    expect(await t.req({ type: "settings.testJev" })).toEqual({ ok: false, detail: "No Jev key set (brain: claude-api)" });
     expect(await t.req({ type: "settings.testCloud" })).toEqual({ ok: true, detail: "Connected" });
   });
 
@@ -176,7 +178,7 @@ describe("UiRouter", () => {
 
   it("tasks.* manage the local list", async () => {
     const t = setup();
-    const { task } = await t.req({ type: "tasks.add", instructions: "post it", account: "@me", repeat: { dailyAt: ["09:00"] }, media: [{ name: "a.png", type: "image/png", dataBase64: btoa("x") }] });
+    const { task } = await t.req({ type: "tasks.add", instructions: "post it", account: "@me", repeat: { cron: "0 9 * * *", tz: "UTC" }, media: [{ name: "a.png", type: "image/png", dataBase64: btoa("x") }] });
     expect(task).toMatchObject({ instructions: "post it", account: "@me", status: "pending" });
     const { tasks } = await t.req({ type: "tasks.list" });
     expect(tasks).toHaveLength(1);
@@ -186,6 +188,10 @@ describe("UiRouter", () => {
     expect(await t.req({ type: "tasks.delete", id: task.id })).toEqual({ ok: true });
     expect(await t.req({ type: "tasks.delete", id: task.id })).toEqual({ ok: false });
     expect(await t.router.handle({ type: "tasks.add", instructions: "" })).toEqual({ ok: false, error: "Instructions are empty" });
+    // Run on a row: the runner runs that task.
+    expect(await t.req({ type: "tasks.run", id: "T9" })).toEqual({ sessionId: "S-task" });
+    expect(t.runner.runTask).toHaveBeenCalledWith("T9");
+    expect(await t.router.handle({ type: "tasks.run", id: "" } as never)).toEqual({ ok: false, error: "id is required" });
   });
 
   it("sessions.list / sessions.events", async () => {
@@ -360,8 +366,8 @@ describe("UiRouter: account", () => {
     // A plan without the TODO list: the kept tasks come with locked.
     t.accountTodo.list.mockResolvedValueOnce({ tasks: [], locked: true });
     expect(await t.req({ type: "tasks.list" })).toEqual({ tasks: [], locked: true, source: "account" });
-    await t.req({ type: "tasks.add", instructions: "x", repeat: { dailyAt: ["09:00"] } });
-    expect(t.accountTodo.add).toHaveBeenCalledWith({ instructions: "x", account: null, notBefore: null, repeat: { dailyAt: ["09:00"] }, media: [] });
+    await t.req({ type: "tasks.add", instructions: "x", repeat: { cron: "0 9 * * *", tz: "UTC" } });
+    expect(t.accountTodo.add).toHaveBeenCalledWith({ instructions: "x", account: null, notBefore: null, repeat: { cron: "0 9 * * *", tz: "UTC" }, media: [] });
     expect(await t.req({ type: "tasks.cancel", id: "A1" })).toEqual({ task: { id: "A1", status: "cancelled" } });
     t.view.signedIn = false;
     await t.localStore.add({ instructions: "local one" });
@@ -369,6 +375,31 @@ describe("UiRouter: account", () => {
     expect(local.source).toBe("local");
     expect(local.tasks).toHaveLength(1);
     expect(await t.router.handle({ type: "tasks.cancel", id: local.tasks[0].id })).toMatchObject({ ok: false, error: expect.stringMatching(/delete it instead/) });
+  });
+
+  it("schedule_task goes into the account's TODO list on a plan with it; Undo on the chat's card deletes it", async () => {
+    const t = withAccount(true);
+    Object.assign(t.view, { plan: { id: "plus", status: "active", currentPeriodEnd: null, cancelAtPeriodEnd: false } });
+    await t.sessions.create({ sessionId: "S1", source: "adhoc", title: "t", brain: "claude-api", jev: false, startedAt: new Date().toISOString() });
+    const at = new Date(Date.now() + 3 * 3_600_000).toISOString();
+    const r = await t.router.scheduler.schedule("S1", { task: "Check the order status", schedule: { at } });
+    expect(r).toMatchObject({ taskId: "A1", instructions: "Check the order status", nextRunAt: at });
+    expect(t.accountTodo.add).toHaveBeenCalledWith({ instructions: "Check the order status", notBefore: at, repeat: null });
+    expect(await t.req({ type: "chat.undoScheduled", sessionId: "S1", taskId: "A1" })).toEqual({ ok: true });
+    expect(t.accountTodo.delete).toHaveBeenCalledWith("A1");
+    expect((await t.sessions.eventsOf("S1")).map((e) => e.type)).toEqual(["task_scheduled", "task_unscheduled"]);
+  });
+
+  it("schedule_task on Free, or signed out, is refused with the chat's fix", async () => {
+    const t = withAccount(true);
+    Object.assign(t.view, { plan: { id: "free", status: "none", currentPeriodEnd: null, cancelAtPeriodEnd: false } });
+    await t.sessions.create({ sessionId: "S1", source: "adhoc", title: "t", brain: "claude-api", jev: false, startedAt: new Date().toISOString() });
+    const args = { task: "x", schedule: { at: new Date(Date.now() + 60_000).toISOString() } };
+    await expect(t.router.scheduler.schedule("S1", args)).rejects.toThrow(SCHEDULE_PLAN_REQUIRED);
+    t.view.signedIn = false;
+    await expect(t.router.scheduler.schedule("S1", args)).rejects.toThrow(SCHEDULE_SIGN_IN);
+    expect(t.accountTodo.add).not.toHaveBeenCalled();
+    expect((await t.sessions.eventsOf("S1")).map((e) => (e.type === "error" ? e.text : e.type))).toEqual([SCHEDULE_PLAN_REQUIRED, SCHEDULE_SIGN_IN]);
   });
 
   it("migrate and keys; no billing request (plans are bought on the dashboard)", async () => {

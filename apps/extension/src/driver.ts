@@ -1,12 +1,16 @@
-import { delay, type AgentTabInfo, type PageSnapshot, type Screenshot, type Sleep } from "@browsertodo/shared";
+import { delay, PAGE_SETTLE_MS, urlMatches, type AgentTabInfo, type PageSnapshot, type Screenshot, type Sleep } from "@browsertodo/shared";
 import type { AgentTab } from "./agent-tab.js";
 import type { Cdp } from "./cdp.js";
 import { CdpActions } from "./cdp-actions.js";
-import { isTabLoaded, tabUrl } from "./chrome-tabs.js";
+import { isTabLoaded, tabExists, tabUrl } from "./chrome-tabs.js";
 import { assertOpenable, BACKGROUND_SHOT_SKIPPED, NAV_TIMEOUT_MS, pollUntil, type Params as P, type Result as R } from "./driver-common.js";
 import { FALLBACK_NOTE, FallbackDriver } from "./fallback-driver.js";
 import { keyEvents } from "./keys.js";
-import { isDebuggerBlocked, isRestrictedError, restrictedToolError } from "./restricted.js";
+import { leavingDocument, waitForUsablePage, type LoadProbe } from "./page-load.js";
+import { WAIT_MIN_GAP_MS, WAIT_POLL_MS, type PageWait, type PageWaitArgs } from "./page-wait.js";
+import { isDebuggerBlocked, isDebuggerDetached, isRestrictedError, restrictedToolError } from "./restricted.js";
+import type { PageResult } from "./scroll-probe.js";
+import { shrinkScreenshot } from "./screenshot-size.js";
 
 /** A result that may carry FALLBACK_NOTE, once, for the caller to show. */
 export type WithNote<T> = T & { note?: string };
@@ -19,6 +23,12 @@ export type WithNote<T> = T & { note?: string };
  * browser that never paints hidden tabs.
  */
 const BACKGROUND_SHOT_TIMEOUT_MS = 10_000;
+
+/**
+ * How much longer than its slice a wait_for slice may take to answer: the page's own timer may be throttled in a
+ * background tab, so the service worker ends the slice itself (the page's watcher is stopped by the next slice).
+ */
+const WAIT_SLICE_GRACE_MS = 2000;
 
 /**
  * Implements the browser.* methods on the agent's tabs through the debugger.
@@ -80,18 +90,38 @@ export class Driver {
     return tabId;
   }
 
+  /**
+   * Opens `url` in the current tab and waits until the page is usable (past
+   * DOMContentLoaded and settled; not the load event of a heavy app). A tab in
+   * fallback mode navigates with chrome.tabs.update, never through a debugger
+   * attach that the page's other-extension frame would drop; so does a tab
+   * whose debugger Chrome drops during the navigation. After it, the debugger
+   * is tried again only when the new page has no other extension's frame.
+   */
   async navigate({ url }: P<"browser.navigate">): Promise<WithNote<R<"browser.navigate">>> {
     assertOpenable(url);
     let started = false;
+    let leaving: number | null = null;
+    const from = async (tabId: number, probe: (id: number) => Promise<LoadProbe | null>) => {
+      const before = await chrome.tabs.get(tabId).then(tabUrl, () => undefined);
+      leaving = leavingDocument(before, url, (await probe(tabId).catch(() => null))?.doc);
+    };
     return this.use(
-      (tabId) => this.viaCdp.navigate(tabId, url, () => (started = true)),
       async (tabId) => {
-        // If Page.navigate went through before the debugger was refused, only wait for the load.
-        const r = started ? await this.fallback.waitForLoad(tabId, url) : await this.fallback.navigate(tabId, { url });
-        // The new page may not contain the other extension's frame: try the debugger again next call.
-        this.fallbackTabs.delete(tabId);
+        await from(tabId, (id) => this.viaCdp.probe(id));
+        return this.viaCdp.navigate(tabId, url, () => (started = true), leaving);
+      },
+      async (tabId) => {
+        if (leaving === null) await from(tabId, (id) => this.fallback.probe(id));
+        // Page.navigate may have gone through before Chrome refused or dropped the debugger: then only wait.
+        const heading = started || (await chrome.tabs.get(tabId).then((t) => t.pendingUrl === url, () => false));
+        const { probe, ...r } = heading ? await this.fallback.waitForLoad(tabId, url, leaving) : await this.fallback.navigate(tabId, { url }, leaving);
+        // A page without the other extension's frame gets the debugger again (trusted input) from the next call.
+        if (!probe?.foreignFrame) this.fallbackTabs.delete(tabId);
         return r;
       },
+      undefined,
+      { droppedGoesFallback: true },
     );
   }
 
@@ -102,6 +132,7 @@ export class Driver {
       (tabId) => this.viaCdp.readPage(tabId),
       (tabId) => this.fallback.readPage(tabId),
       target,
+      { droppedGoesFallback: true },
     );
     // Several tabs may be read in one tool call: say which tab the note is about.
     if (r?.note && target !== undefined) r.note = `Tab ${(await this.agent.shortId(target)) ?? p.tab}: ${r.note}`;
@@ -112,13 +143,17 @@ export class Driver {
    * Screenshot of the current tab. The tab is never brought to the front (the
    * user may be using another tab): a background tab is captured through the
    * debugger as it is; when that is not possible the call fails with
-   * BACKGROUND_SHOT_SKIPPED.
+   * BACKGROUND_SHOT_SKIPPED. At most SCREENSHOT_MAX_WIDTH pixels wide.
    */
   async screenshot(): Promise<WithNote<Screenshot>> {
-    return this.use(
+    const shot = await this.use(
       (tabId) => this.cdpScreenshot(tabId),
       (tabId) => this.fallback.screenshot(tabId),
+      undefined,
+      { droppedGoesFallback: true },
     );
+    const small = await shrinkScreenshot(shot).catch(() => shot);
+    return small === shot ? shot : { ...small, ...(shot.note ? { note: shot.note } : {}) };
   }
 
   click(p: P<"browser.click">): Promise<WithNote<R<"browser.click">>> {
@@ -195,6 +230,47 @@ export class Driver {
     return { tabs };
   }
 
+  /**
+   * One slice of wait_for on the current tab, or on `tab` without making it current: which condition holds
+   * (url_matches from the tab's URL, the others in the page: page-wait.ts), or none after timeoutMs. A page
+   * that cannot be read right now (it is navigating) answers at once with none; a closed tab answers closed.
+   */
+  async waitFor(p: P<"browser.waitFor">): Promise<WithNote<R<"browser.waitFor">>> {
+    const target = p.tab === undefined ? undefined : await this.agent.resolve(p.tab);
+    return this.use(
+      (tabId) => this.watch(tabId, p, (args) => this.viaCdp.waitInPage(tabId, args)),
+      (tabId) => this.watch(tabId, p, (args) => this.fallback.waitInPage(tabId, args)),
+      target,
+      { droppedGoesFallback: true },
+    );
+  }
+
+  private async watch(tabId: number, p: P<"browser.waitFor">, inPage: (a: PageWaitArgs) => Promise<PageResult<PageWait> | undefined>): Promise<R<"browser.waitFor">> {
+    const tab = () => chrome.tabs.get(tabId).then((t) => ({ url: tabUrl(t), title: t.title ?? "" }), () => null);
+    const byUrl = (url: string) => p.until.findIndex((c) => c.kind === "url_matches" && urlMatches(c.text ?? "", url));
+    const before = await tab();
+    if (!before) return { met: null, closed: true, url: "", title: "" };
+    const early = byUrl(before.url);
+    if (early >= 0) return { met: early, ...before };
+    const args: PageWaitArgs = { until: p.until, timeoutMs: p.timeoutMs, baseline: p.baseline ?? null, settleMs: PAGE_SETTLE_MS, minGapMs: WAIT_MIN_GAP_MS, pollMs: WAIT_POLL_MS };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const slice = inPage(args);
+    const page = await Promise.race([slice, new Promise<undefined>((r) => (timer = setTimeout(() => r(undefined), p.timeoutMs + WAIT_SLICE_GRACE_MS)))])
+      .catch(async (err: unknown) => {
+        // A page that is navigating gives no answer; the debugger refused or dropped on a tab that is still there switches to the fallback.
+        if ((isDebuggerBlocked(err) || isDebuggerDetached(err)) && (await tabExists(tabId))) throw err;
+        return undefined;
+      })
+      .finally(() => clearTimeout(timer));
+    slice.catch(() => undefined);
+    if (page && !page.ok) throw new Error(page.error);
+    const after = await tab();
+    if (!after) return { met: null, closed: true, url: before.url, title: before.title };
+    const fingerprint = page?.value.fingerprint;
+    const met = byUrl(after.url);
+    return { met: met >= 0 ? met : (page?.value.met ?? null), ...after, ...(fingerprint ? { fingerprint } : {}) };
+  }
+
   /** Makes a tab current and attaches to it. The browser's active tab does not change. */
   async switchTab({ tab }: P<"browser.switchTab">): Promise<R<"browser.switchTab">> {
     const tabId = await this.agent.setCurrent(tab);
@@ -237,12 +313,16 @@ export class Driver {
   /**
    * Runs `viaCdp`, or `viaFallback` when the tab refuses the debugger
    * (switching on the first such error). Acts on the current tab, or on
-   * `target` without making it current.
+   * `target` without making it current. droppedGoesFallback: Chrome dropping
+   * the debugger mid-command switches too (only for calls that are safe to
+   * run again: a click might have happened already). Tabs a page opened
+   * meanwhile are reported in the result's note (withNewTabs).
    */
   private async use<T extends object>(
     viaCdp: (tabId: number) => Promise<T>,
     viaFallback: (tabId: number) => Promise<T>,
     target?: number,
+    opts: { droppedGoesFallback?: boolean } = {},
   ): Promise<WithNote<T>> {
     let tabId: number | undefined = target;
     try {
@@ -253,15 +333,16 @@ export class Driver {
       }
       if (!this.fallbackTabs.has(tabId)) {
         try {
-          return await viaCdp(tabId);
+          return await this.withNewTabs(await viaCdp(tabId));
         } catch (err) {
-          if (!isDebuggerBlocked(err)) throw err;
+          const dropped = opts.droppedGoesFallback === true && isDebuggerDetached(err) && (await tabExists(tabId));
+          if (!isDebuggerBlocked(err) && !dropped) throw err;
           this.enterFallback(tabId);
         }
       }
       const result: WithNote<T> = await viaFallback(tabId);
       if (this.pendingNotes.delete(tabId)) result.note = FALLBACK_NOTE;
-      return result;
+      return await this.withNewTabs(result);
     } catch (err) {
       // A page Chrome keeps extensions out of (Web Store, chrome://): one plain sentence, not Chrome's raw error.
       if (!isRestrictedError(err)) throw err;
@@ -269,6 +350,21 @@ export class Driver {
       const url = id === null ? undefined : await chrome.tabs.get(id).then(tabUrl, () => undefined);
       throw new Error(restrictedToolError(url));
     }
+  }
+
+  /**
+   * Tells the agent about tabs a page of the run opened (a click that opens a
+   * new tab), in the result's note: otherwise it keeps looking at the old tab
+   * for what happened.
+   */
+  private async withNewTabs<T extends object>(result: WithNote<T>): Promise<WithNote<T>> {
+    const fresh = await this.agent.takeNewTabs().catch(() => []);
+    if (!fresh.length) return result;
+    const lines = fresh.map(
+      (t) =>
+        `A new tab opened from the page: ${t.id} ${JSON.stringify(t.title)} ${t.url}. Your current tab is still the one you were in: use switch_tab ${t.id} to work in the new one (read_page, act and screenshot work there).`,
+    );
+    return { ...result, note: [result.note, ...lines].filter(Boolean).join("\n") };
   }
 
   /** Attaches the debugger to the tab (current: and makes it cdp's current tab), or marks the tab for fallback. */
@@ -321,15 +417,18 @@ export class Driver {
 
   /** Waits until a new tab finished loading; `error` when it did not within NAV_TIMEOUT_MS. */
   private async waitForTab(tabId: number): Promise<{ url: string; title: string; error?: string }> {
-    const read = () => chrome.tabs.get(tabId).catch(() => null);
-    const loaded = await pollUntil(async () => {
-      const tab = await read();
-      return !tab || isTabLoaded(tab);
-    }, this.sleep);
-    const tab = await read();
+    // Usable, like navigate (page-load.ts), read with chrome.scripting: no debugger attach per tab, and not the load event.
+    const usable = await waitForUsablePage(
+      async () => {
+        if (!(await tabExists(tabId))) throw new Error("closed");
+        return this.fallback.probe(tabId);
+      },
+      { sleep: this.sleep },
+    ).catch(() => null);
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
     if (!tab) return { url: "", title: "", error: "the tab was closed while loading" };
     const r: { url: string; title: string; error?: string } = { url: tabUrl(tab), title: tab.title ?? "" };
-    if (!loaded) r.error = `still loading after ${NAV_TIMEOUT_MS / 1000} s`;
+    if (!usable) r.error = `still loading after ${NAV_TIMEOUT_MS / 1000} s`;
     return r;
   }
 }

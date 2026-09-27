@@ -1,5 +1,6 @@
 import type { AgentEvent } from "./events.js";
 import type { TaskOutcome } from "./task.js";
+import type { ReasoningLevel } from "./reasoning.js";
 
 /** Native messaging host name registered with Chrome. */
 export const NATIVE_HOST_NAME = "com.browsertodo.helper";
@@ -17,6 +18,10 @@ export interface RunConfig {
    * brains run the same model. The helper falls back to BROWSERTODO_MODEL, then Claude Code's "sonnet" alias.
    */
   model?: string;
+  /** The Reasoning setting (absent: the helper's BROWSERTODO_THINKING, else DEFAULT_REASONING). */
+  reasoning?: ReasoningLevel;
+  /** Fast: raise reasoning when the run gets stuck (absent: true). */
+  reasoningAutoRaise?: boolean;
   /**
    * True when an earlier attempt of this task may have crashed after acting.
    * The agent must first check whether the work was already done (for posts:
@@ -41,6 +46,23 @@ export interface AgentTask {
    * TODO tasks): the agent works in its own tab.
    */
   userTab?: UserTab;
+  /**
+   * The user's IANA time zone (the browser's): every turn's prompt states the
+   * user's date and time in it (userTimeLine), for "after 3 hours" or
+   * "tomorrow morning" in schedule_task.
+   */
+  timeZone?: string;
+  /**
+   * What the automation level asks of the agent (automationPromptLine, e.g.
+   * "Approvals: actions that publish, send, pay ... wait for the user's OK").
+   * Absent: nothing waits (full autonomy).
+   */
+  approvals?: string;
+  /**
+   * What the agent is given from memory this turn (the block of relevant entries the extension picked,
+   * apps/extension/src/memory/select.ts). Absent: memory is off, or nothing applies.
+   */
+  memory?: string;
 }
 
 /** The tab a chat belongs to, as chrome.tabs reports it, and whether the run can work in it. */
@@ -66,6 +88,8 @@ export interface TaskRunResult {
   suggestion?: string;
   /** The outcome in one or two spoken sentences (task_* `spoken`), read aloud in hands-free voice. */
   spoken?: string;
+  /** A repeating task's note for its next run (task_complete `memory_note`), kept in memory as task history. */
+  memoryNote?: string;
   logPath?: string;
 }
 

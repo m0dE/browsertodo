@@ -10,6 +10,7 @@ import {
   openingTurn,
   pairHeard,
   sameWords,
+  scheduledView,
   spokenEchoes,
   turnPicks,
 } from "../../src/sidepanel/event-format.js";
@@ -260,5 +261,33 @@ describe("Realtime voice in the chat: the user's own words, and the request sent
     expect(pairs).toEqual({ opening: 1, messages: new Map(), placed: new Set([1]) });
     expect(openingTurn(s, events, undefined, { type: "heard", text: said, sent })).toMatchObject({ text: said, voice: true, sent });
     expect(openingTurn(s, events, undefined, { type: "heard", text: "open gmail and read the newest email from sarah please", sent })).not.toHaveProperty("sent");
+  });
+});
+
+describe("scheduled from the chat", () => {
+  const scheduled = {
+    type: "task_scheduled",
+    taskId: "t9",
+    instructions: "Check the order status at https://shop.example.com/orders/42\nIf it shipped, tell me.",
+    schedule: { at: "2026-09-26T22:45:00Z" },
+  } satisfies AgentEvent;
+  const NY = { timeZone: "America/New_York", hour12: true };
+
+  it("a task_scheduled is a card: the task's first line, its schedule in words as of now, whether it was undone", () => {
+    expect(scheduledView(scheduled, false, { ...NY, now: new Date("2026-09-26T19:45:00Z") })).toEqual({
+      kind: "scheduled",
+      taskId: "t9",
+      title: "Check the order status at https://shop.example.com/orders/42",
+      instructions: "Check the order status at https://shop.example.com/orders/42\nIf it shipped, tell me.",
+      when: "Once, today at 6:45 PM",
+    });
+    // Read the next day, it no longer says "today".
+    expect(scheduledView(scheduled, false, { ...NY, now: new Date("2026-09-27T15:00:00Z") }).when).toBe("Once, Sat, Sep 26 at 6:45 PM");
+    expect(describeEvent(scheduled)).toMatchObject({ kind: "scheduled", taskId: "t9" });
+    expect(describeEvent(scheduled, { undone: true })).toMatchObject({ kind: "scheduled", undone: true });
+  });
+
+  it("the schedule_task step reads as the task's first line", () => {
+    expect(toolArgsSummary("schedule_task", { task: "Post gm on X\nfrom @alpha", schedule: { repeat: { cron: "0 9 * * *", tz: "UTC" } } })).toBe("Post gm on X");
   });
 });

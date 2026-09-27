@@ -61,14 +61,23 @@ function nothingUsable(inputs: BrainInputs, ccProblem: string): string {
   return `${head}. ${helperStep}, add a Claude API key, or ${last}.`;
 }
 
+/**
+ * Where a brain's Jev comes from without a Jev key in Settings: "hosted", the
+ * hosted AI's own (/v1/ai/jev; a key here is not used); "helper", the
+ * helper's own key (TYPESAFE_API_KEY in its environment; a key here takes
+ * priority); null, nowhere (Jev needs the user's key). The runner's
+ * jevActive, the settings page and its Test Jev button all ask this.
+ */
+export function builtInJev(brain: BrainKind | null, helper: HelperInfo | null): "hosted" | "helper" | null {
+  if (brain === "browsertodo") return "hosted";
+  if (brain === "claude-code" && helper?.jevAvailable) return "helper";
+  return null;
+}
+
 function jevActiveFor(brain: BrainKind | null, inputs: BrainInputs): boolean {
   const s = inputs.settings;
   if (!s.jevEnabled || !brain) return false;
-  // The hosted AI brings its own Jev (/v1/ai/jev).
-  if (brain === "browsertodo") return true;
-  if (s.jevApiKey) return true;
-  // The helper can fall back to TYPESAFE_API_KEY from its own environment.
-  return brain === "claude-code" && !!inputs.helper?.jevAvailable;
+  return !!s.jevApiKey || !!builtInJev(brain, inputs.helper);
 }
 
 /**

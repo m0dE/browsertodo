@@ -20,6 +20,7 @@ import {
 import { isDebuggerBlocked } from "../src/restricted.js";
 import { scrollProbeInPage } from "../src/scroll-probe.js";
 import { snapshotPage } from "../src/page-snapshot.js";
+import { loadProbeInPage } from "../src/page-load.js";
 
 let chrome: ChromeFake;
 let cdp: Cdp;
@@ -27,6 +28,9 @@ let agent: AgentTab;
 let driver: Driver;
 let tabId: number;
 let windowId: number;
+/** The page's readings (loadProbeInPage): the first is the page before a navigation; each tabs.update loads a new document. */
+let probes: number;
+let foreignFrame: boolean;
 
 const snap = { url: "https://mail.test/", title: "Inbox", text: "hi", elements: [], truncated: false };
 
@@ -39,8 +43,12 @@ beforeEach(async () => {
     if (method === "Page.captureScreenshot") return { data: "Q0RQ" };
     return {};
   };
+  probes = 0;
+  foreignFrame = false;
   chrome.scripting.respond = (func) =>
-    func === snapshotPage
+    func === loadProbeInPage
+      ? { doc: probes++ === 0 ? 1 : 2 + chrome.tabs.updateCalls.filter((c) => c.props.url).length, state: "complete", controls: 3, text: 10, foreignFrame }
+      : func === snapshotPage
       ? snap
       : func === viewportInPage
         ? { ok: true, value: { w: 1000, h: 800 } }
@@ -193,6 +201,35 @@ describe("Driver on a page where Chrome refuses the debugger", () => {
     chrome.debugger.attached.delete(tabId);
     cdp.handleDetach({ tabId }, "target_closed");
     expect(await driver.readPage()).toEqual(snap);
+  });
+
+  it("keeps fallback mode after a navigation to a page that has the other extension's frame again (no debugger attach to be dropped)", async () => {
+    chrome.debugger.blocked.add(tabId);
+    foreignFrame = true;
+    await driver.navigate({ url: "https://mail.test/u/2/" });
+    const attachesBefore = chrome.debugger.attachCalls;
+    // The next calls stay in fallback without trying the debugger.
+    chrome.debugger.blocked.delete(tabId);
+    expect(await driver.readPage()).toEqual(snap);
+    expect(driver.inFallback).toBe(true);
+    expect(chrome.debugger.attachCalls).toBe(attachesBefore);
+    // Navigating from a fallback tab never goes through the debugger.
+    await driver.navigate({ url: "https://mail.test/u/0/" });
+    expect(chrome.debugger.commands.filter((c) => c.method === "Page.navigate")).toEqual([]);
+    expect(chrome.tabs.updateCalls.at(-1)).toEqual({ id: tabId, props: { url: "https://mail.test/u/0/" } });
+  });
+
+  it("Chrome dropping the debugger during a navigation ('Detached while handling command') goes on in fallback mode", async () => {
+    chrome.debugger.respond = (method) => {
+      if (method === "Page.navigate") {
+        chrome.debugger.blocked.add(tabId);
+        throw new Error("Detached while handling command.");
+      }
+      return {};
+    };
+    chrome.tabs.byId.get(tabId)!.title = "Inbox";
+    expect(await driver.navigate({ url: "https://mail.test/u/2/" })).toEqual({ url: "https://mail.test/u/2/", title: "Inbox", note: FALLBACK_NOTE });
+    expect(chrome.tabs.updateCalls.at(-1)).toEqual({ id: tabId, props: { url: "https://mail.test/u/2/" } });
   });
 
   it("navigate only waits when Page.navigate went through before the tab got blocked", async () => {

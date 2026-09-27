@@ -9,8 +9,11 @@ import type { SessionStore } from "../sessions.js";
 import { localTaskOf, type CloudJob, type Job } from "./jobs.js";
 import type { RunnerState } from "./state.js";
 import type { ActiveSession } from "./turn.js";
+import type { MemoryService } from "../../memory/service.js";
 
 export interface RecorderDeps {
+  /** A repeating task's run note (task_complete memory_note) goes to memory (absent: dropped). */
+  memory?: Pick<MemoryService, "runNote">;
   localStore: LocalStore;
   sessions: SessionStore;
   patchState(patch: Partial<RunnerState>): Promise<void>;
@@ -37,6 +40,10 @@ export class ResultRecorder {
 
   /** Ends the session's turn: the one final task_end event and the latest-turn fields. */
   async endSession(sessionId: string, result: TaskRunResult): Promise<void> {
+    // The run note first: its "Remembered" line belongs to the turn, before the end card.
+    if (result.memoryNote && this.deps.memory) {
+      await this.deps.memory.runNote(sessionId, result.memoryNote).catch((err: unknown) => this.deps.log(`run note failed: ${errorMessage(err)}`));
+    }
     const end: AgentEvent = { type: "task_end", outcome: result.outcome };
     if (result.summary) end.summary = result.summary;
     if (result.url) end.url = result.url;

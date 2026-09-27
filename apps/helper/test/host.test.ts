@@ -119,8 +119,8 @@ describe("dist/host.js over native messaging", () => {
     const tail = await ext.call("helper.runLog", { path, maxBytes: 200 }, { timeoutMs: 5000 });
     expect(tail.truncated).toBe(true);
     expect(tail.text.length).toBeLessThanOrEqual(200);
-    await expect(ext.call("helper.runLog", { path: join(home, "helper.json") }, { timeoutMs: 5000 })).rejects.toThrow(/not a browsertodo run log/);
-    await expect(ext.call("helper.runLog", { path: join(home, "runs", "..", "selftest.json") }, { timeoutMs: 5000 })).rejects.toThrow(/not a browsertodo run log/);
+    await expect(ext.call("helper.runLog", { path: join(home, "helper.json") }, { timeoutMs: 5000 })).rejects.toThrow(/not a BrowserTODO run log/);
+    await expect(ext.call("helper.runLog", { path: join(home, "runs", "..", "selftest.json") }, { timeoutMs: 5000 })).rejects.toThrow(/not a BrowserTODO run log/);
   });
 
   it("returns the live log tail", async () => {

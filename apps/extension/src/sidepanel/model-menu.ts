@@ -10,10 +10,13 @@ import { $, h } from "../ui/dom.js";
 import { modelChip, type ModelChipInfo } from "./format.js";
 import { modelLabel } from "../ui/labels.js";
 import { openSettings } from "./open-settings.js";
+import type { ChatMemoryView } from "./chat-memory.js";
 
 export interface ModelPicker {
   setState(state: UiState): void;
   setRunning(running: boolean): void;
+  /** Redraws an open menu (the chat's Memory switch changed). */
+  refresh(): void;
 }
 
 const CHECK_PATH = "M3.5 8.5 6.5 11.5 12.5 4.5";
@@ -41,6 +44,8 @@ export function initModelPicker(opts: {
   onError(text: string): void;
   /** Opens the account's top-up page. */
   onTopup?(): void;
+  /** The Memory switch of the chat shown (chat-memory.ts). */
+  memory?: { view(): ChatMemoryView; toggle(): void };
 }): ModelPicker {
   const chip = $<HTMLButtonElement>("now-model");
   const label = $("now-model-label");
@@ -137,6 +142,25 @@ export function initModelPicker(opts: {
         h("span.mm-switch", { "aria-hidden": "true", "data-on": String(jevOn) }),
       ),
     );
+    const memory = opts.memory?.view();
+    if (memory) {
+      rows.push(
+        h(
+          "button.mm-item.mm-memory",
+          {
+            type: "button",
+            role: "menuitemcheckbox",
+            "aria-checked": String(memory.on),
+            tabindex: "-1",
+            disabled: memory.disabled,
+            title: "Memory in this chat: facts the agent saved earlier (preferences, accounts, how sites work), and what it learns here",
+            onclick: () => opts.memory!.toggle(),
+          },
+          h("span.mm-text", null, h("span.mm-label", null, "Memory"), h("span.mm-hint", null, memory.hint)),
+          h("span.mm-switch", { "aria-hidden": "true", "data-on": String(memory.on) }),
+        ),
+      );
+    }
     rows.push(h("div.mm-sep", { role: "separator" }));
     rows.push(
       h(
@@ -240,6 +264,12 @@ export function initModelPicker(opts: {
       chip.disabled = running;
       if (running) close(false);
       renderChip();
+    },
+    refresh() {
+      if (menu.hidden) return;
+      const idx = items().indexOf(document.activeElement as HTMLButtonElement);
+      renderMenu();
+      if (idx >= 0) items()[idx]?.focus();
     },
   };
 }

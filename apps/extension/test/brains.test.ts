@@ -275,6 +275,36 @@ describe("ApiBrain", () => {
     expect((core.startApiAgent.mock.calls as unknown as [ApiAgentOptions][]).map((c) => c[0].jev)).toEqual([null, null]);
   });
 
+  it("schedule_task goes to the scheduler for this conversation; without one the agent gets none", async () => {
+    const got: ApiAgentOptions[] = [];
+    const core = {
+      createJev: vi.fn(),
+      startApiAgent: vi.fn((o: ApiAgentOptions) => (got.push(o), { sessionId: "s1", sendUserMessage() {}, abort() {}, done: new Promise<never>(() => {}) })),
+    };
+    const stored = { taskId: "t9", instructions: "x", when: "Once, today at 6:45 PM", nextRunAt: null };
+    const scheduleTask = vi.fn(async () => stored);
+    new ApiBrain({ core, browser: { call: vi.fn() as never }, scheduleTask }).start(opts([]));
+    const args = { task: "x", schedule: { at: "2026-09-26T22:45:00Z" } };
+    expect(await got[0]!.scheduleTask!(args)).toBe(stored);
+    expect(scheduleTask).toHaveBeenCalledWith("s1", args);
+    new ApiBrain({ core, browser: { call: vi.fn() as never } }).start(opts([]));
+    expect(got[1]!.scheduleTask).toBeUndefined();
+  });
+
+  it("remember / recall / forget go to the memory of this conversation; without it the agent gets none", async () => {
+    const got: ApiAgentOptions[] = [];
+    const core = {
+      createJev: vi.fn(),
+      startApiAgent: vi.fn((o: ApiAgentOptions) => (got.push(o), { sessionId: "s1", sendUserMessage() {}, abort() {}, done: new Promise<never>(() => {}) })),
+    };
+    const memoryTool = vi.fn(async () => ({ text: "ok" }));
+    new ApiBrain({ core, browser: { call: vi.fn() as never }, memoryTool }).start(opts([]));
+    expect(await got[0]!.memory!("recall", { query: "x" })).toEqual({ text: "ok" });
+    expect(memoryTool).toHaveBeenCalledWith("s1", "recall", { query: "x" });
+    new ApiBrain({ core, browser: { call: vi.fn() as never } }).start(opts([]));
+    expect(got[1]!.memory).toBeUndefined();
+  });
+
   it("a throwing startApiAgent becomes a failed run", async () => {
     const core = {
       createJev: vi.fn(),

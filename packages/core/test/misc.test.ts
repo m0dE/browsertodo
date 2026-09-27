@@ -531,3 +531,49 @@ describe("SecretRedactor", () => {
     expect(mapStrings({ s: "a", n: 1, list: ["b"], nested: { t: "c" } }, (s) => s.toUpperCase())).toEqual({ s: "A", n: 1, list: ["B"], nested: { t: "C" } });
   });
 });
+
+describe("scheduling from the chat (schedule_task)", () => {
+  const NOW = new Date("2026-09-26T19:45:00Z");
+  const withTool = buildSystemPrompt({ tools: toolsFor(), jev: true });
+
+  it("the system prompt says when and how to schedule, only when the tool is offered", () => {
+    expect(toolsFor()).toContain("schedule_task");
+    expect(buildSystemPrompt({ tools: toolsFor().filter((t) => t !== "schedule_task"), jev: true })).not.toMatch(/Scheduling:/);
+    expect(withTool).toMatch(/Scheduling: when the user asks for something to happen later or again/);
+    // A task that stands on its own, not a reference to the chat.
+    expect(withTool).toMatch(/fresh session with no memory of this chat/);
+    expect(withTool).toMatch(/Never write "same as before", "what we just did"/);
+    // Confirmation before risky actions; asking once when unclear.
+    expect(withTool).toMatch(/Never schedule, without the user's plain confirmation in this chat, a task that pays or buys, deletes, sends/);
+    expect(withTool).toMatch(/ask once in one short question/);
+  });
+
+  it("relative times and repeats are turned into the schedule with worked examples", () => {
+    for (const example of [
+      '"after 3 hours" / "in 3 hours" = that time + 3 h',
+      '"tomorrow morning" = 09:00 tomorrow',
+      '"every day at 9" = "0 9 * * *"',
+      '"every weekday at 9" = "0 9 * * 1-5"',
+      '"every Monday at 8:30" = "30 8 * * 1"',
+      'interval {every: 2, unit: "week"}',
+      "with the user's offset on that date (e.g. 2026-09-26T18:45:00-04:00)",
+    ]) {
+      expect(withTool).toContain(example);
+    }
+  });
+
+  it("every turn states the user's date, time and zone (first turn and follow-ups)", () => {
+    const task = buildTaskPrompt({ id: "t", instructions: "check my order", account: null, timeZone: "America/New_York" }, [], { isRetry: false, now: NOW });
+    expect(task).toContain("The user's time: Saturday, September 26, 2026, 3:45 PM in America/New_York (UTC-04:00).");
+    expect(buildTaskPrompt({ id: "t", instructions: "x", account: null }, [], { isRetry: false })).not.toContain("The user's time");
+    const follow = buildFollowUpMessage({ text: "k schedule a check up after 3 hours", timeZone: "America/New_York", now: NOW });
+    expect(follow.split("\n")).toEqual(["The user's time: Saturday, September 26, 2026, 3:45 PM in America/New_York (UTC-04:00).", "", "k schedule a check up after 3 hours"]);
+    expect(buildFollowUpMessage({ text: "hi" })).toBe("hi");
+  });
+
+  it("the tool's input schema converts to JSON Schema for Claude Code and the Messages API", () => {
+    const schema = z.toJSONSchema(toolArgsSchema("schedule_task", false), { io: "input" }) as { properties: Record<string, unknown>; required: string[] };
+    expect(Object.keys(schema.properties)).toEqual(["task", "schedule", "account"]);
+    expect(schema.required).toEqual(["task", "schedule"]);
+  });
+});

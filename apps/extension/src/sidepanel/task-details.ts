@@ -3,12 +3,12 @@
  * about a task or a chat message, from its TODO entry and/or a run of it.
  * Fields the panel does not have are left out. See details-sheet.ts for the DOM.
  */
-import { chipHint, formatBytes, taskChip, type Chip, type LocalTask, type RepeatRule, type SessionInfo } from "@browsertodo/shared";
+import { chipHint, describeRepeat, formatBytes, localTimeZone, taskChip, type Chip, type LocalTask, type RepeatSchedule, type SessionInfo, type TextOptions } from "@browsertodo/shared";
 import type { LocalMediaInfo } from "../ui-protocol.js";
 import { accountLabel, outcomeChip, sessionHeadline, trimUrlEnd } from "./format.js";
 
 /** A TODO entry as the TODO tab has it (cloud tasks may lack repeat and media). */
-export type DetailsTask = Omit<LocalTask, "repeat"> & { repeat?: RepeatRule | null; media?: LocalMediaInfo[] };
+export type DetailsTask = Omit<LocalTask, "repeat"> & { repeat?: RepeatSchedule | null; media?: LocalMediaInfo[] };
 
 export interface DetailsInput {
   /** The task's TODO entry, when the TODO list has it. */
@@ -86,12 +86,11 @@ export function formatWhen(iso: string | null | undefined, opts: WhenOptions = {
   return d.toLocaleString(opts.locale, { dateStyle: "medium", timeStyle: "short", ...(opts.timeZone ? { timeZone: opts.timeZone } : {}) });
 }
 
-/** "Every day at 09:00 and 18:30", plus the time zone when the task has one. */
-export function repeatSentence(repeat: RepeatRule | null | undefined, tz?: string | null): string {
-  const times = repeat?.dailyAt ?? [];
-  if (!times.length) return "";
-  const list = times.length === 1 ? times[0]! : `${times.slice(0, -1).join(", ")} and ${times.at(-1)!}`;
-  return `Every day at ${list}${tz ? ` (${tz})` : ""}`;
+/** "Every weekday at 9:00 AM, until Dec 31", plus the rule's time zone when it is not this browser's. Never raw cron. */
+export function repeatSentence(repeat: RepeatSchedule | null | undefined, opts: TextOptions & { localZone?: string } = {}): string {
+  if (!repeat) return "";
+  const zone = repeat.tz === (opts.localZone ?? localTimeZone()) ? "" : ` (${repeat.tz})`;
+  return `${describeRepeat(repeat, opts)}${zone}`;
 }
 
 export function detailsModel(input: DetailsInput, now = Date.now(), when: WhenOptions = {}): DetailsModel {
@@ -121,9 +120,10 @@ export function detailsModel(input: DetailsInput, now = Date.now(), when: WhenOp
   if (origin) add("Source", ORIGIN_LABELS[origin]);
 
   if (task) {
-    add("Not before", fmt(task.notBefore));
+    add(task.repeat ? "Next run" : "Scheduled at", fmt(task.notBefore));
     if (task.status === "pending" && task.retryAfter && Date.parse(task.retryAfter) > now) add("Tries again", fmt(task.retryAfter));
-    add("Repeats", repeatSentence(task.repeat, task.tz));
+    const hour12 = when.locale ? new Intl.DateTimeFormat(when.locale, { hour: "numeric" }).resolvedOptions().hour12 : undefined;
+    add("Repeats", repeatSentence(task.repeat, { now: new Date(now), ...(hour12 === undefined ? {} : { hour12 }), ...(when.timeZone ? { localZone: when.timeZone } : {}) }));
     fields.push({ label: "Attempts", value: String(task.attempts) });
   }
 

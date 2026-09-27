@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent, SessionInfo, StampedAgentEvent, TraceEvent } from "@browsertodo/shared";
 import { addEvent, beginTurn, linkCid, newBook, observe, type TraceBook } from "../../src/trace/trace-book.js";
-import { buildReport, durationText, exportJson, redactDeep, redactSecrets, relText, reportText, SLOW_MS, SLOWEST_COUNT, TEXT_LIMITS, type ReportEnv } from "../../src/trace/trace-report.js";
+import { buildReport, durationText, exportJson, redactDeep, redactSecrets, relText, reportText, SLOW_MS, SLOWEST_COUNT, summaryLines, TEXT_LIMITS, type ReportEnv } from "../../src/trace/trace-report.js";
 
 /** Fake keys for the redaction tests, built at runtime so no key-shaped literal is in the repo. */
 const FAKE_ANTHROPIC_KEY = ["sk", "ant", "api03", "abcdefghijklmnop"].join("-");
@@ -197,5 +197,22 @@ describe("trace report: streaming and Realtime", () => {
     const r = buildReport({ session, events: [], trace: book });
     expect(r.turns[0]!.speechToResponseMs).toBe(3800);
     expect(r.turns[0]!.rows.find((x) => x.name === "first.response")!.detail).toBe("3.80 s from the end of speech · 3.00 s after send_to_agent");
+  });
+  it("the narration audit: the narrator's replies by kind, the audio it sent, what was cancelled and what was noise", () => {
+    const book = newBook("s1");
+    beginTurn(book, 1, T0);
+    const reply = (t: number, data: Record<string, string | number>) => addEvent(book, { t, ms: 500, cat: "voice", name: "voice.narrator", src: "panel", data: { waitMs: 300, ...data } });
+    reply(T0 + 100, { trigger: "speech", kind: "speech", spokenMs: 0, status: "completed" });
+    reply(T0 + 700, { trigger: "update", kind: "ack", spokenMs: 600, status: "completed" });
+    reply(T0 + 9_000, { trigger: "update", kind: "result", spokenMs: 4_200, status: "cancelled" });
+    addEvent(book, { t: T0 + 50, ms: 300, cat: "voice", name: "voice.user_words", src: "panel", data: { chars: 0, noise: true } });
+    const r = buildReport({ session, events: [], trace: book });
+    expect(r.summary.narration).toEqual({ replies: 3, byKind: { speech: 1, ack: 1, result: 1 }, spokenMs: 4_800, cancelled: 1, noise: 1 });
+    expect(summaryLines(r.summary).find((l) => l.label === "Narrator")).toMatchObject({ value: "4.80 s spoken", hint: "3 replies: 1 speech, 1 ack, 1 result; 1 cancelled, 1 noise" });
+    const labels = r.turns[0]!.rows.filter((x) => x.name === "voice.narrator").map((x) => x.label);
+    expect(labels).toEqual(["Voice: narrator reply (to speech)", "Voice: narrator reply (acknowledgement)", "Voice: narrator reply (result)"]);
+    expect(r.turns[0]!.rows.find((x) => x.name === "voice.user_words")!.detail).toContain("noise (nothing said)");
+    // No narrator: no audit.
+    expect(buildReport({ session, events: [], trace: newBook("s1") }).summary.narration).toBeNull();
   });
 });

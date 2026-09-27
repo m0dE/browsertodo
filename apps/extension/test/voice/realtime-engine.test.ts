@@ -49,6 +49,7 @@ function setup() {
     forward: (t) => void log.push(`forward:${t}`),
     userWords: (w, s) => void log.push(`words:${w}:${s}`),
     stopTask: async () => (log.push("stopTask"), "Stopped the task."),
+    answerApproval: async (allow: boolean) => (log.push(`answerApproval:${allow}`), "Allowed: the agent goes on."),
     endVoice: () => void log.push("end"),
     failed: (f) => void log.push(`failed:${(f as { kind: string }).kind}`),
   };

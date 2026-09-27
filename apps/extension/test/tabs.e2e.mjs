@@ -138,7 +138,7 @@ try {
     return JSON.stringify(map);
   });
 
-  await step("the Activity Log: clicking a past run opens that conversation in Chat, bound to the active tab", async () => {
+  await step("the History tab: clicking a past run opens that conversation in Chat, bound to the active tab", async () => {
     await ui({ type: "run.newChat", sessionId: b.sessionId, tabId: tabB });
     await waitFor(async () => (await panelView()).empty, "tab B's new chat");
     await panel.click("#tab-btn-history");
@@ -202,7 +202,7 @@ try {
     assert.equal(ended.reason, "The tab was closed");
     assert.equal((await bindings())[d], undefined);
     const { sessions } = await ui({ type: "sessions.list" });
-    assert.ok(sessions.some((x) => x.sessionId === s.sessionId), "still in the Activity Log");
+    assert.ok(sessions.some((x) => x.sessionId === s.sessionId), "still in History");
     return `${ended.outcome}: ${ended.reason}`;
   });
 } finally {

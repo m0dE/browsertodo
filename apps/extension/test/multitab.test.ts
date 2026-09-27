@@ -75,16 +75,12 @@ describe("Driver with several tabs", () => {
     expect(await agent.tabId()).toBe(mainTab);
     const group = chrome.tabs.byId.get(mainTab)!.groupId;
     for (const t of r.tabs) expect(chrome.tabs.byId.get(await agent.resolve(t.id))!.groupId).toBe(group);
-    expect(chrome.tabGroups.byId.get(group)!.title).toBe("browsertodo");
+    expect(chrome.tabGroups.byId.get(group)!.title).toBe("BrowserTODO");
   });
 
   it("reports a tab that is still loading after 30 s instead of waiting forever", async () => {
-    const origCreate = chrome.tabs.create;
-    chrome.tabs.create = async (opts) => {
-      const tab = await origCreate(opts);
-      chrome.tabs.byId.get(tab.id)!.status = "loading";
-      return tab;
-    };
+    // The page never gets past loading (no DOMContentLoaded).
+    chrome.scripting.respond = (func) => (func.name === "loadProbeInPage" ? { doc: 5, state: "loading", controls: 0, text: 0, foreignFrame: false } : { ok: true, value: true });
     const realNow = Date.now;
     let now = realNow();
     Date.now = () => now;
@@ -141,7 +137,8 @@ describe("Driver with several tabs", () => {
     expect(a!.note).toBeUndefined();
     expect(b!.text).toBe("via scripting");
     expect(b!.note).toBe(`Tab t3: ${FALLBACK_NOTE}`);
-    expect(chrome.scripting.calls.map((c) => c.tabId)).toEqual([blocked]);
+    // (openTabs read each new tab's load with chrome.scripting too, without the debugger.)
+    expect(chrome.scripting.calls.filter((c) => c.func.name !== "loadProbeInPage").map((c) => c.tabId)).toEqual([blocked]);
     expect(activations()).toEqual([]);
     // Once per tab; the main tab still uses the debugger.
     expect((await driver.readPage({ tab: "t3" })).note).toBeUndefined();
@@ -260,13 +257,36 @@ describe("Driver with several tabs", () => {
     expect(await driver.closeOpenedTabs()).toBe(0);
   });
 
-  it("the next run closes tabs an interrupted run left open", async () => {
+  it("a run of another chat keeps the tabs an interrupted chat turn left open for that chat", async () => {
+    await agent.prepare("current-tab", { tabId: mainTab, owner: "A" });
     await driver.openTabs({ urls: urls(2) });
     const left = await Promise.all(["t2", "t3"].map((t) => agent.resolve(t)));
     expect(await agent.isAgentTab(left[0]!)).toBe(true);
-    await agent.prepare("own-tab");
+    await agent.prepare("own-tab", { owner: "B" });
+    for (const id of left) expect(chrome.tabs.byId.has(id)).toBe(true);
+    expect(await agent.tabIds()).toEqual([mainTab]);
+    // A's next turn has them again, with the same ids.
+    await agent.prepare("current-tab", { tabId: mainTab, owner: "A" });
+    expect((await agent.list()).map((t) => [t.id, t.tabId])).toEqual([["t1", mainTab], ["t2", left[0]], ["t3", left[1]]]);
+  });
+
+  it("the next run closes tabs no chat owns that an interrupted run left open", async () => {
+    await driver.openTabs({ urls: urls(2) });
+    const left = await Promise.all(["t2", "t3"].map((t) => agent.resolve(t)));
+    await agent.prepare("own-tab", { owner: "B" });
     for (const id of left) expect(chrome.tabs.byId.has(id)).toBe(false);
     expect(chrome.tabs.byId.has(mainTab)).toBe(true);
+  });
+
+  it("never closes a tab the user took over (looking at it, or moved out of the group)", async () => {
+    await driver.openTabs({ urls: urls(3) });
+    const [looked, moved, idle] = await Promise.all(["t2", "t3", "t4"].map((t) => agent.resolve(t)));
+    await chrome.tabs.update(looked!, { active: true });
+    chrome.tabs.byId.get(moved!)!.groupId = -1;
+    expect(await driver.closeOpenedTabs()).toBe(1);
+    expect([looked, moved, idle].map((id) => chrome.tabs.byId.has(id!))).toEqual([true, true, false]);
+    // They are the user's now: no longer the run's.
+    expect(await agent.tabIds()).toEqual([mainTab]);
   });
 
   it("is reachable through the browser caller used by the executor", async () => {

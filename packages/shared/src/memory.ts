@@ -1,0 +1,449 @@
+/**
+ * The agent's long-term memory: durable facts it keeps between chats and
+ * runs (the user's preferences, which account is which, people, how a site
+ * works, and what earlier runs of a repeating task did). What the tools, the
+ * extension's store (apps/extension/src/memory/) and the settings share: the
+ * kinds, the entry, the limits, the tools' arguments, and the rule that no
+ * secret is ever kept (secretProblem).
+ */
+import { z } from "zod";
+import { secretProblem } from "./secret-text.js";
+import { siteHost } from "./urls.js";
+
+/**
+ * preference: how the user wants things done (tone, sign-offs, language, "never post before 8am").
+ * account: which account is which ("admin@runhq.io is the work email, Google /u/2"). Never a password.
+ * person: facts about people the user deals with ("Paul Lee is my accountant"), not what they wrote.
+ * playbook: how to get something done on one site (direct URLs, where a button is, pitfalls).
+ * task: what earlier runs of a repeating task did (topics posted, replies sent, what is pending).
+ * episode: a dated summary of one chat or one task run (what was asked, what was done, the sites and things
+ *   involved, how it ended), written in the background after the chat goes idle or the run ends (never by the
+ *   agent's remember). One per conversation: a later turn of the same chat rewrites it.
+ */
+export const MemoryKind = z.enum(["preference", "account", "person", "playbook", "task", "episode"]);
+export type MemoryKind = z.infer<typeof MemoryKind>;
+export const MEMORY_KINDS: readonly MemoryKind[] = MemoryKind.options;
+/** The kinds the agent's remember writes (episodes come from the background writer only). */
+export const RememberKind = z.enum(["preference", "account", "person", "playbook", "task"]);
+export type RememberKind = z.infer<typeof RememberKind>;
+
+/** Where an entry applies: everywhere, on one site (and its subdomains), or to one repeating task. */
+export const MemoryScope = z.enum(["global", "domain", "task"]);
+export type MemoryScope = z.infer<typeof MemoryScope>;
+
+/** How each kind reads in Settings and in the agent's prompt, in the order both list them. */
+export const MEMORY_KIND_TEXT: Record<MemoryKind, { label: string; hint: string }> = {
+  task: { label: "Task history", hint: "What earlier runs of a repeating task did, so the next run goes on from there" },
+  episode: { label: "Episodes", hint: "A dated summary of each chat and task run: what was asked, what was done, where, and how it ended" },
+  playbook: { label: "Site playbooks", hint: "How to get things done on a site the agent worked on: addresses, buttons, pitfalls" },
+  account: { label: "Accounts", hint: "Which account is which (never passwords)" },
+  person: { label: "People", hint: "Who people are to you (not what they wrote)" },
+  preference: { label: "Preferences", hint: "Tone, sign-offs, language, summaries, rules like “never post before 8am”" },
+};
+
+export const MAX_MEMORY_SUBJECT_CHARS = 80;
+export const MAX_MEMORY_TEXT_CHARS = 400;
+/** Entries kept in all; past it the least recently used go first. */
+export const MAX_MEMORY_ENTRIES = 500;
+/** Run notes kept per repeating task (the oldest go first). */
+export const MAX_TASK_NOTES = 12;
+/** Longest run note the agent leaves at the end of a task (task_complete `memory_note`). */
+export const MAX_MEMORY_NOTE_CHARS = 300;
+
+/** What the memory given to the agent at the start of a turn may cost, at most (tokens, estimated from characters). */
+export const MEMORY_TOKEN_BUDGET = 600;
+/** Characters per token, for estimating what an entry costs in the prompt. */
+export const MEMORY_CHARS_PER_TOKEN = 4;
+/** The newest run notes of the task given to the agent (older ones are left to recall). */
+export const MAX_INJECTED_TASK_NOTES = 5;
+/** Most entries recall returns. */
+export const MAX_RECALL_RESULTS = 8;
+/** Episodes kept in all, apart from the rest of memory (MAX_MEMORY_ENTRIES); past it the oldest go. */
+export const MAX_EPISODES = 1000;
+/** Most sites and things (people, IDs, accounts) an entry names in `entities`. */
+export const MAX_MEMORY_ENTITIES = 12;
+/** Longest entity. */
+export const MAX_MEMORY_ENTITY_CHARS = 80;
+/** Earlier values an entry keeps once replaced (newest first). */
+export const MAX_MEMORY_HISTORY = 3;
+
+// ---------------------------------------------------------------- a task's records, by key
+
+/*
+ * A repeating task that deals with many separate things (whatever it works through: people, items, numbers) keeps
+ * what it learns about each in a record filed under the thing's identifier, its key (remember with `key`). A record
+ * is a task entry (kind and scope "task", its taskKey) with a `key`: its summary text and a few dated notes. Records
+ * have their own limits, per task, so a task's records never push out the user's other memory (MAX_MEMORY_ENTRIES)
+ * and one task's records never push out another's.
+ */
+/** Records one task keeps; past it the task's least recently used record goes (other memory is not counted). */
+export const MAX_TASK_RECORDS = 1000;
+/** Longest key (an identifier, as given). */
+export const MAX_RECORD_KEY_CHARS = 120;
+/** Dated notes a record keeps beside its summary (the newest); older ones are folded into the summary. */
+export const MAX_RECORD_NOTES = 5;
+/** A record's summary and notes together, at most (characters); past it the oldest notes are folded into the summary. */
+export const MAX_RECORD_CHARS = 800;
+/** What records named in a turn may cost in the prompt (tokens), within MEMORY_TOKEN_BUDGET: one whole record fits. */
+export const MEMORY_RECORD_TOKEN_BUDGET = 300;
+/** How much of a summary's beginning folding keeps when the summary grows too long (what the record first said). */
+export const RECORD_SUMMARY_HEAD_CHARS = 120;
+
+/** Where an entry came from: an agent run (a task or a chat), or the user in Settings. */
+export interface MemorySource {
+  kind: "task" | "chat" | "user";
+  sessionId?: string;
+  /** The run's title, for Settings ("from 'Post the daily tip'"). */
+  title?: string;
+}
+
+export interface MemoryEntry {
+  id: string;
+  kind: MemoryKind;
+  /** What it is about, short: "Work email", "Paul Lee", "Sign-off", "Compose button". Entries are updated by kind + subject + scope. */
+  subject: string;
+  text: string;
+  scope: MemoryScope;
+  /** scope "domain": the site's host without www ("mail.google.com", "x.com"). */
+  domain?: string;
+  /** scope "task": the repeating task it belongs to (memoryTaskKey). */
+  taskKey?: string;
+  /** scope "task": the task's first line, for Settings. */
+  taskTitle?: string;
+  source: MemorySource;
+  learnedAt: string;
+  updatedAt: string;
+  /** Last time it was given to the agent or recalled. */
+  lastUsedAt?: string;
+  /** A task's record: the identifier it is filed under, normalized (memoryRecordKey). Absent: not a record. */
+  key?: string;
+  /** A record's dated notes, oldest first (at most MAX_RECORD_NOTES; condenseRecord folds older ones into `text`). */
+  notes?: RecordNote[];
+  /** An episode: when what it tells happened (its conversation's start). Other entries: absent (learnedAt). */
+  at?: string;
+  /** The sites and things it involves, as written ("app.channex.io", "Paul Lee", "HM4K2ZQ9"): matched whole. */
+  entities?: string[];
+  /** Values it had before it was replaced (the same slot, or the entry remember's `replaces` named), newest first. */
+  history?: MemoryPastValue[];
+  /** The user marked it to be given at the start of every turn (a tiny always-on core). */
+  pinned?: true;
+}
+
+/** An earlier value of an entry: what it said, and from when until when. */
+export interface MemoryPastValue {
+  subject: string;
+  text: string;
+  since: string;
+  until: string;
+}
+
+/** When an entry's content happened or was learned: an episode's `at`, else learnedAt. */
+export const memoryDate = (e: Pick<MemoryEntry, "at" | "learnedAt">): string => e.at ?? e.learnedAt;
+
+/** One dated note of a record. */
+export interface RecordNote {
+  at: string;
+  text: string;
+}
+
+const RecordNoteSchema = z.object({ at: z.string().min(1).max(40), text: z.string().min(1).max(MAX_MEMORY_TEXT_CHARS) });
+const PastValueSchema = z.object({
+  subject: z.string().min(1).max(MAX_MEMORY_SUBJECT_CHARS),
+  text: z.string().min(1).max(MAX_MEMORY_TEXT_CHARS),
+  since: z.string().min(1).max(40),
+  until: z.string().min(1).max(40),
+});
+
+/** A repeating task's record (filed under a key), not a fact of the user's own memory. */
+export const isMemoryRecord = (e: { key?: string | undefined }): boolean => e.key !== undefined;
+
+/** The characters a record holds: its summary and its notes (MAX_RECORD_CHARS). */
+export const recordChars = (e: { text: string; notes?: readonly RecordNote[] | undefined }): number => e.text.length + (e.notes ?? []).reduce((n, x) => n + x.text.length, 0);
+
+/** A stored entry as it is checked when read back or synced (unknown fields dropped). */
+export const MemoryEntrySchema = z.object({
+  id: z.string().min(1).max(64),
+  kind: MemoryKind,
+  subject: z.string().min(1).max(MAX_MEMORY_SUBJECT_CHARS),
+  text: z.string().min(1).max(MAX_MEMORY_TEXT_CHARS),
+  scope: MemoryScope,
+  domain: z.string().min(1).max(253).optional(),
+  taskKey: z.string().min(1).max(64).optional(),
+  taskTitle: z.string().max(MAX_MEMORY_SUBJECT_CHARS).optional(),
+  source: z.object({ kind: z.enum(["task", "chat", "user"]), sessionId: z.string().max(128).optional(), title: z.string().max(200).optional() }),
+  learnedAt: z.string(),
+  updatedAt: z.string(),
+  lastUsedAt: z.string().optional(),
+  key: z.string().min(1).max(MAX_RECORD_KEY_CHARS).optional(),
+  notes: z.array(RecordNoteSchema).max(MAX_RECORD_NOTES).optional(),
+  at: z.string().min(1).max(40).optional(),
+  entities: z.array(z.string().min(1).max(MAX_MEMORY_ENTITY_CHARS)).max(MAX_MEMORY_ENTITIES).optional(),
+  history: z.array(PastValueSchema).max(MAX_MEMORY_HISTORY).optional(),
+  pinned: z.literal(true).optional(),
+}).superRefine((e, ctx) => {
+  if (e.kind === "episode" && (e.key !== undefined || e.scope !== "global")) ctx.addIssue({ code: "custom", path: ["kind"], message: "an episode is global and has no key" });
+  if (e.key === undefined && e.notes === undefined) return;
+  if (e.scope !== "task" || e.kind !== "task" || !e.taskKey) ctx.addIssue({ code: "custom", path: ["key"], message: "a record belongs to one repeating task (kind and scope task)" });
+  if (e.key === undefined) ctx.addIssue({ code: "custom", path: ["notes"], message: "only a record (with a key) has notes" });
+  if (recordChars(e) > MAX_RECORD_CHARS) ctx.addIssue({ code: "custom", path: ["notes"], message: `a record holds at most ${MAX_RECORD_CHARS} characters` });
+});
+
+// ---------------------------------------------------------------- sync with the account (paid plans)
+
+/**
+ * Memory is kept in the signed-in account too, on a plan with the TODO list (the owner's rule for what keeps
+ * accumulating in cloud storage, docs/BILLING-CONTRACT.md), so another browser gets it. GET MEMORY_PATH?since=rev
+ * reads the changes after `rev` (also when the plan no longer includes it: read-only); POST MEMORY_SYNC_PATH sends
+ * this browser's changes and answers the changes since `since`; DELETE MEMORY_PATH forgets everything on the server.
+ * A change wins over another of the same entry when it is newer (updatedAt; a deletion's `at`).
+ */
+export const MEMORY_PATH = "/v1/memory";
+export const MEMORY_SYNC_PATH = "/v1/memory/sync";
+/** Most upserts and most deletions in one sync request. */
+export const MAX_MEMORY_SYNC_BATCH = 500;
+
+export const MemoryDeletion = z.object({ id: z.string().min(1).max(64), at: z.string().min(1).max(40) });
+export type MemoryDeletion = z.infer<typeof MemoryDeletion>;
+
+export const MemorySyncInput = z.object({
+  /** The server revision this browser has (0: none yet). */
+  since: z.number().int().min(0),
+  upserts: z.array(MemoryEntrySchema).max(MAX_MEMORY_SYNC_BATCH),
+  deletes: z.array(MemoryDeletion).max(MAX_MEMORY_SYNC_BATCH),
+});
+export type MemorySyncInput = z.infer<typeof MemorySyncInput>;
+
+export const MemorySyncResponse = z.object({
+  /** The server's revision now: send it as `since` next time. */
+  rev: z.number().int().min(0),
+  /** Entries changed after `since` (newest version of each). */
+  entries: z.array(MemoryEntrySchema),
+  /** Entries deleted after `since`. */
+  deleted: z.array(MemoryDeletion),
+  /** Upserts the server refused (a secret in them): never sent again. */
+  refused: z.array(z.object({ id: z.string(), reason: z.string() })).default([]),
+  /** The plan does not include sync (read-only: what was kept is still listed). */
+  locked: z.boolean(),
+});
+export type MemorySyncResponse = z.infer<typeof MemorySyncResponse>;
+
+// ---------------------------------------------------------------- semantic search (signed in)
+
+/**
+ * The account computes an embedding of each synced entry (memoryEmbeddingText) and answers POST
+ * MEMORY_SEARCH_PATH with the entries nearest to a query (cosine similarity), so the extension can fuse meaning
+ * with its own keyword, key, entity and date matching. Signed out or offline it goes on without it.
+ */
+export const MEMORY_SEARCH_PATH = "/v1/memory/search";
+/** Longest query embedded (characters; a long request is cut). */
+export const MAX_MEMORY_SEARCH_QUERY_CHARS = 1000;
+/** Most hits one search answers. */
+export const MAX_MEMORY_SEARCH_HITS = 100;
+
+export const MemorySearchInput = z.object({
+  query: z.string().trim().min(1).max(MAX_MEMORY_SEARCH_QUERY_CHARS),
+  /** The turn's repeating task: its records are searched too (other tasks' records never are). */
+  taskKey: z.string().min(1).max(64).optional(),
+  limit: z.number().int().min(1).max(MAX_MEMORY_SEARCH_HITS).optional(),
+});
+export type MemorySearchInput = z.infer<typeof MemorySearchInput>;
+
+export const MemorySearchResponse = z.object({
+  /** The embedding model the scores come from. */
+  model: z.string(),
+  /** Nearest first; `score` is the cosine similarity (-1..1). */
+  hits: z.array(z.object({ id: z.string(), score: z.number() })),
+  /** Entries not embedded yet (they are embedded in the background and found by later searches). */
+  pending: z.number().int().min(0),
+});
+export type MemorySearchResponse = z.infer<typeof MemorySearchResponse>;
+
+// ---------------------------------------------------------------- the agent's tools
+
+export const RememberArgs = z.object({
+  kind: RememberKind.describe(
+    "preference: how the user wants things done. account: which account is which (an address, a /u/N index, a handle), never a password. person: who someone is to the user. playbook: how to get something done on one site (give domain). task: a note for the next run of this repeating task",
+  ),
+  subject: z
+    .string()
+    .trim()
+    .min(1)
+    .max(MAX_MEMORY_SUBJECT_CHARS)
+    .optional()
+    .describe(
+      "A short name for what it is about, e.g. 'Work email', 'Paul Lee', 'Sign-off', 'Compose button'. Remembering the same kind and subject again replaces the old entry. Required, except with key",
+    ),
+  text: z.string().trim().min(1).max(MAX_MEMORY_TEXT_CHARS).describe("The fact, in one or two plain sentences that will still make sense in a later run"),
+  scope: MemoryScope.optional().describe("global (default), domain (only on that site: give domain), or task (only for this repeating task). Default: task for kind task, domain when domain is given"),
+  domain: z.string().trim().min(1).max(253).optional().describe("The site's host, e.g. mail.google.com or x.com. Required for playbook"),
+  key: z
+    .string()
+    .trim()
+    .min(1)
+    .max(MAX_RECORD_KEY_CHARS)
+    .optional()
+    .describe(
+      "Only for a repeating task that works through many separate things (kind task): the identifier of the one thing this fact is about (its email address, ID, number or name), never the task itself. Files it in this task's record for that key; the same key again adds a dated note to it. What a run did goes in task_complete's memory_note instead",
+    ),
+  replaces: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .optional()
+    .describe("The id of an entry this fact replaces under another subject (e.g. a new accountant replacing the old one): that entry goes, and its value is kept as this one's history"),
+});
+export type RememberArgs = z.infer<typeof RememberArgs>;
+
+export const RecallArgs = z.object({
+  query: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("Words to look for: a site, a person, an account, a topic. Time words narrow it to what happened then ('last spring', 'in March 2025', 'yesterday', 'before the price change')"),
+  key: z.string().trim().min(1).max(MAX_RECORD_KEY_CHARS).optional().describe("An identifier this task filed a record under (remember with key): returns that record"),
+});
+export type RecallArgs = z.infer<typeof RecallArgs>;
+
+export const ForgetArgs = z.object({
+  id: z.string().trim().min(1).max(64).describe("The entry's id as memory lists it, e.g. m3k9"),
+});
+export type ForgetArgs = z.infer<typeof ForgetArgs>;
+
+export const REMEMBER_DESCRIPTION =
+  "Save a durable fact for later chats and runs: a preference, which account is which, who someone is, how a site works (playbook), or a note for this repeating task. Only facts that stay true and save time later; never page content, passwords, codes or keys. The user sees each saved fact with Undo.";
+export const RECALL_DESCRIPTION =
+  "Search your memory for facts not given at the start of the turn (older task notes, dated episodes of past chats and runs, another site's playbook, a person, what a fact was before it changed), or get this task's record for an identifier (key). Give query or key.";
+export const FORGET_DESCRIPTION = "Delete a memory entry that turned out wrong or out of date (by its id). To correct one, remember it again with the same kind and subject.";
+
+/** RPC the helper calls on the extension for remember / recall / forget (Claude Code brain), with the task session's id. */
+export type MemoryMethods = {
+  "memory.call": { params: { sessionId: string; tool: "remember" | "recall" | "forget"; args: unknown }; result: { text: string; isError?: boolean } };
+};
+
+// ---------------------------------------------------------------- rules every write follows
+
+/** Why an entry must not be kept (a credential in its subject, text, key or a record's notes), or null. */
+export function memoryWriteProblem(e: {
+  subject: string;
+  text: string;
+  key?: string | undefined;
+  notes?: readonly RecordNote[] | undefined;
+  entities?: readonly string[] | undefined;
+  history?: readonly MemoryPastValue[] | undefined;
+}): string | null {
+  let why: string | null = null;
+  const parts = [e.subject, e.text, e.key ?? "", ...(e.notes ?? []).map((n) => n.text), ...(e.entities ?? []), ...(e.history ?? []).flatMap((h) => [h.subject, h.text])];
+  for (const part of parts) if ((why = secretProblem(part))) break;
+  return why ? `Not saved: ${why}. Memory never keeps passwords, codes, keys or card numbers; describe it without the value (e.g. "the login is in Site logins").` : null;
+}
+
+/**
+ * A site's host as memory keys it ("https://www.X.com/home" -> "x.com", "http://localhost:4777/w" -> "localhost");
+ * null when it is not a host (a bare word such as "gmail" is not: only localhost goes without a dot).
+ */
+export function memoryDomain(site: string): string | null {
+  const host = siteHost(site);
+  return host === "localhost" || /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host) ? host : null;
+}
+
+/** `host` is `domain` or one of its subdomains ("mail.google.com" is on "google.com"). */
+export function onDomain(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
+/**
+ * The key a repeating task's memory is kept under: the same for every run of the task (each repeat is a new
+ * task row with a new id, the instructions stay), different when its instructions or account change. FNV-1a.
+ */
+export function memoryTaskKey(instructions: string, account: string | null | undefined): string {
+  const text = `${instructions.replace(/\s+/g, " ").trim().toLowerCase()}\n${(account ?? "").trim().toLowerCase()}`;
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ c, 0x5bd1e995) >>> 0;
+  }
+  return `t${h1.toString(36)}${h2.toString(36)}`;
+}
+
+/**
+ * An entry as the agent reads it: "[m3k9] Work email: admin@runhq.io is the work email (Google /u/2)". A record:
+ * "[m7q2] key 48213: summary · 2026-09-24: newer note".
+ */
+export function memoryLine(
+  e: Pick<MemoryEntry, "id" | "kind" | "subject" | "text" | "domain" | "learnedAt" | "key" | "notes" | "at" | "history">,
+  opts: { history?: boolean } = {},
+): string {
+  if (e.key !== undefined) {
+    const label = memoryRecordKey(e.subject) === e.key ? e.subject : `${e.subject} (key ${e.key})`;
+    const notes = (e.notes ?? []).map((n) => ` · ${n.at.slice(0, 10)}: ${n.text}`).join("");
+    return `[${e.id}] key ${label}: ${e.text}${notes}`;
+  }
+  const where = e.domain ? ` (${e.domain})` : "";
+  const when = e.kind === "task" || e.kind === "episode" ? `${memoryDate(e).slice(0, 10)} ` : "";
+  const before = opts.history ? (e.history ?? []).map((h) => ` · until ${h.until.slice(0, 10)}: ${sameSubject(h.subject, e.subject) ? "" : `${h.subject}: `}${h.text}`).join("") : "";
+  return `[${e.id}] ${when}${e.subject}${where}: ${e.text}${before}`;
+}
+
+const sameSubject = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/**
+ * What of an entry is embedded for semantic search (the server's vectors, routes/memory.ts): its kind, subject,
+ * site, key, text, notes, entities and earlier values, in plain words.
+ */
+export function memoryEmbeddingText(e: Pick<MemoryEntry, "kind" | "subject" | "text" | "domain" | "key" | "notes" | "entities" | "history" | "taskTitle">): string {
+  return [
+    `${MEMORY_KIND_TEXT[e.kind].label}: ${e.subject}${e.domain ? ` (${e.domain})` : ""}${e.key ? ` [${e.key}]` : ""}`,
+    e.taskTitle ? `Task: ${e.taskTitle}` : "",
+    e.text,
+    ...(e.notes ?? []).map((n) => n.text),
+    e.entities?.length ? `Involves: ${e.entities.join(", ")}` : "",
+    ...(e.history ?? []).map((h) => `Before: ${h.subject}: ${h.text}`),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * The words of an identifier or a text as keys are matched: lower case; letters and digits, with . _ - + ' @ inside
+ * a word keeping it whole ("Ada.Lee@Example.com" is one word, "#48213." is "48213", "Paul  Lee" is "paul", "lee").
+ */
+export function keyTokens(text: string): string[] {
+  return text.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]+(?:[@._+'-][\p{L}\p{N}]+)*/gu) ?? [];
+}
+
+/** A record's key as it is kept and compared: its words (keyTokens) joined by one space; "" when it has none. */
+export function memoryRecordKey(raw: string): string {
+  return keyTokens(raw).join(" ").slice(0, MAX_RECORD_KEY_CHARS).trim();
+}
+
+/**
+ * A record within its limits, deterministically (no model): while it has more than MAX_RECORD_NOTES notes or more
+ * than MAX_RECORD_CHARS characters, its oldest note is folded into the summary ("summary | 2026-09-20: note"). A
+ * summary grown past MAX_MEMORY_TEXT_CHARS keeps its first RECORD_SUMMARY_HEAD_CHARS characters (what the record
+ * first said) and its most recent end, with " … " between.
+ */
+export function condenseRecord(summary: string, notes: readonly RecordNote[]): { text: string; notes: RecordNote[] } {
+  let text = summary;
+  const kept = [...notes];
+  while (kept.length && (kept.length > MAX_RECORD_NOTES || recordChars({ text, notes: kept }) > MAX_RECORD_CHARS)) {
+    const oldest = kept.shift()!;
+    text = fitSummary(`${text} | ${oldest.at.slice(0, 10)}: ${oldest.text}`);
+  }
+  return { text, notes: kept };
+}
+
+function fitSummary(text: string): string {
+  if (text.length <= MAX_MEMORY_TEXT_CHARS) return text;
+  const gap = " … ";
+  const head = text.slice(0, RECORD_SUMMARY_HEAD_CHARS).trimEnd();
+  let tail = text.slice(text.length - (MAX_MEMORY_TEXT_CHARS - head.length - gap.length));
+  // Start the end part at a word when one starts soon.
+  const space = tail.indexOf(" ");
+  if (space >= 0 && space < 20) tail = tail.slice(space + 1);
+  return `${head}${gap}${tail}`;
+}

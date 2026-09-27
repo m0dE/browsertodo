@@ -155,7 +155,7 @@ try {
     assert.equal(out.tab.windowId, out.activeWindow, "same window");
     assert.equal(out.tab.index, out.activeIndex + 1, "right after the active tab");
     assert.equal(out.tab.active, true);
-    assert.equal(out.group?.title, "browsertodo");
+    assert.equal(out.group?.title, "BrowserTODO");
     assert.equal(out.group?.color, "blue");
     assert.equal(after.windows, before.windows, "no new window");
     assert.equal(after.tabs, before.tabs + 1);
@@ -319,11 +319,11 @@ try {
       const tabId = await globalThis.__browsertodo.agentTab.prepare("current-tab");
       await globalThis.__browsertodo.driver.ready();
       const tab = await chrome.tabs.get(tabId);
-      return { url: tab.url, group: tab.groupId !== -1 ? (await chrome.tabGroups.get(tab.groupId)).title : null, groups: (await chrome.tabGroups.query({ title: "browsertodo" })).length };
+      return { url: tab.url, group: tab.groupId !== -1 ? (await chrome.tabGroups.get(tab.groupId)).title : null, groups: (await chrome.tabGroups.query({ title: "BrowserTODO" })).length };
     });
     assert.equal(out.url, `${base}/other`);
-    assert.equal(out.group, "browsertodo");
-    assert.equal(out.groups, 1, "reuses the existing browsertodo group");
+    assert.equal(out.group, "BrowserTODO");
+    assert.equal(out.groups, 1, "reuses the existing BrowserTODO group");
     const snap = await call("readPage");
     assert.ok(snap.text.includes("other page"), snap.text);
     await userPage.close();

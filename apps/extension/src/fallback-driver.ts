@@ -26,7 +26,9 @@ import {
   typeTargetInPage,
   viewportInPage,
 } from "./page-input.js";
+import { loadProbeInPage, waitForUsablePage, type LoadProbe } from "./page-load.js";
 import { snapshotPage } from "./page-snapshot.js";
+import { waitInPage, type PageWait, type PageWaitArgs } from "./page-wait.js";
 import { scrollProbeInPage, scrollReport, type PageResult, type ScrollProbe } from "./scroll-probe.js";
 
 /**
@@ -54,19 +56,35 @@ export class FallbackDriver {
     this.sleep = opts.sleep ?? delay;
   }
 
-  async navigate(tabId: number, { url }: P<"browser.navigate">): Promise<R<"browser.navigate">> {
+  /** Navigates with chrome.tabs.update, then waits until the new page is usable (see waitForLoad). */
+  async navigate(tabId: number, { url }: P<"browser.navigate">, leaving: number | null = null): Promise<R<"browser.navigate"> & { probe: LoadProbe | null }> {
     await chrome.tabs.update(tabId, { url });
-    return this.waitForLoad(tabId, url);
+    return this.waitForLoad(tabId, url, leaving);
   }
 
-  /** Waits until the tab finished loading, then returns its url and title. */
-  async waitForLoad(tabId: number, url: string): Promise<R<"browser.navigate">> {
-    // tabs.update resolves before the old page starts unloading; give it a moment.
-    await this.sleep(POLL_MS);
-    await pollUntil(async () => isTabLoaded(await chrome.tabs.get(tabId)), this.sleep);
-    await this.sleep(SETTLE_MS);
+  /**
+   * Waits until the tab's new page is usable (page-load.ts: past
+   * DOMContentLoaded and no longer changing; not its load event), then returns
+   * its url and title, and the last reading. leaving: the document the
+   * navigation leaves.
+   */
+  async waitForLoad(tabId: number, url: string, leaving: number | null = null): Promise<R<"browser.navigate"> & { probe: LoadProbe | null }> {
+    const probe = await waitForUsablePage(() => this.probe(tabId), { sleep: this.sleep, leaving });
     const tab = await chrome.tabs.get(tabId);
-    return { url: tab.url ?? url, title: tab.title ?? "" };
+    return { url: tab.url ?? url, title: tab.title ?? "", probe };
+  }
+
+  /** How far the tab's page loaded; null while it cannot be read (a navigation not committed yet, or no page script). */
+  async probe(tabId: number): Promise<LoadProbe | null> {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.pendingUrl) return null;
+    try {
+      const [res] = await chrome.scripting.executeScript({ target: { tabId }, func: loadProbeInPage });
+      return (res?.result as LoadProbe | undefined) ?? null;
+    } catch {
+      // A loaded page no script may enter (e.g. an error page): usable as it is.
+      return tab.status === "complete" ? { doc: -1, state: "complete", controls: 0, text: 0, foreignFrame: false } : null;
+    }
   }
 
   async readPage(tabId: number): Promise<PageSnapshot> {
@@ -74,6 +92,12 @@ export class FallbackDriver {
     const snap = res?.result as PageSnapshot | undefined;
     if (!snap) throw new Error("Page script failed: no page snapshot (the page may be navigating); try again");
     return snap;
+  }
+
+  /** One slice of wait_for in the page (page-wait.ts; chrome.scripting waits for its promise); undefined when the page gave no answer. */
+  async waitInPage(tabId: number, args: PageWaitArgs): Promise<PageResult<PageWait> | undefined> {
+    const [res] = await chrome.scripting.executeScript({ target: { tabId }, func: waitInPage, args: [args] });
+    return res?.result as PageResult<PageWait> | undefined;
   }
 
   async screenshot(tabId: number): Promise<Screenshot> {

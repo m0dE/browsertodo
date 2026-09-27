@@ -37,7 +37,7 @@ const inputCommands = () => chrome.debugger.commands.filter((c) => c.method.star
 const userWindow = (url: string) => openWindow(chrome, url);
 
 describe("AgentTab", () => {
-  it("one-off runs act on the tab the user is looking at, in a browsertodo group", async () => {
+  it("one-off runs act on the tab the user is looking at, in a BrowserTODO group", async () => {
     const { windowId, tabId } = await userWindow("https://example.com/");
     await chrome.windows.create({ url: "https://popup.test/", focused: false, type: "popup" });
     expect(await agent.prepare("current-tab")).toBe(tabId);
@@ -48,7 +48,7 @@ describe("AgentTab", () => {
     expect(await agent.isAgentTab(999)).toBe(false);
     expect(await agent.windowId()).toBe(windowId);
     const group = chrome.tabGroups.byId.get(chrome.tabs.byId.get(tabId)!.groupId)!;
-    expect(group).toMatchObject({ windowId, title: "browsertodo", color: "blue" });
+    expect(group).toMatchObject({ windowId, title: "BrowserTODO", color: "blue" });
   });
 
   it.each([
@@ -71,6 +71,38 @@ describe("AgentTab", () => {
     expect(agentTab).not.toBe(second.id);
     expect(chrome.tabs.createCalls).toEqual([{ windowId, index: 2, active: true, url: "about:blank" }]);
     expect((await chrome.tabs.get(agentTab)).active).toBe(true);
+  });
+
+  it("a tab a page of the run opens joins the run (grouped, in the background), is reported once, and stays open after the run", async () => {
+    const { windowId, tabId } = await userWindow("https://x.test/compose");
+    await agent.prepare("current-tab");
+    const other = await chrome.tabs.create({ windowId, url: "https://elsewhere.test/", active: false });
+    // Opened by some other tab: not the run's.
+    expect(await agent.adopt(other.id!, 999)).toBeNull();
+    const popup = await chrome.tabs.create({ windowId, url: "https://x.test/grok", active: false });
+    chrome.tabs.byId.get(popup.id!)!.title = "Grok Imagine";
+    expect(await agent.adopt(popup.id!, tabId)).toEqual({ id: "t2", tabId: popup.id, opened: true, fromPage: true });
+    expect(await agent.adopt(popup.id!, tabId)).toBeNull();
+    expect((await agent.list()).map((t) => t.id)).toEqual(["t1", "t2"]);
+    expect(chrome.tabGroups.byId.get(chrome.tabs.byId.get(popup.id!)!.groupId)!.title).toBe("BrowserTODO");
+    expect((await chrome.tabs.get(popup.id!)).active).toBe(false);
+    expect(await agent.takeNewTabs()).toEqual([{ id: "t2", url: "https://x.test/grok", title: "Grok Imagine" }]);
+    expect(await agent.takeNewTabs()).toEqual([]);
+    // The run's result may be in it: it is not closed with the run's open_tabs tabs.
+    await agent.closeOpened();
+    expect(await chrome.tabs.get(popup.id!)).toBeDefined();
+    expect(await agent.isAgentTab(popup.id!)).toBe(false);
+  });
+
+  it("the driver's next result tells the agent about a tab the page opened", async () => {
+    const { windowId, tabId } = await userWindow("https://x.test/compose");
+    await agent.prepare("current-tab");
+    evalResults.push(["snapshotPage", { url: "https://x.test/compose", title: "X", text: "", elements: [], truncated: false }]);
+    const popup = await chrome.tabs.create({ windowId, url: "https://x.test/grok", active: false });
+    await agent.adopt(popup.id!, tabId);
+    const snap = await driver.readPage();
+    expect(snap.note).toMatch(/^A new tab opened from the page: t2 "" https:\/\/x\.test\/grok\. Your current tab is still the one you were in: use switch_tab t2 to work in the new one/);
+    expect((await driver.readPage()).note).toBeUndefined();
   });
 
   it("about:blank is controllable", async () => {
@@ -129,7 +161,7 @@ describe("AgentTab", () => {
     await chrome.tabGroups.update(mine, { title: "Work", color: "red" });
     await agent.prepare("current-tab");
     expect(chrome.tabGroups.byId.get(mine)).toMatchObject({ title: "Work", color: "red" });
-    expect(chrome.tabGroups.byId.get(chrome.tabs.byId.get(tabId)!.groupId)!.title).toBe("browsertodo");
+    expect(chrome.tabGroups.byId.get(chrome.tabs.byId.get(tabId)!.groupId)!.title).toBe("BrowserTODO");
   });
 
   it("still works when tab groups are unavailable", async () => {
@@ -217,6 +249,22 @@ describe("Cdp", () => {
     cdp.reset();
     await cdp.attach(5);
     await expect(cdp.send("Page.enable")).resolves.toBeDefined();
+  });
+
+  it("a command that meets a page being swapped ('Not attached to an active page') attaches again and runs", async () => {
+    const { tabId } = await userWindow("https://example.com/");
+    await cdp.attach(tabId);
+    let refusals = 2;
+    chrome.debugger.respond = (method) => {
+      if (method === "Runtime.evaluate" && refusals-- > 0) throw new Error('{"code":-32000,"message":"Not attached to an active page"}');
+      return { result: { value: 7 } };
+    };
+    expect(await cdp.sendTo(tabId, "Runtime.evaluate", { expression: "7" })).toEqual({ result: { value: 7 } });
+    expect(refusals).toBe(-1);
+    chrome.debugger.respond = () => {
+      throw new Error("Not attached to an active page");
+    };
+    await expect(cdp.sendTo(tabId, "Runtime.evaluate", {})).rejects.toThrow("Not attached to an active page");
   });
 
   it("ignores detaches of other tabs", async () => {
@@ -401,19 +449,27 @@ describe("Driver", () => {
     expect(cmd?.params).toEqual({ format: "jpeg", quality: 70 });
   });
 
-  it("navigate waits for readyState complete and returns url and title", async () => {
-    let polls = 0;
+  it("navigate waits until the new page is usable (not its load event) and returns url and title", async () => {
+    // The page before (doc 1), then the new one: loading, then drawn and settled while still loading resources.
+    const readings = [
+      { doc: 1, state: "complete", controls: 5, text: 100, foreignFrame: false },
+      { doc: 1, state: "complete", controls: 5, text: 100, foreignFrame: false },
+      { doc: 2, state: "loading", controls: 0, text: 0, foreignFrame: false },
+      ...Array(4).fill({ doc: 2, state: "interactive", controls: 50, text: 3000, foreignFrame: false }),
+    ];
+    let probes = 0;
     chrome.debugger.respond = (method, params) => {
       if (method === "Page.navigate") return { frameId: "f" };
       if (method === "Runtime.evaluate") {
         const expr = (params as { expression: string }).expression;
-        if (expr === "document.readyState") return { result: { value: ++polls < 3 ? "loading" : "complete" } };
+        if (expr.includes("timeOrigin")) return { result: { value: readings[Math.min(probes++, readings.length - 1)] } };
         return { result: { value: { url: "https://example.com/", title: "Example" } } };
       }
       return {};
     };
     expect(await driver.navigate({ url: "https://example.com/" })).toEqual({ url: "https://example.com/", title: "Example" });
-    expect(polls).toBe(3);
+    // One reading of the page it leaves, then the new page until three unchanged readings.
+    expect(probes).toBe(7);
   });
 
   it("navigate rejects unsupported schemes and navigation errors", async () => {

@@ -1,5 +1,9 @@
 import { z } from "zod";
 import { MAX_TABS_PER_CALL } from "./browser.js";
+import { ScheduleInput } from "./schedule.js";
+import { MAX_ACCOUNT_CHARS, MAX_INSTRUCTIONS_CHARS } from "./task.js";
+import { FORGET_DESCRIPTION, ForgetArgs, MAX_MEMORY_NOTE_CHARS, RECALL_DESCRIPTION, RecallArgs, REMEMBER_DESCRIPTION, RememberArgs } from "./memory.js";
+import { WAIT_FOR_DESCRIPTION, WaitForArgs } from "./wait.js";
 
 /**
  * MCP tools exposed to Claude Code. The MCP server registers these, the helper
@@ -63,8 +67,32 @@ const spokenArg = z
   .max(MAX_SPOKEN_CHARS)
   .optional()
   .describe(
-    `One or two short sentences, read aloud to a user who talks to browsertodo hands-free, at most ${MAX_SPOKEN_CHARS} characters: the result, or the question they must answer. Natural speech, as you would say it to them: no Markdown, lists, URLs or IDs (e.g. "Done. You have four unread emails, and Jordan needs your signature by Friday.").`,
+    `One or two short sentences, read aloud to a user who talks to BrowserTODO hands-free, at most ${MAX_SPOKEN_CHARS} characters: the result, or the question they must answer. Natural speech, as you would say it to them: no Markdown, lists, URLs or IDs (e.g. "Done. You have four unread emails, and Jordan needs your signature by Friday.").`,
   );
+
+/**
+ * schedule_task's arguments: a task for the user's TODO list, written from the conversation, and when it
+ * runs (the task schedule model, schedule.ts). The extension stores it (engine/schedule-task.ts).
+ */
+export const ScheduleTaskArgs = z.object({
+  task: z
+    .string()
+    .trim()
+    .min(1)
+    .max(MAX_INSTRUCTIONS_CHARS)
+    .describe(
+      "The task exactly as it will run later: on its own, in a fresh session with no memory of this chat. State the goal and every step in order, with the URLs, account names, search terms, names and values it needs, and what to report or when to stop. Never 'same as before', 'what we just did' or 'the page from earlier'.",
+    ),
+  schedule: ScheduleInput.refine((s) => !!s.at || !!s.repeat, "give `at` (a one-off time), `repeat`, or both").describe(
+    "When it runs. at: ISO 8601 with the user's UTC offset (e.g. 2026-09-26T18:45:00-04:00): the one-off time, or a repeat's first run. repeat: { cron: one or more 5-field lines 'minute hour day-of-month month day-of-week' (e.g. '0 9 * * *' daily 9:00, '0 9 * * 1-5' weekdays 9:00, '30 8 * * 1' Mondays 8:30), tz: the user's IANA time zone, start / end: first and last day as YYYY-MM-DD, interval: { every: N, unit: 'day' | 'week' | 'month' } for every N days/weeks/months, count: the number of runs }.",
+  ),
+  account: z.string().trim().min(1).max(MAX_ACCOUNT_CHARS).optional().describe("The account the task acts as (e.g. an X handle '@name'), when the chat used one"),
+});
+export type ScheduleTaskArgs = z.infer<typeof ScheduleTaskArgs>;
+
+/** schedule_task's description for the model (the prompt says when to use it). */
+export const SCHEDULE_TASK_DESCRIPTION =
+  "Put a task in the user's TODO list, to run later at a time or on a repeat (e.g. 'check again in 3 hours', 'make this a daily task at 9am', 'repeat what we just did every Monday'). It runs by itself later with no memory of this chat, so `task` must be complete on its own. The user sees it in their TODO tab at once, with Undo in the chat. Only when the user asks for something to run later or again.";
 
 export const ToolArgs = {
   navigate: z.object({ url: z.string().describe("Absolute URL to open") }),
@@ -110,8 +138,13 @@ export const ToolArgs = {
   switch_tab: z.object({ tab: z.string().describe("Tab id from open_tabs or list_tabs, e.g. t2") }),
   list_tabs: z.object({}),
   close_tabs: z.object({ tabs: z.array(z.string()).min(1).describe("Tab ids to close") }),
+  wait_for: WaitForArgs,
   switch_x_account: z.object({ handle: z.string().describe("Account handle, e.g. @myhandle") }),
   get_credential: z.object({ site: z.string().describe("Hostname, e.g. example.com") }),
+  schedule_task: ScheduleTaskArgs,
+  remember: RememberArgs,
+  recall: RecallArgs,
+  forget: ForgetArgs,
   task_complete: z.object({
     summary: z
       .string()
@@ -119,6 +152,15 @@ export const ToolArgs = {
     url: z.string().optional().describe("URL of the created post or result, if any"),
     suggestion: suggestionArg,
     spoken: spokenArg,
+    memory_note: z
+      .string()
+      .trim()
+      .min(1)
+      .max(MAX_MEMORY_NOTE_CHARS)
+      .optional()
+      .describe(
+        "Repeating TODO tasks only: a short note for this task's next run: what this run did (the topic posted, who was answered) and what is still pending, so the next run goes on instead of repeating. Never page content, passwords or codes.",
+      ),
   }),
   task_fail: z.object({ reason: z.string(), suggestion: suggestionArg, spoken: spokenArg }),
   task_pause: z.object({ reason: z.string().describe("Why a human is needed"), suggestion: suggestionArg, spoken: spokenArg }),
@@ -145,8 +187,13 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   switch_tab: "Make another tab the current tab: read_page, act, navigate, scroll, screenshot and the other tools then act on it.",
   list_tabs: "List this task's tabs with id, URL, title, and which one is current.",
   close_tabs: "Close tabs you opened and no longer need. The tab the task started on is never closed.",
+  wait_for: WAIT_FOR_DESCRIPTION,
   switch_x_account: "Switch X (Twitter) to another signed-in account using X's account switcher. It checks that the switcher shows the new account before it answers.",
   get_credential: "Get the stored username and password for a site. Never use this for X.",
+  schedule_task: SCHEDULE_TASK_DESCRIPTION,
+  remember: REMEMBER_DESCRIPTION,
+  recall: RECALL_DESCRIPTION,
+  forget: FORGET_DESCRIPTION,
   task_complete:
     "Finish the task successfully. Call exactly once when the task is fully done. For questions and information tasks, write the full answer to the user as normal message text first (Markdown is rendered), then call this with a one-line summary; never put the answer or long text in the summary. Add a suggestion only when a next step is clearly likely.",
   task_fail: "Finish the task as failed when it cannot be done. Add a suggestion only when a next request would clearly help (e.g. 'Try again after I sign in').",
@@ -212,8 +259,15 @@ export type PipeMethods = {
 /** Tools that end a task. Not offered to the user's own Claude Code (mcp-server --attach). */
 export const TASK_END_TOOLS: readonly ToolName[] = ["task_complete", "task_fail", "task_pause"];
 
-/** Tools offered to the user's own Claude Code through mcp-server --attach (no task to end). */
-export const INTERACTIVE_TOOL_NAMES: ToolName[] = TOOL_NAMES.filter((n) => !TASK_END_TOOLS.includes(n));
+/** Tools that need a browsertodo conversation: schedule_task puts a task in its user's TODO list; memory is the user's, kept by the extension. */
+export const CONVERSATION_TOOLS: readonly ToolName[] = ["schedule_task", "remember", "recall", "forget"];
+
+/** The memory tools (memory.ts): answered by the extension's memory for the conversation. */
+export const MEMORY_TOOLS = ["remember", "recall", "forget"] as const satisfies readonly ToolName[];
+export type MemoryToolName = (typeof MEMORY_TOOLS)[number];
+
+/** Tools offered to the user's own Claude Code through mcp-server --attach (no task to end, no conversation). */
+export const INTERACTIVE_TOOL_NAMES: ToolName[] = TOOL_NAMES.filter((n) => !TASK_END_TOOLS.includes(n) && !CONVERSATION_TOOLS.includes(n));
 
 /**
  * Tools offered to the model. act (batched steps) always replaces click and

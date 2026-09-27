@@ -35,6 +35,7 @@ const METHODS: { [M in BrowserMethod]: (t: Targets, params: BrowserMethods[M]["p
   "browser.switchTab": ({ driver }, p) => driver.switchTab(p),
   "browser.listTabs": ({ driver }, p) => driver.listTabs(p),
   "browser.closeTabs": ({ driver }, p) => driver.closeTabs(p),
+  "browser.waitFor": ({ driver }, p) => driver.waitFor(p),
   "vault.getCredential": ({ vault }, p) => vault.getCredential(p.site),
 };
 

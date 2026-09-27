@@ -1,11 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent, RunConfig, TraceDraft } from "@browsertodo/shared";
 import { MAX_RETRY_AFTER_MS, RETRY_JITTER, retryWaitMs, startApiAgentWith } from "../src/api-agent.js";
 import { retryAfterMs } from "../src/anthropic.js";
 import { ENDED_WITHOUT_RESULT } from "../src/failures.js";
 import type { ApiAgentOptions, BrowserCaller, JevLike } from "../src/types.js";
 import { FakeX } from "./fake-x.js";
-import { CONFIG, collect, fakeJev, fakeMessagesServer, noSleep, smartJev, type FakeReplySource } from "./helpers.js";
+import { CONFIG, collect, fakeJev, fakeMessagesServer, messageSseEvents, noSleep, smartJev, type FakeReplySource } from "./helpers.js";
 
 type Block = Record<string, any>;
 
@@ -29,6 +29,8 @@ function start(
     /** Jitter source; default 0.5, which is no jitter. */
     random?: () => number;
     onTrace?: ApiAgentOptions["onTrace"];
+    /** false: whole replies, as the hosted AI answers (a request is then never stopped for a user message). */
+    stream?: boolean;
   } = {},
 ) {
   const server = fakeMessagesServer(replies);
@@ -45,6 +47,7 @@ function start(
     onEvent,
     fetch: server.fetchImpl,
     ...(over.onTrace ? { onTrace: over.onTrace } : {}),
+    ...(over.stream === undefined ? {} : { stream: over.stream }),
   };
   const session = startApiAgentWith(opts, { sleep: over.sleep ?? noSleep, retryDelaysMs: over.delays ?? [1000, 3000, 9000], random: over.random ?? (() => 0.5) });
   return { session, server, events };
@@ -81,7 +84,10 @@ describe("startApiAgent", () => {
     expect(toolNames(first)).toContain("act");
     expect(toolNames(first)).not.toContain("click");
     expect(toolNames(first)).not.toContain("type");
-    expect(toolNames(first)).toHaveLength(17);
+    expect(toolNames(first)).toHaveLength(22);
+    // schedule_task (scheduling from the chat) is offered with its input schema.
+    const schedule = first.body.tools.find((t: any) => t.name === "schedule_task");
+    expect(schedule.input_schema).toMatchObject({ type: "object", required: ["task", "schedule"] });
     expect(first.body.tools.filter((t: any) => t.cache_control)).toEqual([first.body.tools.at(-1)]);
     const actTool = first.body.tools.find((t: any) => t.name === "act");
     expect(actTool.input_schema).toMatchObject({ type: "object", required: ["steps"] });
@@ -185,7 +191,7 @@ describe("startApiAgent", () => {
     expect(x.calls).toHaveLength(0);
   });
 
-  it("appends user messages before the next request", async () => {
+  it("a user message sent while the model is thinking goes to it as user text with the next tool results, marked as overriding the task", async () => {
     const x = new FakeX({ url: "https://x.com/home" });
     let session!: ReturnType<typeof start>["session"];
     const r = start(x, [
@@ -194,14 +200,165 @@ describe("startApiAgent", () => {
         return msg(tool("read_page"));
       },
       msg(tool("task_complete", { summary: "ok" })),
-    ]);
+      // A whole reply (not streamed) is let finish: the message goes with its tool results.
+    ], { stream: false });
     session = r.session;
     await session.done;
-    const second = r.server.requests[1]!;
-    const content = lastUser(second).content;
+    const content = lastUser(r.server.requests[1]!).content;
     expect(content[0].type).toBe("tool_result");
-    expect(content[1]).toEqual({ type: "text", text: expect.stringContaining("use the draft text instead") });
+    // Never inside the tool result (untrusted page content): a user text block of its own.
+    expect(content[0].content[0].text).not.toContain("use the draft text instead");
+    expect(content[1]).toEqual({ type: "text", text: 'The user just said: "use the draft text instead". Act on it now: it changes the current task (keep doing what it does not change), or replaces or stops it if that is what it says.' });
     expect(r.events.some((e) => e.type === "user_message" && e.text === "use the draft text instead")).toBe(true);
+  });
+
+  it("a user message sent while the model writes its final answer keeps the turn going: task_complete is refused and the message follows", async () => {
+    const x = new FakeX({ url: "https://mail.test/u/0" });
+    let session!: ReturnType<typeof start>["session"];
+    const traces: TraceDraft[] = [];
+    const r = start(
+      x,
+      [
+        () => {
+          // The model is already writing the summary of page A when the user redirects it.
+          session.sendUserMessage("no, use page B");
+          return msg(text("Page A has 3 unread emails."), tool("task_complete", { summary: "Summarised page A" }));
+        },
+        msg(tool("navigate", { url: "https://mail.test/u/2" })),
+        msg(text("Page B has 1 unread email."), tool("task_complete", { summary: "Summarised page B" })),
+      ],
+      // A whole reply (not streamed) is let finish: its task_complete is refused.
+      { onTrace: (e) => traces.push(e), stream: false },
+    );
+    session = r.session;
+    expect(await session.done).toEqual({ outcome: "done", summary: "Summarised page B" });
+    const [refused, said] = lastUser(r.server.requests[1]!).content;
+    expect(refused).toMatchObject({ type: "tool_result", is_error: true });
+    expect(refused.content[0].text).toBe("Not recorded: the user sent you a new message, so task_complete was not called. Read that message (it follows) and do what it asks before ending.");
+    expect(said).toEqual({ type: "text", text: expect.stringContaining('The user just said: "no, use page B"') });
+    expect(r.events.filter((e) => e.type === "task_end")).toHaveLength(1);
+    expect(traces.find((t) => t.name === "interjection")).toMatchObject({ cat: "user", data: { route: "request", count: 1 } });
+  });
+
+  it("a user message during a slow page load reaches the model in the next request, without waiting for the page", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    let session!: ReturnType<typeof start>["session"];
+    let finishLoad!: (r: unknown) => void;
+    const browser: BrowserCaller = {
+      call: async (method, params) => {
+        if (method === "browser.navigate") {
+          session.sendUserMessage("skip that page, open the other one");
+          return new Promise((r) => (finishLoad = r as never)) as never;
+        }
+        return x.caller().call(method, params);
+      },
+    };
+    const traces: TraceDraft[] = [];
+    const r = start(x, [msg(tool("navigate", { url: "https://slow.test/a" })), msg(tool("task_complete", { summary: "switched" }))], { browser, onTrace: (e) => traces.push(e) });
+    session = r.session;
+    expect(await session.done).toEqual({ outcome: "done", summary: "switched" });
+    const [result, said] = lastUser(r.server.requests[1]!).content;
+    expect(result.content[0].text).toContain("still loading");
+    expect(said.text).toContain('The user just said: "skip that page, open the other one"');
+    expect(traces.find((t) => t.name === "interjection")).toMatchObject({ data: { route: "request", count: 1 } });
+    finishLoad({ url: "https://slow.test/a", title: "A" });
+  });
+
+  describe("a user message while the model is still writing", () => {
+    /**
+     * A Messages endpoint whose first reply streams `first` and then stalls (until it is aborted, or `release()`),
+     * and whose later replies call task_complete. `firstOut`: the stream's events written before the stall.
+     */
+    function stallingServer(first: Parameters<typeof messageSseEvents>[0], firstOut: number) {
+      const requests: any[] = [];
+      let release!: () => void;
+      const fetchImpl = (async (_url: string, init?: RequestInit) => {
+        await new Promise((r) => setTimeout(r, 0));
+        const body = JSON.parse(String(init?.body));
+        requests.push(structuredClone(body));
+        const events = requests.length === 1 ? messageSseEvents(first) : messageSseEvents({ id: `m${requests.length}`, stop_reason: "tool_use", content: [{ type: "tool_use", id: `tu${requests.length}`, name: "task_complete", input: { summary: "changed course" } }] });
+        const frame = ([event, data]: [string, unknown]) => new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        const stream = new ReadableStream<Uint8Array>({
+          async start(c) {
+            const stall = requests.length === 1;
+            for (const e of stall ? events.slice(0, firstOut) : events) c.enqueue(frame(e));
+            if (!stall) return c.close();
+            const aborted = new Promise<void>((r) => init?.signal?.addEventListener("abort", () => r()));
+            const released = new Promise<void>((r) => (release = r));
+            const how = await Promise.race([aborted.then(() => "aborted" as const), released.then(() => "released" as const)]);
+            if (how === "aborted") return c.error(new DOMException("The operation was aborted.", "AbortError"));
+            for (const e of events.slice(firstOut)) c.enqueue(frame(e));
+            c.close();
+          },
+        });
+        return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+      }) as unknown as typeof fetch;
+      return { fetchImpl, requests, release: () => release() };
+    }
+
+    function run(server: ReturnType<typeof stallingServer>, x: FakeX) {
+      const { events, onEvent } = collect();
+      const traces: TraceDraft[] = [];
+      const session = startApiAgentWith(
+        { sessionId: "S1", apiKey: "sk-test", model: "claude-sonnet-5", task: { id: "T1", instructions: "Summarise page A", account: null }, mediaPaths: [], config: CONFIG, browser: x.caller(), jev: null, onEvent, fetch: server.fetchImpl, onTrace: (e) => traces.push(e) },
+        { sleep: noSleep },
+      );
+      return { session, events, traces };
+    }
+
+    it("while it only writes text, its request is stopped and the next one carries the message at once", async () => {
+      const x = new FakeX({ url: "https://mail.test/u/0" });
+      const server = stallingServer({ id: "m1", stop_reason: "tool_use", content: [text("Page A has three unread emails, the first one"), tool("navigate", { url: "https://mail.test/u/1" })] }, 4);
+      const r = run(server, x);
+      await vi.waitFor(() => expect(r.events.some((e) => e.type === "assistant_text_delta")).toBe(true));
+      r.session.sendUserMessage("no, use page B");
+      expect(await r.session.done).toEqual({ outcome: "done", summary: "changed course" });
+      expect(server.requests).toHaveLength(2);
+      // The stopped reply is not in the history: the user's message follows the task prompt directly.
+      expect(server.requests[1].messages.at(-1)).toEqual({ role: "user", content: [expect.objectContaining({ type: "text" }), { type: "text", text: expect.stringContaining('The user just said: "no, use page B"') }] });
+      expect(x.calls.some((c) => c.method === "browser.navigate")).toBe(false);
+      expect(r.traces.find((t) => t.name === "interjection")).toMatchObject({ data: { route: "interrupt", count: 1 } });
+      expect(r.traces.find((t) => t.name === "model.call")).toMatchObject({ data: { result: "interrupted" } });
+    });
+
+    it("once it started a tool call, the request is let finish: the call runs, then the message follows", async () => {
+      const x = new FakeX({ url: "https://mail.test/u/0" });
+      // Stalls after the tool_use block started.
+      const server = stallingServer({ id: "m1", stop_reason: "tool_use", content: [tool("read_page")] }, 3);
+      const r = run(server, x);
+      await vi.waitFor(() => expect(server.requests).toHaveLength(1));
+      await new Promise((res) => setTimeout(res, 10));
+      r.session.sendUserMessage("no, use page B");
+      await new Promise((res) => setTimeout(res, 10));
+      server.release();
+      expect(await r.session.done).toEqual({ outcome: "done", summary: "changed course" });
+      expect(x.calls.some((c) => c.method === "browser.readPage")).toBe(true);
+      const [result, said] = server.requests[1].messages.at(-1).content;
+      expect(result.type).toBe("tool_result");
+      expect(said.text).toContain('The user just said: "no, use page B"');
+    });
+  });
+
+  it("act stops before its next step when the user sends a message, which follows the result", async () => {
+    const x = new FakeX({ url: "https://x.com/home" });
+    let session!: ReturnType<typeof start>["session"];
+    const browser: BrowserCaller = {
+      call: async (method, params) => {
+        if (method === "browser.type") session.sendUserMessage("stop, do not post that");
+        return x.caller().call(method, params);
+      },
+    };
+    const r = start(
+      x,
+      [msg(tool("read_page")), msg(tool("act", { steps: [{ goal: "type the post", index: 2, text: "gm" }, { goal: "click Post", index: 4 }] })), msg(tool("task_complete", { summary: "stopped" }))],
+      { browser },
+    );
+    session = r.session;
+    await session.done;
+    const [result, said] = lastUser(r.server.requests[2]!).content;
+    expect(result.content[0].text).toContain("Stopped before step 2: the user sent a new message (it follows). Steps 2-2 were not run.");
+    expect(said.text).toContain('The user just said: "stop, do not post that"');
+    expect(x.posts).toHaveLength(0);
   });
 
   it("a user message after an end_turn keeps the loop going", async () => {
@@ -213,7 +370,8 @@ describe("startApiAgent", () => {
         return msg(text("I think I am done."));
       },
       msg(tool("task_complete", { summary: "yes" })),
-    ]);
+      // A whole reply (not streamed) is let finish.
+    ], { stream: false });
     session = r.session;
     expect(await session.done).toEqual({ outcome: "done", summary: "yes" });
     expect(r.server.requests[1]!.body.messages.at(-1)).toEqual({ role: "user", content: [{ type: "text", text: expect.stringContaining("are you done?") }] });

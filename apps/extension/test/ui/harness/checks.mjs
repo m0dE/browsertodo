@@ -118,7 +118,7 @@ export function createChecks({ browser, base, only, shots }) {
         const r = el.getBoundingClientRect();
         if (r.width && (r.top < bar.top - 0.5 || r.bottom > bar.bottom + 0.5)) out.push(`${el.id || el.className} wraps out of the control row`);
       }
-      // Notices (and the hands-free pill) sit in the layout directly above the box: never floating, never over the
+      // Notices sit in the layout directly above the box: never floating, never over the
       // text box or any of its controls, never over each other.
       const form = document.getElementById("now-form");
       const f = form.getBoundingClientRect();

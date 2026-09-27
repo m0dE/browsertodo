@@ -22,7 +22,10 @@ import {
   toolsFor,
   type AgentEvent,
   type AgentTask,
+  type MemoryToolName,
   type RunConfig,
+  type ScheduledTask,
+  type ScheduleTaskArgs,
   type Sleep,
   type TaskRunResult,
   type ToolName,
@@ -73,6 +76,10 @@ export interface TaskRunnerDeps {
   makeBrain: () => Brain;
   /** helper.event notifications. */
   notify: (sessionId: string, event: AgentEvent) => void;
+  /** schedule_task for a session (the extension's todo.scheduleTask). Absent: the tool is refused. */
+  scheduleTask?: (sessionId: string, args: ScheduleTaskArgs) => Promise<ScheduledTask>;
+  /** remember / recall / forget for a session (the extension's memory.call). Absent: the tools are refused. */
+  memory?: (sessionId: string, tool: MemoryToolName, args: unknown) => Promise<{ text: string; isError?: boolean }>;
   /** The set of open sessions changed (one opened or closed): helper.sessions notifications. */
   onSessionsChanged?: (open: string[]) => void;
   live?: LiveLog | null;
@@ -190,6 +197,8 @@ export class TaskRunner {
       mediaPaths,
       secrets,
       notify: this.deps.notify,
+      ...(this.deps.scheduleTask ? { scheduleTask: this.deps.scheduleTask } : {}),
+      ...(this.deps.memory ? { memory: this.deps.memory } : {}),
       finishGraceMs: this.deps.finishGraceMs ?? RUNNER_DEFAULTS.finishGraceMs,
       abortWaitMs: this.deps.abortWaitMs ?? RUNNER_DEFAULTS.abortWaitMs,
       ...(this.deps.sleep ? { sleep: this.deps.sleep } : {}),
@@ -238,6 +247,7 @@ export class TaskRunner {
           log: (e) => log.event(e),
           emit: (e) => s.emit(e),
           input: s.input,
+          interjections: s.interjections,
           idle: () => s.onIdle(),
           task: { instructions: task.instructions, account: task.account, mediaPaths },
         })
@@ -270,7 +280,7 @@ export class TaskRunner {
     const turn = s.startTurn(params.config);
     s.log.event({ type: "turn_start", chars: params.text.length, maxToolCalls: params.config.maxToolCalls, maxTaskMinutes: params.config.maxTaskMinutes });
     s.emit({ type: "user_message", text: params.text });
-    s.input.push(`${FOLLOW_UP_PREFIX}${params.text}`, "followup");
+    s.input.push(`${FOLLOW_UP_PREFIX}${params.text}`);
     return this.finishTurn(s, turn);
   }
 

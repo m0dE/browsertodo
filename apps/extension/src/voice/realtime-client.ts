@@ -42,12 +42,22 @@ import {
 } from "@browsertodo/shared";
 import { bytesToBase64 } from "../base64.js";
 import { REALTIME_NOT_AVAILABLE_NOTE } from "./engine-choice.js";
+import { floor, isNoise, moreImportant, type ReplyKind, type SpokenKind } from "./narrator-policy.js";
 
 /** PCM16 mono at this rate, both ways ("audio/pcm" is 24 kHz). */
 export const REALTIME_SAMPLE_RATE = 24_000;
 
 /** Quiet after speech that ends the user's turn (server VAD). */
 const TURN_SILENCE_MS = 700;
+/**
+ * Whether OpenAI cancels the reply being made the moment the user starts talking (server VAD's
+ * interrupt_response). Off: its cancel also cut off a send_to_agent call being written (measured 2026-09-26 on
+ * gpt-realtime-2.1: the user talking on ~400 ms after their pause ended the call's arguments mid-string, and the
+ * request never reached the agent). The client cancels instead (bargeIn), after any call it is writing.
+ */
+const SERVER_INTERRUPTS_REPLY = false;
+/** The user's turn is in and its reply is expected this long; past it (no reply came) the floor is free again. */
+const AWAIT_REPLY_MS = 5_000;
 
 export const NARRATOR_INSTRUCTIONS = [
   "You are the voice of BrowserTODO, an assistant that works in the user's Chrome browser.",
@@ -55,9 +65,11 @@ export const NARRATOR_INSTRUCTIONS = [
   "When the user asks for something, call send_to_agent immediately, before saying anything. After it returns, say at most one short acknowledgement.",
   "Pass the request in the user's own words, keeping every detail (names, the text to post, times). A message for the running task (for example 'use the second draft') goes the same way.",
   "If right after that the user says 'cancel', 'never mind' or 'don't send it', call cancel_request: the request already went to the agent, and this stops its task.",
-  "You get 'Agent update' messages about what the agent does. When asked to reply, say it in one short sentence for progress, and one or two sentences for a result. Never read long text, lists, links, code or numbers of steps aloud. Never make up results: say only what the updates say.",
+  "You get 'Agent update' messages about what the agent does. Speak only when you have news the user doesn't have: results, questions, blockers, errors. Never describe routine steps (opening, reading, clicking, still working), never repeat the user's request back to them, and never say again what you already said.",
+  "When asked to reply to an update: one short sentence for progress; for a result, the actual answer in one to three short sentences. If an update came while the user was talking, include its news in your answer to them. Never read long text, lists, links, code or numbers of steps aloud. Never make up results: say only what the updates say.",
   "When the agent needs the user (a question, a login, a code), ask the user in your own words and pass their answer on with send_to_agent.",
   "If the user asks to stop the task, call stop_task. If they say goodbye or ask you to stop listening, call end_voice.",
+  "When an update says an action needs the user's OK, ask them briefly; when they answer yes or no, call answer_approval (never send_to_agent for it).",
   "Be friendly and brief. Speak the user's language.",
 ].join("\n");
 
@@ -88,6 +100,16 @@ export const NARRATOR_TOOLS = [
     name: "stop_task",
     description: "Stop the task the agent is running, when the user asks to stop it.",
     parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    type: "function",
+    name: "answer_approval",
+    description: "The user's answer to the action waiting for their OK: allow true for yes (it runs once), false for no (it is not done).",
+    parameters: {
+      type: "object",
+      properties: { allow: { type: "boolean", description: "true: allow it once; false: deny it" } },
+      required: ["allow"],
+    },
   },
   {
     type: "function",
@@ -204,6 +226,10 @@ export interface RealtimeHandlers {
   onTurnDone?(inputId: string): void;
   /** The session ended: null when we closed it, else why. */
   onClose?(failure: RealtimeFailure | null): void;
+  /** The narrator's audio is still playing here (a new line waits for it). */
+  playing?(): boolean;
+  /** The reply being heard answers noise (an empty transcript of a short sound): its audio must stop. */
+  onNoise?(): void;
   /**
    * Timing for the conversation's trace: "voice.connect" (the socket opening, the session ready, the model), one
    * "voice.narrator" per reply (what started it, the time to its first audio and to its end, tokens) and one
@@ -226,6 +252,10 @@ const MAX_INPUT_TIMINGS = 16;
 /** A reply being made: what it answers (the user's input, else a request of ours), and its audio. */
 interface Reply {
   inputId: string | null;
+  /** Its answer to the user's speech, or what we asked it to say. */
+  kind: ReplyKind;
+  /** Bytes of audio (PCM16) it sent: its spoken length. */
+  audioBytes: number;
   /** Epoch ms of what it answers: the end of the user's speech (else its commit), or our request. */
   from: number;
   created: number;
@@ -255,8 +285,28 @@ export class RealtimeClient {
   private responding = false;
   /** The current (or last) reply has audio: the narrator spoke in it. */
   private spoke = false;
-  /** A reply to ask for once the current one is done: one for the notes, or only the acknowledgement of a request. */
-  private wantReply: "reply" | "acknowledge" | null = null;
+  /** A line waiting for the floor (the most important one asked for; see narrator-policy.ts floor()). */
+  private wantReply: SpokenKind | null = null;
+  /** What our last response.create asked for (the reply it makes is traced as that). */
+  private askedKind: SpokenKind | null = null;
+  /** The user is talking (speech_started .. speech_stopped). */
+  private userSpeaking = false;
+  /** When the user's latest turn was committed (its reply is expected, AWAIT_REPLY_MS at most). */
+  private committedAt = -Infinity;
+  /** The reply being made was talked over: its further audio is not played. */
+  private replyStale = false;
+  /** The reply being made is writing a tool call's arguments (its output item started, its arguments are not done). */
+  private writingCall = false;
+  /** The user talked over the reply while it wrote a tool call: it is cancelled once that call has run. */
+  private cancelAfterCall = false;
+  /** The reply being made answers noise (cancelled). */
+  private noiseReply = false;
+  /** News let go while the user's turn was in (their reply covers it): asked again if that turn was noise. */
+  private droppedNews: SpokenKind | null = null;
+  /** Input items that were noise: their reply is cancelled when it starts. */
+  private readonly noise = new Set<string>();
+  /** Server VAD's audio_start_ms / audio_end_ms of each input item (how long the user spoke). */
+  private readonly vad = new Map<string, { start?: number; end?: number }>();
   /** The user's latest input item that no reply answered yet, and the one the current reply answers. */
   private unansweredInput: string | null = null;
   private replyInput: string | null = null;
@@ -293,11 +343,16 @@ export class RealtimeClient {
     this.send({ type: "input_audio_buffer.append", audio: bytesToBase64(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength)) });
   }
 
-  /** Tells the narrator something (a system message); `respond`: and asks it to reply (once no reply is being made). */
-  note(text: string, respond: boolean): void {
+  /** Tells the narrator something (a system message); `speak`: and asks it to say it, when the floor allows (floor()). */
+  note(text: string, speak: SpokenKind | null): void {
     if (!this.isOpen()) return;
     this.send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text }] } });
-    if (respond) this.requestReply();
+    if (speak) this.requestReply(speak);
+  }
+
+  /** The narrator's audio finished playing here: a line waiting for the floor may start. */
+  playbackIdle(): void {
+    this.flush();
   }
 
   /** Stops the reply being made (the user pressed Esc or the shortcut while it spoke). */
@@ -328,7 +383,7 @@ export class RealtimeClient {
         input: {
           format,
           transcription: { model: REALTIME_INPUT_TRANSCRIPTION_MODEL },
-          turn_detection: { type: "server_vad", silence_duration_ms: TURN_SILENCE_MS, create_response: true, interrupt_response: true },
+          turn_detection: { type: "server_vad", silence_duration_ms: TURN_SILENCE_MS, create_response: true, interrupt_response: SERVER_INTERRUPTS_REPLY },
         },
         output: { format, voice: this.opts.voice ?? DEFAULT_REALTIME_VOICE, speed: clampSpeed(this.opts.speed ?? REALTIME_SPEED.default, REALTIME_SPEED) },
       },
@@ -344,18 +399,33 @@ export class RealtimeClient {
   }
 
   /**
-   * Asks for a reply now, or once the one being made is done. An acknowledgement is only wanted when the reply that
-   * called send_to_agent said nothing: it is dropped when that reply spoke, and a reply for the notes covers it.
+   * Asks for a line when the floor allows it (narrator-policy.ts floor()): now, once the reply being made and the
+   * audio playing are done, or not at all. An acknowledgement is only wanted when the reply that called
+   * send_to_agent said nothing: it is dropped when that reply spoke, and a reply for the notes covers it.
    */
-  private requestReply(kind: "reply" | "acknowledge" = "reply"): void {
-    if (this.responding) {
-      if (this.wantReply !== "reply") this.wantReply = kind;
+  private requestReply(kind: SpokenKind): void {
+    const awaitingReply = this.unansweredInput !== null && Date.now() - this.committedAt < AWAIT_REPLY_MS;
+    const decision = floor(kind, { userSpeaking: this.userSpeaking, awaitingReply, replying: this.responding, playing: this.opts.handlers.playing?.() ?? false });
+    if (decision === "drop") {
+      if ((this.userSpeaking || awaitingReply) && kind !== "milestone" && kind !== "ack") this.droppedNews = moreImportant(this.droppedNews, kind);
       return;
     }
-    this.wantReply = null;
-    if (kind === "acknowledge" && this.spoke) return;
+    if (decision === "later") {
+      this.wantReply = moreImportant(this.wantReply, kind);
+      return;
+    }
+    if (kind === "ack" && this.spoke) return;
     this.askedAt = Date.now();
-    this.send(kind === "acknowledge" ? { type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS } } : { type: "response.create" });
+    this.askedKind = kind;
+    this.send(kind === "ack" ? { type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS } } : { type: "response.create" });
+  }
+
+  /** The line waiting for the floor, if the floor is free now. */
+  private flush(): void {
+    const kind = this.wantReply;
+    if (!kind) return;
+    this.wantReply = null;
+    this.requestReply(kind);
   }
 
   private trace(e: TraceDraft, inputId: string | null = null): void {
@@ -371,8 +441,10 @@ export class RealtimeClient {
     const now = Date.now();
     const input = inputId ? this.inputTimes.get(inputId) : undefined;
     const from = input ? (input.speechEnd ?? input.committed) : (this.askedAt ?? now);
+    const kind: ReplyKind = inputId ? "speech" : (this.askedKind ?? "result");
     this.askedAt = null;
-    return { inputId, from, created: now, audioDeltas: 0 };
+    this.askedKind = null;
+    return { inputId, kind, from, created: now, audioDeltas: 0, audioBytes: 0 };
   }
 
   /** The reply is done: what started it, the waits for it to start and for its first audio, and its usage. */
@@ -396,6 +468,9 @@ export class RealtimeClient {
         name: "voice.narrator",
         data: {
           trigger: inputId ? "speech" : "update",
+          kind: r.kind,
+          // PCM16 mono: two bytes a sample.
+          spokenMs: Math.round((r.audioBytes / 2 / REALTIME_SAMPLE_RATE) * 1000),
           ...(input && input.speechEnd !== null ? { commitMs: input.committed - input.speechEnd } : {}),
           createdMs: r.created - r.from,
           firstAudioMs,
@@ -415,12 +490,13 @@ export class RealtimeClient {
   }
 
   /** The user's words of input `inputId` are transcribed (or could not be): the time since the input was committed. */
-  private traceWords(inputId: string, text: string, usage: unknown, failed = false): void {
+  private traceWords(inputId: string, text: string, usage: unknown, failed = false, noise = false): void {
     const input = this.inputTimes.get(inputId);
     const now = Date.now();
     const u = (usage && typeof usage === "object" ? usage : {}) as Record<string, unknown>;
     const data: NonNullable<TraceDraft["data"]> = { chars: text.length, model: REALTIME_INPUT_TRANSCRIPTION_MODEL };
     if (failed) data.failed = true;
+    if (noise) data.noise = true;
     for (const [from, to] of [["input_tokens", "inTokens"], ["output_tokens", "outTokens"], ["seconds", "audioSeconds"]] as const) {
       if (typeof u[from] === "number") data[to] = u[from] as number;
     }
@@ -458,37 +534,54 @@ export class RealtimeClient {
       case "response.created": {
         this.responding = true;
         this.spoke = false;
+        this.replyStale = false;
+        this.writingCall = false;
+        this.cancelAfterCall = false;
         this.narratorText = "";
         this.replyInput = this.unansweredInput;
         this.unansweredInput = null;
         this.reply = this.newReply(this.replyInput);
+        this.noiseReply = false;
+        // The reply answers noise (its empty transcript came first): it is not said.
+        if (this.replyInput && this.noise.has(this.replyInput)) this.dropNoiseReply();
         break;
       }
       case "response.done": {
         this.responding = false;
+        this.writingCall = false;
+        this.cancelAfterCall = false;
         const answered = this.replyInput;
         this.replyInput = null;
         this.traceReply(ev, answered);
         h.onReplyDone?.();
         if (answered) h.onTurnDone?.(answered);
-        if (this.wantReply) this.requestReply(this.wantReply);
+        // The user's turn was answered, with the news let go meanwhile in it (not when it was noise).
+        if (answered && !this.noiseReply) this.droppedNews = null;
+        this.flush();
         break;
       }
       case "response.output_audio.delta":
+        // A reply the user talked over (or noise's): the rest of it is not heard.
+        if (this.replyStale) break;
         this.spoke = true;
         if (this.reply) {
           this.reply.firstAudio ??= Date.now();
           this.reply.audioDeltas++;
+          this.reply.audioBytes += base64Bytes(str("delta"));
         }
         h.onAudio?.(str("delta"), str("item_id"));
         break;
       case "input_audio_buffer.speech_stopped":
         this.speechEndAt = Date.now();
+        this.userSpeaking = false;
+        this.vadTime(str("item_id"), "end", ev.audio_end_ms);
         break;
       case "input_audio_buffer.committed":
         // The user's turn is in: the reply the server makes next answers it.
         if (str("item_id")) {
           this.unansweredInput = str("item_id");
+          this.committedAt = Date.now();
+          this.userSpeaking = false;
           this.inputTimes.set(str("item_id"), { speechEnd: this.speechEndAt, committed: Date.now() });
           if (this.inputTimes.size > MAX_INPUT_TIMINGS) this.inputTimes.delete(this.inputTimes.keys().next().value!);
           this.speechEndAt = null;
@@ -496,8 +589,16 @@ export class RealtimeClient {
         break;
       case "conversation.item.input_audio_transcription.completed":
         if (str("item_id")) {
-          this.traceWords(str("item_id"), str("transcript").trim(), ev.usage);
-          h.onUserWords?.(str("item_id"), str("transcript").trim());
+          const id = str("item_id");
+          const text = str("transcript").trim();
+          if (isNoise(text, this.speechMs(id, ev.usage))) {
+            // Noise (a cough, a door): nothing is said for it and it is no message; the trace keeps it, marked.
+            this.traceWords(id, text, ev.usage, false, true);
+            this.onNoiseInput(id);
+            break;
+          }
+          this.traceWords(id, text, ev.usage);
+          h.onUserWords?.(id, text);
         }
         break;
       case "conversation.item.input_audio_transcription.failed":
@@ -512,11 +613,18 @@ export class RealtimeClient {
         h.onNarratorText?.(this.narratorText);
         break;
       case "input_audio_buffer.speech_started":
-        // The user's turn gets its own reply; ours would talk over it.
+        // The user's turn gets its own reply; ours would talk over it, and what waited for older turns is let go.
         this.wantReply = null;
+        this.userSpeaking = true;
+        if (this.responding) this.bargeIn();
+        this.vadTime(str("item_id"), "start", ev.audio_start_ms);
         h.onUserSpeech?.();
         break;
+      case "response.output_item.added":
+        if ((ev.item as { type?: unknown } | undefined)?.type === "function_call") this.writingCall = true;
+        break;
       case "response.function_call_arguments.done":
+        this.writingCall = false;
         void this.runTool(str("call_id"), str("name"), str("arguments"), this.replyInput);
         break;
       case REALTIME_ERROR_EVENT: {
@@ -554,8 +662,58 @@ export class RealtimeClient {
       }
     }
     this.send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output } });
+    // Talked over while it wrote the call: the call ran, the rest of the reply is not wanted (the user has the floor).
+    if (this.cancelAfterCall && this.responding && !this.writingCall) {
+      this.cancelAfterCall = false;
+      this.send({ type: "response.cancel" });
+    }
     // Tool first, then at most one short acknowledgement (none when the narrator already spoke in that reply).
-    this.requestReply(name === "send_to_agent" ? "acknowledge" : "reply");
+    this.requestReply(name === "send_to_agent" ? "ack" : "result");
+  }
+
+  /**
+   * The user started talking while a reply is being made: its further audio is not played, and the reply is
+   * cancelled, but never while it writes a tool call (a send_to_agent cut off is a request lost): then right after
+   * that call has run.
+   */
+  private bargeIn(): void {
+    this.replyStale = true;
+    if (this.writingCall) this.cancelAfterCall = true;
+    else this.send({ type: "response.cancel" });
+  }
+
+  private vadTime(itemId: string, at: "start" | "end", ms: unknown): void {
+    if (!itemId || typeof ms !== "number") return;
+    const v = this.vad.get(itemId) ?? {};
+    v[at] = ms;
+    this.vad.set(itemId, v);
+    if (this.vad.size > MAX_INPUT_TIMINGS) this.vad.delete(this.vad.keys().next().value!);
+  }
+
+  /** How long the user spoke in input item `itemId` (server VAD, else the transcription's billed seconds; null: unknown). */
+  private speechMs(itemId: string, usage: unknown): number | null {
+    const v = this.vad.get(itemId);
+    if (v?.start !== undefined && v.end !== undefined) return v.end - v.start;
+    const seconds = (usage as { seconds?: unknown } | undefined)?.seconds;
+    return typeof seconds === "number" ? seconds * 1000 : null;
+  }
+
+  /** Input `itemId` was noise: its reply (being made, or when it starts) is cancelled and not heard. */
+  private onNoiseInput(itemId: string): void {
+    if (this.responding && this.replyInput === itemId) this.dropNoiseReply();
+    else if (this.unansweredInput === itemId) this.noise.add(itemId);
+    // News let go for that turn is said after all (no reply of it will carry it).
+    const news = this.droppedNews;
+    this.droppedNews = null;
+    if (news) this.requestReply(news);
+  }
+
+  private dropNoiseReply(): void {
+    this.replyStale = true;
+    this.noiseReply = true;
+    this.send({ type: "response.cancel" });
+    if (this.replyInput) this.noise.delete(this.replyInput);
+    this.opts.handlers.onNoise?.();
   }
 
   private onClosed(code: number): void {
@@ -574,4 +732,10 @@ export class RealtimeClient {
   private log(message: string): void {
     this.opts.handlers.log?.(message);
   }
+}
+
+/** The bytes a base64 string decodes to. */
+function base64Bytes(b64: string): number {
+  const pad = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((b64.length * 3) / 4) - pad);
 }

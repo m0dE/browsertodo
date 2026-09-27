@@ -3,8 +3,9 @@
  * everything that is shown or stored: Activity events, run logs, live.log.
  * The model itself still gets them; only what leaves the agent is redacted.
  */
+import { REDACTED_SECRET } from "@browsertodo/shared";
 
-export const REDACTED = "[redacted]";
+export const REDACTED = REDACTED_SECRET;
 
 /**
  * Shorter secrets are not redacted: replacing every occurrence of a

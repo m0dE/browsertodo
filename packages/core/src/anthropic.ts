@@ -134,9 +134,10 @@ export interface MessagesTransport {
   label?: string;
 }
 
-/** Streaming: text as it is written. `messageId:index` names the text block. */
+/** Streaming: text as it is written (`messageId:index` names the text block), and the start of a tool call. */
 export interface StreamOptions {
   onText(messageId: string, index: number, text: string): void;
+  onToolStart?(): void;
 }
 
 /** API error types in a stream's error event that are worth a retry. */
@@ -228,13 +229,22 @@ export function retryAfterMs(headers: Headers, now = Date.now()): number | undef
 }
 
 async function readStream(body: ReadableStream<Uint8Array>, stream: StreamOptions, label: string, signal?: AbortSignal): Promise<PostResult> {
-  const acc = new MessageAccumulator((id, i, t) => {
-    try {
-      stream.onText(id, i, t);
-    } catch {
-      /* a listener must not break the stream */
-    }
-  });
+  const acc = new MessageAccumulator(
+    (id, i, t) => {
+      try {
+        stream.onText(id, i, t);
+      } catch {
+        /* a listener must not break the stream */
+      }
+    },
+    () => {
+      try {
+        stream.onToolStart?.();
+      } catch {
+        /* a listener must not break the stream */
+      }
+    },
+  );
   try {
     for await (const ev of readSse(body)) {
       acc.apply(ev);

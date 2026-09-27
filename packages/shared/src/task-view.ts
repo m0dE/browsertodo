@@ -1,10 +1,13 @@
 /**
  * How a task reads in a list, the same in the side panel's TODO tab and the
- * dashboard: its status chip and tooltip, list order, repeat label, and the
- * add/edit form's time parsing. Pure and DOM-free.
+ * dashboard: its status chip and tooltip, list order, when it runs in words,
+ * and whether it is due. Pure and DOM-free.
  */
 import { plural } from "./format.js";
-import { MAX_REPEAT_TIMES, type RepeatRule, type TaskStatus } from "./task.js";
+import type { LegacyRepeatRule, RepeatSchedule } from "./schedule.js";
+import { describeRepeat, prefersHour12, timeText, WEEKDAY_SHORT, type TextOptions } from "./schedule-text.js";
+import type { TaskStatus } from "./task.js";
+import { localTimeZone, wallTime } from "./zoned-time.js";
 
 export type Tone = "ok" | "warn" | "bad" | "muted" | "accent";
 
@@ -74,32 +77,55 @@ export function splitTasks<T extends Sortable>(tasks: readonly T[]): { active: T
   return { active, finished };
 }
 
-/** { dailyAt: ["09:00", "18:00"] } -> "daily at 09:00, 18:00"; no repeat -> "". */
-export function repeatLabel(repeat: RepeatRule | null | undefined): string {
-  return repeat?.dailyAt.length ? `daily at ${repeat.dailyAt.join(", ")}` : "";
+/** A repeat rule in words ("Daily at 9:00 AM"), an old { dailyAt } one too; no repeat -> "". Never raw cron. */
+export function repeatLabel(repeat: RepeatSchedule | LegacyRepeatRule | null | undefined, opts: TextOptions = {}): string {
+  return repeat ? describeRepeat(repeat, opts) : "";
 }
 
-const pad = (n: number) => String(n).padStart(2, "0");
-
-/** Parse "9:00, 18:30 21.15" into sorted, unique "HH:MM" times. Empty input = no repeat. */
-export function parseRepeatTimes(input: string): { ok: true; times: string[] } | { ok: false; error: string } {
-  const times = new Set<string>();
-  for (const p of input.split(/[\s,;]+/).filter(Boolean)) {
-    const m = /^(\d{1,2})[:.](\d{2})$/.exec(p);
-    const h = m ? Number(m[1]) : NaN;
-    const min = m ? Number(m[2]) : NaN;
-    if (!m || h > 23 || min > 59) return { ok: false, error: `"${p}" is not a time like 09:30` };
-    times.add(`${pad(h)}:${pad(min)}`);
-  }
-  if (times.size > MAX_REPEAT_TIMES) return { ok: false, error: `At most ${MAX_REPEAT_TIMES} times a day` };
-  return { ok: true, times: [...times].sort() };
+/**
+ * True when a task would start at the next check: pending with its time
+ * come. `account`: the account's queue, which also takes up a paused task
+ * once its retry time has come (the API's claim does the same in SQL).
+ * The extension's scheduler picks local tasks with this, and the TODO tab
+ * counts "Run due (N)" with it.
+ */
+export function isDueNow(task: Timing, now = Date.now(), source: "local" | "account" = "local"): boolean {
+  const passed = (iso: string | null | undefined) => !iso || Date.parse(iso) <= now;
+  if (task.status === "pending") return passed(task.notBefore) && passed(task.retryAfter);
+  return source === "account" && task.status === "paused" && !!task.retryAfter && passed(task.retryAfter);
 }
 
-/** Value of <input type="datetime-local"> (local time) to ISO UTC; empty or invalid -> undefined. */
-export function localInputToIso(value: string): string | undefined {
-  if (!value) return undefined;
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** A time soon, in words: "Today 3:00 PM", "Tomorrow 9:00 AM", "Fri 9:00 AM", "Oct 12, 9:00 AM" (in `tz`, default this runtime's). */
+export function whenText(iso: string, now = Date.now(), opts: { hour12?: boolean; tz?: string } = {}): string {
+  const tz = opts.tz ?? localTimeZone();
+  const hour12 = opts.hour12 ?? prefersHour12();
+  const w = wallTime(Date.parse(iso), tz);
+  const n = wallTime(now, tz);
+  const days = Math.round((Date.UTC(w.year, w.month - 1, w.day) - Date.UTC(n.year, n.month - 1, n.day)) / 86_400_000);
+  const time = timeText(w.hour, w.minute, hour12);
+  if (days === 0) return `Today ${time}`;
+  if (days === 1) return `Tomorrow ${time}`;
+  if (days === -1) return `Yesterday ${time}`;
+  if (days > 1 && days < 7) return `${WEEKDAY_SHORT[new Date(Date.UTC(w.year, w.month - 1, w.day)).getUTCDay()]} ${time}`;
+  return `${MONTHS[w.month - 1]} ${w.day}${w.year === n.year ? "" : `, ${w.year}`}, ${time}`;
+}
+
+/**
+ * How a task's schedule reads in a list row: its repeat rule in words
+ * ("Daily at 9:00 AM"), else "Once · Today 3:00 PM" while it waits, "Due now"
+ * when its time has come, and "Once" when it is over.
+ */
+export function scheduleLabel(
+  task: Timing & { repeat?: RepeatSchedule | null },
+  now = Date.now(),
+  opts: { hour12?: boolean; tz?: string } = {},
+): string {
+  if (task.repeat) return repeatLabel(task.repeat, { ...opts, now: new Date(now) });
+  if (task.status !== "pending") return "Once";
+  const next = taskNextTime(task);
+  return next && Date.parse(next) > now ? `Once · ${whenText(next, now, opts)}` : "Due now";
 }
 
 /** The TODO list on a plan without it (the side panel's TODO tab and the dashboard's TODO page say the same). */

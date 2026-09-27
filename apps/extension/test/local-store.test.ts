@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { installChromeFake, type ChromeFake } from "./chrome-fake.js";
 import { MemoryKvDb } from "./memory-kv.js";
 import { LOCAL_TASKS_KEY, LocalStore } from "../src/engine/local-store.js";
-import { MAX_LOCAL_ATTEMPTS, nextOccurrence } from "../src/engine/local-task-rules.js";
+import { localTimeZone } from "@browsertodo/shared";
+import { cleanRepeat, MAX_LOCAL_ATTEMPTS, migrateStoredTask, nextOccurrenceTask, type StoredLocalTask } from "../src/engine/local-task-rules.js";
 
 /** Local wall-clock date, so the tests pass in any time zone. */
 const local = (y: number, mo: number, d: number, h = 0, mi = 0) => new Date(y, mo - 1, d, h, mi, 0, 0);
@@ -22,21 +23,33 @@ beforeEach(() => {
   store = new LocalStore({ db, now: () => now, newId: () => `id${++ids}` });
 });
 
-describe("nextOccurrence", () => {
-  it("picks the next matching local time later today", () => {
-    expect(nextOccurrence(["09:00", "13:30"], local(2026, 9, 24, 10, 0))).toEqual(local(2026, 9, 24, 13, 30));
+const TZ = localTimeZone();
+const daily = (hhmm: string, extra = {}) => ({ cron: `${Number(hhmm.slice(3))} ${Number(hhmm.slice(0, 2))} * * *`, tz: TZ, ...extra });
+
+describe("local repeat rules (the shared schedule rules, in this browser's zone)", () => {
+  it("cleanRepeat takes the current shape and converts the old { dailyAt }", () => {
+    expect(cleanRepeat(daily("09:00"))).toEqual(daily("09:00"));
+    expect(cleanRepeat({ dailyAt: ["13:30", "09:00"] })).toEqual({ cron: "0 9 * * *\n30 13 * * *", tz: TZ });
+    expect(cleanRepeat(null)).toBeNull();
+    expect(() => cleanRepeat({ dailyAt: ["25:00"] })).toThrow(/Repeat rule/);
+    expect(() => cleanRepeat({ cron: "0 9 * *", tz: TZ })).toThrow(/has 4 fields/);
   });
 
-  it("rolls over to tomorrow when all of today's times passed", () => {
-    expect(nextOccurrence(["09:00", "13:30"], local(2026, 9, 24, 14, 0))).toEqual(local(2026, 9, 25, 9, 0));
+  it("tasks stored before are migrated as they are read", () => {
+    const old = { id: "a", repeat: { dailyAt: ["09:00"] } } as unknown as StoredLocalTask;
+    expect(migrateStoredTask(old).repeat).toEqual({ cron: "0 9 * * *", tz: TZ });
+    const plain = { id: "b", repeat: null } as unknown as StoredLocalTask;
+    expect(migrateStoredTask(plain)).toBe(plain);
   });
 
-  it("is strictly after now (an exact match goes to the next one)", () => {
-    expect(nextOccurrence(["10:00"], local(2026, 9, 24, 10, 0))).toEqual(local(2026, 9, 25, 10, 0));
-  });
-
-  it("handles month and year ends and unsorted times", () => {
-    expect(nextOccurrence(["23:59", "00:15"], local(2026, 12, 31, 23, 59))).toEqual(local(2027, 1, 1, 0, 15));
+  it("the next occurrence is strictly after the end of the run, and none once the rule is over", () => {
+    const base = { id: "t", status: "done", attempts: 1 } as unknown as StoredLocalTask;
+    const at = (repeat: object, end: Date) => nextOccurrenceTask({ ...base, repeat } as never, "n", end)?.notBefore ?? null;
+    expect(at(daily("10:00"), local(2026, 9, 24, 10, 0))).toBe(local(2026, 9, 25, 10, 0).toISOString());
+    expect(at({ cron: "59 23 * * *\n15 0 * * *", tz: TZ }, local(2026, 12, 31, 23, 59))).toBe(local(2027, 1, 1, 0, 15).toISOString());
+    expect(at(daily("09:00", { end: "2026-09-24" }), local(2026, 9, 24, 10, 0))).toBeNull();
+    expect(at(daily("09:00", { count: 1 }), local(2026, 9, 24, 10, 0))).toBeNull();
+    expect(nextOccurrenceTask({ ...base, repeat: daily("09:00", { count: 3 }) } as never, "n", local(2026, 9, 24, 10, 0))!.repeat).toEqual(daily("09:00", { count: 2 }));
   });
 });
 
@@ -56,14 +69,18 @@ describe("LocalStore", () => {
 
   it("validates input", async () => {
     await expect(store.add({ instructions: "   " })).rejects.toThrow(/empty/);
-    await expect(store.add({ instructions: "x", repeat: { dailyAt: ["25:00"] } })).rejects.toThrow(/HH:MM/);
+    await expect(store.add({ instructions: "x", repeat: { dailyAt: ["25:00"] } })).rejects.toThrow(/Repeat rule/);
+    await expect(store.add({ instructions: "x", repeat: daily("09:00", { end: "2020-01-01" }) })).rejects.toThrow(/never runs/);
     await expect(store.add({ instructions: "x", notBefore: "not a date" })).rejects.toThrow(/Invalid time/);
   });
 
   it("a repeating task without a time starts at its next occurrence", async () => {
     const t = await store.add({ instructions: "daily", repeat: { dailyAt: ["18:00", "08:00", "18:00"] } });
-    expect(t.repeat).toEqual({ dailyAt: ["08:00", "18:00"] });
+    expect(t.repeat).toEqual({ cron: "0 8,18 * * *", tz: TZ });
     expect(t.notBefore).toBe(local(2026, 9, 24, 18, 0).toISOString());
+    // Every 2 days: anchored on the first run's day.
+    const other = await store.add({ instructions: "x", repeat: daily("09:00", { interval: { every: 2, unit: "day" } }) });
+    expect(other).toMatchObject({ notBefore: local(2026, 9, 25, 9, 0).toISOString(), repeat: daily("09:00", { interval: { every: 2, unit: "day" }, start: "2026-09-25" }) });
   });
 
   it("due: pending, notBefore and retryAfter passed, oldest first", async () => {
@@ -124,7 +141,7 @@ describe("LocalStore", () => {
   });
 
   it("a repeating task spawns its next occurrence once when it ends done or failed", async () => {
-    const t = await store.add({ instructions: "daily", repeat: { dailyAt: ["09:00"] }, media: [{ name: "a.png", type: "image/png", dataBase64: b64("x") }] });
+    const t = await store.add({ instructions: "daily", repeat: daily("09:00"), media: [{ name: "a.png", type: "image/png", dataBase64: b64("x") }] });
     now = local(2026, 9, 25, 9, 1);
     await store.markStarted(t.id);
     const { task, next } = await store.finish(t.id, { outcome: "failed", reason: "nope" }, { retryAfterMinutes: 10 });
@@ -145,14 +162,38 @@ describe("LocalStore", () => {
   });
 
   it("retry outcomes of a repeating task do not spawn", async () => {
-    const t = await store.add({ instructions: "daily", repeat: { dailyAt: ["09:00"] } });
+    const t = await store.add({ instructions: "daily", repeat: daily("09:00") });
     await store.markStarted(t.id);
     expect((await store.finish(t.id, { outcome: "retry" }, { retryAfterMinutes: 5 })).next).toBeNull();
   });
 
+  it("a counted rule stops after its last run", async () => {
+    const t = await store.add({ instructions: "twice", repeat: daily("09:00", { count: 2 }) });
+    now = local(2026, 9, 24, 9, 1);
+    await store.markStarted(t.id);
+    const { next } = await store.finish(t.id, { outcome: "done" }, { retryAfterMinutes: 5 });
+    expect(next!.repeat).toEqual(daily("09:00", { count: 1 }));
+    now = local(2026, 9, 25, 9, 1);
+    await store.markStarted(next!.id);
+    const last = await store.finish(next!.id, { outcome: "done" }, { retryAfterMinutes: 5 });
+    expect(last).toMatchObject({ next: null, task: { status: "done", nextId: null } });
+  });
+
+  it("reads tasks stored with the old { dailyAt } rule, and saves them converted", async () => {
+    chrome.storage.local.data[LOCAL_TASKS_KEY] = [{ id: "old", instructions: "x", status: "pending", notBefore: null, retryAfter: null, mediaIds: [], createdAt: now.toISOString(), updatedAt: now.toISOString(), repeat: { dailyAt: ["09:00"] } }];
+    expect((await store.get("old"))!.repeat).toEqual({ cron: "0 9 * * *", tz: TZ });
+    await store.update("old", { instructions: "y" });
+    expect((chrome.storage.local.data[LOCAL_TASKS_KEY] as StoredLocalTask[])[0]!.repeat).toEqual({ cron: "0 9 * * *", tz: TZ });
+  });
+
   it("update and delete refuse running tasks", async () => {
     const t = await store.add({ instructions: "x" });
-    expect(await store.update(t.id, { instructions: "y", account: "@a", repeat: { dailyAt: ["07:00"] } })).toMatchObject({ instructions: "y", account: "@a" });
+    expect(await store.update(t.id, { instructions: "y", account: "@a", repeat: daily("07:00") })).toMatchObject({
+      instructions: "y",
+      account: "@a",
+      repeat: daily("07:00"),
+      notBefore: local(2026, 9, 25, 7, 0).toISOString(),
+    });
     await store.markStarted(t.id);
     await expect(store.update(t.id, { instructions: "z" })).rejects.toThrow(/running/);
     await expect(store.delete(t.id)).rejects.toThrow(/running/);

@@ -68,20 +68,117 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 @media (max-width: 380px) { .grid2 { grid-template-columns: 1fr; } }
 
 .tasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+/* A task row: the task (two lines at most) with when it runs and its last result; Run and "⋯" on the right. */
 .task {
   display: grid;
-  grid-template-columns: 70px 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
-  gap: 8px;
-  padding: 8px 0;
+  gap: 10px;
+  padding: 9px 0;
   border-bottom: 1px solid var(--border);
 }
 .task:last-child { border-bottom: 0; }
-.task .chip { justify-self: start; margin-top: 1px; }
-.task-main { min-width: 0; }
-.task-meta { color: var(--muted); font-size: var(--text-sm); display: flex; flex-wrap: wrap; column-gap: 8px; }
+.task-main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.task-main > button.title-btn {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  white-space: normal; overflow-wrap: anywhere; font-weight: 500; line-height: 1.35;
+}
+.task-meta { color: var(--muted); font-size: var(--text-sm); display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; }
+.task-meta > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.task-meta .chip { flex: none; }
+.task-meta .when { white-space: normal; }
+.task-meta .when.due { color: var(--accent); font-weight: 500; }
 .task-meta a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-.task-reason { color: var(--bad); font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-reason, .task-result { font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-reason { color: var(--bad); }
+.task-reason[data-tone="warn"] { color: var(--warn); }
+.task-result { color: var(--muted); display: flex; gap: 6px; min-width: 0; }
+.task-result > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.task-result > a { flex: none; max-width: 60%; }
+.task-actions { display: flex; align-items: center; gap: 2px; }
+button.run-btn { min-width: 46px; justify-content: center; font-weight: 500; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); background: var(--accent-soft); }
+button.run-btn:hover:not([aria-disabled="true"]) { border-color: var(--accent); }
+button.run-btn.stop { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--border)); background: var(--bad-soft); }
+button.run-btn.stop:hover { border-color: var(--bad); }
+.task[data-status="running"] .task-main > button.title-btn::before {
+  content: ""; display: inline-block; width: 6px; height: 6px; margin: 0 6px 1px 0; border-radius: 50%;
+  background: var(--accent); animation: pulse 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) { .task[data-status="running"] .task-main > button.title-btn::before { animation: none; } }
+
+/* The add / edit form */
+.add-title { font-size: var(--text-md); }
+.add textarea { min-height: 72px; }
+.add-actions { gap: 6px; }
+.add-actions .files.inline { flex: 0 1 auto; min-width: 0; }
+button.icon-btn { padding: 4px 7px; color: var(--muted); }
+button.icon-btn:hover { color: var(--text); }
+.add-kept { color: var(--muted); font-size: var(--text-sm); }
+
+/* The schedule section (packages/shared ui/schedule-fields.ts) */
+.sch { display: flex; flex-direction: column; gap: 8px; }
+.sch-label, .sch-field > label { color: var(--muted); font-size: var(--text-sm); }
+.sch-when, .sch-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.sch-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.sch-row.sch-wrap { flex-wrap: wrap; }
+/* Inputs and selects are width: 100% (ui.css); in a row their flex basis sets the size. */
+.sch-row > * { flex: none; }
+.sch-row > select { flex: 1 1 0; }
+.sch-row > input[type="date"] { flex: 1 1 128px; }
+.sch-row > input[type="time"] { flex: 0 1 112px; }
+.sch-row > input.sch-num { flex: 0 0 64px; }
+.sch-hint { margin: 0; color: var(--muted); font-size: var(--text-xs); }
+.sch-hint[data-tone="bad"], .sch-cron-text[data-tone="bad"], .sch-summary[data-tone="bad"] { color: var(--bad); }
+button.sch-link { border: 0; background: none; padding: 2px 4px; color: var(--accent); font-size: var(--text-sm); }
+button.sch-link:hover { text-decoration: underline; background: none; }
+.sch-switch { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; cursor: pointer; font-weight: 500; position: relative; }
+.sch-switch input { position: absolute; opacity: 0; width: 30px; height: 18px; margin: 0; cursor: pointer; }
+.sch-track {
+  width: 30px; height: 18px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--muted) 35%, transparent);
+  position: relative; transition: background 0.15s; flex: none;
+}
+.sch-track::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--knob); box-shadow: 0 1px 2px rgb(0 0 0 / 0.25); transition: transform 0.15s;
+}
+.sch-switch input:checked + .sch-track { background: var(--accent); }
+.sch-switch input:checked + .sch-track::after { transform: translateX(12px); }
+.sch-switch input:focus-visible + .sch-track { outline: var(--focus-ring); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .sch-track, .sch-track::after { transition: none; } }
+.sch-rule {
+  margin: 0; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  display: flex; flex-direction: column; gap: 10px; min-width: 0; background: color-mix(in srgb, var(--bg) 55%, var(--surface));
+}
+.sch-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.sch-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.sch-unit { color: var(--muted); font-size: var(--text-sm); }
+.sch-days { display: flex; gap: 4px; flex-wrap: wrap; }
+button.sch-day {
+  width: 36px; height: 30px; padding: 0; justify-content: center; border-radius: var(--radius-sm);
+  font-size: var(--text-sm); color: var(--muted);
+}
+button.sch-day[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 500; }
+.sch-monthly { gap: 6px; }
+.sch-monthly .sch-row { flex-wrap: wrap; }
+.sch-monthly label { color: var(--text); font-size: var(--text-md); }
+.sch-times { display: contents; }
+.sch-time { display: inline-flex; align-items: center; gap: 1px; }
+.sch-time input { flex: 0 0 112px; }
+button.sch-x { border: 0; background: none; padding: 2px 5px; color: var(--muted); font-size: var(--text-lg); line-height: 1; }
+button.sch-x:hover:not(:disabled) { color: var(--bad); background: none; }
+button.sch-x:disabled { visibility: hidden; }
+textarea.sch-cron { font-family: var(--mono); font-size: var(--text-sm); min-height: 0; }
+.sch-cron-text { margin: 0; font-size: var(--text-sm); color: var(--text); min-height: 1.2em; }
+.sch-cron-text:empty { display: none; }
+.sch-field .sch-row > select { min-width: 0; }
+.sch-summary { margin: 0; font-size: var(--text-sm); color: var(--text); font-weight: 500; }
+.sch-first:empty { display: none; }
+.sch-tz { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; }
+.sch-tz select { max-width: 100%; font-size: var(--text-sm); padding: 2px 6px; }
+/* Narrow: Starts and Ends one under the other (Frequency and Every stay side by side). */
+@media (max-width: 380px) {
+  .sch-grid.sch-range { grid-template-columns: minmax(0, 1fr); }
+}
 .empty { color: var(--muted); text-align: center; margin: 12px 0; font-size: var(--text-sm); }
 .empty-state { text-align: center; color: var(--muted); font-size: var(--text-sm); padding: 28px 16px 20px; border: 1px dashed var(--border); border-radius: var(--radius); }
 .empty-state p { margin: 0 auto; max-width: 250px; text-wrap: balance; }
@@ -115,6 +212,7 @@ button.login-btn {
 /* The offer to move this browser's tasks into the account */
 .migrate { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); background: var(--accent-soft); }
 .migrate-text { margin: 0; }
+.migrate-hint { margin: 4px 0 0; color: var(--muted); font-size: var(--text-sm); }
 
 /* A task's overflow menu: .menu in ui.css. */
 
@@ -163,7 +261,7 @@ button.title-btn:hover { color: var(--accent); }
 .act-chip .live-dot { margin: 0; flex: none; }
 .act-chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
-/* The conversation log (Chat, and a past run in the Activity log).
+/* The conversation log (Chat, and a past run in History).
    Claude's text reads as plain prose, full width; the user's messages are compact bubbles;
    tool steps recede into small, muted groups that fold when there are many. */
 .log {
@@ -355,6 +453,38 @@ button.title-btn:hover { color: var(--accent); }
 .log .ev-actions { display: flex; gap: 6px; margin-top: 2px; }
 /* Continue waits until nothing runs. */
 .log.busy .ev-actions { display: none; }
+/* A task the agent put in the TODO list (event-render.ts renderScheduled): one line, View in TODO and Undo. */
+.log .ev-scheduled {
+  display: flex; flex-direction: column; gap: 5px; min-width: 0;
+  padding: 7px 10px; border-radius: var(--radius-sm); font-size: var(--text-sm); line-height: 1.45;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--accent) 65%, transparent);
+}
+/* One line when the task keeps room to be read; in a narrow panel the schedule goes to a second line. */
+.log .ev-scheduled .sched-line { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 5px; min-width: 0; }
+.log .ev-scheduled .sched-line > svg { flex: none; align-self: center; color: var(--accent); }
+.log .ev-scheduled .sched-label { flex: none; font-weight: 600; }
+.log .ev-scheduled .sched-task { flex: 1 1 9em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log .ev-scheduled .sched-when { flex: 0 1 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.log .ev-scheduled .sched-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.log .ev-scheduled .sched-note { font-size: var(--text-xs); color: var(--muted); }
+.log .ev-scheduled .sched-note.bad { color: color-mix(in srgb, var(--bad) 75%, var(--text)); }
+.log .ev-scheduled.undone { background: none; border-left-color: var(--border); color: var(--muted); }
+.log .ev-scheduled.undone .sched-line > svg { color: var(--faint); }
+.log .ev-scheduled.undone .sched-task { text-decoration: line-through; }
+/* A change to the agent's memory (event-render.ts renderMemoryNote): one quiet line, "Remembered: subject · text", with Undo at its end. */
+.log .ev-memory { display: flex; flex-direction: column; gap: 3px; min-width: 0; font-size: var(--text-sm); line-height: 1.45; color: var(--muted); }
+.log .ev-memory .mem-line { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.log .ev-memory .mem-line > svg { flex: none; color: var(--accent); }
+.log .ev-memory .mem-label { flex: none; font-weight: 600; color: var(--text); }
+.log .ev-memory .mem-subject { flex: 0 1 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.log .ev-memory .mem-text { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log .ev-memory .mem-undo { flex: none; margin-left: auto; padding-block: 1px; }
+.log .ev-memory .mem-note { font-size: var(--text-xs); padding-left: 18px; }
+.log .ev-memory .mem-note.bad { color: color-mix(in srgb, var(--bad) 75%, var(--text)); }
+.log .ev-memory.undone .mem-line > svg { color: var(--faint); }
+.log .ev-memory.undone .mem-label, .log .ev-memory.undone .mem-subject { color: var(--muted); }
+.log .ev-memory.undone .mem-subject, .log .ev-memory.undone .mem-text { text-decoration: line-through; }
 /* A failure (chat, composer): one plain line, maybe a second, the fix buttons, and Details (error-view.ts). */
 .ev-error {
   display: flex; flex-direction: column; gap: 3px; min-width: 0;
@@ -376,7 +506,7 @@ button.title-btn:hover { color: var(--accent); }
 .log .empty { margin: auto; max-width: 240px; }
 .log .chat-empty { margin: auto 0; border: 0; }
 
-/* Activity log tab: the list of runs (one opens in Chat) */
+/* History tab: the list of runs (one opens in Chat) */
 .history { flex: 1; min-height: 0; padding: 4px 12px 12px; }
 .history .empty-state { margin-top: 8px; }
 .sessions { list-style: none; padding: 0; margin: 0; }
@@ -465,6 +595,9 @@ button.title-btn:hover { color: var(--accent); }
 }
 .now-tool:hover { color: var(--text); background: var(--hover); }
 .now-tool:focus-visible { outline: var(--focus-ring); outline-offset: 0; }
+/* Memory is off in this chat (chat-memory.ts): a quiet crossed-out bookmark next to the model; a click turns it back on. */
+.now-bar .now-memory-off { padding: 0; border: 0; background: none; color: var(--warn); }
+.now-bar .now-memory-off[hidden] { display: none; }
 
 /* Model chip ("Sonnet 5 · Jev") and its menu, which opens upward. */
 .model-pick { position: relative; min-width: 0; display: flex; }
@@ -554,7 +687,8 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / 0.35); }
 .sheet-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 12px 12px; border-top: 1px solid var(--border); }
 .sheet-actions .msg { flex: 1; min-width: 120px; }
 
-/* Voice input (voice-input.ts): the mic left of Send, its tip, and the listening orb in the panel's middle.
+/* Voice input (voice-input.ts): the mic left of Send, its tip, and the listening orb in the panel's middle
+   (the live look while hands-free is on, and the voice bar, are in voice.css).
    --level (0..1) is the live microphone level. */
 .now-bar .voice-mic { position: relative; padding: 0; border: 0; background: none; }
 .voice-mic .lock { display: none; }
@@ -617,28 +751,8 @@ body:has(.voice-orb:not([hidden])) .composer { z-index: var(--z-above-veil); }
 .voice-orb[data-state="sending"] .voice-orb-halo { animation-duration: 0.9s; }
 .voice-orb[data-state="speaking"] .voice-orb-core { animation: voice-breathe 1.2s ease-in-out infinite; }
 @keyframes voice-breathe { 50% { opacity: 0.6; } }
-/* Hands-free (hands-free.ts): a compact pill in the notice row above the input while a session is on; on another
-   tab it names the tab it listens in, with Go to tab. */
-.hf-pill {
-  flex: 0 1 auto; display: inline-flex; align-items: center; gap: 7px; max-width: 100%; min-width: 0;
-  padding: 2px 3px 2px 10px; border-radius: var(--radius-pill);
-  background: var(--surface); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
-  font-size: var(--text-sm); line-height: 22px; color: var(--text);
-}
-.hf-pill.elsewhere { border-style: dashed; color: var(--muted); }
-.hf-label { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hf-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
-.hf-pill[data-phase="sending"] .hf-dot { background: var(--warn); animation-duration: 0.6s; }
-.hf-pill[data-phase="speaking"] .hf-dot { animation-duration: 0.9s; }
-.hf-pill .hf-go { flex: none; font-size: var(--text-sm); white-space: nowrap; }
-.hf-pill .hf-stop {
-  flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: none;
-  color: var(--muted); font-size: 15px; line-height: 1;
-}
-.hf-pill .hf-stop:hover { background: var(--hover); color: var(--text); }
 
 @media (prefers-reduced-motion: reduce) {
-  .hf-dot { animation: none; }
   .voice-orb { backdrop-filter: none; }
   .voice-orb-halo, .voice-orb-core { animation: none; transform: none; transition: none; }
   .voice-mic::after { transition: none; transform: none; }
@@ -696,3 +810,35 @@ body:has(.voice-orb:not([hidden])) .composer { z-index: var(--z-above-veil); }
 .raw-row.slow .raw-dur { color: var(--warn); font-weight: 600; }
 .raw-row.slow .raw-dur::before { content: "▲ "; font-size: 8px; vertical-align: 1px; }
 .raw-row.error .raw-label { color: var(--bad); }
+
+/* An action waiting for the user's OK (approval-card.ts): what, where, why, the exact text, and the answers. Pending
+   stands out in the warning colour; once answered it keeps one quiet line. */
+.log .ev-approval {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  padding: 9px 10px; border-radius: var(--radius-sm); font-size: var(--text-sm); line-height: 1.45;
+  background: var(--warn-soft); border-left: 3px solid var(--warn);
+}
+.log .ev-approval .appr-head { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--warn); }
+.log .ev-approval .appr-head > svg { flex: none; }
+.log .ev-approval .appr-action { min-width: 0; overflow-wrap: anywhere; }
+.log .ev-approval .appr-site, .log .ev-approval .appr-why { color: var(--muted); }
+.log .ev-approval .appr-text {
+  max-height: 9.5em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  padding: 6px 8px; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--border); color: var(--text);
+}
+.log .ev-approval .appr-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.log .ev-approval .appr-note { font-size: var(--text-xs); color: var(--muted); }
+.log .ev-approval .appr-note.bad { color: color-mix(in srgb, var(--bad) 75%, var(--text)); }
+.log .ev-approval[data-state="allowed"], .log .ev-approval[data-state="refused"] { background: none; border-left-color: var(--border); gap: 3px; padding-block: 5px; }
+.log .ev-approval[data-state="allowed"] .appr-head { color: var(--ok); }
+.log .ev-approval[data-state="refused"] .appr-head { color: color-mix(in srgb, var(--bad) 80%, var(--text)); }
+.log .ev-approval:not([data-state="pending"]) .appr-text { max-height: none; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--muted); }
+
+/* Full autonomy is on (autonomy-warning.ts): one red line under the status for as long as it lasts. */
+.autonomy-warning {
+  display: flex; align-items: baseline; gap: 6px; margin: 0; padding: 4px 12px;
+  font-size: var(--text-xs); line-height: 1.4; background: var(--bad-soft); color: var(--bad); border-bottom: 1px solid color-mix(in srgb, var(--bad) 30%, transparent);
+}
+.autonomy-warning[hidden] { display: none; }
+.autonomy-warning > span { flex: 1; min-width: 0; }
+.autonomy-warning .link { flex: none; color: var(--bad); font-weight: 600; font-size: inherit; }

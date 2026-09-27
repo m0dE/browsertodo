@@ -11,13 +11,17 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { dirname } from "node:path";
 import { DeltaBatcher, MAX_ASSISTANT_TEXT, clipEventText, type AgentEvent } from "@browsertodo/shared";
-import { humanMessage, plainErrorText } from "@browsertodo/core";
+import { plainErrorText } from "@browsertodo/core";
 import { claudeEnv, isolatedClaudeArgs, killTree } from "../claude-process.js";
 import { LineSplitter } from "../line-framing.js";
 import { ClaudeStreamTimer } from "./claude-timing.js";
+import { ClaudeTurnState } from "./claude-turn-state.js";
 import type { Brain, BrainContext } from "./brain.js";
 
-export function buildClaudeArgs(opts: { systemPrompt: string; mcpConfigPath: string; allowedTools: string[]; model: string }): string[] {
+/** Claude Code's settings that turn its extended thinking off (it then answers at once). */
+export const NO_THINKING_SETTINGS = JSON.stringify({ alwaysThinkingEnabled: false });
+
+export function buildClaudeArgs(opts: { systemPrompt: string; mcpConfigPath: string; allowedTools: string[]; model: string; thinking?: boolean }): string[] {
   return [
     "-p",
     "--input-format",
@@ -27,6 +31,8 @@ export function buildClaudeArgs(opts: { systemPrompt: string; mcpConfigPath: str
     "--verbose",
     // Text arrives as it is written (stream_event lines), for the chat to show live.
     "--include-partial-messages",
+    // Each stdin message is echoed when Claude Code reads it: whether a result ends the work (ClaudeTurnState).
+    "--replay-user-messages",
     "--strict-mcp-config",
     "--mcp-config",
     opts.mcpConfigPath,
@@ -34,6 +40,7 @@ export function buildClaudeArgs(opts: { systemPrompt: string; mcpConfigPath: str
     opts.allowedTools.join(","),
     "--append-system-prompt",
     opts.systemPrompt,
+    ...(opts.thinking === false ? ["--settings", NO_THINKING_SETTINGS] : []),
     ...isolatedClaudeArgs(opts.model),
   ];
 }
@@ -65,6 +72,11 @@ function asStreamLine(value: unknown): StreamLine | null {
 /** One stream-json input line carrying a user message. */
 export function userMessageLine(text: string): string {
   return JSON.stringify({ type: "user", message: { role: "user", content: text } }) + "\n";
+}
+
+/** The stream-json control request that stops Claude Code's current model request (it answers with an error result, then reads stdin on). */
+export function interruptLine(requestId: string): string {
+  return JSON.stringify({ type: "control_request", request_id: requestId, request: { subtype: "interrupt" } }) + "\n";
 }
 
 /**
@@ -162,6 +174,8 @@ export class ClaudeCodeBrain implements Brain {
     private readonly opts: {
       claudePath: string;
       model: string;
+      /** false: extended thinking off (see NO_THINKING_SETTINGS). Default: Claude Code's own (on). */
+      thinking?: boolean;
       /** Extra leading args, for tests that run a fake claude script with node. */
       prefixArgs?: string[];
       /**
@@ -185,8 +199,9 @@ export class ClaudeCodeBrain implements Brain {
       mcpConfigPath: ctx.mcpConfigPath,
       allowedTools: ctx.allowedTools,
       model,
+      ...(this.opts.thinking === false ? { thinking: false } : {}),
     });
-    ctx.log({ type: "claude_start", claudePath: this.opts.claudePath, model, allowedTools: ctx.allowedTools });
+    ctx.log({ type: "claude_start", claudePath: this.opts.claudePath, model, thinking: this.opts.thinking !== false, allowedTools: ctx.allowedTools });
     return new Promise<void>((resolve, reject) => {
       if (ctx.signal.aborted) return resolve();
       let child: ChildProcess;
@@ -209,22 +224,47 @@ export class ClaudeCodeBrain implements Brain {
       const stdin = child.stdin!;
       stdin.on("error", (e) => ctx.log({ type: "claude_stdin_error", message: e.message }));
 
-      // Every user message gets one result event; when all are answered and
-      // no task_* was called, Claude has stopped: close stdin so it exits.
-      let sent = 0;
+      // A result with every stdin message read and nothing else waiting means
+      // Claude has stopped: idle (persistent), or close stdin so it exits.
+      const turn = new ClaudeTurnState();
       let started = false;
-      let results = 0;
+      let interrupts = 0;
+      /** An interrupt was sent: its error result is expected, not a failure. */
+      let interrupted = false;
+      const writable = () => !stdin.destroyed && !stdin.writableEnded;
       const send = (text: string) => {
-        if (stdin.destroyed || stdin.writableEnded) return;
-        sent++;
+        if (!writable()) return;
+        turn.wrote();
         stdin.write(userMessageLine(text));
         timer.sent();
       };
+      /** Hands the user's waiting messages to Claude as a message of their own. */
+      const sendInterjections = (route: "next_step" | "next_message"): boolean => {
+        if (!writable()) return false;
+        const text = ctx.interjections.handOff(route);
+        if (text === null) return false;
+        ctx.log({ type: "claude_user_message", kind: route, chars: text.length });
+        send(text);
+        return true;
+      };
+      /** Stops the model's request (only text or thinking so far) so the message written for it is read now. */
+      const interrupt = () => {
+        if (interrupted || !turn.interruptible || !writable()) return;
+        interrupted = true;
+        ctx.interjections.reroute("interrupt");
+        ctx.log({ type: "claude_interrupt" });
+        stdin.write(interruptLine(`interrupt-${++interrupts}`));
+      };
       send(ctx.prompt);
-      ctx.input.onMessage((text, kind) => {
-        ctx.log({ type: "claude_user_message", kind, chars: text.length });
-        // Follow-ups come framed by the runner; messages typed mid-turn get their own framing.
-        send(kind === "followup" ? text : humanMessage(text));
+      ctx.input.onMessage((text) => {
+        ctx.log({ type: "claude_user_message", kind: "followup", chars: text.length });
+        send(text);
+      });
+      // A message typed mid-turn goes to stdin at once: Claude Code reads it at its next step (with the
+      // running tool's result). While the model only thinks or writes, that request is stopped so it reads it now.
+      ctx.interjections.onAdd(() => {
+        const writing = turn.interruptible;
+        if (sendInterjections("next_step") && writing) interrupt();
       });
       ctx.input.onClose(() => {
         if (!stdin.destroyed && !stdin.writableEnded) stdin.end();
@@ -248,20 +288,26 @@ export class ClaudeCodeBrain implements Brain {
           }
           if (!isNoisyStreamLine(event)) ctx.log({ type: "claude", event: withoutBase64Data(event) });
           timer.line(event);
+          const read = turn.line(event);
+          if (read !== null) ctx.interjections.seen(read);
+          // A request that started without the message written before its step would only read it after its tool.
+          if (turn.missedInput && ctx.interjections.unread) interrupt();
           // Claude Code repeats its init event for every turn; "started" is said once per session.
           const ev = asStreamLine(event);
           const isInit = ev?.type === "system" && ev.subtype === "init";
-          if (!(isInit && started))
+          const isResult = ev?.type === "result";
+          // The interrupted request ends with an error result: expected, not a failure to show.
+          if (!(isInit && started) && !(isResult && interrupted))
             for (const e of mapper.map(event)) {
               if (e.type === "assistant_text_delta") out.delta(e.id, e.text);
               else out.emit(e);
             }
           if (isInit) started = true;
-          if (ev?.type === "result") {
+          if (isResult) {
             out.flush();
-            results++;
-            if (results >= sent && !ctx.input.closed) {
-              ctx.log({ type: "claude_turns_done", sent, results });
+            interrupted = false;
+            if (!turn.pendingInput && !ctx.input.closed && !sendInterjections("next_message")) {
+              ctx.log({ type: "claude_turns_done" });
               if (this.persistent) ctx.idle?.();
               else ctx.input.close();
             }

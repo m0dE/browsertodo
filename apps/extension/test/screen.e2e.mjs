@@ -26,7 +26,7 @@ const SCREEN = "Figure out what to do based on the current screen";
 const BUILT_COMMANDS = JSON.parse(readFileSync(join(DIST, "manifest.json"), "utf8")).commands;
 const SUGGESTED = BUILT_COMMANDS["open-chat"].suggested_key.default;
 const SUGGESTED_VOICE = BUILT_COMMANDS.voice.suggested_key.default;
-const RESTRICTED_STATUS = "Chrome doesn't let extensions see this page; browsertodo will work in other tabs";
+const RESTRICTED_STATUS = "Chrome doesn't let extensions see this page; BrowserTODO will work in other tabs";
 /** How long a key press gets to reach the extension's command handler before it counts as not delivered. */
 const KEY_PRESS_GRACE_MS = 1500;
 const RUN_TIMEOUT = claude ? 8 * 60_000 : 15_000;
@@ -123,14 +123,24 @@ try {
   });
 
   await step("without a user gesture Chrome refuses sidePanel.open (why the handler calls it before any await)", async () => {
-    const err = await bt(async (w) => chrome.sidePanel.open({ windowId: w }).then(() => "opened", (e) => e.message), windowId);
+    const err = await bt(async (t) => chrome.sidePanel.open({ tabId: t }).then(() => "opened", (e) => e.message), signupTab);
     assert.match(err, /user gesture/);
     return err;
   });
 
   await step("with a gesture the real side panel opens; with the focus in the page the shortcut puts it in the panel's box; the voice key then starts voice there", async () => {
-    // A trusted click in an extension page is a user gesture, like the key press.
-    await openSidePanel(sw, panel, windowId);
+    // Playwright makes every page it drives look focused, so the panel page in its (background) tab would tell
+    // the background it has the focus: from here it has the real focus state, like the side panel.
+    await (await context.newCDPSession(panel)).send("Emulation.setFocusEmulationEnabled", { enabled: false });
+    // A trusted click in an extension page is a user gesture, like the key press. The panel is the sign-up tab's own.
+    await signup.bringToFront();
+    await bt((t) => chrome.tabs.update(t, { active: true }), signupTab);
+    await openSidePanel(sw, panel, windowId, { tabId: signupTab });
+    // The click focused the panel page in its (background) tab: in front and back again, so its blur tells the background.
+    await panel.bringToFront();
+    await signup.bringToFront();
+    await bt((t) => chrome.tabs.update(t, { active: true }), signupTab);
+    await waitFor(() => panel.evaluate(() => !document.hasFocus()), "the panel page in its tab to lose the focus");
     await waitFor(() => bt((w) => globalThis.__browsertodo.panelCommands.isOpen(w), windowId), "the panel's hello");
     // The real side panel (not the panel page in a tab, which also shows in getViews).
     const sidePanel = () =>
@@ -138,9 +148,6 @@ try {
         const v = chrome.extension.getViews().find((x) => x !== window && x.location.pathname === "/sidepanel.html");
         return v ? { hasFocus: v.document.hasFocus(), active: v.document.activeElement?.id } : null;
       });
-    // Playwright makes every page it drives look focused, so the panel page in its (background) tab would tell
-    // the background it has the focus: from here it has the real focus state, like the side panel.
-    await (await context.newCDPSession(panel)).send("Emulation.setFocusEmulationEnabled", { enabled: false });
     // The user is in the sign-up page.
     await signup.bringToFront();
     await signup.click("body");
@@ -148,7 +155,9 @@ try {
     // The key press: the handler in a real user gesture of the service worker.
     const press = await shortcutPresser(ext);
     const first = await press(site.url("/signup"));
-    assert.equal(first, "reopened");
+    // What the background knew of each panel page when the key was pressed, should it not be what was expected.
+    const known = () => bt(() => [...globalThis.__browsertodo.panelCommands.panels.values()]);
+    assert.equal(first, "reopened", JSON.stringify(await known()));
     const inBox = await waitFor(
       async () => {
         const p = await sidePanel();
@@ -184,7 +193,12 @@ try {
       const run = await lastRun();
       // Told which page it is (the tab the chat belongs to), where it works.
       const userTab = { url: site.url("/signup"), title: await signup.title(), access: "here" };
-      assert.deepEqual(run.task, { id: sessionId, instructions: SCREEN, account: null, screenHelp: true, userTab });
+      // And the user's time zone (the browser's), for the prompt's date and time line.
+      const timeZone = await panel.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
+      const { approvals, ...task } = run.task;
+      assert.deepEqual(task, { id: sessionId, instructions: SCREEN, account: null, screenHelp: true, userTab, timeZone });
+      // The default automation level ("Ask before posting, sending or paying") is in the task too.
+      assert.match(approvals, /^Approvals: actions that publish, send, pay/);
       assert.equal(run.url, site.url("/signup"));
       assert.ok(run.shot > 100, `background screenshot ${JSON.stringify(run)}`);
       return `outcome ${s.outcome}; screenshot of the background tab ${run.shot} base64 chars; read ${run.url}`;

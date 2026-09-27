@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS, type BrainMode, type HelperInfo } from "@browsertodo/shared";
-import { autoSwitchRefusal, CLAUDE_CODE_GONE, needsHelper, resolveBrain } from "../src/engine/brain-resolver.js";
+import { autoSwitchRefusal, builtInJev, CLAUDE_CODE_GONE, needsHelper, resolveBrain } from "../src/engine/brain-resolver.js";
 
 const base: HelperInfo = { version: "2", jevAvailable: false, claudePath: "C:\\claude.exe", logDir: "L" };
 const ok: HelperInfo = { ...base, selfTest: { ok: true, ms: 900, at: "2026-09-24T00:00:00Z" } };
@@ -61,6 +61,16 @@ describe("resolveBrain", () => {
     expect(r("claude-code", { ...ok, jevAvailable: true }, false).jevActive).toBe(true);
     expect(r("claude-code", ok, false).jevActive).toBe(false);
     expect(r("auto", null, false, { jevApiKey: "j" }).jevActive).toBe(false);
+  });
+});
+
+describe("builtInJev", () => {
+  it("the hosted AI brings its own Jev; local Claude Code the helper's own key when it has one; else none", () => {
+    expect(builtInJev("browsertodo", null)).toBe("hosted");
+    expect(builtInJev("claude-code", { ...base, jevAvailable: true })).toBe("helper");
+    expect(builtInJev("claude-code", base)).toBeNull();
+    expect(builtInJev("claude-api", { ...base, jevAvailable: true })).toBeNull();
+    expect(builtInJev(null, null)).toBeNull();
   });
 });
 

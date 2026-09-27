@@ -1,5 +1,5 @@
 /**
- * Activity log tab: every run, newest first. Picking one opens that
+ * History tab: every run, newest first. Picking one opens that
  * conversation in Chat (its steps, its end card and Continue): a running one
  * in the tab it runs in, a finished one bound to the tab the panel shows.
  */

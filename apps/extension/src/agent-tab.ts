@@ -1,10 +1,12 @@
 import { MAX_AGENT_TABS } from "@browsertodo/shared";
-import { addToGroup, createWindowTab, lastNormalWindow, mustId, removeTabs, tabExists } from "./chrome-tabs.js";
+import { addToGroup, createWindowTab, lastNormalWindow, mustId, removeAgentTabs, removeTabs, tabExists } from "./chrome-tabs.js";
 import { isControllableUrl } from "./restricted.js";
 
 const TAB_KEY = "agentTabId";
 /** The run's tabs (main + opened by open_tabs) and which one is current. */
 const TABS_KEY = "agentTabs";
+/** A chat's opened tabs between its turns: "agentChatTabs.<sessionId>" (see park). */
+const CHAT_TABS_KEY = "agentChatTabs";
 
 /**
  * current-tab: act on the tab the user is looking at (one-off runs).
@@ -18,8 +20,10 @@ const AGENT_TAB_CLOSED = "the agent tab was closed";
 export interface RunTab {
   id: string;
   tabId: number;
-  /** True for tabs opened by open_tabs; they are closed when the run ends. */
+  /** True for tabs opened by open_tabs (closed when the chat or unattended run ends) or by a page of the run (see fromPage). */
   opened: boolean;
+  /** Opened by a page in one of the run's tabs (a link or button that opens a new tab): never closed by the agent's cleanup. */
+  fromPage?: boolean;
 }
 
 interface TabsState {
@@ -27,6 +31,16 @@ interface TabsState {
   current: number;
   /** The run's main tab (from prepare()) first, then the tabs the agent opened. */
   tabs: [main: RunTab, ...opened: RunTab[]];
+  next: number;
+  /** Tabs a page opened that the agent has not been told about yet (Chrome ids). */
+  unreported?: number[];
+  /** The chat (session id) whose turn these tabs are for: the opened ones are its own. */
+  owner?: string;
+}
+
+/** A chat's opened tabs while no turn of it runs, and its next short id. */
+interface ChatTabs {
+  tabs: RunTab[];
   next: number;
 }
 
@@ -52,6 +66,12 @@ export interface AgentTabOptions {
    * run (scheduled) then opens a tab of its own instead of reusing it.
    */
   isChatTab?(tabId: number): boolean | Promise<boolean>;
+  /**
+   * True when the tab has its own side panel open (panel-tabs.ts): a tab
+   * that replaces it (a chrome:// page, a tab another run uses) then opens
+   * in the background, so the user stays with the panel.
+   */
+  showsPanel?(tabId: number): boolean;
 }
 
 /**
@@ -60,6 +80,10 @@ export interface AgentTabOptions {
  * them current. The state lives in chrome.storage.session so a restarted
  * service worker finds it again. Every agent tab is put in a tab group titled
  * "browsertodo".
+ *
+ * The opened tabs belong to the chat (owner) whose turns opened them: between
+ * its turns they are kept for the chat (park), its next turn in any slot takes
+ * them back (prepare), and they close when the chat is over (closeChatTabs).
  *
  * Runs that happen at the same time each use their own slot: slot 0 is the
  * first agent tab (its storage keys predate slots), slot n keeps its state
@@ -80,17 +104,49 @@ export class AgentTab {
   /**
    * Picks the main tab for a run and makes it the current tab. The driver
    * keeps using the current tab until the next prepare() or switch, even if
-   * the user switches tabs. Tabs an earlier run opened and left open are closed.
-   * current-tab with `tabId`: that tab (the one the run was started from)
-   * instead of the one the user is looking at now; the same rules apply.
+   * the user switches tabs. current-tab with `tabId`: that tab (the one the
+   * run was started from) instead of the one the user is looking at now; the
+   * same rules apply.
+   * owner: the chat the run is a turn of. The tabs its earlier turns opened
+   * are its tabs again. Tabs a turn of another chat left here (it never
+   * ended, e.g. the worker restarted) are kept for that chat; ones no chat
+   * owns are closed.
    */
-  async prepare(mode: TabMode, opts: { tabId?: number } = {}): Promise<number> {
+  async prepare(mode: TabMode, opts: { tabId?: number; owner?: string } = {}): Promise<number> {
     const tabId = mode === "current-tab" ? await this.pickCurrentTab(opts.tabId) : await this.pickOwnTab();
     const previous = await this.state();
-    await removeTabs((previous?.tabs ?? []).filter((t) => t.opened && t.tabId !== tabId).map((t) => t.tabId));
-    await chrome.storage.session.set({ [this.tabKey]: tabId, [this.tabsKey]: freshState(tabId) });
+    const left = previous?.tabs.slice(1) ?? [];
+    let kept: RunTab[] = [];
+    let next = 2;
+    if (previous && previous.owner === opts.owner) [kept, next] = [left, previous.next];
+    else if (previous?.owner) await parkTabs(previous.owner, left, previous.next);
+    else await closeTabsOf(left);
+    if (opts.owner) {
+      const parked = await takeChatTabs(opts.owner);
+      kept = [...kept, ...parked.tabs];
+      next = Math.max(next, parked.next);
+    }
+    const state = freshState(tabId);
+    state.tabs.push(...(await existing(kept, tabId)));
+    state.next = renumber(state.tabs, next);
+    if (opts.owner) state.owner = opts.owner;
+    await chrome.storage.session.set({ [this.tabKey]: tabId, [this.tabsKey]: state });
     await addToGroup(tabId);
     return tabId;
+  }
+
+  /**
+   * The chat's turn ended: its opened tabs stay open and are kept for it (its
+   * next turn, in any slot, takes them back); the main tab stays here.
+   * owner: only when these are that chat's tabs.
+   */
+  async park(owner: string): Promise<void> {
+    const state = await this.state();
+    if (!state || state.owner !== owner) return;
+    const [main, ...opened] = state.tabs;
+    if (!opened.length) return;
+    await parkTabs(owner, opened, state.next);
+    await this.save({ ...state, tabs: [main], current: main.tabId, unreported: [] });
   }
 
   /**
@@ -183,6 +239,39 @@ export class AgentTab {
     return created;
   }
 
+  /**
+   * A tab a page opened (a link with target=_blank, window.open, a popup):
+   * when its opener is one of the run's tabs, it becomes a run tab too (in
+   * the browsertodo group; never activated by the agent), and takeNewTabs()
+   * reports it once. Returns it, or null when the opener is not the run's.
+   */
+  async adopt(tabId: number, openerTabId: number): Promise<RunTab | null> {
+    const state = await this.state();
+    if (!state || !state.tabs.some((t) => t.tabId === openerTabId) || state.tabs.some((t) => t.tabId === tabId)) return null;
+    if (state.tabs.length >= MAX_AGENT_TABS) return null;
+    const tab: RunTab = { id: `t${state.next++}`, tabId, opened: true, fromPage: true };
+    state.tabs.push(tab);
+    state.unreported = [...(state.unreported ?? []), tabId];
+    await this.save(state);
+    await addToGroup(tabId);
+    return tab;
+  }
+
+  /** The tabs pages opened since the last call, with their address and title (see adopt). */
+  async takeNewTabs(): Promise<{ id: string; url: string; title: string }[]> {
+    const state = await this.state();
+    if (!state?.unreported?.length) return [];
+    const ids = state.unreported;
+    await this.save({ ...state, unreported: [] });
+    const out: { id: string; url: string; title: string }[] = [];
+    for (const tabId of ids) {
+      const run = state.tabs.find((t) => t.tabId === tabId);
+      const tab = await chrome.tabs.get(tabId).catch(() => null);
+      if (run && tab) out.push({ id: run.id, url: tab.pendingUrl || tab.url || "", title: tab.title ?? "" });
+    }
+    return out;
+  }
+
   /** Makes a run tab current. Returns its Chrome id. */
   async setCurrent(id: string): Promise<number> {
     const tabId = await this.resolve(id);
@@ -214,16 +303,20 @@ export class AgentTab {
     return targets.map((t) => t.id);
   }
 
-  /** Closes every tab the agent opened in this run; the main tab becomes current again. Returns how many were closed. */
+  /**
+   * The run is over (an unattended run's end): closes every tab the agent
+   * opened with open_tabs in it and forgets the rest (tabs a page opened stay:
+   * they may hold what the user wanted; so do tabs the user took over); the
+   * main tab becomes current again. Returns how many were closed.
+   */
   async closeOpened(): Promise<number> {
     const state = await this.state();
     if (!state) return 0;
-    const opened = state.tabs.filter((t) => t.opened);
+    const [main, ...opened] = state.tabs;
     if (!opened.length) return 0;
-    await removeTabs(opened.map((t) => t.tabId));
-    const [main] = state.tabs;
-    await this.save({ ...state, tabs: [main], current: main.tabId });
-    return opened.length;
+    const closed = await closeTabsOf(opened);
+    await this.save({ ...state, tabs: [main], current: main.tabId, unreported: [] });
+    return closed;
   }
 
   /** Brings the current agent tab's window to the front and activates the tab. */
@@ -295,8 +388,9 @@ export class AgentTab {
     }
     if (tab?.id === undefined) return createWindowTab();
     if (isControllableUrl(tab.url ?? tab.pendingUrl) && !(await this.opts.isTaken?.(tab.id))) return tab.id;
-    // Shown only in place of the tab the user is looking at.
-    const created = await chrome.tabs.create({ windowId: tab.windowId, index: tab.index + 1, active: !!tab.active, url: "about:blank" });
+    // Shown only in place of the tab the user is looking at, unless its side panel is where the user follows the chat.
+    const active = !!tab.active && !this.opts.showsPanel?.(tab.id);
+    const created = await chrome.tabs.create({ windowId: tab.windowId, index: tab.index + 1, active, url: "about:blank" });
     return mustId(created);
   }
 
@@ -309,6 +403,62 @@ export class AgentTab {
     const created = await chrome.tabs.create({ windowId: win.id, active: false, url: "about:blank" });
     return mustId(created);
   }
+}
+
+/**
+ * The chat is over (New Chat): closes the tabs its agent opened and forgets
+ * them. keep: tabs to leave open (another run or chat uses them now).
+ * Returns how many were closed.
+ */
+export async function closeChatTabs(owner: string, keep: (tabId: number) => Promise<boolean>): Promise<number> {
+  const { tabs } = await takeChatTabs(owner);
+  const closing: RunTab[] = [];
+  for (const t of tabs) if (!(await keep(t.tabId))) closing.push(t);
+  return closeTabsOf(closing);
+}
+
+/** Closes the tabs the agent opened with open_tabs, except ones the user took over (removeAgentTabs). */
+function closeTabsOf(tabs: RunTab[]): Promise<number> {
+  return removeAgentTabs(tabs.filter((t) => t.opened && !t.fromPage).map((t) => t.tabId));
+}
+
+const chatTabsKey = (owner: string) => `${CHAT_TABS_KEY}.${owner}`;
+
+/** Adds tabs to the ones kept for a chat between its turns. */
+async function parkTabs(owner: string, tabs: RunTab[], next: number): Promise<void> {
+  if (!tabs.length) return;
+  const key = chatTabsKey(owner);
+  const known = ((await chrome.storage.session.get(key))[key] as ChatTabs | undefined) ?? { tabs: [], next: 2 };
+  const added = tabs.filter((t) => !known.tabs.some((k) => k.tabId === t.tabId));
+  await chrome.storage.session.set({ [key]: { tabs: [...known.tabs, ...added], next: Math.max(next, known.next) } satisfies ChatTabs });
+}
+
+/** The tabs kept for a chat, taken out of the store (the caller holds them now). */
+async function takeChatTabs(owner: string): Promise<ChatTabs> {
+  const key = chatTabsKey(owner);
+  const got = (await chrome.storage.session.get(key))[key] as ChatTabs | undefined;
+  if (!got) return { tabs: [], next: 2 };
+  await chrome.storage.session.remove(key);
+  return got;
+}
+
+/** The tabs that still exist (one the user closed is forgotten), once each, without the main tab. */
+async function existing(tabs: RunTab[], main: number): Promise<RunTab[]> {
+  const out: RunTab[] = [];
+  for (const t of tabs) {
+    if (t.tabId !== main && !out.some((o) => o.tabId === t.tabId) && (await tabExists(t.tabId))) out.push(t);
+  }
+  return out;
+}
+
+/** Gives a tab whose short id is taken a new one (t1 is the main tab). Returns the next free number. */
+function renumber(tabs: RunTab[], next: number): number {
+  const seen = new Set<string>();
+  for (const t of tabs) {
+    if (seen.has(t.id)) t.id = `t${next++}`;
+    seen.add(t.id);
+  }
+  return next;
 }
 
 /** "T2", " t2 " and "2" all mean t2. */

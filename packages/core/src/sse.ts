@@ -91,14 +91,18 @@ type OpenBlock = { type: string; [k: string]: unknown };
  * Rebuilds a MessagesResponse from stream events. Text deltas are passed to
  * onText as they come; tool_use input is the joined input_json_delta parts,
  * parsed when the block stops; thinking text and signatures are kept so the
- * block can be sent back.
+ * block can be sent back. onToolStart: a tool_use block started (from then on
+ * the reply is an action, not only words).
  */
 export class MessageAccumulator {
   private msg: MessagesResponse | null = null;
   private json = new Map<number, string>();
   private stopped = false;
 
-  constructor(private readonly onText?: (messageId: string, index: number, text: string) => void) {}
+  constructor(
+    private readonly onText?: (messageId: string, index: number, text: string) => void,
+    private readonly onToolStart?: () => void,
+  ) {}
 
   /** True once message_stop came. */
   get done(): boolean {
@@ -140,7 +144,10 @@ export class MessageAccumulator {
       case "content_block_start": {
         if (index === null) return;
         const block: OpenBlock = { type: "", ...(d.content_block ?? {}) };
-        if (block.type === "tool_use") this.json.set(index, "");
+        if (block.type === "tool_use") {
+          this.json.set(index, "");
+          this.onToolStart?.();
+        }
         msg.content[index] = block;
         if (block.type === "text" && typeof block.text === "string" && block.text) this.onText?.(msg.id, index, block.text);
         return;

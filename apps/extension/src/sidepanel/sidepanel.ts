@@ -1,8 +1,10 @@
 /**
  * Side panel entry: wires the header (header.ts), the tabs (Chat | TODO |
- * Activity log, tabs.ts), the composer and the push port to the background
+ * History, tabs.ts), the composer and the push port to the background
  * (port.ts), and decides which conversation Chat shows: the one of the
- * browser tab active in the panel's window (see tab-chat.ts).
+ * browser tab the panel belongs to (each tab has its own panel, see
+ * panel-tabs.ts; the page opened as a tab follows its window's active tab
+ * instead), see tab-chat.ts.
  */
 import { errorMessage, type SessionInfo, type VoiceEngineId, type VoiceEnginesResponse } from "@browsertodo/shared";
 import { isStale, uiRequest, type UiPush, type UiState } from "../ui-protocol.js";
@@ -14,8 +16,10 @@ import { setErrorFixes, type ErrorFixes } from "./error-view.js";
 import { initHeader } from "./header.js";
 import { initHistory } from "./history.js";
 import { openSettings } from "./open-settings.js";
+import { initAutonomyWarning } from "./autonomy-warning.js";
 import { connectBackground } from "./port.js";
-import { chatForTab, isBound, tabOfSession } from "./tab-chat.js";
+import { chatForTab, followChat, isBound, tabOfSession } from "./tab-chat.js";
+import { openTabPanel, panelTabOf } from "../panel-tabs.js";
 import { initPanelTabs, tabHasComposer, type TabName } from "./tabs.js";
 import { initTasks } from "./tasks.js";
 import { OPEN_CHAT_COMMAND, openShortcutSettings, readShortcut, VOICE_COMMAND } from "../shortcut.js";
@@ -39,42 +43,69 @@ let state: UiState | null = null;
 let currentTab: TabName = "chat";
 /** The conversation the Chat tab shows. */
 let focused: SessionInfo | null = null;
-/** The browser window this panel is in, and its active tab: Chat shows that tab's conversation. */
+/** The tab this side panel belongs to (null: the panel page opened as a tab). */
+const ownTab = panelTabOf(location.search);
+/**
+ * The browser window this panel is in, and the tab whose conversation Chat shows: the panel's own tab (or where the
+ * agent moved the chat it showed, see followChat), else the active tab of the window.
+ */
 let windowId: number | null = null;
-let activeTab: number | null = null;
+let activeTab: number | null = ownTab;
+/** The conversation Chat shows (null: an empty new chat). */
+let shownChat: string | null = null;
 /** A conversation just started from a tab, until the state shows it bound there. */
 let pending: { tab: number; sessionId: string } | null = null;
+/** The conversation last sent to from the tab Chat shows (kept once bound: its turn may move it, see followChat). */
+let sent: { tab: number; sessionId: string } | null = null;
 /** Running sessions the user left with New chat in a tab they act in (not bound to it). */
 const left = new Map<number, string>();
 
 /** Shows the conversation of the active tab (or an empty new chat). */
 function resolveChat(): void {
   if (pending && state && isBound(pending.sessionId, state)) pending = null;
-  chat.show(chatForTab(activeTab, state ?? {}, { pending, left }));
+  shownChat = chatForTab(activeTab, state ?? {}, { pending, left });
+  chat.show(shownChat);
+}
+
+/** Chat shows the conversation of `tab` from now on. */
+function setActive(tab: number | null): void {
+  if (tab === activeTab) return;
+  activeTab = tab;
+  resolveChat();
+  handsFree.refresh();
 }
 
 /** A message, a new task or a continue went out from this tab: its conversation shows here at once. */
 function startedHere(sessionId: string): void {
   if (activeTab !== null) {
-    pending = { tab: activeTab, sessionId };
+    pending = sent = { tab: activeTab, sessionId };
     left.delete(activeTab);
   }
   tabs.show("chat");
   resolveChat();
 }
 
-/** Switch to the tab another conversation lives in (its chat then shows, since the panel follows the tab). */
+/**
+ * Shows another browser tab. From a tab's own panel, that tab's panel opens too (it shows that tab's chat): called
+ * synchronously in the user's click, since open() needs the gesture.
+ */
+async function goToTab(tabId: number): Promise<boolean> {
+  if (ownTab !== null) void openTabPanel(tabId).catch((err: unknown) => console.warn(`[browsertodo] opening the panel of tab ${tabId} failed: ${errorMessage(err)}`));
+  return (await uiRequest({ type: "tab.focus", tabId })).ok;
+}
+
+/** Switch to the tab another conversation lives in (its chat shows there). */
 async function switchTo(sessionId: string): Promise<boolean> {
   const tab = state ? tabOfSession(sessionId, state) : null;
   try {
-    if (tab !== null) return (await uiRequest({ type: "tab.focus", tabId: tab })).ok;
+    if (tab !== null) return await goToTab(tab);
     return (await uiRequest({ type: "agent.show", sessionId })).ok;
   } catch {
     return false;
   }
 }
 
-/** A run picked in the Activity log: a running conversation of another tab is switched to; any other is bound to this tab. */
+/** A run picked in History: a running conversation of another tab is switched to; any other is bound to this tab. */
 async function openHere(s: SessionInfo): Promise<void> {
   tabs.show("chat");
   const st = state ?? {};
@@ -143,8 +174,11 @@ const transcribe = panelTranscriber(
   (clip) => uiRequest({ type: "voice.transcribe", ...clip }),
   () => composer.target()?.sessionId,
 );
-/** A hands-free session is on: the voice shortcut then reaches this panel, wherever the focus is. */
-const reportListening = (listening: boolean) => port.send({ type: "panel.listening", listening });
+/**
+ * A hands-free session is on (in tab `tabId`): the voice shortcut then reaches this panel, wherever the focus is, and
+ * that tab's toolbar button shows the voice badge.
+ */
+const reportListening = (listening: boolean, tabId: number | null) => port.send({ type: "panel.listening", listening, ...(tabId === null ? {} : { tabId }) });
 const voice = initVoiceInput({
   composer,
   mic: { ...micAccess, watch: (onChange) => watchMicPermission(onChange) },
@@ -161,7 +195,8 @@ const chatOfTab = (tab: number | null): string | null =>
  */
 async function sendSpoken(text: string, target: { tabId: number | null; sessionId: string | null }, cid?: string): Promise<string> {
   const { tabId: tab, sessionId } = target;
-  const where = sessionId ? { sessionId } : tab === null ? {} : { tabId: tab };
+  // A new chat carries the choice of memory made for its tab (the composer's menu).
+  const where = sessionId ? { sessionId } : { ...(tab === null ? {} : { tabId: tab }), ...composer.memory.forNewChat(tab) };
   const r = await uiRequest({ type: "run.message", ...where, text, voice: true, ...(cid ? { cid } : {}) });
   if (sessionId) return r.sessionId;
   if (tab === null || tab === activeTab) startedHere(r.sessionId);
@@ -186,7 +221,7 @@ const handsFree = initHandsFree({
   },
   send: sendSpoken,
   tabTitle: async (tabId) => (await chrome.tabs.get(tabId)).title ?? null,
-  goToTab: (tabId) => void uiRequest({ type: "tab.focus", tabId }).catch((err: unknown) => composer.showError(err)),
+  goToTab: (tabId) => void goToTab(tabId).catch((err: unknown) => composer.showError(err)),
   onSpeaking: (line) => chat.setSpeaking(line),
   keepSpoken: (sessionId, text) =>
     void uiRequest({ type: "voice.spoken", sessionId, text }).catch((err: unknown) => console.warn(`[browsertodo] keeping a spoken line failed: ${errorMessage(err)}`)),
@@ -224,6 +259,7 @@ const handsFree = initHandsFree({
           model: () => voiceModels.standard,
         });
   },
+  answerApproval: async (sessionId, id, answer) => (await uiRequest({ type: "approval.answer", sessionId, id, answer, by: "voice" })).ok,
   stopTask: async (sessionId) => {
     if (!sessionId || !state?.runningSessions.some((s) => s.sessionId === sessionId)) return "No task is running.";
     await uiRequest({ type: "run.stop", sessionId });
@@ -232,7 +268,7 @@ const handsFree = initHandsFree({
   openBilling: billing,
   signIn: () => signIn(),
   onActive: reportListening,
-  host: $("now-notices"),
+  bar: $("voice-bar"),
   trace: panelTrace,
   log: (m) => console.info(`[browsertodo] ${m}`),
 });
@@ -244,7 +280,7 @@ const chat = initChat({
     composer.setConversation(s);
     handsFree.refresh();
   },
-  // New chat: this tab has no conversation any more (the session stays in the Activity log).
+  // New chat: this tab has no conversation any more (the session stays in History).
   onLeave: (s) => {
     if (activeTab !== null) {
       left.set(activeTab, s.sessionId);
@@ -255,11 +291,15 @@ const chat = initChat({
       }
     }
     if (pending?.sessionId === s.sessionId) pending = null;
+    if (sent?.sessionId === s.sessionId) sent = null;
     composer.leave(s.sessionId);
+    // A tab's own panel that followed its chat to the agent's tab starts the new one in its own tab.
+    if (ownTab !== null) activeTab = ownTab;
     resolveChat();
   },
   onSwitch: (s) => void switchTo(s.sessionId),
   onDetails: runDetails,
+  onOpenTask: openInTodo,
   onShortcuts: () => void openShortcutSettings(),
   voiceEnv: () => {
     const settings = state?.settings;
@@ -287,6 +327,8 @@ function signIn(): void {
 }
 
 const header = initHeader({ onState: (s) => applyState(s), onBilling: billing, onSignIn: signIn });
+// While the agent may act without asking, the panel says so (Settings > AI > Automation).
+const autonomyWarning = initAutonomyWarning();
 
 /** What the fix buttons of error cards and the status line do (error-help.ts names them). Billing ones need an account. */
 function errorFixes(s: UiState): ErrorFixes {
@@ -313,14 +355,28 @@ const tabs = initPanelTabs((name) => {
   if (name === "history") history.refresh();
 });
 
-/** Follows the active tab of this panel's window (each window's panel follows its own). */
-async function trackTabs(): Promise<void> {
-  const setActive = (id: number | null) => {
-    if (id === activeTab) return;
-    activeTab = id;
-    resolveChat();
-    handsFree.refresh();
+/** A tab's own panel: its window (the tab may be dragged to another one); the chat it follows goes back when that tab closes. */
+async function trackOwnTab(tab: number): Promise<void> {
+  const refresh = async () => {
+    try {
+      windowId = (await chrome.tabs.get(tab)).windowId;
+    } catch {
+      // The tab is closing, and its panel with it.
+      return;
+    }
+    hello();
   };
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    handsFree.tabClosed(tabId);
+    if (tabId === activeTab) setActive(tab);
+  });
+  chrome.tabs.onAttached.addListener((tabId) => tabId === tab && void refresh());
+  await refresh();
+}
+
+/** The panel page opened as a tab: follows the active tab of its window. */
+async function trackTabs(): Promise<void> {
+  if (ownTab !== null) return trackOwnTab(ownTab);
   const refresh = async () => {
     try {
       const [t] = await chrome.tabs.query(windowId === null ? { active: true, currentWindow: true } : { active: true, windowId });
@@ -357,6 +413,7 @@ function applyState(s: UiState): void {
   state = s;
   setErrorFixes(errorFixes(s));
   header.render(s);
+  autonomyWarning.render(s.settings);
   voice.setAllowed(!!s.account?.signedIn && voiceAllowed(s.account.plan));
   if (voicePending) {
     voicePending = false;
@@ -369,6 +426,14 @@ function applyState(s: UiState): void {
   tasks.setState(s);
   // A left running session that ended no longer needs hiding.
   for (const [tab, id] of [...left]) if (!s.runningSessions.some((r) => r.sessionId === id)) left.delete(tab);
+  // The agent moved this panel's chat to the tab it works in: the panel goes on showing it (and talking to it).
+  if (ownTab !== null && activeTab !== null) {
+    const followed = followChat(activeTab, shownChat, s, sent);
+    if (followed !== activeTab) {
+      activeTab = followed;
+      handsFree.refresh();
+    }
+  }
   resolveChat();
   updateComposer();
 }
@@ -407,13 +472,13 @@ function onPush(msg: UiPush): void {
   }
 }
 
-/** Tells the background which window this panel is in (the keyboard shortcut acts per window). */
+/** Tells the background which tab and window this panel is in (the keyboard shortcut acts on the tab's panel). */
 function hello(): void {
   if (windowId === null) return;
-  port.send({ type: "panel.hello", windowId });
+  port.send({ type: "panel.hello", windowId, ...(ownTab === null ? {} : { tabId: ownTab }) });
   reportDocumentFocus();
   // A background that restarted meanwhile learns it again (the voice shortcut stops a listening panel).
-  if (handsFree.active) reportListening(true);
+  if (handsFree.active) reportListening(true, handsFree.tab);
 }
 
 /** Whether this page has the keyboard focus, for the shortcut (see panel-command.ts), with the text in the box. */

@@ -21,8 +21,7 @@ export function taskFixture(id: string, extra: Partial<Task> = {}): Task {
     failReason: null,
     createdAt: "2026-09-24T00:00:00.000Z",
     updatedAt: "2026-09-24T00:00:00.000Z",
-    repeat: null,
-    tz: null,
+    schedule: null,
     ownerId: "u1",
     ...extra,
   };

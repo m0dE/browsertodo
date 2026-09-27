@@ -11,7 +11,8 @@ import { ANTHROPIC_MESSAGES_URL, delay, DeltaBatcher, errorMessage, OUT_OF_CREDI
 import type { AgentSession, ApiAgentOptions } from "./types.js";
 import { createToolExecutor } from "./executor.js";
 import { agentError, CLAUDE_DECLINED, ENDED_WITHOUT_RESULT } from "./failures.js";
-import { buildSystemPrompt, buildTaskPrompt, FOLLOW_UP_PREFIX, humanMessage } from "./prompts.js";
+import { Interjections } from "./interjections.js";
+import { buildSystemPrompt, buildTaskPrompt, FOLLOW_UP_PREFIX } from "./prompts.js";
 import { isTaskEndTool, timeLimitReached, toolBudget, toolCallLimitExceeded, toolCallLimitReached, turnEndEvents } from "./turn-rules.js";
 import {
   buildRequest,
@@ -58,7 +59,12 @@ function startModelCall(streaming: boolean, doFetch: typeof fetch, onDelta: (id:
   let firstTextMs: number | undefined;
   let lastTextMs: number | undefined;
   let deltas = 0;
+  let toolStarted = false;
   return {
+    /** The reply has started a tool call (streamed replies only). */
+    get toolStarted() {
+      return toolStarted;
+    },
     fetch: (async (input, init) => {
       const res = await doFetch(input, init);
       headersMs = took();
@@ -72,10 +78,14 @@ function startModelCall(streaming: boolean, doFetch: typeof fetch, onDelta: (id:
             deltas++;
             onDelta(`${messageId}:${index}`, text);
           },
+          onToolStart: () => {
+            toolStarted = true;
+          },
         }
       : undefined,
-    span(r: PostResult, extra: { model: string; attempt: number; messages: number }): TraceDraft {
-      const data: NonNullable<TraceDraft["data"]> = { ...extra, result: r.kind, streamed: streaming };
+    /** interrupted: stopped for a message from the user (see request()). */
+    span(r: PostResult, extra: { model: string; attempt: number; messages: number }, interrupted = false): TraceDraft {
+      const data: NonNullable<TraceDraft["data"]> = { ...extra, result: interrupted ? "interrupted" : r.kind, streamed: streaming };
       if (headersMs !== undefined) data.responseMs = headersMs;
       if (firstTextMs !== undefined) data.firstTextMs = firstTextMs;
       if (lastTextMs !== undefined) data.lastTextMs = lastTextMs;
@@ -154,15 +164,25 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
 
   /** The running turn's task_* result sink (the executor is shared by every turn). */
   let onTaskEnd: (r: TaskRunResult) => void = () => {};
+  /** When the running turn's time limit ends it (wait_for stops before). */
+  let turnEndsAt: number | undefined;
+  /** Messages the user types while a turn runs: with the next tool result or request, and the turn cannot end before. */
+  const interjections = new Interjections((route, waitedMs, count) =>
+    trace({ t: Date.now() - Math.round(waitedMs), ms: waitedMs, cat: "user", name: "interjection", data: { route, count } }),
+  );
   const executor = createToolExecutor({
+    interjections,
     browser: opts.browser,
     jev: opts.jev,
     jevThreshold: opts.config.jevThreshold,
     onEvent: emit,
     onTaskEnd: (r) => onTaskEnd(r),
+    turnEndsAt: () => turnEndsAt,
     mediaPaths: opts.mediaPaths,
     sleep,
     ...(opts.onTrace ? { onTrace: trace } : {}),
+    ...(opts.scheduleTask ? { scheduleTask: opts.scheduleTask } : {}),
+    ...(opts.memory ? { memory: opts.memory } : {}),
   });
 
   const tools = toolsFor();
@@ -212,7 +232,6 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
   const runTurn = (config: RunConfig): AgentSession => {
     turnRunning = true;
     const controller = new AbortController();
-    const pendingUser: string[] = [];
     let ended = false;
     let resolveDone!: (r: TaskRunResult) => void;
     const done = new Promise<TaskRunResult>((r) => (resolveDone = r));
@@ -229,23 +248,50 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
       if (timer) clearTimeout(timer);
       controller.abort();
       // Messages typed while the turn was ending still reach Claude with the next turn.
-      for (const t of pendingUser.splice(0)) addUserText(humanMessage(t));
+      const said = interjections.take("next_message");
+      if (said) addUserText(said);
       // Who picked this turn's elements (Jev, or Claude after Jev was unsure), then task_end.
       for (const e of turnEndEvents(r, jevOn ? executor.takePicks() : null)) emit(e);
       resolveDone(r);
     };
 
-    const takeUserText = (): TextBlock[] => pendingUser.splice(0).map((t) => ({ type: "text" as const, text: humanMessage(t) }));
+    const takeUserText = (route: "request" | "interrupt" | "next_message"): TextBlock[] => {
+      const said = interjections.take(route);
+      return said ? [{ type: "text", text: said }] : [];
+    };
 
-    /** One request with retries. null means the turn already ended. */
-    const request = async (): Promise<MessagesResponse | null> => {
+    /**
+     * One request with retries. null means the turn already ended. "interrupted": a message from the user came
+     * while the model was only writing (thinking or text, no tool call started), so the request was stopped and
+     * its reply dropped: the next request carries the message at once, as Claude Code's interrupt does. A reply
+     * that is not streamed (the hosted AI) never shows where it is, so it is let finish.
+     */
+    const request = async (): Promise<MessagesResponse | "interrupted" | null> => {
       const body = buildRequest({ model: opts.model, system, tools, messages, jev: jevOn });
       for (let attempt = 0; ; attempt++) {
         const call = startModelCall(streaming, doFetch, (id, text) => batcher.delta(id, text));
-        const r = await postMessages(call.fetch, opts.apiKey, body, controller.signal, transport, call.stream);
+        const thisRequest = new AbortController();
+        const endRequest = () => thisRequest.abort();
+        controller.signal.addEventListener("abort", endRequest, { once: true });
+        let interrupted = false;
+        const stopListening = streaming
+          ? interjections.onAdd(() => {
+              if (call.toolStarted || interrupted) return;
+              interrupted = true;
+              thisRequest.abort();
+            })
+          : () => {};
+        let r: PostResult;
+        try {
+          r = await postMessages(call.fetch, opts.apiKey, body, thisRequest.signal, transport, call.stream);
+        } finally {
+          stopListening();
+          controller.signal.removeEventListener("abort", endRequest);
+        }
         batcher.flush();
-        trace(call.span(r, { model: opts.model, attempt: attempt + 1, messages: messages.length }));
+        trace(call.span(r, { model: opts.model, attempt: attempt + 1, messages: messages.length }, interrupted));
         if (ended) return null;
+        if (interrupted) return "interrupted";
         if (r.kind === "ok") return r.message;
         if (r.kind === "credit") {
           emit({ type: "error", text: r.reason });
@@ -285,11 +331,18 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
     const loop = async () => {
       const max = config.maxToolCalls;
       let toolCalls = 0;
+      /** How the next request gets the user's waiting messages. */
+      let route: "request" | "interrupt" = "request";
       while (!ended) {
-        const pending = takeUserText();
+        const pending = takeUserText(route);
+        route = "request";
         if (pending.length) messages[messages.length - 1]!.content.push(...pending);
         pruneImages();
         const msg = await request();
+        if (msg === "interrupted") {
+          route = "interrupt";
+          continue;
+        }
         if (!msg || ended) return;
         const content = Array.isArray(msg.content) ? msg.content : [];
         // The API rejects a history with an empty assistant message, which would break every later turn.
@@ -302,10 +355,10 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
         });
         const uses = content.filter((b): b is ToolUseBlock => b.type === "tool_use");
         if (uses.length === 0) {
-          if (pendingUser.length) {
-            // The human said something while Claude was finishing; let Claude answer it.
+          if (interjections.unseen) {
+            // The user said something while Claude was finishing; let Claude answer it.
             // (After an empty answer the last message is still the user's: the next round adds the text to it.)
-            if (content.length) messages.push({ role: "user", content: takeUserText() });
+            if (content.length) messages.push({ role: "user", content: takeUserText("next_message") });
             continue;
           }
           const why = msg.stop_reason === "refusal" ? CLAUDE_DECLINED : ENDED_WITHOUT_RESULT;
@@ -351,6 +404,7 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
       }
     };
 
+    turnEndsAt = Date.now() + Math.max(0, config.maxTaskMinutes * 60_000);
     timer = setTimeout(
       () => finish({ outcome: "failed", reason: timeLimitReached(config.maxTaskMinutes) }),
       Math.max(0, config.maxTaskMinutes * 60_000),
@@ -365,7 +419,7 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
       done,
       sendUserMessage(text: string) {
         if (ended || !text.trim()) return;
-        pendingUser.push(text);
+        interjections.add(text);
         emit({ type: "user_message", text });
       },
       abort(reason: string, outcome: "paused" | "failed" | "retry" = "failed") {

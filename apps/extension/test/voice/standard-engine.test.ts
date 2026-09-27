@@ -38,6 +38,7 @@ function events(): EngineEvents & { log: string[] } {
     forward: () => {},
     userWords: () => {},
     stopTask: async () => "",
+    answerApproval: async () => "",
     endVoice: () => {},
     failed: (err) => void log.push(`failed:${String(err)}`),
   };

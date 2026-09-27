@@ -5,7 +5,9 @@
  * - The mic button and the voice shortcut do the same: start a hands-free
  *   session (hands-free.ts) with the engine picked in Settings, or end the one
  *   that is on, wherever it listens. The session shows itself on the button
- *   and the orb.
+ *   (filled in the live colour, a ring following the voice, its state in the
+ *   tooltip), the orb, and the box (a glow and "Listening… just talk" while
+ *   it listens for this tab); the voice bar at the top is hands-free.ts's.
  * - Plans without voice (and signed out) see a lock that explains, with a
  *   way to pick a plan. The microphone is asked for on mic-permission.html,
  *   since a side panel cannot show Chrome's prompt.
@@ -24,10 +26,10 @@ export type VoiceUiState = "locked" | "idle" | "handsfree";
 /** From the plan catalog, e.g. "Voice needs the Plus or Pro plan". */
 export const LOCKED_TEXT = `Voice needs ${plansWithText("voice")}`;
 
-/** The mic button's tooltip and accessible name. */
-export function micButtonTitle(state: VoiceUiState, shortcut: string | null): string {
+/** The mic button's tooltip and accessible name; status: what a session on is doing ("Listening"). */
+export function micButtonTitle(state: VoiceUiState, shortcut: string | null, status?: string): string {
   if (state === "locked") return LOCKED_TEXT;
-  const base = state === "handsfree" ? "Stop hands-free" : "Voice";
+  const base = state === "handsfree" ? (status ? `Stop hands-free (${status})` : "Stop hands-free") : "Voice";
   return shortcut ? `${base} · ${shortcut}` : base;
 }
 
@@ -73,6 +75,10 @@ export interface HandsFreeLook {
   caption: string;
   /** "sending" / "speaking" change the orb's rhythm. */
   phase: string;
+  /** What the session is doing, for the mic's tooltip ("Listening", as the voice bar says). */
+  status: string;
+  /** It listens for another tab than the one shown (the box here is not its). */
+  elsewhere: boolean;
 }
 
 /** What voice input needs of the hands-free session (hands-free.ts). */
@@ -87,6 +93,8 @@ export interface VoiceInput {
   setAllowed(allowed: boolean): void;
   /** The voice shortcut's label for the tooltip (null: none assigned). */
   setShortcut(label: string | null): void;
+  /** The voice shortcut's label (null: none assigned). */
+  readonly shortcutLabel: string | null;
   /** The voice shortcut: hands-free on or off, as the mic button; locked, it points at the button and says why. */
   shortcut(): void;
   readonly state: VoiceUiState;
@@ -127,14 +135,12 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
   );
   deps.host.append(orb);
 
-  // The level drives the orb and the button ring, once per frame at most.
+  // The level drives the orb, the button ring and the voice bar's meter (all read --level), once per frame at most.
   let level = 0;
   let frame = 0;
   const paint = () => {
     frame = 0;
-    const v = level.toFixed(3);
-    orb.style.setProperty("--level", v);
-    button.style.setProperty("--level", v);
+    document.body.style.setProperty("--level", level.toFixed(3));
   };
   const setLevel = (l: number) => {
     level = l;
@@ -146,7 +152,7 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
 
   function render(): void {
     const state = uiState();
-    const title = micButtonTitle(state, shortcutLabel);
+    const title = micButtonTitle(state, shortcutLabel, look?.status);
     button.dataset.state = state;
     button.title = title;
     button.setAttribute("aria-label", title);
@@ -154,7 +160,10 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
     orb.hidden = !look?.orb;
     orb.dataset.state = look?.phase ?? "idle";
     caption.textContent = look?.caption ?? "";
-    composer.setDictating(!!look);
+    // The box shows it listens only on the session's own tab (elsewhere, what is said goes to that tab's chat).
+    const here = !!look && !look.elsewhere;
+    composer.setDictating(here);
+    document.body.classList.toggle("voice-live", here);
     if (!look) setLevel(0);
   }
 
@@ -203,6 +212,9 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
     setShortcut(label) {
       shortcutLabel = label;
       render();
+    },
+    get shortcutLabel() {
+      return shortcutLabel;
     },
     shortcut: () => toggle("shortcut"),
     get state() {

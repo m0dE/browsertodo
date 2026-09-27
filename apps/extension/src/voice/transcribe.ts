@@ -57,7 +57,7 @@ export function toVoiceError(err: unknown): VoiceError {
     }
     return new VoiceError({ kind: "server", message: "Voice isn't working right now. Try again in a moment.", fatal: false });
   }
-  return new VoiceError({ kind: "network", message: "Can't reach browsertodo. Check your connection.", fatal: false });
+  return new VoiceError({ kind: "network", message: "Can't reach BrowserTODO. Check your connection.", fatal: false });
 }
 
 /** One clip for the background (UI request "voice.transcribe"). */

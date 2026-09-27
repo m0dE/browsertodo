@@ -1,6 +1,6 @@
 /** Errors in plain words with the button that fixes them (error-help.ts), and a failed turn shown once in the chat. */
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { HOSTED_AI_UNAVAILABLE, OUT_OF_CREDIT, PLAN_REQUIRED_MESSAGES, type AgentEvent } from "@browsertodo/shared";
+import { HOSTED_AI_UNAVAILABLE, OUT_OF_CREDIT, PLAN_REQUIRED_MESSAGES, SCHEDULE_PLAN_REQUIRED, SCHEDULE_SIGN_IN, type AgentEvent } from "@browsertodo/shared";
 import { CLAUDE_CODE_GONE, HOSTED_SIGN_IN } from "../../src/engine/brain-resolver.js";
 import { errorHelp, FIXES } from "../../src/sidepanel/error-help.js";
 import { setErrorFixes } from "../../src/sidepanel/error-view.js";
@@ -22,6 +22,9 @@ describe("errorHelp", () => {
     [HOSTED_SIGN_IN, "You're not logged in.", ["Log in"], true],
     ["BrowserTODO AI rejected the sign-in (HTTP 401: invalid or expired session)", "You're not logged in.", ["Log in"], true],
     [PLAN_REQUIRED_MESSAGES.voice, PLAN_REQUIRED_MESSAGES.voice, ["Choose a plan"], false],
+    // schedule_task's refusals, as the chat shows them.
+    [SCHEDULE_PLAN_REQUIRED, "Scheduling needs a paid plan.", ["Choose a plan"], false],
+    [SCHEDULE_SIGN_IN, "You're not logged in.", ["Log in"], false],
     ["Helper not installed", "The Claude Code helper isn't installed.", ["Set up Claude Code"], false],
     ["helper disconnected: Native host has exited.", "Local Claude Code isn't connected.", ["Set up Claude Code", "Use BrowserTODO AI"], true],
     [CLAUDE_CODE_GONE, "Local Claude Code isn't connected.", ["Set up Claude Code", "Use BrowserTODO AI"], true],

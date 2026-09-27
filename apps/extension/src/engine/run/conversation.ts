@@ -5,14 +5,14 @@
  * is told what was done so far. Either way its events append to the same
  * session, so the Activity view shows one thread.
  */
-import type { AgentTask, ExtensionSettings, SessionInfo, StampedAgentEvent, TaskRunResult, UserTab } from "@browsertodo/shared";
+import { localTimeZone, type AgentTask, type ExtensionSettings, type SessionInfo, type StampedAgentEvent, type TaskRunResult, type UserTab } from "@browsertodo/shared";
 import { buildFollowUpMessage } from "@browsertodo/core";
 import { buildFollowUpInstructions, isContinuableOutcome } from "../../continue.js";
 import { isContinuable, SessionEndedError, type Brain } from "../brains.js";
 import type { LocalStore } from "../local-store.js";
 import { mediaSources, type TurnJob } from "./jobs.js";
 import { isRestrictedUrl } from "../../restricted.js";
-import { runConfig, userTabOf, type ActiveSession, type Cleanup, type TurnRunner } from "./turn.js";
+import { approvalsLine, runConfig, userTabOf, type ActiveSession, type Cleanup, type TurnRunner } from "./turn.js";
 
 /** The message "Continue" sends when the user adds no note. */
 export const CONTINUE_TEXT = "Continue from where you stopped.";
@@ -65,10 +65,30 @@ export async function runNextTurn(
   if (active.forced) throw new Error(active.forced.reason);
   // What the agent gets: what the user's tab shows, then the message (for an empty one: look at the page again).
   const message = { text: job.text, ...(job.screen ? { screenHelp: true } : {}) };
-  const text = buildFollowUpMessage({ ...message, ...(userTab ? { userTab } : {}) });
+  // What waits for the user's approval this turn (the level may have changed since the last one).
+  const approvals = approvalsLine(settings, active.scheduled);
+  // The conversation's own task (a TODO or cloud task) keeps its run notes in memory; a chat has none.
+  const memoryRun = {
+    ...(from.source === "adhoc" ? {} : { task: { instructions: job.first.instructions, account: job.first.account } }),
+    title: from.title,
+    request: job.text,
+    ...(page ? { tabUrl: page.url, tabTitle: page.title } : {}),
+  };
+  const sameSession = from.brain === brain.kind && isContinuable(brain) && brain.isOpen?.(sessionId) !== false;
+  // The same agent session already has what earlier turns were given: only what is new comes with this message.
+  const memory = sameSession ? await turns.memoryFor(active, { ...memoryRun, continued: true }) : undefined;
+  const text = buildFollowUpMessage({
+    ...message,
+    timeZone: localTimeZone(),
+    ...(userTab ? { userTab } : {}),
+    ...(approvals ? { approvals } : {}),
+    ...(memory ? { memory } : {}),
+  });
+  // Scheduled runs hold what the task does not ask for: the task is the first turn's instructions plus this message.
+  active.instructions = `${job.first.instructions}\n${job.text}`;
   // The brain echoes the message it got; the chat already shows the user's own words.
   active.said.push(text);
-  if (from.brain === brain.kind && isContinuable(brain) && brain.isOpen?.(sessionId) !== false) {
+  if (sameSession && isContinuable(brain)) {
     turns.emit(active, { type: "status", text: SAME_SESSION[brain.kind] ?? "Continuing the same agent session" });
     try {
       const run = turns.continue(active, brain, { text, config: runConfig(settings, false), settings });
@@ -84,7 +104,8 @@ export async function runNextTurn(
   const instructions = buildFollowUpInstructions({ instructions: job.first.instructions, session: from, events, text: buildFollowUpMessage(message) });
   const sources = job.task ? await mediaSources({ source: "local", task: job.task }, localStore) : [];
   const mediaPaths = await turns.materialize(active, sources, cleanups);
-  const task: AgentTask = { id: job.task?.id ?? sessionId, instructions, account: job.first.account, ...(userTab ? { userTab } : {}) };
+  const fresh = await turns.memoryFor(active, memoryRun);
+  const task: AgentTask = { id: job.task?.id ?? sessionId, instructions, account: job.first.account, ...(userTab ? { userTab } : {}), ...(fresh ? { memory: fresh } : {}) };
   // After a stop, the agent first checks whether the work was already done.
   const run = turns.start(active, brain, { task, mediaPaths, config: runConfig(settings, from.outcome !== "done"), settings });
   return turns.drive(active, run, settings, cleanups);

@@ -8,13 +8,16 @@ export * from "./types.js";
 /** Tool execution shared by both brains. */
 export { createToolExecutor } from "./executor.js";
 /** Jev client over fetch (works in the extension and in Node). */
-export { createJev, type CreateJevOptions } from "./jev.js";
+export { createJev, proxyJevClient, type CreateJevOptions, type JevClientLike } from "./jev.js";
 /** A hosted-AI request refused for lack of usage credit (HTTP 402); error text made readable for the user. */
 export { OutOfCreditError, plainErrorText } from "./api-errors.js";
 /** Keeps passwords the agent was given out of events and logs. */
 export { mapStrings, REDACTED, SecretRedactor } from "./redact.js";
 /** System prompt for either brain, the first user message of a task, and how later messages are framed. */
-export { buildFollowUpMessage, buildSystemPrompt, buildTaskPrompt, FOLLOW_UP_PREFIX, humanMessage, type FollowUpMessage } from "./prompts.js";
+export { buildFollowUpMessage, buildSystemPrompt, buildTaskPrompt, FOLLOW_UP_PREFIX, type FollowUpMessage } from "./prompts.js";
+/** Messages the user sends while a turn runs: delivered at the model's next read, and the turn cannot end before. */
+export { interjectionText, Interjections, type InterjectionRoute } from "./interjections.js";
+export { runWaitFor, WAIT_RETRY_BACKOFF, type WaitEnd } from "./wait.js";
 /** Compact text form of a snapshot (as returned by read_page), and its parser for the helper's scripted brain. */
 export { formatSnapshot, parseSnapshotText, type ParsedPage } from "./page-format.js";
 /** Failure reasons the agents report, and their sorting into temporary (retry later) or permanent. */

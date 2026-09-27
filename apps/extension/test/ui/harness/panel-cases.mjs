@@ -92,7 +92,7 @@ export const PANEL_CASES = [
     names: ["panel-chat-idle", "panel-composer-long", "panel-model-menu", "panel-composer-files"],
     async run({ ctx, size, scheme, label, fail, expectBar, tabsText, want, openPanel, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "idle", ".chat-empty");
-      if ((await tabsText(p)) !== "Chat | TODO | Activity log") fail(`tabs "${await tabsText(p)}"`);
+      if ((await tabsText(p)) !== "Chat | TODO | History") fail(`tabs "${await tabsText(p)}"`);
       const bar = await expectBar(p, { "chat-new": false, "chat-show": false }, "idle chat");
       if (!/already a new chat/.test(bar["chat-new"].title)) fail(`New Chat tooltip "${bar["chat-new"].title}"`);
       // Disabled bar buttons do nothing.
@@ -208,7 +208,7 @@ export const PANEL_CASES = [
       await shoot(p, "panel-empty-send-sent", size, scheme);
 
       // Chrome keeps extensions out of the user's page: one quiet line, the run goes on.
-      await push({ type: "status", text: "Chrome doesn't let extensions see this page; browsertodo will work in other tabs" });
+      await push({ type: "status", text: "Chrome doesn't let extensions see this page; BrowserTODO will work in other tabs" });
       await p.waitForFunction(() => document.querySelector("#chat-log")?.textContent.includes("Chrome doesn't let extensions see this page"));
       const line = await p.evaluate(() => {
         const el = [...document.querySelectorAll("#chat-log *")].reverse().find((e) => e.children.length === 0 && e.textContent.includes("Chrome doesn't let extensions"));
@@ -271,37 +271,35 @@ export const PANEL_CASES = [
       await p.close();
     },
   },
-  // Empty todo list: nothing due, so Run now is disabled and says why; with cloud sync it stays usable.
+  // Empty todo list: nothing due, so Run due is not shown; with cloud sync (its queue unknown here) it is.
   {
     names: ["panel-todo-empty"],
     async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "empty", ".chat-empty");
       await p.click("#tab-btn-todo");
       await p.waitForSelector("#tasks-empty:not([hidden])");
-      const runNow = () => p.evaluate(() => ({ on: document.getElementById("run-now").getAttribute("aria-disabled") !== "true", title: document.getElementById("run-now").title }));
-      const idle = await runNow();
-      if (idle.on || idle.title !== "Nothing is waiting to run") fail(`Run now with nothing due ${JSON.stringify(idle)}`);
-      await p.click("#run-now", { force: true });
-      if (await p.evaluate(() => window.__requests.some((r) => r.type === "run.due"))) fail("disabled Run now sent run.due");
+      const runDue = () => p.evaluate(() => ({ shown: !document.getElementById("run-now").hidden, text: document.getElementById("run-now").textContent, title: document.getElementById("run-now").title }));
+      const idle = await runDue();
+      if (idle.shown) fail(`Run due shown with nothing due ${JSON.stringify(idle)}`);
       await checkLayout(p, `empty ${label}`);
       await shoot(p, "panel-todo-empty", size, scheme);
       const st = scenario("empty").state;
       await p.evaluate((s) => window.__push({ type: "state", state: s }), { ...st, settings: { ...st.settings, cloudEnabled: true } });
-      const cloud = await runNow();
-      if (!cloud.on || !/check the cloud queue/.test(cloud.title)) fail(`Run now with cloud sync ${JSON.stringify(cloud)}`);
+      const cloud = await runDue();
+      if (!cloud.shown || cloud.text !== "Run due" || !/check the cloud queue/.test(cloud.title)) fail(`Run due with cloud sync ${JSON.stringify(cloud)}`);
       reportErrors(p, `empty ${label}`);
       await p.close();
     },
   },
-  // A running session: TODO, then Chat with its action bar, then the Activity Log.
+  // A running session: TODO, then Chat with its action bar, then the History tab.
   {
-    names: ["panel-todo", "panel-model-running", "panel-add-form", "panel-finished-menu", "panel-chat-running", "panel-activity-log", "panel-activity-log-open"],
+    names: ["panel-todo", "panel-model-running", "panel-finished-menu", "panel-chat-running", "panel-history", "panel-history-open"],
     async run({ ctx, size, scheme, label, fail, expectBar, expectChipHints, firstMessage, want, only, openPanel, shoot, checkLayout, reportErrors, wantAny, shots, taken }) {
       const page = await openPanel(ctx, "ok", ".ev-tool");
       await page.click("#tab-btn-todo");
       await page.waitForSelector(".task");
-      const rn = await page.evaluate(() => ({ text: document.getElementById("run-now").textContent, on: document.getElementById("run-now").getAttribute("aria-disabled") !== "true", title: document.getElementById("run-now").title }));
-      if (rn.text !== "Run now" || !rn.on || rn.title !== "Run the tasks whose time has come, instead of waiting for the next check (every 15 minutes)") fail(`Run now ${JSON.stringify(rn)}`);
+      const rn = await page.evaluate(() => ({ text: document.getElementById("run-now").textContent, shown: !document.getElementById("run-now").hidden, title: document.getElementById("run-now").title }));
+      if (rn.text !== "Run due (1)" || !rn.shown || rn.title !== "Run the 1 task whose time has come now, instead of waiting for the next check (every 15 minutes)") fail(`Run due ${JSON.stringify(rn)}`);
       await expectChipHints(page, "todo");
       await checkLayout(page, `todo ${label}`);
       await shoot(page, "panel-todo", size, scheme);
@@ -318,14 +316,6 @@ export const PANEL_CASES = [
         await page.locator("#composer").screenshot({ path: join(shots, `panel-model-running-${size.w}-${scheme}.png`) });
         taken.push(join(shots, `panel-model-running-${size.w}-${scheme}.png`));
       }
-      if (want("panel-add-form", size, scheme)) {
-        await page.click("#add-toggle");
-        await page.fill("#add-text", "Post the weekly recap");
-        await page.fill("#add-repeat", "9:00, 18:30");
-        await checkLayout(page, `add ${label}`);
-        await shoot(page, "panel-add-form", size, scheme);
-        await page.click("#add-cancel");
-      }
       if (want("panel-finished-menu", size, scheme)) {
         await page.locator("#finished > summary").click();
         await expectChipHints(page, "finished");
@@ -334,7 +324,7 @@ export const PANEL_CASES = [
         await shoot(page, "panel-finished-menu", size, scheme);
         await page.locator("#tab-todo .section-head h2").click();
       }
-      if (wantAny(["panel-chat-running", "panel-activity-log", "panel-activity-log-open"], size, scheme)) {
+      if (wantAny(["panel-chat-running", "panel-history", "panel-history-open"], size, scheme)) {
         await page.click("#tab-btn-chat");
         await page.waitForSelector("#chat-log .ev-tool", { state: "attached" });
         // Running: New chat and Show Tab work.
@@ -351,12 +341,12 @@ export const PANEL_CASES = [
         const shown = await page.evaluate(() => window.__requests.find((r) => r.type === "agent.show"));
         if (shown?.sessionId !== "s-live") fail(`Show Tab sent ${JSON.stringify(shown)}`);
 
-        // Activity Log: the list of runs, no composer. Picking a finished run (by keyboard) opens it in Chat, bound to this tab.
+        // History: the list of runs, no composer. Picking a finished run (by keyboard) opens it in Chat, bound to this tab.
         await page.click("#tab-btn-history");
         await page.waitForSelector(".sessions li");
-        await expectChipHints(page, "activity log");
-        await checkLayout(page, `activity log ${label}`);
-        await shoot(page, "panel-activity-log", size, scheme);
+        await expectChipHints(page, "history");
+        await checkLayout(page, `history ${label}`);
+        await shoot(page, "panel-history", size, scheme);
         if (await page.evaluate(() => !!document.querySelector("#hist-past, #hist-log, #hist-open, #hist-rawlog"))) fail("the read-only run view is still in the page");
         const pastRow = page.locator(".sessions li button").nth(1);
         const pastId = await pastRow.getAttribute("data-id");
@@ -371,10 +361,10 @@ export const PANEL_CASES = [
           focus: document.activeElement?.id,
         }));
         if (opened.tab !== "tab-btn-chat" || opened.title !== "Post 'good morning' on X" || opened.bind?.sessionId !== pastId || opened.bind?.tabId !== 1 || !opened.composer || opened.focus !== "now-text") {
-          fail(`Activity Log row did not open the run in Chat: ${JSON.stringify(opened)}`);
+          fail(`History row did not open the run in Chat: ${JSON.stringify(opened)}`);
         }
-        await checkLayout(page, `activity log open ${label}`);
-        await shoot(page, "panel-activity-log-open", size, scheme);
+        await checkLayout(page, `history open ${label}`);
+        await shoot(page, "panel-history-open", size, scheme);
         // A running one opens in Chat too.
         await page.click("#tab-btn-history");
         await page.waitForSelector(".sessions li");
@@ -468,10 +458,10 @@ export const PANEL_CASES = [
       const todo = await sheet();
       checkSheet(todo, "details from todo");
       if (todo.text !== known.tasks[1].instructions) fail(`todo details text ${JSON.stringify(todo.text)}`);
-      for (const [k, v] of [["Status", "scheduled"], ["Repeats", "Every day at 09:00 and 18:00"], ["Attempts", "0"], ["Task id", "t1"]]) {
+      for (const [k, v] of [["Status", "scheduled"], ["Repeats", "Daily at 9:00 AM and 6:00 PM"], ["Attempts", "0"], ["Task id", "t1"]]) {
         if (todo.fields[k] !== v) fail(`todo details ${k}: ${todo.fields[k]}`);
       }
-      if (!todo.fields["Not before"]) fail("todo details: no Not before");
+      if (!todo.fields["Next run"]) fail("todo details: no Next run");
       if (todo.files.join() !== "thank-you.gif") fail(`todo details files ${todo.files}`);
       if (todo.buttons.includes("Open in TODO")) fail("todo details offers Open in TODO from the TODO tab");
       await shoot(p, "panel-details-todo", size, scheme);
@@ -479,7 +469,7 @@ export const PANEL_CASES = [
       await p.waitForFunction(() => !document.querySelector("dialog.sheet"));
       if ((await p.evaluate(() => document.activeElement?.dataset?.taskId)) !== "t1") fail("backdrop click did not return focus to the task");
 
-      // Activity Log: a past one-off chat opens in Chat, with the whole message typed as its first bubble (a long,
+      // History: a past one-off chat opens in Chat, with the whole message typed as its first bubble (a long,
       // multi-line prompt, wrapped); the bubble opens its details.
       await p.click("#tab-btn-history");
       await p.locator(".sessions li button", { hasText: "Lisbon" }).click();
@@ -579,14 +569,14 @@ export const PANEL_CASES = [
           attach: !document.getElementById("now-attach").hidden,
           stop: !document.getElementById("now-stop").hidden,
         }));
-      const CHAT = { placeholder: "Message browsertodo…", submit: "Send", newChat: true, attach: false, stop: false };
+      const CHAT = { placeholder: "Message BrowserTODO…", submit: "Send", newChat: true, attach: false, stop: false };
       const NEW = { placeholder: "Figure out what to do based on the current screen", submit: "Send", newChat: false, attach: true, stop: false };
       const expectComposer = async (want, what) => {
         const got = await composer();
         if (JSON.stringify(got) !== JSON.stringify(want)) fail(`composer ${what}: ${JSON.stringify(got)}`);
       };
       // The last conversation ended a minute ago: Chat shows it and the composer talks to it, also from TODO.
-      await p.waitForFunction(() => document.getElementById("now-text").placeholder === "Message browsertodo…");
+      await p.waitForFunction(() => document.getElementById("now-text").placeholder === "Message BrowserTODO…");
       const view = await p.evaluate(() => ({
         bubbles: [...document.querySelectorAll("#chat-log .ev-user")].map((b) => b.textContent),
         ends: document.querySelectorAll("#chat-log .ev-end").length,
@@ -649,6 +639,170 @@ export const PANEL_CASES = [
       await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.adhoc" && r.instructions === "Post gm"));
       reportErrors(p, `conversation ${label}`);
       await p.close();
+    },
+  },
+  // Scheduling from the chat (schedule_task): the card (one line, View in TODO, Undo), the TODO row it points at,
+  // the card once undone, and on Free the refusal's card with Choose a plan.
+  {
+    names: ["panel-scheduled", "panel-scheduled-todo", "panel-scheduled-undone", "panel-scheduled-free"],
+    async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, checkLayout, reportErrors }) {
+      const card = (p) =>
+        p.evaluate(() => {
+          const c = document.querySelector("#chat-log .ev-scheduled");
+          if (!c) return null;
+          const line = c.querySelector(".sched-line");
+          const r = line.getBoundingClientRect();
+          return {
+            line: line.textContent,
+            lines: Math.round(r.height / parseFloat(getComputedStyle(line).lineHeight)),
+            taskW: line.querySelector(".sched-task").getBoundingClientRect().width,
+            inside: c.scrollWidth <= c.clientWidth + 1 && c.getBoundingClientRect().right <= document.getElementById("chat-log").getBoundingClientRect().right + 1,
+            buttons: [...c.querySelectorAll("button")].map((b) => b.textContent),
+            undone: c.classList.contains("undone"),
+            title: line.title,
+          };
+        });
+      if (want("panel-scheduled", size, scheme) || want("panel-scheduled-todo", size, scheme) || want("panel-scheduled-undone", size, scheme)) {
+        const p = await openPanel(ctx, "scheduled", "#chat-log .ev-scheduled");
+        const c = await card(p);
+        // Three hours from now, in the browser's words ("today at 6:45 PM", or "tomorrow at ..." late at night).
+        const TASK = "Open https://shop.example.com/orders/48213 and tell me whether order #48213 has shipped yet; if it has, give me the carrier and tracking number.";
+        // The first line is clipped at 120 characters (the tooltip holds it all); CSS ellipsizes what does not fit.
+        if (!c?.line.startsWith(`Scheduled:${TASK.slice(0, 119)}…· Once, `) || !/Once, (today|tomorrow) at \d/.test(c.line)) fail(`card line "${c?.line}"`);
+        // One line where it fits (480); at 360 the schedule may take a second line so the task stays readable.
+        if (!c || c.lines > (size.w >= 480 ? 1 : 2) || c.taskW < 100 || !c.inside) fail(`card layout ${JSON.stringify(c)}`);
+        if (c?.buttons.join(" | ") !== "View in TODO | Undo") fail(`card buttons ${c?.buttons.join(" | ")}`);
+        if (!c?.title.includes("tracking number")) fail("card tooltip does not hold the whole task");
+        // The card sits in the thread after the user's request, before the agent's reply.
+        const order = await p.evaluate(() => [...document.querySelectorAll("#chat-log > *")].map((e) => e.className.split(" ")[0]).join(" "));
+        if (!/ev-user .*ev-scheduled .*ev-text/.test(order)) fail(`card out of order: ${order}`);
+        await checkLayout(p, `scheduled ${label}`);
+        await shoot(p, "panel-scheduled", size, scheme);
+
+        // View in TODO: the TODO tab, with the task's row in view and focused.
+        await p.click("#chat-log .sched-view");
+        await p.waitForFunction(() => document.querySelector('#tab-btn-todo[aria-selected="true"]') && document.activeElement?.dataset?.taskId === "t-sched");
+        const row = await p.evaluate(() => {
+          const li = document.querySelector('#tab-todo [data-task-id="t-sched"]').closest("li");
+          const r = li.getBoundingClientRect();
+          const list = document.getElementById("tab-todo").getBoundingClientRect();
+          return { found: li.classList.contains("found"), visible: r.top >= list.top - 1 && r.bottom <= list.bottom + 1 };
+        });
+        if (!row.found || !row.visible) fail(`View in TODO did not show the row ${JSON.stringify(row)}`);
+        await checkLayout(p, `scheduled-todo ${label}`);
+        await shoot(p, "panel-scheduled-todo", size, scheme);
+
+        // Undo: the task is deleted, and the card says so (no buttons left).
+        await p.click("#tab-btn-chat");
+        await p.click("#chat-log .sched-undo");
+        await p.waitForSelector("#chat-log .ev-scheduled.undone");
+        const sent = await p.evaluate(() => window.__requests.find((r) => r.type === "chat.undoScheduled"));
+        if (sent?.sessionId !== "s-sched" || sent.taskId !== "t-sched") fail(`undo sent ${JSON.stringify(sent)}`);
+        const u = await card(p);
+        if (!u.undone || u.buttons.length || !u.line.startsWith("Undone:")) fail(`undone card ${JSON.stringify(u)}`);
+        await checkLayout(p, `scheduled-undone ${label}`);
+        await shoot(p, "panel-scheduled-undone", size, scheme);
+        reportErrors(p, `scheduled ${label}`);
+        await p.close();
+      }
+      if (want("panel-scheduled-free", size, scheme)) {
+        const p = await openPanel(ctx, "scheduled-free", "#chat-log .ev-error");
+        const got = await p.evaluate(() => ({
+          msg: [...document.querySelectorAll("#chat-log .ev-error .err-msg")].map((e) => e.textContent),
+          fixes: [...document.querySelectorAll("#chat-log .ev-error .err-fix")].map((b) => b.textContent),
+          cards: document.querySelectorAll("#chat-log .ev-scheduled").length,
+        }));
+        if (JSON.stringify(got) !== JSON.stringify({ msg: ["Scheduling needs a paid plan."], fixes: ["Choose a plan"], cards: 0 })) fail(`Free refusal ${JSON.stringify(got)}`);
+        await checkLayout(p, `scheduled-free ${label}`);
+        await shoot(p, "panel-scheduled-free", size, scheme);
+        await p.click("#chat-log [data-fix=plans]");
+        await p.waitForFunction(() => window.__created.includes("https://app.browsertodo.com/billing") || window.__opened.includes("https://app.browsertodo.com/billing"));
+        reportErrors(p, `scheduled-free ${label}`);
+        await p.close();
+      }
+    },
+  },
+  // An action waiting for the user's OK (automation level "Ask before posting, sending or paying"): the approval card
+  // with what, where, why and the exact text, answered by a click (Allow once) or a key (Alt+N denies); an earlier
+  // allowed one keeps one quiet line.
+  {
+    names: ["panel-approval", "panel-approval-allowed", "panel-approval-denied", "panel-autonomy-full"],
+    async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, checkLayout, reportErrors }) {
+      const card = (p) =>
+        p.evaluate((wide) => {
+          const cards = [...document.querySelectorAll("#chat-log .ev-approval")];
+          const log = document.getElementById("chat-log").getBoundingClientRect();
+          return cards.map((c) => ({
+            state: c.dataset.state,
+            head: c.querySelector(".appr-head").textContent,
+            action: c.querySelector(".appr-action").textContent,
+            text: c.querySelector(".appr-text")?.textContent ?? null,
+            buttons: [...c.querySelectorAll("button")].map((b) => b.textContent),
+            inside: c.scrollWidth <= c.clientWidth + 1 && c.getBoundingClientRect().right <= log.right + 1,
+            buttonsOneRow: new Set([...c.querySelectorAll(".appr-actions button")].map((b) => Math.round(b.getBoundingClientRect().top))).size <= (wide ? 1 : 2),
+          }));
+        }, size.w >= 480);
+      const sent = (p) => p.evaluate(() => window.__requests.filter((r) => r.type === "approval.answer"));
+      if (want("panel-approval", size, scheme) || want("panel-approval-allowed", size, scheme)) {
+        const p = await openPanel(ctx, "approval", "#chat-log .ev-approval[data-state=pending]");
+        const [earlier, now] = await card(p);
+        if (earlier?.state !== "allowed" || earlier.head !== "Allowed once" || earlier.buttons.length) fail(`earlier card ${JSON.stringify(earlier)}`);
+        if (now?.state !== "pending" || now.head !== "Waiting for your OK" || now.action !== 'Click "Post" on x.com · publishes') fail(`card ${JSON.stringify(now)}`);
+        if (!now?.text?.startsWith("We just shipped browsertodo 0.3") || !now.text.includes("\n\nhttps://")) fail(`card text ${JSON.stringify(now?.text)}`);
+        if (now?.buttons.join(" | ") !== "Allow once | Allow for this task | Deny") fail(`buttons ${now?.buttons.join(" | ")}`);
+        if (!now?.inside || !now.buttonsOneRow) fail(`card layout ${JSON.stringify(now)}`);
+        const titles = await p.evaluate(() => [...document.querySelectorAll("#chat-log .ev-approval[data-state=pending] button")].map((b) => b.title));
+        if (titles.join(" | ") !== "Allow once (Alt+Y) | Allow for this task (Alt+T) | Deny (Alt+N)") fail(`shortcut titles ${titles.join(" | ")}`);
+        if (await p.isVisible("#autonomy-warning")) fail("the Full autonomy warning shows at the default level");
+        await checkLayout(p, `approval ${label}`);
+        await shoot(p, "panel-approval", size, scheme);
+        await p.click("#chat-log .ev-approval[data-state=pending] button[data-answer=allow_once]");
+        await p.waitForSelector("#chat-log .ev-approval:last-of-type[data-state=allowed]");
+        const got = await sent(p);
+        if (got.length !== 1 || got[0].sessionId !== "s-appr" || got[0].id !== "ap-2" || got[0].answer !== "allow_once") fail(`answer sent ${JSON.stringify(got)}`);
+        const after = (await card(p))[1];
+        if (after?.head !== "Allowed once" || after.buttons.length) fail(`allowed card ${JSON.stringify(after)}`);
+        await checkLayout(p, `approval-allowed ${label}`);
+        await shoot(p, "panel-approval-allowed", size, scheme);
+        reportErrors(p, `approval ${label}`);
+        await p.close();
+      }
+      if (want("panel-approval-denied", size, scheme)) {
+        const p = await openPanel(ctx, "approval", "#chat-log .ev-approval[data-state=pending]");
+        // The key works while the message box has the focus.
+        await p.focus("#now-text");
+        await p.keyboard.press("Alt+KeyN");
+        await p.waitForSelector("#chat-log .ev-approval:last-of-type[data-state=refused]");
+        const got = await sent(p);
+        if (got.length !== 1 || got[0].answer !== "deny") fail(`Alt+N sent ${JSON.stringify(got)}`);
+        const typed = await p.inputValue("#now-text");
+        if (typed) fail(`Alt+N typed into the message box: ${JSON.stringify(typed)}`);
+        const after = (await card(p))[1];
+        if (after?.head !== "Denied" || after.buttons.length) fail(`denied card ${JSON.stringify(after)}`);
+        await checkLayout(p, `approval-denied ${label}`);
+        await shoot(p, "panel-approval-denied", size, scheme);
+        reportErrors(p, `approval-denied ${label}`);
+        await p.close();
+      }
+      // Full autonomy: a red line under the status, as long as it is on; Change opens Settings > AI > Automation.
+      if (want("panel-autonomy-full", size, scheme)) {
+        const p = await openPanel(ctx, "idle", ".chat-empty", { edit: (d) => (d.state.settings.automationLevel = "full") });
+        const w = await p.evaluate(() => {
+          const el = document.getElementById("autonomy-warning");
+          const r = el.getBoundingClientRect();
+          return { shown: !el.hidden && r.height > 0, text: el.textContent.replace(/\s+/g, " ").trim(), oneLine: r.height < 40, inside: r.right <= innerWidth + 0.5 };
+        });
+        if (!w.shown || !w.text.startsWith("Full autonomy: the agent posts, sends, pays and deletes without asking.") || !w.inside) fail(`autonomy warning ${JSON.stringify(w)}`);
+        await checkLayout(p, `autonomy ${label}`);
+        await shoot(p, "panel-autonomy-full", size, scheme);
+        await p.click("#autonomy-warning-change");
+        await p.waitForFunction(() => [...(window.__created ?? []), ...(window.__opened ?? [])].some((u) => u.endsWith("options.html#automation")));
+        // Back to asking: the warning goes with the next state.
+        await p.evaluate(() => { const st = window.__data.state; window.__push({ type: "state", state: { ...st, rev: (st.rev ?? 0) + 1, settings: { ...st.settings, automationLevel: "ask_consequential" } } }); });
+        await p.waitForSelector("#autonomy-warning", { state: "hidden" });
+        reportErrors(p, `autonomy ${label}`);
+        await p.close();
+      }
     },
   },
   // A question answered in the chat, with Markdown: the latest turn at the bottom, the older one scrolled to the top.
@@ -846,7 +1000,7 @@ export const PANEL_CASES = [
 
       // Anything else hides it, and Tab then moves the focus as usual; an emptied box shows it again.
       await p.fill("#now-text", "Forward it");
-      await expectBox(p, { ghost: null, placeholder: "Message browsertodo…", described: null }, "after other text");
+      await expectBox(p, { ghost: null, placeholder: "Message BrowserTODO…", described: null }, "after other text");
       await p.keyboard.press("Tab");
       if ((await box(p)).focused) fail("suggestion: with other text typed, Tab did not move the focus");
       await p.fill("#now-text", "");
@@ -872,7 +1026,7 @@ export const PANEL_CASES = [
       // Esc dismisses it for this turn: the placeholder is back, Tab moves the focus, an empty Enter looks at the page.
       await focusBox(p);
       await p.keyboard.press("Escape");
-      await expectBox(p, { value: "", ghost: null, placeholder: "Message browsertodo…", described: null }, "after Esc");
+      await expectBox(p, { value: "", ghost: null, placeholder: "Message BrowserTODO…", described: null }, "after Esc");
       await p.keyboard.press("Tab");
       if ((await box(p)).focused) fail("suggestion: after Esc, Tab did not move the focus");
       await focusBox(p);
@@ -1325,13 +1479,13 @@ export const PANEL_CASES = [
     },
   },
   {
-    names: ["panel-paused-activity-log"],
+    names: ["panel-paused-history"],
     async run({ ctx, size, scheme, label, openPanel, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "paused", ".chat-empty");
       await p.click("#tab-btn-history");
       await p.waitForSelector(".sessions li");
       await checkLayout(p, `paused ${label}`);
-      await shoot(p, "panel-paused-activity-log", size, scheme);
+      await shoot(p, "panel-paused-history", size, scheme);
       reportErrors(p, `paused ${label}`);
       await p.close();
     },
@@ -1360,7 +1514,7 @@ export const PANEL_CASES = [
         const got = await mode();
         if (got.placeholder !== want.placeholder || got.submit !== want.submit || got.newChat !== want.newChat || got.attach !== want.attach) fail(`composer ${what}: ${JSON.stringify(got)}`);
       };
-      const CHAT = { placeholder: "Message browsertodo…", submit: "Send", newChat: true, attach: false };
+      const CHAT = { placeholder: "Message BrowserTODO…", submit: "Send", newChat: true, attach: false };
       const NEW = { placeholder: "Figure out what to do based on the current screen", submit: "Send", newChat: false, attach: true };
       const lastMessage = () => p.evaluate(() => window.__requests.filter((r) => r.type === "run.message").at(-1) ?? null);
       await expectMode(CHAT, "not talking to the stopped conversation");
@@ -1389,15 +1543,15 @@ export const PANEL_CASES = [
       await checkLayout(p, `continue-newtask ${label}`);
       await shoot(p, "panel-continue-newtask", size, scheme);
 
-      // A past stopped run from the Activity Log opens straight in Chat, with Continue, and the composer talks to it.
+      // A past stopped run from History opens straight in Chat, with Continue, and the composer talks to it.
       if (want("panel-continue-past-chat", size, scheme)) {
         await p.click("#tab-btn-history");
         await p.waitForSelector(".sessions li");
         await p.locator(".sessions li button", { hasText: "cheapest flight" }).click();
         await p.waitForSelector("#tab-chat:not([hidden]) #chat-log .ev-continue");
-        if (!(await p.locator("#chat-log .ev-first .ev-user-text").textContent()).includes("cheapest flight")) fail("the Activity Log row did not show the run in Chat");
-        await expectMode(CHAT, "not talking to a past stopped run opened from the Activity Log");
-        if ((await p.evaluate(() => document.activeElement?.id)) !== "now-text") fail("opening from the Activity Log did not focus the box");
+        if (!(await p.locator("#chat-log .ev-first .ev-user-text").textContent()).includes("cheapest flight")) fail("the History tab row did not show the run in Chat");
+        await expectMode(CHAT, "not talking to a past stopped run opened from History");
+        if ((await p.evaluate(() => document.activeElement?.id)) !== "now-text") fail("opening from History did not focus the box");
         await checkLayout(p, `continue-past-chat ${label}`);
         await shoot(p, "panel-continue-past-chat", size, scheme);
       }
@@ -1432,7 +1586,7 @@ export const PANEL_CASES = [
           throw new Error(`waiting for voice "${state}": ${JSON.stringify(seen)} (${err.message.split("\n")[0]})`);
         });
       const waitPill = (p, phase) =>
-        p.waitForFunction((w) => document.querySelector(".hf-pill:not([hidden])")?.dataset.phase === w, phase, { timeout: 15_000 });
+        p.waitForFunction((w) => document.querySelector("#voice-bar:not([hidden])")?.dataset.phase === w, phase, { timeout: 15_000 });
       const orbCheck = (p) =>
         p.evaluate(() => {
           const orb = document.querySelector(".voice-orb");
@@ -1459,7 +1613,7 @@ export const PANEL_CASES = [
         await p.waitForSelector("#now-notice:not([hidden])");
         const tipText = await p.textContent("#now-notice");
         if (!/Voice needs the Plus or Pro plan/.test(tipText) || !/Choose a plan/.test(tipText)) fail(`locked tip "${tipText}"`);
-        if (await p.evaluate(() => !document.querySelector(".hf-pill").hidden)) fail("the locked mic started hands-free");
+        if (await p.evaluate(() => !document.querySelector("#voice-bar").hidden)) fail("the locked mic started hands-free");
         await checkLayout(p, `voice-locked ${label}`);
         await shoot(p, "panel-voice-locked", size, scheme);
         await p.click("#now-notice .notice-action");
@@ -1490,7 +1644,7 @@ export const PANEL_CASES = [
         await p.click(mic);
         await waitPill(p, "listening");
         await waitVoice(p, "handsfree");
-        if ((await p.getAttribute(mic, "title")) !== `Stop hands-free · ${VOICE_SHORTCUT_LABEL}`) fail(`mic tooltip while on "${await p.getAttribute(mic, "title")}"`);
+        if (!/^Stop hands-free \((Listening|Hearing you…)\) · /.test(await p.getAttribute(mic, "title")) || !(await p.getAttribute(mic, "title")).endsWith(VOICE_SHORTCUT_LABEL)) fail(`mic tooltip while on "${await p.getAttribute(mic, "title")}"`);
         if ((await listeningReported(p)) !== true) fail("the mic's hands-free not reported to the background");
         if (await p.evaluate(() => window.__requests.some((r) => r.type === "voice.realtime"))) fail("Standard asked for the realtime relay");
         const problems = await orbCheck(p);
@@ -1502,7 +1656,7 @@ export const PANEL_CASES = [
         await shoot(p, "panel-voice-mic-standard", size, scheme);
         await p.click(mic);
         await waitVoice(p, "idle");
-        if (await p.evaluate(() => !document.querySelector(".hf-pill").hidden)) fail("the mic did not end hands-free");
+        if (await p.evaluate(() => !document.querySelector("#voice-bar").hidden)) fail("the mic did not end hands-free");
         if (!(await p.evaluate(() => document.querySelector(".voice-orb").hidden))) fail("orb still shown after stopping");
         if ((await listeningReported(p)) !== false) fail("the end not reported to the background");
         if (await p.evaluate(() => window.__requests.some((r) => r.type === "run.message" || r.type === "run.adhoc"))) fail("ending hands-free sent the words");
@@ -1557,8 +1711,77 @@ export const PANEL_CASES = [
       }
     },
   },
-  // Hands-free voice (the voice shortcut): the orb and the pill while listening, "Sending…" with the utterance in the
-  // box (Standard), the pill while the agent works, a spoken line with its caption; Realtime's one-time cost notice,
+  // The voice bar (voice-bar.ts) while the fake microphone hears a voice: "Hearing you…", the engine and the time on,
+  // Stop with the voice shortcut; the mic filled in the live colour, the box glowing with "Listening… just talk"; the
+  // background told the tab (its toolbar badge) and, on Stop by keyboard, that it ended (the badge goes). With reduced
+  // motion nothing pulses: still rings and a fixed meter.
+  {
+    names: ["panel-voicebar-hearing", "panel-voicebar-reduced"],
+    async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors, base, want }) {
+      await ctx.grantPermissions(["microphone"], { origin: base });
+      for (const reduced of [false, true]) {
+        const name = reduced ? "panel-voicebar-reduced" : "panel-voicebar-hearing";
+        if (!want(name, size, scheme)) continue;
+        const p = await openPanel(ctx, "account", ".chat-empty", { edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
+        if (reduced) await p.emulateMedia({ reducedMotion: "reduce" });
+        await p.evaluate(() => window.__push({ type: "panel.voice" }));
+        await p
+          .waitForFunction(() => document.getElementById("voice-bar").dataset.state === "hearing", null, { timeout: 15_000 })
+          .catch(async () => fail(`${name}: never "hearing" (${await p.evaluate(() => document.getElementById("voice-bar").dataset.state)})`));
+        const look = await p.evaluate(() => {
+          const bar = document.getElementById("voice-bar");
+          const mic = document.querySelector("#now-actions .voice-mic");
+          const anim = (el, pseudo) => getComputedStyle(el, pseudo).animationName;
+          return {
+            title: bar.querySelector(".vb-title").textContent,
+            detail: bar.querySelector(".vb-detail").textContent,
+            live: bar.querySelector("[aria-live=polite]").textContent,
+            region: [bar.getAttribute("role"), bar.getAttribute("aria-label")],
+            key: bar.querySelector(".vb-key").textContent,
+            meter: !bar.querySelector(".vb-meter").hidden,
+            placeholder: document.getElementById("now-text").placeholder,
+            glow: document.body.classList.contains("voice-live") && getComputedStyle(document.querySelector(".now")).boxShadow !== "none",
+            micTitle: mic.title,
+            micFill: getComputedStyle(mic).backgroundColor,
+            barInk: getComputedStyle(bar.querySelector(".vb-stop")).backgroundColor,
+            live2: getComputedStyle(document.documentElement).getPropertyValue("--live").trim(),
+            anims: [anim(bar.querySelector(".vb-icon"), "::after"), anim(mic, "::before"), anim(document.querySelector(".now"))],
+            reported: window.__portSent.filter((m) => m.type === "panel.listening").at(-1),
+          };
+        });
+        const want2 = (ok, what) => ok || fail(`${name} ${label}: ${what} ${JSON.stringify(look)}`);
+        want2(look.title === "Hearing you…" && look.live === "Hands-free: Listening", "state word / announcement");
+        want2(/^Standard · 0:0\d · Just talk · say “stop” to end$/.test(look.detail), "detail line");
+        want2(look.region[0] === "region" && look.region[1] === "Hands-free voice", "bar region");
+        want2(look.key === VOICE_SHORTCUT_LABEL, "shortcut by Stop");
+        want2(look.meter, "meter");
+        want2(look.placeholder === "Listening… just talk" && look.glow, "listening box");
+        want2(/^Stop hands-free \((Listening|Hearing you…)\) · /.test(look.micTitle), "mic tooltip");
+        want2(look.micFill !== "rgba(0, 0, 0, 0)" && look.micFill !== look.barInk, "mic filled");
+        want2(look.reported?.listening === true && look.reported?.tabId === 1, "listening reported with the tab (badge)");
+        const still = look.anims.every((a) => a === "none");
+        want2(reduced ? still : look.anims.join() === "vb-ring,vb-mic-ring,vb-glow", reduced ? "something pulses with reduced motion" : "no pulse");
+        await checkLayout(p, `${name} ${label}`);
+        await shoot(p, name, size, scheme);
+        // Stop by keyboard: the session ends, the background hears it (the badge goes), the box is as before.
+        await p.focus("#voice-bar .vb-stop");
+        await p.keyboard.press("Enter");
+        await p.waitForFunction(() => document.getElementById("voice-bar").hidden, null, { timeout: 5000 }).catch(() => fail(`${name} ${label}: Enter on Stop did not end it`));
+        const after = await p.evaluate(() => ({
+          reported: window.__portSent.filter((m) => m.type === "panel.listening").at(-1),
+          mic: document.querySelector("#now-actions .voice-mic").dataset.state,
+          placeholder: document.getElementById("now-text").placeholder,
+          glow: document.body.classList.contains("voice-live"),
+        }));
+        if (after.reported?.listening !== false || after.reported?.tabId !== undefined || after.mic !== "idle" || after.placeholder === "Listening… just talk" || after.glow)
+          fail(`${name} ${label}: after Stop ${JSON.stringify(after)}`);
+        reportErrors(p, `${name} ${label}`);
+        await p.close();
+      }
+    },
+  },
+  // Hands-free voice (the voice shortcut): the orb and the voice bar while listening, "Sending…" with the utterance in
+  // the box (Standard), the bar while the agent works, a spoken line with its caption; Realtime's one-time cost notice,
   // the narrator speaking, its send_to_agent starting a task at once with one acknowledgement, and the user's own
   // words in the chat with "Sent to agent: …" under them; the fallback note when Realtime is unavailable.
   {
@@ -1575,27 +1798,44 @@ export const PANEL_CASES = [
     ],
     async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors, base, want }) {
       await ctx.grantPermissions(["microphone"], { origin: base });
-      const phase = (p) => p.evaluate(() => (document.querySelector(".hf-pill:not([hidden])") ? document.querySelector(".hf-pill").dataset.phase : "off"));
+      const phase = (p) => p.evaluate(() => (document.querySelector("#voice-bar:not([hidden])") ? document.querySelector("#voice-bar").dataset.phase : "off"));
       /** Waits for the hands-free phase; on timeout says what the panel shows instead. */
       const waitPhase = (p, wanted, timeout = 20_000) =>
-        p.waitForFunction((w) => document.querySelector(".hf-pill:not([hidden])")?.dataset.phase === w, wanted, { timeout }).catch(async (err) => {
+        p.waitForFunction((w) => document.querySelector("#voice-bar:not([hidden])")?.dataset.phase === w, wanted, { timeout }).catch(async (err) => {
           const seen = await p.evaluate(() => ({
-            phase: document.querySelector(".hf-pill")?.dataset.phase,
-            hidden: document.querySelector(".hf-pill")?.hidden,
-            pill: document.querySelector(".hf-label")?.textContent,
+            phase: document.querySelector("#voice-bar")?.dataset.phase,
+            hidden: document.querySelector("#voice-bar")?.hidden,
+            bar: document.querySelector("#voice-bar .vb-title")?.textContent,
             tip: document.querySelector("#now-notice:not([hidden])")?.textContent,
           }));
           throw new Error(`waiting for hands-free "${wanted}": ${JSON.stringify(seen)} (${err.message.split("\n")[0]})`);
         });
-      const pillText = (p) => p.textContent(".hf-label");
-      /** The pill sits inside the panel, just above the input, without covering it. */
-      const pillCheck = (p) =>
+      const barTitle = (p) => p.textContent("#voice-bar .vb-title");
+      /** The state word, allowing for the fake microphone's voice ("Hearing you…" while listening or working). */
+      const barSays = async (p, ...words) => words.includes(await barTitle(p));
+      /**
+       * The voice bar: full width right under the tabs, above the orb's veil, in one row; Stop in view and reachable
+       * by keyboard, with the voice shortcut by it; a polite live line saying the state.
+       */
+      const barCheck = (p) =>
         p.evaluate(() => {
-          const pill = document.querySelector(".hf-pill").getBoundingClientRect();
-          const box = document.querySelector(".now").getBoundingClientRect();
+          const bar = document.getElementById("voice-bar");
+          const r = bar.getBoundingClientRect();
+          const top = document.querySelector("header.top").getBoundingClientRect();
+          const stop = bar.querySelector(".vb-stop");
+          const s = stop.getBoundingClientRect();
           const out = [];
-          if (pill.left < 0 || pill.right > window.innerWidth) out.push("pill off screen");
-          if (pill.bottom > box.top + 1) out.push(`pill covers the input (${Math.round(pill.bottom)} > ${Math.round(box.top)})`);
+          if (bar.hidden) out.push("bar hidden");
+          if (Math.abs(r.top - top.bottom) > 1) out.push(`bar not right under the tabs (${Math.round(r.top)} vs ${Math.round(top.bottom)})`);
+          if (r.left !== 0 || Math.abs(r.width - window.innerWidth) > 1) out.push("bar not full width");
+          if (r.height > 64) out.push(`bar too tall (${Math.round(r.height)})`);
+          if (s.right > window.innerWidth || s.left < r.left || s.width < 60) out.push("Stop clipped or small");
+          if (stop.tabIndex < 0 || stop.disabled) out.push("Stop not reachable by keyboard");
+          if (!/^Stop hands-free/.test(stop.getAttribute("aria-label") ?? "")) out.push(`Stop label "${stop.getAttribute("aria-label")}"`);
+          const live = bar.querySelector("[aria-live=polite]");
+          if (!live?.textContent) out.push("no live line");
+          if (document.elementFromPoint(s.left + s.width / 2, s.top + s.height / 2)?.closest(".vb-stop") !== stop) out.push("Stop covered");
+          for (const el of bar.querySelectorAll(".vb-title, .vb-detail")) if (el.getBoundingClientRect().right > s.left + 0.5) out.push(`${el.className} runs under Stop`);
           return out;
         });
       /** The background's state with `session` running in tab 1 (pushed as the runner would). */
@@ -1613,19 +1853,19 @@ export const PANEL_CASES = [
         await p.evaluate(() => (window.__ttsHold = true));
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
-        if ((await pillText(p)) !== "Hands-free · listening") fail(`listening pill "${await pillText(p)}"`);
+        if (!(await barSays(p, "Listening", "Hearing you…"))) fail(`listening bar "${await barTitle(p)}"`);
         if (!(await p.evaluate(() => !document.querySelector(".voice-orb").hidden))) fail("no orb while hands-free listens");
         if ((await p.getAttribute("#now-actions .voice-mic", "data-state")) !== "handsfree") fail("the mic does not show hands-free");
         if (!(await p.evaluate(() => window.__portSent.some((m) => m.type === "panel.listening" && m.listening === true)))) fail("hands-free not reported to the background");
         if (await p.evaluate(() => window.__requests.some((r) => r.type === "voice.realtime"))) fail("Standard asked for the realtime relay");
         await checkLayout(p, `handsfree-listening ${label}`);
-        const pl = await pillCheck(p);
-        if (pl.length) fail(`listening pill: ${pl.join("; ")}`);
+        const pl = await barCheck(p);
+        if (pl.length) fail(`listening bar: ${pl.join("; ")}`);
         await shoot(p, "panel-handsfree-listening", size, scheme);
 
         // The fake microphone talks, then pauses: the utterance waits in "Sending…" with its words in the box.
         await waitPhase(p, "sending", 25_000);
-        if ((await pillText(p)) !== "Sending… (say “cancel” or Esc)") fail(`sending pill "${await pillText(p)}"`);
+        if ((await barTitle(p)) !== "Sending") fail(`sending bar "${await barTitle(p)}"`);
         if (!/^Open Gmail/.test(await p.inputValue("#now-text"))) fail(`sending: box "${await p.inputValue("#now-text")}"`);
         await shoot(p, "panel-handsfree-sending", size, scheme);
         // It goes to the chat of the tab the session started in (none yet: a new one there), marked as spoken.
@@ -1635,7 +1875,7 @@ export const PANEL_CASES = [
         const sent = req.text;
         await p.waitForSelector("#chat-log .ev-first.voice .ev-voice", { state: "attached" });
 
-        // The task runs: its short plan is said (playing in the chat), then the pill stays while it works.
+        // The task runs: its short plan is said (playing in the chat), then the bar says it works.
         await pushRunning(p, newSession(sent));
         await p.evaluate(() =>
           window.__push({ type: "event", event: { type: "assistant_text", text: "I'll open Gmail and read your newest email. Starting now.", ts: new Date().toISOString(), sessionId: "s-new" } }),
@@ -1645,13 +1885,14 @@ export const PANEL_CASES = [
         const playing = await p.evaluate(() => [...document.querySelectorAll("#chat-log .ev-spoken.playing .ev-spoken-text")].map((e) => e.textContent));
         if (playing.join(" | ") !== "I'll open Gmail and read your newest email.") fail(`playing in the chat: ${JSON.stringify(playing)}`);
         if (await p.evaluate(() => document.querySelector(".hf-caption, .voice-tip"))) fail("a floating caption or tip is still drawn");
-        if ((await pillText(p)) !== "Hands-free · speaking") fail(`speaking pill "${await pillText(p)}"`);
+        if ((await barTitle(p)) !== "Speaking") fail(`speaking bar "${await barTitle(p)}"`);
+        if (await p.evaluate(() => document.querySelector("#voice-bar .vb-interrupt").hidden)) fail("no Interrupt while speaking");
         if (!(await p.evaluate(() => document.querySelector(".voice-orb").hidden))) fail("the orb still covers the chat after sending");
         await checkLayout(p, `handsfree-speaking ${label}`);
         await shoot(p, "panel-handsfree-speaking", size, scheme);
         await p.evaluate(() => window.__ttsRelease());
         await waitPhase(p, "working");
-        if ((await pillText(p)) !== "Hands-free · listening while it works") fail(`working pill "${await pillText(p)}"`);
+        if (!(await barSays(p, "Agent working", "Hearing you…"))) fail(`working bar "${await barTitle(p)}"`);
         // Said: the line is kept in its chat (compact: the agent's text above starts with it), no longer playing.
         await p.waitForFunction(() => document.querySelector("#chat-log .ev-spoken:not(.live)"));
         const kept = await p.evaluate(() => ({
@@ -1669,8 +1910,8 @@ export const PANEL_CASES = [
         if ((await spokenLast(p)) !== "Opening mail.google.com") fail(`milestone "${await spokenLast(p)}"`);
         await p.evaluate(() => window.__ttsRelease());
         await waitPhase(p, "working");
-        const wl = await pillCheck(p);
-        if (wl.length) fail(`working pill: ${wl.join("; ")}`);
+        const wl = await barCheck(p);
+        if (wl.length) fail(`working bar: ${wl.join("; ")}`);
         await checkLayout(p, `handsfree-working ${label}`);
         await shoot(p, "panel-handsfree-working", size, scheme);
 
@@ -1689,9 +1930,9 @@ export const PANEL_CASES = [
         if (await p.evaluate(() => window.__requests.some((r) => r.type === "voice.spoken" && /^Opening/.test(r.text)))) fail("a milestone was kept in the chat");
         if (await p.evaluate(() => window.__spoken.some((l) => /\*\*/.test(l)))) fail("a Markdown answer was read out");
 
-        // The shortcut again ends it: the pill goes, the background hears the mic is off.
+        // The shortcut again ends it: the bar goes, the background hears the mic is off.
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
-        await p.waitForFunction(() => document.querySelector(".hf-pill").hidden);
+        await p.waitForFunction(() => document.querySelector("#voice-bar").hidden);
         if ((await p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.listening").at(-1)?.listening)) !== false) fail("hands-free end not reported to the background");
         if ((await p.getAttribute("#now-actions .voice-mic", "data-state")) !== "idle") fail("the mic still shows hands-free");
         reportErrors(p, `handsfree ${label}`);
@@ -1710,7 +1951,7 @@ export const PANEL_CASES = [
         const rt = await p.evaluate(() => ({ protocols: window.__rt.protocols, sent: window.__rt.sent.map((e) => e.type), first: window.__rt.sent[0] }));
         if (JSON.stringify(rt.protocols) !== JSON.stringify(["browsertodo", "bt.tok"])) fail(`subprotocols ${JSON.stringify(rt.protocols)}`);
         if (rt.first?.type !== "session.update" || rt.first.session.model !== undefined) fail(`first event ${JSON.stringify(rt.first)?.slice(0, 120)}; sent ${rt.sent.slice(0, 5)}`);
-        if (!(await p.evaluate(() => !document.querySelector(".hf-pill").hidden))) fail("the cost notice took the pill's place");
+        if (!(await p.evaluate(() => !document.querySelector("#voice-bar").hidden))) fail("the cost notice took the bar's place");
         await checkLayout(p, `handsfree-cost ${label}`);
         await shoot(p, "panel-handsfree-cost", size, scheme);
         await p.click("#now-notice:not([hidden]) .notice-close");
@@ -1791,13 +2032,13 @@ export const PANEL_CASES = [
         await p.close();
       }
 
-      // The session belongs to the tab it started in: on another tab the pill says where it listens (Go to tab),
+      // The session belongs to the tab it started in: on another tab the bar says where it listens (Go to tab),
       // what is said there still goes to its own tab's chat; the shortcut there moves it; closing its tab ends it.
       if (want("panel-handsfree-elsewhere", size, scheme)) {
         const p = await openPanel(ctx, "voice-chat", "#chat-log .ev-end", { edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
-        // A tab its chat lives in is the session's own: the plain pill there. Here the chat moved to the tab its
+        // A tab its chat lives in is the session's own: the plain bar there. Here the chat moved to the tab its
         // task works in (as a run started from an extension page does), and the agent brought that tab to the front.
         const home = await p.evaluate(() => window.__data.state);
         await p.evaluate(() => {
@@ -1806,18 +2047,18 @@ export const PANEL_CASES = [
           window.__activateTab(3);
         });
         await p.waitForTimeout(100);
-        if (await p.evaluate(() => document.querySelector(".hf-pill").classList.contains("elsewhere"))) fail("the tab the chat moved to counts as another tab");
+        if (await p.evaluate(() => document.getElementById("voice-bar").dataset.state === "elsewhere")) fail("the tab the chat moved to counts as another tab");
         await p.evaluate((st) => window.__push({ type: "state", state: st }), home);
         await p.evaluate(() => window.__activateTab(2));
-        await p.waitForFunction(() => document.querySelector(".hf-pill.elsewhere .hf-label")?.textContent.startsWith("Hands-free · listening in Inbox (1)"));
+        await p.waitForFunction(() => document.querySelector("#voice-bar[data-state=elsewhere] .vb-title")?.textContent.startsWith("Hands-free on in Inbox (1)"));
         const away = await p.evaluate(() => ({
-          label: document.querySelector(".hf-label").textContent,
-          go: !document.querySelector(".hf-go").hidden,
-          use: !document.querySelector(".hf-use").hidden,
+          label: document.querySelector("#voice-bar .vb-title").textContent,
+          go: !!document.querySelector("#voice-bar .vb-go").offsetParent,
+          use: !!document.querySelector("#voice-bar .vb-use").offsetParent,
           orb: !document.querySelector(".voice-orb").hidden,
           chat: document.querySelector("#chat-log .chat-empty") !== null,
         }));
-        if (away.label !== "Hands-free · listening in Inbox (1) - ada.lovelace@ex…" || !away.go || !away.use || away.orb || !away.chat) fail(`pill on another tab ${JSON.stringify(away)}`);
+        if (away.label !== "Hands-free on in Inbox (1) - ada.lovelace@ex…" || !away.go || !away.use || away.orb || !away.chat) fail(`bar on another tab ${JSON.stringify(away)}`);
         await checkLayout(p, `handsfree-elsewhere ${label}`);
         await shoot(p, "panel-handsfree-elsewhere", size, scheme);
         // Said while tab 2 is shown: it goes to tab 1's chat, and tab 2's box stays as it was.
@@ -1826,30 +2067,30 @@ export const PANEL_CASES = [
         // To the chat by its id (it stays in the tab it lives in).
         if (req.sessionId !== "s-voice" || req.tabId !== undefined || req.voice !== true || !/^Open Gmail/.test(req.text)) fail(`said on another tab, sent ${JSON.stringify(req)}`);
         if ((await p.inputValue("#now-text")) !== "") fail(`the other tab's box got "${await p.inputValue("#now-text")}"`);
-        // Go to tab shows the session's tab (and its chat), where the pill is the plain one again.
-        await p.click(".hf-go");
-        await p.waitForFunction(() => !document.querySelector(".hf-pill").classList.contains("elsewhere"));
+        // Go to tab shows the session's tab (and its chat), where the bar is the plain one again.
+        await p.click("#voice-bar .vb-go");
+        await p.waitForFunction(() => document.getElementById("voice-bar").dataset.state !== "elsewhere");
         if (!(await p.evaluate(() => window.__requests.some((r) => r.type === "tab.focus" && r.tabId === 1)))) fail("Go to tab did not ask for tab 1");
         // Use this tab (on another tab) moves the session there, and says so.
         await p.evaluate(() => window.__activateTab(2));
-        await p.waitForSelector(".hf-pill.elsewhere");
-        await p.click(".hf-use");
-        await p.waitForFunction(() => !document.querySelector(".hf-pill").hidden && !document.querySelector(".hf-pill").classList.contains("elsewhere"));
+        await p.waitForSelector("#voice-bar[data-state=elsewhere]");
+        await p.click("#voice-bar .vb-use");
+        await p.waitForFunction(() => !document.querySelector("#voice-bar").hidden && document.getElementById("voice-bar").dataset.state !== "elsewhere");
         if ((await p.textContent("#now-notice .notice-text")) !== "Hands-free moved to this tab.") fail(`moved note "${await p.textContent("#now-notice")}"`);
         await checkLayout(p, `handsfree-moved ${label}`);
         // Closing another tab changes nothing; closing its tab ends it, with a note.
         await p.evaluate(() => window.__closeTab(1));
-        if (await p.evaluate(() => document.querySelector(".hf-pill").hidden)) fail("closing another tab ended hands-free");
+        if (await p.evaluate(() => document.querySelector("#voice-bar").hidden)) fail("closing another tab ended hands-free");
         await p.evaluate(() => window.__closeTab(2));
-        await p.waitForFunction(() => document.querySelector(".hf-pill").hidden);
+        await p.waitForFunction(() => document.querySelector("#voice-bar").hidden);
         if ((await p.textContent("#now-notice .notice-text")) !== "Hands-free stopped: its tab was closed.") fail(`tab closed note "${await p.textContent("#now-notice")}"`);
         // The voice key on another tab than the session's ends it (it never moves it).
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
         await p.evaluate(() => window.__activateTab(4));
-        await p.waitForSelector(".hf-pill.elsewhere");
+        await p.waitForSelector("#voice-bar[data-state=elsewhere]");
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
-        await p.waitForFunction(() => document.querySelector(".hf-pill").hidden);
+        await p.waitForFunction(() => document.querySelector("#voice-bar").hidden);
         if (await p.evaluate(() => document.querySelector("#now-notice .notice-text")?.textContent === "Hands-free moved to this tab.")) fail("the voice key on another tab moved hands-free");
         if ((await p.getAttribute("#now-actions .voice-mic", "data-state")) !== "idle") fail("the voice key on another tab did not end hands-free");
         if ((await p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.listening").at(-1)?.listening)) !== false) fail("the end is not reported to the background");
@@ -1865,7 +2106,7 @@ export const PANEL_CASES = [
         await p.waitForSelector("#now-notice:not([hidden])");
         const note = await p.evaluate(() => ({ text: document.querySelector("#now-notice .notice-text")?.textContent, level: document.getElementById("now-notice").dataset.level }));
         if (note.text !== "Realtime voice is unavailable. Using Standard." || note.level !== "fallback") fail(`fallback note ${JSON.stringify(note)}`);
-        // The note and the pill share the row above the box.
+        // The note stays in the row above the box; the bar is at the top.
         await checkLayout(p, `handsfree-fallback ${label}`);
         await shoot(p, "panel-handsfree-fallback", size, scheme);
         // Standard is listening: the utterance goes through the server's transcription (voice.transcribe).
@@ -1943,7 +2184,8 @@ export const PANEL_CASES = [
         };
       });
       if (!got.logHidden || !got.rawShown || got.pressed !== "true") fail(`raw: not shown in place of the log ${JSON.stringify({ logHidden: got.logHidden, rawShown: got.rawShown, pressed: got.pressed })}`);
-      const tiles = ["Total", "First response", "Speech → agent", "Model", "Tools", "Voice", "Other", "Tokens"];
+      // The Realtime narrator's own tile follows speech to agent (trace-report.ts, "Narrator").
+      const tiles = ["Total", "First response", "Speech → agent", "Narrator", "Model", "Tools", "Voice", "Other", "Tokens"];
       if (JSON.stringify(got.tiles) !== JSON.stringify(tiles)) fail(`raw: summary tiles ${JSON.stringify(got.tiles)}`);
       if (!got.tileTitles) fail("raw: a summary tile without its explanation");
       if (got.slowest !== 5) fail(`raw: ${got.slowest} slowest items`);
@@ -1978,7 +2220,7 @@ export const PANEL_CASES = [
       });
       await p.click(".raw-copy");
       const copied = await (await p.waitForFunction(() => window.__copied)).jsonValue();
-      if (!/^browsertodo trace · /.test(copied) || !copied.includes("SUMMARY") || !copied.includes("TURN 3") || copied.includes(RAW_SECRET)) fail(`raw: copied text ${copied.slice(0, 200)}`);
+      if (!/^BrowserTODO trace · /.test(copied) || !copied.includes("SUMMARY") || !copied.includes("TURN 3") || copied.includes(RAW_SECRET)) fail(`raw: copied text ${copied.slice(0, 200)}`);
       if (!(await p.textContent(".raw-copy")).includes("Copied")) fail("raw: Copy does not say it copied");
 
       // Download .json: a valid, redacted export with the environment.

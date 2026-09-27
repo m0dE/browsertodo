@@ -26,11 +26,11 @@ import { ENV } from "./env-names.js";
 import { isPidAlive, readHelperFile } from "./helper-file.js";
 
 const NOT_RUNNING =
-  "browsertodo helper is not running: open Chrome with the browsertodo extension (it starts the helper), then restart this MCP server.";
+  "BrowserTODO helper is not running: open Chrome with the BrowserTODO extension (it starts the helper), then restart this MCP server.";
 
 /** Diagnostics go to stderr: stdout carries MCP frames only. */
 function warn(message: string): void {
-  process.stderr.write(`browsertodo mcp-server: ${message}\n`);
+  process.stderr.write(`BrowserTODO mcp-server: ${message}\n`);
 }
 
 function fail(message: string, code = 1): never {

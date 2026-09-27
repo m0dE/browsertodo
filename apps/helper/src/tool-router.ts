@@ -4,7 +4,7 @@
  * right @browsertodo/core tool executor: the task session's, or the attached
  * session's (task id INTERACTIVE_TASK_ID).
  */
-import { TOOL_NAMES, type BrowserMethod, type BrowserMethods, type ToolName, type ToolResult } from "@browsertodo/shared";
+import { APPROVAL_TIMEOUT_MS, isApprovalGated, TOOL_NAMES, type BrowserMethod, type BrowserMethods, type ToolName, type ToolResult } from "@browsertodo/shared";
 import type { BrowserCaller, ToolExecutor } from "@browsertodo/core";
 import { INTERACTIVE_TASK_ID } from "./mcp-tools.js";
 
@@ -19,9 +19,13 @@ export interface RpcBrowser {
   ): Promise<BrowserMethods[M]["result"]>;
 }
 
-/** A core BrowserCaller over the extension RPC, with a per-call timeout. */
+/**
+ * A core BrowserCaller over the extension RPC, with a per-call timeout. An
+ * action that changes something may first wait for the user's approval in the
+ * extension (up to APPROVAL_TIMEOUT_MS): its timeout allows for that.
+ */
 export function rpcBrowser(peer: RpcBrowser, timeoutMs = BROWSER_RPC_TIMEOUT_MS): BrowserCaller {
-  return { call: (method, params) => peer.call(method, params, { timeoutMs }) };
+  return { call: (method, params) => peer.call(method, params, { timeoutMs: timeoutMs + (isApprovalGated(method) ? APPROVAL_TIMEOUT_MS : 0) }) };
 }
 
 /** A task session, as seen by the router. Implemented by TaskSession. */
@@ -69,7 +73,7 @@ export class ToolRouter {
     const target = this.target(taskId);
     if (!target) return err(`No running task ${taskId}. Stop now.`);
     if (taskId === INTERACTIVE_TASK_ID && this.deps.getSession()) {
-      return err("A browsertodo task is using the browser right now. Wait for it to finish, then try again.");
+      return err("A BrowserTODO task is using the browser right now. Wait for it to finish, then try again.");
     }
     if (!(TOOL_NAMES as string[]).includes(name) || !target.allowedTools.has(name)) {
       return err(`Tool ${name} is not available${taskId === INTERACTIVE_TASK_ID ? " in an attached session" : " for this task"}.`);

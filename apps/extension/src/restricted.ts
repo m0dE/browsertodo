@@ -34,7 +34,7 @@ const WEB_STORE: readonly { host: string; path?: string; why: string }[] = [
 ];
 
 /** The quiet line in the chat when the user's tab is such a page. */
-export const RESTRICTED_STATUS = "Chrome doesn't let extensions see this page; browsertodo will work in other tabs";
+export const RESTRICTED_STATUS = "Chrome doesn't let extensions see this page; BrowserTODO will work in other tabs";
 
 /**
  * True when Chrome keeps extensions out of the page. An empty URL (a tab
@@ -72,6 +72,16 @@ const FOREIGN_FRAME_ERROR = /Cannot access a chrome-extension:\/\/ URL of differ
 export function isDebuggerBlocked(err: unknown): boolean {
   const msg = errorMessage(err);
   return FOREIGN_FRAME_ERROR.test(msg) || /debugger_access_denied/i.test(msg);
+}
+
+/**
+ * True when Chrome dropped the debugger from a tab in the middle of a command
+ * ("Detached while handling command."), as it does when another extension's
+ * frame appears on the page being loaded (Streak in Gmail). Unlike
+ * isDebuggerBlocked, the command may or may not have taken effect.
+ */
+export function isDebuggerDetached(err: unknown): boolean {
+  return /Detached while handling command|Debugger is not attached to the tab/i.test(errorMessage(err));
 }
 
 /**

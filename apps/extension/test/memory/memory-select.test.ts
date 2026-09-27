@@ -1,0 +1,167 @@
+import { describe, expect, it } from "vitest";
+import { MAX_INJECTED_TASK_NOTES, MEMORY_RECORD_TOKEN_BUDGET, MEMORY_TOKEN_BUDGET, memoryRecordKey, type MemoryEntry } from "@browsertodo/shared";
+import { hostsIn, keywordsOf, MEMORY_HEADER, recallMemory, recordFor, recordsNamedIn, RECORDS_LABEL, selectMemory, tokensOf } from "../../src/memory/select.js";
+
+let n = 0;
+function entry(e: Partial<MemoryEntry> & Pick<MemoryEntry, "kind" | "subject" | "text">): MemoryEntry {
+  n++;
+  return {
+    id: `m${n}`,
+    scope: e.domain ? "domain" : e.taskKey ? "task" : "global",
+    source: { kind: "chat" },
+    learnedAt: new Date(Date.UTC(2026, 8, n)).toISOString(),
+    updatedAt: new Date(Date.UTC(2026, 8, n)).toISOString(),
+    ...e,
+  };
+}
+
+const workEmail = entry({ kind: "account", subject: "Work email", text: "admin@runhq.io is the work Gmail, Google account /u/2" });
+const gameX = entry({ kind: "account", subject: "@mecharoyalecom", text: "The X account for the game Mecha Royale" });
+const paul = entry({ kind: "person", subject: "Paul Lee", text: "The user's accountant" });
+const tone = entry({ kind: "preference", subject: "Tone", text: "Friendly, short, no emoji" });
+const gmailBook = entry({ kind: "playbook", subject: "Work inbox", text: "Open https://mail.google.com/mail/u/2/ directly", domain: "mail.google.com" });
+const xBook = entry({ kind: "playbook", subject: "Compose", text: "The Post button is in the left rail", domain: "x.com" });
+const linkedIn = entry({ kind: "playbook", subject: "Messaging", text: "Needs sign-in each morning", domain: "linkedin.com" });
+const all = [workEmail, gameX, paul, tone, gmailBook, xBook, linkedIn];
+
+describe("hostsIn and keywordsOf", () => {
+  it("finds the sites a request names, not mailboxes", () => {
+    expect(hostsIn("Post on x.com and check https://www.LinkedIn.com/feed, then mail admin@runhq.io")).toEqual(["linkedin.com", "x.com"]);
+    expect(hostsIn("http://localhost:4777/w/gmail/u/0/")).toEqual(["localhost"]);
+  });
+  it("keeps emails and handles whole, and their parts", () => {
+    const w = keywordsOf("Email admin@runhq.io from @mecharoyalecom about the invoice");
+    expect([...w]).toEqual(expect.arrayContaining(["admin@runhq.io", "runhq", "@mecharoyalecom", "mecharoyalecom", "invoice", "email"]));
+    expect(w.has("the")).toBe(false);
+  });
+});
+
+describe("selectMemory", () => {
+  it("gives the playbook of the user's tab and of sites the request names, not other sites'", () => {
+    const s = selectMemory(all, { hosts: ["mail.google.com"], text: "reply to the newest email" });
+    expect(s.entries).toContain(gmailBook);
+    expect(s.entries).not.toContain(xBook);
+    expect(s.entries).not.toContain(linkedIn);
+  });
+
+  it("gives account and people facts that share words with the request", () => {
+    const s = selectMemory(all, { hosts: [], text: "Email Paul Lee the invoice from my work email" });
+    expect(s.entries).toEqual(expect.arrayContaining([paul, workEmail]));
+    expect(s.entries).not.toContain(gameX);
+  });
+
+  it("gives a site's playbook when the request names it by word, but not for a word in its text", () => {
+    expect(selectMemory(all, { hosts: [], text: "open my work inbox" }).entries).toContain(gmailBook);
+    expect(selectMemory(all, { hosts: [], text: "Post a tip on LinkedIn" }).entries).not.toContain(xBook);
+  });
+
+  it("always gives preferences when the budget allows", () => {
+    expect(selectMemory(all, { hosts: [], text: "anything" }).entries).toEqual([tone]);
+  });
+
+  it("puts this task's newest run notes first, and never another task's", () => {
+    const notes = Array.from({ length: MAX_INJECTED_TASK_NOTES + 2 }, (_, i) => entry({ kind: "task", subject: "Run note", text: `Posted topic ${i}`, taskKey: "tA" }));
+    const other = entry({ kind: "task", subject: "Run note", text: "Other task", taskKey: "tB" });
+    const s = selectMemory([...all, ...notes, other], { taskKey: "tA", hosts: ["x.com"], text: "Post a daily tip" });
+    const given = s.entries.filter((e) => e.kind === "task");
+    expect(given).toHaveLength(MAX_INJECTED_TASK_NOTES);
+    expect(given[0]!.text).toBe(`Posted topic ${MAX_INJECTED_TASK_NOTES + 1}`);
+    expect(s.entries).not.toContain(other);
+    expect(s.text.split("\n")[0]).toBe(MEMORY_HEADER);
+    expect(s.text).toMatch(/^Task history:\n- \[m\d+\] \d{4}-\d\d-\d\d Run note: Posted topic/m);
+    // Without the task (a chat), no run notes at all.
+    expect(selectMemory([...notes], { hosts: [], text: "Post a daily tip" }).entries).toEqual([]);
+  });
+
+  it("leaves out kinds the user turned off", () => {
+    const s = selectMemory(all, { hosts: ["mail.google.com"], text: "Email Paul Lee" }, { kindsOff: ["person", "playbook"] });
+    expect(s.entries).not.toContain(paul);
+    expect(s.entries).not.toContain(gmailBook);
+  });
+
+  it("stays within the token budget, most relevant first", () => {
+    const many = Array.from({ length: 200 }, (_, i) => entry({ kind: "preference", subject: `Rule ${i}`, text: "Always write in plain words and keep every message short and polite." }));
+    const s = selectMemory([...many, gmailBook], { hosts: ["mail.google.com"], text: "check mail" });
+    expect(s.tokens).toBeLessThanOrEqual(MEMORY_TOKEN_BUDGET);
+    expect(tokensOf(s.text)).toBe(s.tokens);
+    expect(s.entries[0]).toBe(gmailBook);
+    expect(s.entries.length).toBeLessThan(many.length);
+    expect(selectMemory([gmailBook, tone], { hosts: ["mail.google.com"], text: "x" }, { budget: tokensOf(MEMORY_HEADER) + 30 }).entries).toEqual([gmailBook]);
+  });
+
+  it("is empty when nothing applies", () => {
+    expect(selectMemory([xBook], { hosts: [], text: "hello" })).toEqual({ entries: [], text: "", tokens: 0 });
+  });
+
+  it("is cheap: a full store of 500 entries is picked from in a few milliseconds", () => {
+    const store = Array.from({ length: 500 }, (_, i) =>
+      entry({ kind: (["account", "person", "playbook", "preference"] as const)[i % 4]!, subject: `Subject ${i}`, text: `Fact number ${i} about site${i % 50}.example.com and person ${i}`, ...(i % 4 === 2 ? { domain: `site${i % 50}.example.com` } : {}) }),
+    );
+    const t0 = performance.now();
+    for (let i = 0; i < 20; i++) selectMemory(store, { hosts: ["site7.example.com"], text: "Tell person 42 about Subject 99 on site7.example.com" });
+    const perCall = (performance.now() - t0) / 20;
+    expect(perCall).toBeLessThan(25);
+  });
+});
+
+describe("recallMemory", () => {
+  it("finds entries by words or by site, whatever task or site they belong to", () => {
+    const note = entry({ kind: "task", subject: "Run note", text: "Posted about the Mecha Royale beta", taskKey: "tA" });
+    expect(recallMemory([...all, note], "mecha royale")).toEqual(expect.arrayContaining([gameX, note]));
+    expect(recallMemory(all, "linkedin.com")).toEqual([linkedIn]);
+    expect(recallMemory(all, "unrelated words")).toEqual([]);
+  });
+});
+
+// A task's records, by key. Examples only: three differently shaped identifiers (an address, a number, a name).
+const record = (key: string, text: string, taskKey = "tA", notes?: { at: string; text: string }[]) =>
+  entry({ kind: "task", subject: key, text, taskKey, key: memoryRecordKey(key), ...(notes ? { notes } : {}) });
+const ada = record("ada.lee@example.com", "Prefers email; writes about the March invoice.");
+const order = record("#48213", "Refund asked on Sep 20.", "tA", [{ at: "2026-09-22T10:00:00.000Z", text: "Refund sent." }]);
+const unit = record("Unit 7-B", "Heating fixed twice this year.");
+const otherTask = record("ada.lee@example.com", "Another task's record.", "tB");
+const records = [ada, order, unit, otherTask];
+
+describe("records named in a turn", () => {
+  it("finds a record whose key the text names, whole, case aside, in the order named", () => {
+    expect(recordsNamedIn(records.slice(0, 3), "Answer ADA.LEE@example.com, then check order #48213 and unit 7-b")).toEqual([ada, order, unit]);
+    expect(recordsNamedIn(records.slice(0, 3), "https://shop.example/orders/48213?tab=2")).toEqual([order]);
+    // Not part of a longer identifier, nor a key's words out of order.
+    expect(recordsNamedIn(records.slice(0, 3), "order 148213, lee@example.com, 7-B unit")).toEqual([]);
+  });
+
+  it("gives this task's named records first, within their own budget, never another task's", () => {
+    const s = selectMemory([...all, ...records], { taskKey: "tA", hosts: [], text: "Work through the queue", pageText: "https://shop.example/orders/48213\nOrder #48213 - Shop" });
+    expect(s.entries[0]).toBe(order);
+    expect(s.entries).not.toContain(ada);
+    expect(s.entries).not.toContain(otherTask);
+    expect(s.text).toContain(`${RECORDS_LABEL}:\n- [${order.id}] key #48213: Refund asked on Sep 20. · 2026-09-22: Refund sent.`);
+    // In a chat (no task) no record is given.
+    expect(selectMemory(records, { hosts: [], text: "about #48213" }).entries).toEqual([]);
+  });
+
+  it("records spend at most MEMORY_RECORD_TOKEN_BUDGET, leaving the rest for other memory", () => {
+    const big = Array.from({ length: 12 }, (_, i) => record(`item-${i}`, `A long summary ${"x".repeat(380)}`));
+    const s = selectMemory([...big, tone], { taskKey: "tA", hosts: [], text: big.map((_, i) => `item-${i}`).join(" ") });
+    // Each of these records costs about 105 tokens: two fit in the records' budget, a third would not.
+    const given = s.entries.filter((e) => e.key !== undefined);
+    expect(given.map((e) => e.subject)).toEqual(["item-0", "item-1"]);
+    expect(tokensOf(RECORDS_LABEL) + given.reduce((n, e) => n + tokensOf(`- ${e.id} key ${e.subject}: ${e.text}`) + 1, 0)).toBeLessThanOrEqual(MEMORY_RECORD_TOKEN_BUDGET);
+    expect(s.entries).toContain(tone);
+    expect(s.tokens).toBeLessThanOrEqual(MEMORY_TOKEN_BUDGET);
+  });
+});
+
+describe("recall of records", () => {
+  it("by key: this task's record, whatever way the key is written", () => {
+    expect(recordFor(records, "tA", " ADA.Lee@Example.com")).toBe(ada);
+    expect(recordFor(records, "tA", "48213")).toBe(order);
+    expect(recordFor(records, "tB", "#48213")).toBeNull();
+  });
+  it("by words: this task's records rank the exact key first; another task's records are left out", () => {
+    expect(recallMemory([...all, ...records], "#48213", { taskKey: "tA" })[0]).toBe(order);
+    expect(recallMemory([...all, ...records], "invoice", { taskKey: "tA" })).toContain(ada);
+    expect(recallMemory([...all, ...records], "Another task", { taskKey: "tA" })).not.toContain(otherTask);
+    expect(recallMemory(records, "refund")).toEqual([]);
+  });
+});

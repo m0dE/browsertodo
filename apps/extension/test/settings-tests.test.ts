@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "@browsertodo/shared";
-import { ANTHROPIC_MODELS_URL, testClaude, testCloud, testJev } from "../src/engine/settings-tests.js";
+import { ANTHROPIC_MODELS_URL, testClaude, testCloud, testJev, type TestJevDeps } from "../src/engine/settings-tests.js";
 
 const withKey = { ...DEFAULT_SETTINGS, anthropicApiKey: "sk-ant", anthropicModel: "claude-sonnet-5" };
 
@@ -32,10 +32,14 @@ describe("testClaude", () => {
 });
 
 describe("testJev", () => {
+  const onApi = { effective: "claude-api", helper: null } as const;
+  const HOSTED = { token: "bt_s_tok", apiBase: "https://api.test/" };
+  const deps = (createJev: TestJevDeps["core"]["createJev"], hosted: TestJevDeps["hosted"] = null): TestJevDeps => ({ core: { createJev }, hosted });
+
   it("asks Jev for one decision on a two-element page", async () => {
     const decide = vi.fn(async () => ({ operation: "click" as const, index: 1, confidence: 0.93 }));
     const createJev = vi.fn(() => ({ decide }));
-    const r = await testJev({ ...DEFAULT_SETTINGS, jevApiKey: "jk" }, { createJev });
+    const r = await testJev({ ...DEFAULT_SETTINGS, jevApiKey: "jk" }, onApi, deps(createJev));
     expect(createJev).toHaveBeenCalledWith("jk", undefined);
     expect((decide.mock.calls[0] as unknown as [{ snapshot: { elements: unknown[] } }])[0].snapshot.elements).toHaveLength(2);
     expect(r.ok).toBe(true);
@@ -43,9 +47,30 @@ describe("testJev", () => {
   });
 
   it("fails without a key or when Jev throws", async () => {
-    expect(await testJev(DEFAULT_SETTINGS, { createJev: vi.fn() })).toEqual({ ok: false, detail: "No Jev key set" });
+    expect(await testJev(DEFAULT_SETTINGS, onApi, deps(vi.fn()))).toEqual({ ok: false, detail: "No Jev key set" });
     const createJev = () => ({ decide: async () => Promise.reject(new Error("401 bad key")) });
-    expect(await testJev({ ...DEFAULT_SETTINGS, jevApiKey: "jk" }, { createJev })).toEqual({ ok: false, detail: "Jev test failed: 401 bad key" });
+    expect(await testJev({ ...DEFAULT_SETTINGS, jevApiKey: "jk" }, onApi, deps(createJev))).toEqual({ ok: false, detail: "Jev test failed: 401 bad key" });
+  });
+
+  // Bug: "if it's using BrowserTODO AI, then it shouldn't be asking for JEV api key".
+  it("does not ask for a Jev key when the brain is BrowserTODO AI (the server provides Jev)", async () => {
+    const r = await testJev({ ...DEFAULT_SETTINGS, brain: "browsertodo", jevApiKey: "" }, { effective: "browsertodo", helper: null }, deps(vi.fn()));
+    expect(r.detail).not.toMatch(/Jev key/i);
+  });
+
+  it("on BrowserTODO AI tests the account's Jev (the server's /v1/ai/jev), even with a key set here", async () => {
+    const decide = vi.fn(async () => ({ operation: "click" as const, index: 1, confidence: 0.9 }));
+    const createJev = vi.fn(() => ({ decide }));
+    const r = await testJev({ ...DEFAULT_SETTINGS, jevApiKey: "jk" }, { effective: "browsertodo", helper: null }, deps(createJev, HOSTED));
+    expect(createJev).toHaveBeenCalledWith("bt_s_tok", { endpoint: "https://api.test/v1/ai/jev" });
+    expect(r).toMatchObject({ ok: true, detail: expect.stringMatching(/^BrowserTODO AI's Jev answered in \d+ ms: click element 1/) });
+    expect((await testJev(DEFAULT_SETTINGS, { effective: "browsertodo", helper: null }, deps(vi.fn()))).detail).toMatch(/Sign in/);
+  });
+
+  it("on local Claude Code with the helper's own key and none here: says the helper's key is used", async () => {
+    const helper = { version: "2", jevAvailable: true, claudePath: "C", logDir: "L" };
+    const r = await testJev(DEFAULT_SETTINGS, { effective: "claude-code", helper }, deps(vi.fn()));
+    expect(r.detail).toMatch(/helper's own/);
   });
 });
 

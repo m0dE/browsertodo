@@ -1,3 +1,5 @@
+import type { WaitCheck, WaitCheckParams } from "./wait.js";
+
 /**
  * Browser primitives the extension performs on the agent tab, and the page
  * snapshot format. The helper calls these over native messaging as
@@ -52,6 +54,11 @@ export interface PageSnapshot {
   elements: ElementInfo[];
   /** True when elements were cut at MAX_SNAPSHOT_ELEMENTS. */
   truncated: boolean;
+  /**
+   * Visible frames from other sites (e.g. an account switcher or a sign-in popup): their content is
+   * not in text or elements, and they cannot be clicked. Absent when there are none.
+   */
+  frames?: { url: string; title: string }[];
 }
 
 export const MAX_SNAPSHOT_TEXT = 8000;
@@ -162,6 +169,11 @@ export type BrowserMethods = {
   "browser.listTabs": { params: Record<string, never>; result: { tabs: AgentTabInfo[] } };
   /** Closes tabs the agent opened. The run's first tab is never closed. */
   "browser.closeTabs": { params: { tabs: string[] }; result: { closed: string[]; tabs: AgentTabInfo[] } };
+  /**
+   * One slice of wait_for: watches the tab (default the current one; it is not made current) until a condition
+   * holds or timeoutMs passes, then answers which one holds (met), or none yet. Reads only: never approval-gated.
+   */
+  "browser.waitFor": { params: WaitCheckParams; result: WaitCheck };
   "vault.getCredential": {
     params: { site: string };
     result: { found: false; locked?: boolean } | { found: true; username: string; password: string };

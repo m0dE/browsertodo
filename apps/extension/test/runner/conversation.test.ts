@@ -1,12 +1,12 @@
 /** Runner conversations: messages, next turns (same or fresh agent session), Continue, New chat. */
 import { describe, expect, it, vi } from "vitest";
-import type { AgentEvent } from "@browsertodo/shared";
+import { localTimeZone, type AgentEvent } from "@browsertodo/shared";
 import type { AgentSession, ApiAgentOptions } from "@browsertodo/core";
 import { ApiBrain } from "../../src/engine/api-brain.js";
 import { stopOf } from "../../src/engine/run/active.js";
 import { CLAUDE_CODE_GONE } from "../../src/engine/brain-resolver.js";
 import { CONTINUE_TEXT, FRESH_SESSION_STATUS } from "../../src/engine/run/conversation.js";
-import { env, FakeBrain, harness, setupRunnerTests, status, type Harness } from "./harness.js";
+import { env, FakeBrain, harness, setupRunnerTests, status, withoutClock, type Harness } from "./harness.js";
 
 setupRunnerTests();
 
@@ -102,7 +102,9 @@ describe("Runner: conversations", () => {
     await settle(h);
 
     expect(h.brain.starts).toHaveLength(1);
-    expect(h.brain.continues).toEqual([
+    // Each follow-up starts with the user's date and time in the browser's zone (schedule_task's relative times).
+    expect(h.brain.continues[0]!.text).toMatch(new RegExp(`^The user's time: .* in ${localTimeZone().replace("/", "\\/")} \\(UTC[+-]\\d\\d:\\d\\d\\)\\.\n\n`));
+    expect(h.brain.continues.map((c) => ({ ...c, text: withoutClock(c.text) }))).toEqual([
       expect.objectContaining({ sessionId, text: "Now also post from @alpha: second turn", config: expect.objectContaining({ isRetry: false, maxToolCalls: 60 }) }),
     ]);
     // The conversation keeps acting in its tab, which is never brought to the front.
@@ -338,11 +340,11 @@ describe("Runner: conversations", () => {
     h.brain.continueScript = () => ({ outcome: "paused", reason: "needs a code" });
     expect(await h.runner.continueSession(sessionId)).toEqual({ sessionId });
     await settle(h);
-    expect(h.brain.continues[0]!.text).toBe(CONTINUE_TEXT);
+    expect(withoutClock(h.brain.continues[0]!.text)).toBe(CONTINUE_TEXT);
     h.brain.continueScript = () => ({ outcome: "done" });
     await h.runner.continueSession(sessionId, "  the code is 1234 ");
     await settle(h);
-    expect(h.brain.continues[1]!.text).toBe("the code is 1234");
+    expect(withoutClock(h.brain.continues[1]!.text)).toBe("the code is 1234");
     await expect(h.runner.continueSession(sessionId)).rejects.toThrow(/already finished/);
     await expect(h.runner.continueSession("nope")).rejects.toThrow(/No session nope/);
     await h.sessions.create({ sessionId: "c1", source: "cloud", taskId: "ct", title: "cloud", brain: "claude-api", jev: false, startedAt: "x", endedAt: "y", outcome: "paused" });
@@ -372,9 +374,9 @@ describe("Runner: conversations", () => {
           abort: vi.fn(),
           done: Promise.resolve({ outcome: "done", summary: label }),
           continueWith: (text) => {
-            calls.push(`continueWith ${text}`);
+            calls.push(`continueWith ${withoutClock(text)}`);
             o.onEvent({ type: "user_message", text });
-            return agent(`after ${text}`);
+            return agent(`after ${withoutClock(text)}`);
           },
         });
         return agent("first");

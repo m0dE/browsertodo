@@ -67,7 +67,11 @@ export class ScriptedBrain implements Brain {
   async run(ctx: BrainContext): Promise<void> {
     const task = ctx.task;
     if (!task) throw new Error("ScriptedBrain needs ctx.task");
-    ctx.input.onMessage((text) => ctx.emit({ type: "assistant_text", text: `Scripted brain received: ${text}` }));
+    // It reads each message at once (and does not change its script for it).
+    ctx.interjections.onAdd((text) => {
+      ctx.interjections.seen(ctx.interjections.handOff("next_step") ?? "");
+      ctx.emit({ type: "assistant_text", text: `Scripted brain received: ${text}` });
+    });
     const offered = (name: ToolName) => ctx.allowedTools.includes(mcpToolName(name));
     const call = async (name: ToolName, args: unknown = {}): Promise<ToolResult> => {
       if (ctx.signal.aborted) throw new Stop();

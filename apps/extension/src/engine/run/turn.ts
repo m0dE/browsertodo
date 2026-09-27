@@ -4,7 +4,7 @@
  * brain's events into the session, and the checks on the result (X post
  * verification, failure classification). Next turns: conversation.ts.
  */
-import { bareToolName, errorMessage, isXStatusUrl, traceStart, type AgentEvent, type AgentTask, type ExtensionSettings, type RunConfig, type SessionInfo, type TaskRunResult, type TraceCategory, type TraceValue, type UserTab } from "@browsertodo/shared";
+import { automationPromptLine, bareToolName, effectiveLevel, errorMessage, isXStatusUrl, localTimeZone, traceStart, type AgentEvent, type AgentTask, type ExtensionSettings, type RunConfig, type SessionInfo, type TaskRunResult, type TraceCategory, type TraceValue, type UserTab } from "@browsertodo/shared";
 import type { AgentSlot } from "../../agent-slots.js";
 import { SessionEndedError, type Brain, type BrainRun, type ContinuableBrain, type CoreApi } from "../brains.js";
 import type { LocalStore } from "../local-store.js";
@@ -15,6 +15,7 @@ import { isRestrictedUrl, RESTRICTED_STATUS } from "../../restricted.js";
 import type { ForcedStop } from "./active.js";
 import { ABORT_GRACE_MS, safetyTimeoutMinutes } from "./deadline.js";
 import { mediaSources, type FirstJob } from "./jobs.js";
+import type { MemoryRun, MemoryService } from "../../memory/service.js";
 
 /** Said in the thread when a conversation's tab could not be used and it moved to a new one. */
 export const MOVED_TAB_STATUS = "That tab cannot be controlled (a browser page) or another run is using it: working in a new tab next to it";
@@ -29,6 +30,12 @@ export interface ActiveSession {
   forced: ForcedStop | null;
   /** Texts the user typed, to drop the brain's echo of them. */
   said: string[];
+  /** Messages the user sent before the brain's run started: the run gets them the moment it does (drive). */
+  waiting: string[];
+  /** The brain's run of this turn is over (the session is closing): messages now open the next turn. */
+  runOver: boolean;
+  /** Messages the user sent once the run was over: they open the next turn when the session has ended. */
+  nextTurn: QueuedMessage[];
   /** Texts the agent typed or pasted into the page; the longest is the post body to verify. */
   typed: string[];
   /** It acts as an X account: it holds the X turn while it runs. */
@@ -37,6 +44,21 @@ export interface ActiveSession {
   scheduled: boolean;
   /** Local task id, while its run is on. */
   localTaskId: string | null;
+  /** The instructions the agent got this turn (scheduled runs: approvals hold what they do not ask for). */
+  instructions?: string;
+  /** When the brain's time limit ends this turn (epoch ms): an approval waits at most until shortly before. */
+  turnEndsAt?: number;
+}
+
+/** A message waiting for the next turn; voice: it was spoken. */
+export interface QueuedMessage {
+  text: string;
+  voice: boolean;
+}
+
+/** The automation level's line for the agent's prompt this turn (automation.ts); undefined at full autonomy. */
+export function approvalsLine(settings: ExtensionSettings, scheduled: boolean): string | undefined {
+  return automationPromptLine(effectiveLevel(settings, scheduled)) || undefined;
 }
 
 export type Cleanup = () => void | Promise<void>;
@@ -103,6 +125,8 @@ export interface TurnDeps {
    * looking at), from chrome.tabs, which works on every page. Absent: not known.
    */
   pageOf?(tabId?: number): Promise<TabPage | null>;
+  /** The agent's long-term memory: what each turn is given at its start (absent: none). */
+  memory?: Pick<MemoryService, "begin">;
   log(message: string): void;
 }
 
@@ -165,8 +189,35 @@ export class TurnRunner {
     const mediaPaths = await this.materialize(active, sources, cleanups);
     const config = runConfig(settings, opened.isRetry);
     if (active.forced) throw new Error(active.forced.reason);
-    const run = this.start(active, brain, { task, mediaPaths, config, settings });
+    // A TODO or cloud task keeps its run notes in memory; a one-off chat has none.
+    const memory = await this.memoryFor(active, {
+      ...(adhoc ? {} : { task: { instructions: task.instructions, account: task.account } }),
+      title: active.session.title,
+      request: task.instructions,
+      ...(task.userTab ? { tabUrl: task.userTab.url, tabTitle: task.userTab.title } : {}),
+    });
+    const run = this.start(active, brain, { task: memory ? { ...task, memory } : task, mediaPaths, config, settings });
     return this.drive(active, run, settings, cleanups);
+  }
+
+  /**
+   * What the agent is given from memory this turn (undefined: memory is off, or nothing applies), recorded in the
+   * trace (memory.inject: how long picking took; memory.given: how many entries and tokens). Memory never stops a
+   * turn: a failure is logged.
+   */
+  async memoryFor(active: ActiveSession, run: MemoryRun): Promise<string | undefined> {
+    if (!this.deps.memory) return undefined;
+    try {
+      const picked = await this.timed(active, "memory.inject", () => this.deps.memory!.begin(active.session.sessionId, run));
+      if (picked) {
+        const data = { entries: picked.entries.length, tokens: picked.tokens, continued: !!run.continued };
+        this.emit(active, { type: "trace", trace: { t: Date.now(), cat: "turn", name: "memory.given", src: "engine", data } });
+      }
+      return picked?.text || undefined;
+    } catch (err) {
+      this.deps.log(`memory for ${active.session.sessionId} failed: ${errorMessage(err)}`);
+      return undefined;
+    }
   }
 
   /** The browser tab a conversation belongs to, or null. */
@@ -208,9 +259,13 @@ export class TurnRunner {
   /** Starts the brain on a task in the session's tab. */
   start(active: ActiveSession, brain: Brain, opts: { task: AgentTask; mediaPaths: string[]; config: RunConfig; settings: ExtensionSettings }): BrainRun {
     this.mark(active, "brain.start", { brain: brain.kind, fresh: true, chars: opts.task.instructions.length });
+    active.instructions = opts.task.instructions;
+    const approvals = opts.task.approvals ?? approvalsLine(opts.settings, active.scheduled);
     return brain.start({
       sessionId: active.session.sessionId,
       ...opts,
+      // The agent is told the user's date and time in their zone (schedule_task's relative times), and what waits for approval.
+      task: { ...opts.task, timeZone: opts.task.timeZone ?? localTimeZone(), ...(approvals ? { approvals } : {}) },
       browser: active.slot.browser,
       onEvent: (e) => this.onBrainEvent(active, e),
     });
@@ -239,8 +294,14 @@ export class TurnRunner {
    */
   async drive(active: ActiveSession, run: BrainRun, settings: ExtensionSettings, cleanups: Cleanup[], throwEnded = false): Promise<TaskRunResult> {
     active.run = run;
+    active.turnEndsAt = Date.now() + settings.maxTaskMinutes * 60_000;
     const forced = active.forced;
     if (forced) run.abort(forced.reason, forced.outcome);
+    // What the user said while the run was starting (already in the thread; the brain's echo is dropped).
+    for (const text of active.waiting.splice(0)) {
+      active.said.push(text);
+      void run.sendUserMessage(text).then((ok) => ok || this.deps.log(`the agent did not take a message sent while it started (${active.session.sessionId})`));
+    }
     try {
       return await withSafetyTimer(run, settings, cleanups, throwEnded);
     } finally {

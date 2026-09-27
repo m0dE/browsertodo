@@ -25,9 +25,9 @@ export class ApiClient {
     });
   }
 
-  /** Claims the next due task, or null when nothing is due (204). */
-  async claim(runnerId: string): Promise<ClaimResponse | null> {
-    const res = await this.http.request("POST", "/v1/runner/claim", { runnerId });
+  /** Claims the next due task, or null when nothing is due (204). taskId: that task now, whatever its time (Run on its row). */
+  async claim(runnerId: string, taskId?: string): Promise<ClaimResponse | null> {
+    const res = await this.http.request("POST", "/v1/runner/claim", taskId ? { runnerId, taskId } : { runnerId });
     if (res.status === 204) return null;
     const parsed = ClaimResponse.safeParse(await res.json().catch(() => null));
     if (!parsed.success) throw new Error(`Unexpected claim response: ${parsed.error.message}`);

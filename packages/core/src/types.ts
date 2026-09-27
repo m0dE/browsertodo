@@ -7,16 +7,20 @@ import type {
   AgentEvent,
   ElementPicks,
   AgentTask,
+  MemoryToolName,
   BrowserMethod,
   BrowserMethods,
   PageSnapshot,
   RunConfig,
+  ScheduledTask,
+  ScheduleTaskArgs,
   Sleep,
   TaskRunResult,
   ToolName,
   ToolResult,
   TraceDraft,
 } from "@browsertodo/shared";
+import type { Interjections } from "./interjections.js";
 import type { SecretRedactor } from "./redact.js";
 
 /** Something that performs browser.* and vault.* methods (extension driver, or RPC to it). */
@@ -68,12 +72,40 @@ export interface ToolExecutorOptions {
   secrets?: SecretRedactor;
   /** For tests. Default: real setTimeout. */
   sleep?: Sleep;
+  /** For tests (wait_for's clock). Default: Date.now. */
+  now?: () => number;
+  /**
+   * When the running turn's time limit ends it (epoch ms), or undefined: wait_for stops waiting shortly before
+   * (WAIT_TURN_MARGIN_MS), so the agent can still say what it was waiting for. Absent: no limit is known.
+   */
+  turnEndsAt?: () => number | undefined;
   /**
    * The conversation's timing trace: one "tool" span per call (duration,
    * result size) and one "act.step" span per act step. Redacted like events.
    */
   onTrace?: (e: TraceDraft) => void;
+  /**
+   * Messages the user sends while the turn runs (the brain delivers them as
+   * user messages): until the model has read them, act stops before its next
+   * step, navigate, open_tabs and wait_for stop waiting, and task_* is refused.
+   */
+  interjections?: Interjections;
+  /**
+   * schedule_task: stores the task in the user's TODO list for this
+   * conversation and returns what was stored; throws with the reason the
+   * model relays (e.g. the plan has no TODO list). Undefined (mcp-server
+   * --attach): refused, there is no conversation to schedule from.
+   */
+  scheduleTask?: (args: ScheduleTaskArgs) => Promise<ScheduledTask>;
+  /**
+   * remember / recall / forget: the conversation's memory (the extension keeps it). Answers the model's text;
+   * isError when it refused (e.g. memory is off, or the entry looks like a secret). Undefined: refused.
+   */
+  memory?: MemoryCall;
 }
+
+/** One memory tool call, answered by the extension's memory for the conversation. */
+export type MemoryCall = (tool: MemoryToolName, args: unknown) => Promise<{ text: string; isError?: boolean }>;
 
 export interface ToolExecutor {
   /** Validates args with ToolArgs, runs the tool, emits tool_call/tool_result/jev events. Never throws. */
@@ -142,6 +174,10 @@ export interface ApiAgentOptions {
    * waits), and the tool executor's spans.
    */
   onTrace?: (e: TraceDraft) => void;
+  /** schedule_task for this conversation (see ToolExecutorOptions.scheduleTask). Undefined: refused. */
+  scheduleTask?: (args: ScheduleTaskArgs) => Promise<ScheduledTask>;
+  /** remember / recall / forget for this conversation (see ToolExecutorOptions.memory). Undefined: refused. */
+  memory?: MemoryCall;
 }
 
 export type FailureKind = "transient" | "permanent";

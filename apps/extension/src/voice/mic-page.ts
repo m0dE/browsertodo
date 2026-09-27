@@ -32,7 +32,7 @@ export interface MicPageCopy {
   close: boolean;
 }
 
-const WHY = "browsertodo listens only while the voice button is on, and sends what you say to be turned into text. The audio is not stored.";
+const WHY = "BrowserTODO listens only while the voice button is on, and sends what you say to be turned into text. The audio is not stored.";
 
 export function micPageCopy(state: MicPageState): MicPageCopy {
   switch (state) {
@@ -40,11 +40,11 @@ export function micPageCopy(state: MicPageState): MicPageCopy {
       // Chrome's prompt is up; dismissing it lands on "denied", which offers to try again.
       return { title: "Allow the microphone", body: `Chrome will ask you now. ${WHY}`, retry: null, close: false };
     case "granted":
-      return { title: "Microphone allowed", body: "You can close this tab and talk to browsertodo from the side panel.", retry: null, close: true };
+      return { title: "Microphone allowed", body: "You can close this tab and talk to BrowserTODO from the side panel.", retry: null, close: true };
     case "denied":
       return {
         title: "The microphone is blocked",
-        body: "Chrome is blocking the microphone for browsertodo. Click the icon at the left of the address bar, set Microphone to Allow, then try again.",
+        body: "Chrome is blocking the microphone for BrowserTODO. Click the icon at the left of the address bar, set Microphone to Allow, then try again.",
         retry: "Try again",
         close: false,
       };

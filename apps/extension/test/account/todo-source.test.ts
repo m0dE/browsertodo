@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AccountApi } from "../../src/account/account-api.js";
 import { AccountTodo, accountRow } from "../../src/account/todo-source.js";
+import type { RepeatSchedule } from "@browsertodo/shared";
 import { taskFixture as task } from "../fixtures.js";
 import { fakeApi } from "./fake-api.js";
 
@@ -17,12 +18,13 @@ describe("AccountTodo (the signed-in TODO list)", () => {
     t.api.on("GET /v1/tasks", (c) =>
       c.path.includes("cursor=")
         ? { body: { tasks: [task("t3", { status: "done" })], nextCursor: null } }
-        : { body: { tasks: [task("t1", { mediaIds: ["m1", "m2"], repeat: { dailyAt: ["09:00"] }, tz: "Europe/Berlin" }), task("t2")], nextCursor: "c2" } },
+        : { body: { tasks: [task("t1", { mediaIds: ["m1", "m2"], notBefore: "2026-09-25T07:00:00.000Z", schedule: { at: "2026-09-25T07:00:00.000Z", repeat: { cron: "0 9 * * *", tz: "Europe/Berlin" } } }), task("t2")], nextCursor: "c2" } },
     );
     const { tasks: rows, locked } = await t.todo.list();
     expect(locked).toBe(false);
     expect(rows.map((r) => r.id)).toEqual(["t1", "t2", "t3"]);
-    expect(rows[0]).toMatchObject({ repeat: { dailyAt: ["09:00"] }, media: [{ id: "m1", name: "file 1" }, { id: "m2", name: "file 2" }] });
+    expect(rows[0]).toMatchObject({ notBefore: "2026-09-25T07:00:00.000Z", repeat: { cron: "0 9 * * *", tz: "Europe/Berlin" }, media: [{ id: "m1", name: "file 1" }, { id: "m2", name: "file 2" }] });
+    expect(rows[0]).not.toHaveProperty("schedule");
     expect(rows[1]!.repeat).toBeNull();
     expect(t.api.calls.map((c) => c.path)).toEqual(["/v1/tasks?limit=200", "/v1/tasks?limit=200&cursor=c2"]);
     expect(t.api.calls[0]!.headers.authorization).toBe("Bearer bt_s_tok");
@@ -39,35 +41,39 @@ describe("AccountTodo (the signed-in TODO list)", () => {
     expect(t.onChange).toHaveBeenCalledWith(expect.objectContaining({ locked: true }));
   });
 
-  it("adds a task: uploads its files to /v1/media first, sends repeat with the browser's time zone", async () => {
+  it("adds a task: uploads its files to /v1/media first, sends its schedule (the rule carries its zone)", async () => {
     const t = setup();
     t.api.on("POST /v1/media", { status: 201, body: { id: "M1", filename: "a.png", contentType: "image/png", size: 3 } });
-    t.api.on("POST /v1/tasks", (c) => ({ status: 201, body: task("n1", c.body as object) }));
+    const rule = { cron: "0 9 * * 1-5\n30 18 * * 1-5", tz: "Asia/Seoul", end: "2026-12-31" };
+    t.api.on("POST /v1/tasks", (c) => {
+      const { schedule, ...rest } = c.body as { schedule: { at: string; repeat: RepeatSchedule } };
+      return { status: 201, body: task("n1", { ...rest, notBefore: schedule.at, schedule }) };
+    });
     const created = await t.todo.add({
       instructions: "Post the weekly recap",
       account: " alpha ",
       notBefore: "2026-09-25T07:00:00.000Z",
-      repeat: { dailyAt: ["09:00", "18:30"] },
+      repeat: rule,
       media: [{ name: "a.png", type: "image/png", dataBase64: "AQID" }],
     });
-    expect(created).toMatchObject({ id: "n1", repeat: { dailyAt: ["09:00", "18:30"] } });
+    expect(created).toMatchObject({ id: "n1", notBefore: "2026-09-25T07:00:00.000Z", repeat: rule });
     expect(t.api.calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /v1/media", "POST /v1/tasks"]);
     expect(t.api.calls[1]!.body).toEqual({
       instructions: "Post the weekly recap",
       account: "alpha",
-      notBefore: "2026-09-25T07:00:00.000Z",
       mediaIds: ["M1"],
-      repeat: { dailyAt: ["09:00", "18:30"] },
-      tz: "Europe/Berlin",
+      schedule: { at: "2026-09-25T07:00:00.000Z", repeat: rule },
     });
     expect(t.onChange).toHaveBeenCalledWith();
   });
 
-  it("a task without repeat sends no tz", async () => {
+  it("an old { dailyAt } rule goes as cron in the browser's zone; a task without a schedule sends none", async () => {
     const t = setup();
-    t.api.on("POST /v1/tasks", (c) => ({ status: 201, body: task("n2", c.body as object) }));
+    t.api.on("POST /v1/tasks", (c) => ({ status: 201, body: task("n2", { ...(c.body as object), schedule: null }) }));
     await t.todo.add({ instructions: "once" });
     expect(t.api.calls[0]!.body).toEqual({ instructions: "once" });
+    await t.todo.add({ instructions: "daily", repeat: { dailyAt: ["09:00", "18:30"] } });
+    expect(t.api.calls[1]!.body).toEqual({ instructions: "daily", schedule: { repeat: { cron: "0 9 * * *\n30 18 * * *", tz: "Europe/Berlin" } } });
   });
 
   it("update, retry, cancel and delete call the task routes", async () => {
@@ -76,14 +82,16 @@ describe("AccountTodo (the signed-in TODO list)", () => {
     t.api.on("POST /v1/tasks/t1/retry", { body: task("t1") });
     t.api.on("POST /v1/tasks/t1/cancel", { body: task("t1", { status: "cancelled" }) });
     t.api.on("DELETE /v1/tasks/t1", { status: 204 });
-    await t.todo.update("t1", { repeat: { dailyAt: ["07:15"] }, account: null });
+    await t.todo.update("t1", { repeat: { cron: "15 7 * * *", tz: "UTC" }, notBefore: "2026-09-25T07:15:00.000Z", account: null });
     await t.todo.update("t1", { repeat: null });
+    await t.todo.update("t1", { notBefore: null });
     await t.todo.retry("t1");
     expect((await t.todo.cancel("t1")).status).toBe("cancelled");
     expect(await t.todo.delete("t1")).toBe(true);
     expect(t.api.calls.map((c) => [`${c.method} ${c.path}`, c.body])).toEqual([
-      ["PATCH /v1/tasks/t1", { account: null, repeat: { dailyAt: ["07:15"] }, tz: "Europe/Berlin" }],
-      ["PATCH /v1/tasks/t1", { repeat: null }],
+      ["PATCH /v1/tasks/t1", { account: null, schedule: { at: "2026-09-25T07:15:00.000Z", repeat: { cron: "15 7 * * *", tz: "UTC" } } }],
+      ["PATCH /v1/tasks/t1", { schedule: { at: null, repeat: null } }],
+      ["PATCH /v1/tasks/t1", { notBefore: null }],
       ["POST /v1/tasks/t1/retry", undefined],
       ["POST /v1/tasks/t1/cancel", undefined],
       ["DELETE /v1/tasks/t1", undefined],

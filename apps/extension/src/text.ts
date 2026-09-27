@@ -59,6 +59,8 @@ export function toolArgsSummary(name: string, args: unknown, max = 70): string {
     case "task_fail":
     case "task_pause":
       return clip(String(a.reason ?? ""), max);
+    case "schedule_task":
+      return clip(String(a.task ?? "").trim().split("\n")[0]!, max);
     default: {
       if (args === undefined || args === null) return "";
       if (typeof args !== "object") return clip(String(args), max);

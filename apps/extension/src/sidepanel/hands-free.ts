@@ -2,12 +2,15 @@
  * The hands-free session in the side panel (the voice shortcut and the mic
  * button start and end it): runs the state machine (voice/hands-free.ts) on
  * what the engine hears, carries out its effects (send the message, say a
- * line, stop talking), and shows it: the orb until something was sent, then
- * a compact pill in the notice row above the input ("Hands-free · listening").
+ * line, stop talking), and shows it: the voice bar at the top of the panel
+ * (voice-bar.ts) all along, the orb until something was sent, and the mic
+ * button and the box (voice-input.ts). While it is on, the toolbar button of
+ * its tab has a badge (the background sets it, from onActive), and a soft
+ * sound marks the microphone going live and off (Settings > Voice > Sounds).
  *
  * A session belongs to the browser tab it started in (voice/hands-free-tab.ts):
  * what is said goes to that tab's chat by its id, and that chat's events are
- * narrated, whichever tab the panel shows. On another tab the pill says where
+ * narrated, whichever tab the panel shows. On another tab the bar says where
  * it listens, with Go to tab and Use this tab (the only way to move it); the
  * voice key and the mic end it wherever it listens; closing its tab ends it.
  *
@@ -30,29 +33,24 @@
  * closes, so the microphone is never on without the indicator in view.
  */
 import type { AccountView } from "../ui-protocol.js";
-import { errorMessage, traceStart, type AgentEvent, type ExtensionSettings, type StampedAgentEvent, type VoiceEngine, type VoiceEngineId, type VoiceEnginesResponse } from "@browsertodo/shared";
+import { errorMessage, traceStart, type AgentEvent, type ApprovalAnswer, type ExtensionSettings, type StampedAgentEvent, type VoiceEngine, type VoiceEngineId, type VoiceEnginesResponse } from "@browsertodo/shared";
 import type { PanelTrace } from "../trace/panel-trace.js";
-import { h } from "../ui/dom.js";
 import { chooseEngine, costPerMinuteText } from "../voice/engine-choice.js";
 import type { EngineEvents, HandsFreeEngine } from "../voice/engine.js";
 import { HANDS_FREE, handsFree, initialHandsFree, type EndReason, type HandsFreeEffect, type HandsFreeEvent, type HandsFreePhase, type HandsFreeState } from "../voice/hands-free.js";
-import { elsewhereLabel, endsWithTab, listensElsewhere, MOVED_NOTE, TAB_CLOSED_NOTE, voiceKeyAction } from "../voice/hands-free-tab.js";
+import { endsWithTab, listensElsewhere, MOVED_NOTE, TAB_CLOSED_NOTE, voiceKeyAction } from "../voice/hands-free-tab.js";
 import { ChatFollower } from "../voice/chat-follower.js";
 import { Narration } from "../voice/narration.js";
+import { spokenApprovalAnswer, WaitingApprovals } from "../voice/approval-voice.js";
 import type { RealtimeFailure } from "../voice/realtime-client.js";
 import { VoiceError } from "../voice/transcribe.js";
 import { errorHelp } from "./error-help.js";
+import { Earcons, type Earcon } from "../voice/earcons.js";
+import { VoiceActivity, voiceBarView, type VoiceBarView } from "../voice/voice-bar-view.js";
+import { initVoiceBar } from "./voice-bar.js";
 import { errorTip, type HandsFreeControl, type VoiceInput, type VoiceTip } from "./voice-input.js";
 
-/** What the pill says in each phase. */
-export const PILL_TEXT: Record<Exclude<HandsFreePhase, "off">, string> = {
-  listening: "Hands-free · listening",
-  sending: "Sending… (say “cancel” or Esc)",
-  working: "Hands-free · listening while it works",
-  speaking: "Hands-free · speaking",
-};
-
-/** The pill while the engine starts. */
+/** Under the orb while the engine starts. */
 const STARTING_TEXT = "Hands-free · starting…";
 
 /** Under the orb before anything was sent. */
@@ -78,7 +76,7 @@ interface Line {
 }
 
 export interface HandsFreeDeps {
-  voice: Pick<VoiceInput, "state" | "attachHandsFree" | "showHandsFree" | "setLevel" | "showTip" | "ensureMic">;
+  voice: Pick<VoiceInput, "state" | "attachHandsFree" | "showHandsFree" | "setLevel" | "showTip" | "ensureMic" | "shortcutLabel">;
   /** The input box: the user's words show there while the session's tab is shown. */
   composer: {
     draft(): string;
@@ -97,7 +95,7 @@ export interface HandsFreeDeps {
    * cid: the utterance's correlation id in the conversation's trace.
    */
   send(text: string, target: { tabId: number | null; sessionId: string | null }, cid?: string): Promise<string>;
-  /** A tab's title, for the pill on other tabs. */
+  /** A tab's title, for the bar on other tabs. */
   tabTitle(tabId: number): Promise<string | null>;
   /** Shows a tab (Go to tab). */
   goToTab(tabId: number): void;
@@ -115,12 +113,19 @@ export interface HandsFreeDeps {
   createEngine(id: VoiceEngineId, events: EngineEvents): HandsFreeEngine;
   /** Stops the running task of a chat; says what happened. */
   stopTask(sessionId: string | null): Promise<string>;
+  /** Answers an approval request of a chat by voice; true when it was still waiting. */
+  answerApproval(sessionId: string, id: string, answer: ApprovalAnswer): Promise<boolean>;
   openBilling(): void;
   signIn(): void;
-  /** The session started or ended (the panel tells the background, so the shortcut ends it). */
-  onActive(active: boolean): void;
-  /** Where the pill goes (the notice row above the input). */
-  host: HTMLElement;
+  /**
+   * The session started, moved to another tab, or ended; tabId: the tab it belongs to. The panel tells the
+   * background, so the shortcut ends it and the tab's toolbar button shows the badge.
+   */
+  onActive(active: boolean, tabId: number | null): void;
+  /** The voice bar's element (under the tabs; voice-bar.ts fills it). */
+  bar: HTMLElement;
+  /** The start and stop sounds (default: WebAudio's). */
+  earcons?: { play(kind: Earcon): void };
   /** The conversation's trace: what was heard, the sending window, and how long the message took to go out. */
   trace?: Pick<PanelTrace, "record" | "utterance" | "endUtterance" | "bind" | "target">;
   log?(message: string): void;
@@ -132,13 +137,15 @@ export interface HandsFree extends HandsFreeControl {
   onEvent(ev: StampedAgentEvent): void;
   /** The chats with a task running now (the session's chat working keeps it listening). */
   setRunning(sessionIds: readonly string[]): void;
-  /** The tab shown, or a tab's chat, changed: the pill and the chat followed are looked at again. */
+  /** The tab shown, or a tab's chat, changed: the bar and the chat followed are looked at again. */
   refresh(): void;
   /** A browser tab closed (its own ends the session). */
   tabClosed(tabId: number): void;
   /** The chat the session talks to (null: none, or a new chat not started yet). */
   chat(): string | null;
   readonly phase: HandsFreePhase;
+  /** The tab the session belongs to (null: none is on). */
+  readonly tab: number | null;
 }
 
 export function initHandsFree(deps: HandsFreeDeps): HandsFree {
@@ -146,12 +153,14 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   let state: HandsFreeState = initialHandsFree();
   let engine: HandsFreeEngine | null = null;
   let narration = new Narration();
+  /** The approval each followed chat waits on: a spoken yes or no answers it. */
+  const approvals = new WaitingApprovals();
   let timer: ReturnType<typeof setInterval> | null = null;
   let running: ReadonlySet<string> = new Set();
   let working = false;
-  /** Something was sent this session (the orb then gives way to the pill). */
+  /** Something was sent this session (the orb then gives way to the chat). */
   let sent = false;
-  /** The tab the session belongs to, and its title (for the pill on other tabs). */
+  /** The tab the session belongs to, and its title (for the bar on other tabs). */
   let tab: number | null = null;
   let tabTitle: string | null = null;
   /** Its tab and the tabs its chat lived in this session (see voice/hands-free-tab.ts). */
@@ -173,8 +182,22 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   const passing = new Set<string>();
   /** Starting (engine choice, microphone, connection). */
   let starting = false;
+  /** When the session started (the bar's time on). */
+  let startedAt = 0;
+  /** The start sound was made: the stop sound goes with it. */
+  let chimed = false;
+  /** A voice on the microphone now ("Hearing you…"). */
+  const activity = new VoiceActivity();
+  /** What the bar last showed of it. */
+  let hearing = false;
+  const earcons = deps.earcons ?? new Earcons(undefined, deps.log);
+  const sound = (kind: Earcon) => {
+    if (deps.settings()?.voiceSounds !== false) earcons.play(kind);
+  };
   /** The last message going out (it may be starting a new chat): the user's words for it wait for it. */
   let sending: Promise<void> = Promise.resolve();
+  /** The message starting the session's chat, until its id is known: messages said meanwhile go to that chat after it. */
+  let startingChat: Promise<void> | null = null;
   const chatNow = () => chatId ?? deps.chatOf(tab);
   const follower = new ChatFollower(chatNow);
   const trace = deps.trace;
@@ -197,37 +220,55 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     return !listensElsewhere(ownTabs, deps.activeTab());
   };
 
-  const pillLabel = h("span.hf-label");
-  const goBtn = h("button.link.hf-go", { type: "button", hidden: true, title: "Show the tab hands-free listens in" }, "Go to tab");
-  const useBtn = h("button.link.hf-use", { type: "button", hidden: true, title: "Listen for this tab's chat instead" }, "Use this tab");
-  const stopBtn = h("button.hf-stop", { type: "button", "aria-label": "Stop hands-free", title: "Stop hands-free" }, "×");
-  const pill = h("div.hf-pill", { role: "status", "aria-live": "polite", hidden: true }, h("span.hf-dot", { "aria-hidden": "true" }), pillLabel, goBtn, useBtn, stopBtn);
-  deps.host.prepend(pill);
-  stopBtn.addEventListener("click", () => stop("button"));
-  goBtn.addEventListener("click", () => tab !== null && deps.goToTab(tab));
-  useBtn.addEventListener("click", () => moveHere());
+  const bar = initVoiceBar(deps.bar, {
+    stop: () => stop("button"),
+    interrupt: () => state.phase === "speaking" && dispatch({ type: "cancel", now: now() }),
+    goToTab: () => tab !== null && deps.goToTab(tab),
+    useThisTab: () => moveHere(),
+  });
 
   function render(): void {
-    pill.hidden = !on();
     if (!on()) {
+      bar.show(null);
+      delete deps.bar.dataset.phase;
       deps.voice.showHandsFree(null);
       return;
     }
     // Off while on: the engine is still starting (microphone, connection).
     const phase = state.phase === "off" ? null : state.phase;
     const elsewhere = !here();
-    pill.dataset.phase = phase ?? "starting";
-    // Where the session is at home (for debugging and tests): its chat and its tabs.
-    pill.dataset.chat = chatNow() ?? "";
-    pill.dataset.tabs = [...ownTabs].join(",");
-    pill.classList.toggle("elsewhere", elsewhere);
-    pillLabel.textContent = elsewhere ? elsewhereLabel(tabTitle) : phase ? PILL_TEXT[phase] : STARTING_TEXT;
-    pill.title = pillLabel.textContent;
-    goBtn.hidden = !elsewhere;
-    useBtn.hidden = !elsewhere;
+    const t = now();
+    hearing = activity.hearing(t);
+    const view: VoiceBarView = voiceBarView({
+      phase: phase ?? "starting",
+      hearing,
+      engine: engine?.id ?? null,
+      elapsedMs: t - startedAt,
+      elsewhere: elsewhere ? { title: tabTitle } : null,
+      shortcut: deps.voice.shortcutLabel,
+    });
+    bar.show(view);
+    // The phase, and where the session is at home (for debugging and tests): its chat and its tabs.
+    deps.bar.dataset.phase = phase ?? "starting";
+    deps.bar.dataset.chat = chatNow() ?? "";
+    deps.bar.dataset.tabs = [...ownTabs].join(",");
     // The orb veils the session's own tab until something was sent; its caption carries the words.
     const orb = !sent && phase !== "working" && !elsewhere;
-    deps.voice.showHandsFree({ orb, phase: phase ?? "opening", caption: phase === "sending" ? "Sending…" : caption || (phase ? ORB_CAPTION : STARTING_TEXT) });
+    deps.voice.showHandsFree({
+      orb,
+      phase: phase ?? "opening",
+      caption: phase === "sending" ? "Sending…" : caption || (phase ? ORB_CAPTION : STARTING_TEXT),
+      status: elsewhere ? "on in another tab" : view.title,
+      elsewhere,
+    });
+  }
+
+  /** The microphone's level: the meter, and "Hearing you…" while a voice is on it. */
+  function onLevel(level: number): void {
+    deps.voice.setLevel(level);
+    const t = now();
+    activity.push(level, t);
+    if (activity.hearing(t) !== hearing) render();
   }
 
   function dispatch(e: HandsFreeEvent): void {
@@ -283,7 +324,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   function run(effect: HandsFreeEffect): void {
     switch (effect.type) {
       case "send":
-        sending = sendNow(effect.text);
+        sending = send(effect.text);
         break;
       case "speak":
         beginLine(effect.text);
@@ -310,14 +351,31 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     }
   }
 
-  /** What was said goes to the session's chat, whichever tab is shown. */
-  async function sendNow(text: string): Promise<void> {
+  /**
+   * Sends a message at once, unless the session's chat is still being started by an earlier one: then right after
+   * it, into that chat (sent now, it would start a second chat).
+   */
+  function send(text: string): Promise<void> {
+    const cid = trace?.utterance();
+    if (startingChat) return startingChat.then(() => sendNow(text, cid));
+    const startsChat = chatNow() === null;
+    const out = sendNow(text, cid);
+    if (startsChat) {
+      startingChat = out;
+      void out.finally(() => {
+        if (startingChat === out) startingChat = null;
+      });
+    }
+    return out;
+  }
+
+  /** What was said goes to the session's chat, whichever tab is shown. cid: its utterance in the trace. */
+  async function sendNow(text: string, cid: string | undefined): Promise<void> {
     sent = true;
     follower.sent(now());
     if (wroteBox) deps.composer.setDraft("");
     wroteBox = false;
     boxBase = "";
-    const cid = trace?.utterance();
     // The sending window (cancellable) was waiting too.
     if (trace && heardAt !== null) {
       const waited = Date.now() - heardAt;
@@ -336,7 +394,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     } catch (err) {
       deps.notify({ ...failureTip(err), key: "voice" });
     }
-    trace?.endUtterance();
+    trace?.endUtterance(cid);
     syncChat();
   }
 
@@ -362,6 +420,8 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       speech: () => alive(() => dispatch({ type: "speech", now: now() }))(),
       heard: (text, forward) =>
         alive(() => {
+          // A yes or no while the chat waits for an approval answers it, and is not sent as a message.
+          if (forward && answerByVoice(text)) forward = false;
           if (forward && text.trim()) heard(text);
           dispatch({ type: "heard", text, forward, now: now() });
           // Not going out (a stop word, nothing said): the utterance is over.
@@ -373,7 +433,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
           }
         })(),
       partial: (text) => alive(() => showWords(text))(),
-      level: (l) => deps.voice.setLevel(l),
+      level: (l) => onLevel(l),
       narrating: () => alive(() => dispatch({ type: "narrating", now: now() }))(),
       said: () =>
         alive(() => {
@@ -389,6 +449,13 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
         })(),
       userWords: (words, sent) => alive(() => void keepWords(words, sent))(),
       stopTask: () => deps.stopTask(chatNow()),
+      answerApproval: async (allow) => {
+        const chat = chatNow();
+        const id = approvals.of(chat);
+        if (!chat || !id) return "Nothing is waiting for the user's OK.";
+        const ok = await deps.answerApproval(chat, id, allow ? "allow_once" : "deny");
+        return ok ? (allow ? "Allowed: the agent goes on." : "Denied: the agent will not do it.") : "That request is no longer waiting.";
+      },
       endVoice: () => stop("narrator"),
       failed: (err) => void onEngineFailure(err),
     };
@@ -469,9 +536,10 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     starting = true;
     sent = false;
     wroteBox = false;
+    startedAt = now();
     bind(deps.activeTab());
     render();
-    deps.onActive(true);
+    deps.onActive(true, tab);
     const settings = deps.settings();
     try {
       if (!(await deps.voice.ensureMic())) return void finish(null);
@@ -483,6 +551,9 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       // Replaced while it started (Standard took over, or the cost notice switched to it), the session goes on with
       // the new engine and needs the clock just the same; stopped meanwhile, there is none.
       if (!(await openEngine(choice.engine)) && !engine) return;
+      // The microphone is live.
+      chimed = true;
+      sound("start");
       syncChat();
       timer = setInterval(() => {
         const t = now();
@@ -535,8 +606,11 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     chatId = null;
     ownTabs.clear();
     deps.voice.setLevel(0);
+    activity.reset();
+    if (chimed) sound("stop");
+    chimed = false;
     render();
-    deps.onActive(false);
+    deps.onActive(false, null);
     if (note) deps.notify({ text: note, level: "info" });
   }
 
@@ -548,12 +622,13 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     dispatch({ type: "stop", reason });
   }
 
-  /** Use this tab (on the pill, on another tab): the session goes on there. */
+  /** Use this tab (on the bar, on another tab): the session goes on there. */
   function moveHere(): void {
     const shown = deps.activeTab();
     if (wroteBox) deps.composer.setDraft(boxBase);
     wroteBox = false;
     bind(shown);
+    deps.onActive(true, tab);
     syncChat();
     render();
     deps.notify({ text: MOVED_NOTE, level: "info" });
@@ -577,9 +652,20 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     dispatch({ type: "cancel", now: now() });
   });
 
+  /** Standard: a spoken yes or no answers the approval the chat waits on. True when it did. */
+  function answerByVoice(text: string): boolean {
+    const chat = chatNow();
+    const id = approvals.of(chat);
+    const answer = id ? spokenApprovalAnswer(text) : null;
+    if (!chat || !id || !answer) return false;
+    void deps.answerApproval(chat, id, answer);
+    return true;
+  }
+
   /** Tells the engine (and, Standard, the narration) about an event of the session's chat. */
   function narrate(ev: StampedAgentEvent): void {
     const t = now();
+    approvals.push(ev);
     engine?.agentEvent(ev as AgentEvent, t);
     if (engine?.id !== "standard") return;
     const said = narration.push(ev, t);
@@ -594,6 +680,9 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     },
     get phase() {
       return state.phase;
+    },
+    get tab() {
+      return on() ? tab : null;
     },
     toggle(reason) {
       // Only this panel's own session state decides: on, it ends (wherever it listens); off, one starts here.

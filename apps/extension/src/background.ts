@@ -4,11 +4,14 @@
  */
 import { z } from "zod";
 import * as core from "@browsertodo/core";
-import { errorMessage, type ExtensionSettings } from "@browsertodo/shared";
+import { errorMessage, type ExtensionSettings, type ScheduledTask, type SessionInfo } from "@browsertodo/shared";
 import { AccountService, browserTimeZone, type AccountServiceDeps } from "./account/account.js";
 import type { AccountTaskList } from "./account/account-api.js";
 import { AccountTodo, LocalTodo, type TodoSource } from "./account/todo-source.js";
 import { AgentSlots } from "./agent-slots.js";
+import { ApprovalBroker } from "./approval/broker.js";
+import { approvalJev } from "./approval/jev-source.js";
+import type { GateContext } from "./approval/gate.js";
 import { ApiClient } from "./api-client.js";
 import { Cdp } from "./cdp.js";
 import { tabUrl } from "./chrome-tabs.js";
@@ -24,13 +27,17 @@ import { MediaFiles } from "./engine/media-files.js";
 import { Runner, type ResolvedBrain } from "./engine/runner.js";
 import { SessionStore } from "./engine/sessions.js";
 import { TraceStore } from "./engine/trace-store.js";
+import { MemoryService, type MemoryTool } from "./memory/service.js";
+import { MemoryStore } from "./memory/store.js";
+import { MemorySync } from "./memory/sync.js";
 import { testClaude, testCloud, testJev } from "./engine/settings-tests.js";
 import { UiHub } from "./engine/ui-hub.js";
 import { UiRouter, type ExtraRequest } from "./engine/ui-router.js";
 import { HelperLink } from "./helper-link.js";
 import { logger } from "./log.js";
 import { notify } from "./notify.js";
-import { PanelCommands } from "./panel-command.js";
+import { PanelCommands, VOICE_BADGE } from "./panel-command.js";
+import { openTabPanel, StoredPanelTabs } from "./panel-tabs.js";
 import { ALARM_NAME, DUE_ALARM, ensureAlarm, getRunnerId, handleStorageChange, loadSettings, migrateStoredSettings, saveSettings, saveSettingsPatch } from "./settings-store.js";
 import type { UiRequest } from "./ui-protocol.js";
 import { TabChats } from "./tab-chats.js";
@@ -49,28 +56,69 @@ const hub = new UiHub(() => router.getState());
 
 const cdp = new Cdp();
 const vault = new Vault();
-// Each browser tab has its own chat (tab -> conversation); the side panel follows the active tab.
+// Each browser tab has its own chat (tab -> conversation); the tab's own side panel shows it.
 const tabChats = new TabChats();
 // Each running session acts in its own agent tab (slot); slot 0 is the first agent tab.
 // Scheduled runs never take over a tab that has a chat.
 // Every browser call of a session is timed in its conversation's trace (the Raw view).
-const slots = new AgentSlots(
+// Actions the automation level holds wait for the user's OK: a card in the conversation's chat (approval/broker.ts).
+// The side panel may be closed (a scheduled run): a notification says so too.
+const approvals = new ApprovalBroker({
+  note: async (sessionId, e) => {
+    if (!(await sessions.note(sessionId, e))) throw new Error(`No conversation ${sessionId}`);
+  },
+  onRequest: (_sessionId, r) => void notify("needs your OK", `${r.action}${r.site ? ` on ${r.site}` : ""}: ${r.why}. Answer in the side panel.`),
+});
+const slots: AgentSlots = new AgentSlots(
   cdp,
   vault,
   async (tabId) => (await tabChats.get(tabId)) !== null,
   (sessionId, call) => sessions.append(sessionId, { type: "trace", trace: { t: call.t, ms: call.ms, cat: "browser", name: call.method, src: "engine", data: call.data } }),
+  {
+    context: (sessionId): Promise<GateContext> => runner.gateContext(sessionId),
+    request: (sessionId, ask, opts) => approvals.request(sessionId, ask, opts),
+    jev: async (sessionId) =>
+      approvalJev({ settings: await loadSettings(), brain: runner.runningSessions.find((s: SessionInfo) => s.sessionId === sessionId)?.brain, hosted: account.session(), sessionId }),
+    end: (sessionId) => approvals.end(sessionId),
+  },
+  (tabId) => panelCommands.hasPanel(tabId),
 );
 const { tab: agentTab, driver, browser } = slots.get(0);
 const db = new IdbKvDb();
 const localStore = new LocalStore({ db });
 // Each conversation's timing trace (Raw view) lives beside its events.
 const sessions = new SessionStore(db, { trace: new TraceStore(db, { log: logger("trace") }) });
+// schedule_task (every brain): the agent's task goes into the TODO list of that conversation's user (engine/schedule-task.ts).
+const scheduleTask = (sessionId: string, args: unknown): Promise<ScheduledTask> => router.scheduler.schedule(sessionId, args);
+// The agent's long-term memory (memory/): given at each turn's start, kept with remember / forget and run notes.
+const memoryStore = new MemoryStore();
+// On a plan with the TODO list, memory syncs with the signed-in account (memory/sync.ts); else it stays here.
+const memorySync = new MemorySync({
+  store: memoryStore,
+  account: async () => {
+    await account.load();
+    const s = account.session();
+    return s ? { userId: s.user.id, email: s.user.email, syncAllowed: account.todoAllowed(), api: await account.api() } : null;
+  },
+  log: logger("memory"),
+  // "Add this computer's memory to <account>?" shows in the side panel and Settings.
+  onQuestionChange: () => hub.pushState(),
+});
+const memory = new MemoryService({ store: memoryStore, sessions, settings: loadSettings, sync: memorySync });
+// remember / recall / forget (every brain): answered by the memory of that conversation.
+const memoryTool = (sessionId: string, tool: MemoryTool, args: unknown) => memory.tool(sessionId, tool, args);
 // Claude Code's browser calls name their task session: they are served in that session's tab.
-const helper = new HelperLink({ registerHandlers: (peer) => registerBrowserHandlers(peer, (sessionId) => slots.browserFor(sessionId)) });
+const helper = new HelperLink({
+  registerHandlers: (peer) => {
+    registerBrowserHandlers(peer, (sessionId) => slots.browserFor(sessionId));
+    peer.handle("todo.scheduleTask", ({ sessionId, args }) => scheduleTask(sessionId, args));
+    peer.handle("memory.call", ({ sessionId, tool, args }) => memoryTool(sessionId, tool, args));
+  },
+});
 const mediaFiles = new MediaFiles();
 // Which conversations still have their agent session open shows in the side panel.
 const claudeCodeBrain = new ClaudeCodeBrain(helper, { onSessionsChanged: () => hub.pushState() });
-const apiBrain = new ApiBrain({ core, browser, onSessionsChanged: () => hub.pushState() });
+const apiBrain = new ApiBrain({ core, browser, scheduleTask, memoryTool, onSessionsChanged: () => hub.pushState() });
 
 type SignInIdentity = { clientId: string; identity: NonNullable<AccountServiceDeps["identity"]> };
 /** Google sign-in: the built-in client and Chrome's auth flow (the e2e suite swaps in a fake Google, setIdentity). */
@@ -95,13 +143,18 @@ const account = new AccountService({
   onChange: () => {
     hub.pushState();
     hub.push({ type: "tasks.changed" });
+    // Signed in, out, or a new plan: memory syncs (or stops) accordingly.
+    memorySync.schedule();
   },
   log: logger("account"),
 });
 void account.load().catch(() => {});
+memorySync.schedule();
 const hostedBrain = new ApiBrain({
   core,
   browser,
+  scheduleTask,
+  memoryTool,
   onSessionsChanged: () => hub.pushState(),
   backend: hostedBackend({
     core,
@@ -170,14 +223,26 @@ async function pageOf(tabId?: number): Promise<{ tabId: number; url: string; tit
   return tab?.id === undefined ? null : { tabId: tab.id, url: tabUrl(tab), title: tab.title ?? "" };
 }
 
-// The keyboard shortcut: open the side panel with the cursor in the chat input (see panel-command.ts).
+// Each tab's own side panel, and the keyboard shortcut: open it with the cursor in the chat input (see panel-command.ts).
+const panelTabs = new StoredPanelTabs({ log: logger("panel") });
 const panelCommands = new PanelCommands({
-  open: (windowId) => chrome.sidePanel.open({ windowId }),
-  // Disabling the panel closes it in every window at once (close() animates and keeps the page); both calls go
-  // out before the open() that follows, in the same gesture.
-  closeAllInstantly: async () => {
-    await Promise.all([chrome.sidePanel.setOptions({ enabled: false }), chrome.sidePanel.setOptions({ enabled: true })]);
-  },
+  open: (tabId) => openTabPanel(tabId),
+  // Disabling closes the tab's panel at once (close() animates and keeps the page); it goes out before the
+  // open() that follows, in the same gesture.
+  disable: (tabId) => chrome.sidePanel.setOptions({ tabId, enabled: false }),
+  tabs: panelTabs,
+  reportsClosed: !!chrome.sidePanel?.onClosed,
+  // Hands-free voice listening in a tab: its toolbar button says so.
+  badge: (tabId, on) =>
+    void Promise.all(
+      on
+        ? [
+            chrome.action.setBadgeBackgroundColor({ tabId, color: VOICE_BADGE.color }),
+            chrome.action.setBadgeTextColor({ tabId, color: VOICE_BADGE.textColor }),
+            chrome.action.setBadgeText({ tabId, text: VOICE_BADGE.text }),
+          ]
+        : [chrome.action.setBadgeText({ tabId, text: "" })],
+    ).catch((err: unknown) => logger("voice")(`badge on tab ${tabId}: ${errorMessage(err)}`)),
   log: logger(),
 });
 
@@ -190,6 +255,7 @@ const runner = new Runner({
   localStore,
   sessions,
   pageOf,
+  memory,
   media: mediaFiles,
   resolveBrain: resolveForRun,
   core,
@@ -228,6 +294,9 @@ const router = new UiRouter({
   loadSettings,
   saveSettingsPatch,
   runner,
+  approvals,
+  memory,
+  memoryQuestion: () => memorySync.question(),
   showAgent: (sessionId) => slots.show(sessionId ?? runner.running?.sessionId),
   localStore,
   sessions,
@@ -236,7 +305,7 @@ const router = new UiRouter({
   brainStatus,
   nextRunAt,
   testClaude: (s) => testClaude(s),
-  testJev: (s) => testJev(s, core),
+  testJev: (s, brain) => testJev(s, brain, { core, hosted: account.session() }),
   testCloud: (s) => testCloud(s, (x) => createApi(x).check()),
   vault,
   account,
@@ -293,6 +362,9 @@ function onStart(): void {
   // An install saved with an earlier default account server moves to its current address (also on update).
   void migrateStoredSettings().catch((err: unknown) => logger("settings")(`migration failed: ${errorMessage(err)}`));
   void ensureAlarm();
+  // No window-wide panel: a tab without its own options has none (panel-tabs.ts). The toolbar button opens or closes
+  // a tab's own panel; in a tab without one it fires action.onClicked, which opens it there.
+  void chrome.sidePanel?.setOptions({ enabled: false }).catch(() => {});
   void chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   void runner.recover().catch(() => {});
   void scheduleDueAlarm().catch(() => {});
@@ -312,8 +384,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => void runner.onTabUpdated(tabId, changeInfo));
-// A closed tab loses its chat (the session stays in the Activity Log); a turn running there stops.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => changeInfo.status === "loading" && panelCommands.tabLoading(tabId));
+// A tab a running agent's page opened (target=_blank, window.open) joins that run's tabs.
+chrome.tabs.onCreated.addListener((tab) => void slots.adopt(tab).catch(() => {}));
+// A closed tab loses its chat (the session stays in History); a turn running there stops.
 chrome.tabs.onRemoved.addListener((tabId) => {
+  panelCommands.tabRemoved(tabId);
   void tabChats
     .unbind(tabId)
     .then((sessionId) => {
@@ -321,8 +397,14 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     })
     .catch(() => {});
 });
-// Before anything is awaited: sidePanel.open() needs the key press as its user gesture.
+// Before anything is awaited: sidePanel.open() needs the key press (or the click) as its user gesture.
 chrome.commands?.onCommand.addListener((command, tab) => void panelCommands.onCommand(command, tab));
+const onActionClicked = (tab: chrome.tabs.Tab) => panelCommands.onAction(tab);
+chrome.action.onClicked.addListener(onActionClicked);
+// A panel the user closed stays off in its tab (it may wake the worker: the remembered tabs are read first).
+chrome.sidePanel?.onClosed?.addListener(({ tabId }) => {
+  if (tabId !== undefined) void panelTabs.ready.then(() => panelCommands.panelClosed(tabId));
+});
 chrome.debugger.onDetach.addListener((source, reason) => cdp.handleDetach(source, String(reason)));
 chrome.runtime.onMessage.addListener((msg: UiRequest | ExtraRequest, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return false;
@@ -359,8 +441,13 @@ onStart();
   slots,
   agentTab,
   tabChats,
+  memory,
+  memorySync,
   scheduleDueAlarm,
   panelCommands,
+  panelTabs,
+  /** The toolbar button's listener (the e2e shortcut presser points the button at the command handler instead). */
+  onActionClicked,
   /** Runs use this brain instead of the real ones (null: back to the real ones). */
   setBrainOverride: (fn: typeof brainOverride) => void (brainOverride = fn),
   /** Google sign-in uses this client ID and auth flow (a fake Google). */

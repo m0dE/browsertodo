@@ -1,27 +1,27 @@
 /**
  * What the Realtime narrator is told about the chat: short text notes made
- * from the agent's events, so it can say, in its own words, what is going
- * on. Progress (milestones, the agent's words) is batched and sent at most
- * every FEED_BATCH_MS; a finished task, a question and an error go at once.
- * Only milestones (milestones.ts), the agent's own text (clipped) and the
- * short result lines (spoken-line.ts) are passed on: never what the agent
- * types or what pages say. Pure.
+ * from the agent's events, each saying whether the narrator should speak
+ * about it (and as what), by the one policy in narrator-policy.ts: the
+ * result, the agent's question, a problem, and now and then a meaningful step.
+ * What only echoes the user's request (their voice message, their words, the
+ * agent restating it) is not passed on. Only milestones (milestones.ts), the
+ * agent's own text (clipped, as context) and the short result lines
+ * (spoken-line.ts) are passed on: never what the agent types or what pages
+ * say. Pure.
  */
 import type { AgentEvent } from "@browsertodo/shared";
-import { milestoneOf } from "./milestones.js";
-import { endLine, errorLine } from "./spoken-line.js";
+import { freshMemory, narrationOf, type NarrationMemory, type SpokenKind } from "./narrator-policy.js";
+import { approvalLine } from "./approval-voice.js";
 
-/** Progress notes go to the narrator at most this often. */
-export const FEED_BATCH_MS = 8_000;
 /** The agent's text is passed on up to this many characters (the narrator summarises it). */
-const MAX_AGENT_TEXT = 500;
-/** The user's message is noted up to this many characters. */
+const MAX_AGENT_TEXT = 300;
+/** The user's typed message is noted up to this many characters. */
 const MAX_USER_TEXT = 300;
 
 export interface FeedNote {
   text: string;
-  /** Ask the narrator to say something about it now. */
-  respond: boolean;
+  /** Ask the narrator to say something about it (as this kind of line); null: context only. */
+  speak: SpokenKind | null;
 }
 
 const clip = (text: string, max: number) => {
@@ -30,65 +30,48 @@ const clip = (text: string, max: number) => {
 };
 
 export class NarratorFeed {
-  private said: string[] = [];
-  private steps: string[] = [];
-  /** When the oldest unsent progress arrived. */
-  private since: number | null = null;
+  private memory: NarrationMemory = freshMemory();
+  /** The agent's latest words (context for a milestone). */
+  private said: string | null = null;
 
-  constructor(private readonly batchMs = FEED_BATCH_MS) {}
+  /** A request went to the agent at `now` (the narrator acknowledged it): what it says about it starts over. */
+  request(now: number): void {
+    this.memory = freshMemory(now);
+    this.said = null;
+  }
 
-  /** An event of the chat the session follows: notes to send now (a finished task, a question, an error). */
+  /** An event of the chat the session follows: the notes for the narrator. */
   push(ev: AgentEvent, now: number): FeedNote[] {
+    const spoken = narrationOf(ev, this.memory, now);
     switch (ev.type) {
       case "assistant_text":
-        if (ev.text.trim()) this.progress(now, () => this.said.push(clip(ev.text, MAX_AGENT_TEXT)));
+        if (ev.text.trim()) this.said = clip(ev.text, MAX_AGENT_TEXT);
         return [];
-      case "tool_call": {
-        const step = milestoneOf(ev);
-        if (step && !this.steps.includes(step)) this.progress(now, () => this.steps.push(step));
-        return [];
-      }
       case "user_message":
-        return [{ text: `Agent update: the user's message went to the agent: "${clip(ev.text, MAX_USER_TEXT)}"`, respond: false }];
+        // Said to the narrator (send_to_agent): it knows. Typed in the panel: a new request it should know of.
+        if (ev.voice) return [];
+        this.request(this.memory.lastSpokenAt);
+        return [{ text: `Agent update: the user typed a message to the agent: "${clip(ev.text, MAX_USER_TEXT)}". Do not reply to it.`, speak: null }];
+      case "tool_call": {
+        if (!spoken) return [];
+        const context = this.said ? ` (The agent last said: "${this.said}")` : "";
+        return [{ text: `Agent update (progress): ${spoken.line}.${context} Say it in a few words, only if it is news to the user.`, speak: "milestone" }];
+      }
       case "error":
-        return [{ text: `Agent update (problem): "${errorLine(ev.text)}" Tell the user briefly.`, respond: true }];
-      case "task_end":
-        return [this.ending(ev)];
+        return spoken ? [{ text: `Agent update (problem): "${spoken.line}" Tell the user briefly.`, speak: "error" }] : [];
+      case "approval_request":
+        return [{ text: `Agent update (needs the user's OK): "${approvalLine(ev.request)}" Ask the user in a few words, then call answer_approval with their answer.`, speak: "question" }];
+      case "task_end": {
+        this.said = null;
+        if (!spoken) return [];
+        if (spoken.kind === "question") {
+          return [{ text: `Agent update (needs the user): The agent asks: "${spoken.line}" Ask the user, and pass their answer on with send_to_agent.`, speak: "question" }];
+        }
+        const what = ev.outcome === "done" ? "The task is done." : ev.outcome === "paused" ? "The task is waiting for the user." : "The task did not work.";
+        return [{ text: `Agent update (finished): ${what} Tell the user in one to three short sentences: "${spoken.line}"`, speak: "result" }];
+      }
       default:
         return [];
     }
-  }
-
-  /** The batched progress, once FEED_BATCH_MS have passed since the oldest of it. */
-  tick(now: number): FeedNote[] {
-    if (this.since === null || now - this.since < this.batchMs) return [];
-    return [{ text: `Agent update (progress): ${this.takeProgress()}`, respond: true }];
-  }
-
-  private progress(now: number, add: () => void): void {
-    add();
-    this.since ??= now;
-  }
-
-  /** The unsent progress as one line (and forgets it). */
-  private takeProgress(): string {
-    const parts: string[] = [];
-    if (this.said.length) parts.push(`the agent said: ${this.said.map((t) => `"${t}"`).join(" ")}`);
-    if (this.steps.length) parts.push(`Steps: ${this.steps.join("; ")}.`);
-    this.said = [];
-    this.steps = [];
-    this.since = null;
-    return parts.join(" ");
-  }
-
-  private ending(ev: Extract<AgentEvent, { type: "task_end" }>): FeedNote {
-    const before = this.since === null ? "" : `${this.takeProgress()} `;
-    const line = endLine(ev);
-    if (ev.outcome === "paused" && !ev.spoken && ev.reason) {
-      // A reason without a spoken line is the agent's question as it wrote it.
-      return { text: `Agent update (needs the user): ${before}The agent asks: "${line}" Ask the user, and pass their answer on with send_to_agent.`, respond: true };
-    }
-    const what = ev.outcome === "done" ? "The task is done." : ev.outcome === "paused" ? "The task is waiting for the user." : "The task did not work.";
-    return { text: `Agent update (finished): ${before}${what} Tell the user in one or two short sentences: "${line}"`, respond: true };
   }
 }

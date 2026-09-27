@@ -73,17 +73,10 @@ export interface ComposerView {
   readonly actionSlot: HTMLElement;
   /** The text in the box. */
   draft(): string;
-  /** Replaces the text in the box (voice input writes its live text here). */
+  /** Replaces the text in the box (hands-free voice writes the user's words here while they speak). */
   setDraft(value: string): void;
-  /** Voice input is writing into the box: the follow-up suggestion stays hidden meanwhile. */
+  /** Hands-free voice is on (it may write into the box): the follow-up suggestion stays hidden meanwhile. */
   setDictating(on: boolean): void;
-  /** Sends what is in the box, exactly as Enter does (an empty box in Chat looks at the page). voice: the text was spoken. */
-  send(opts?: { voice?: boolean }): void;
-  /**
-   * Sees the box's key presses before the composer does (voice input takes
-   * Enter and Esc while it listens). Return true when handled.
-   */
-  interceptKeys(handler: (e: KeyboardEvent) => boolean): void;
   /** The side panel tab shown (the composer sits under Chat and TODO; only Chat sends empty messages). */
   setPanelTab(tab: TabName): void;
   /** Continue a stopped conversation now: sends the typed note if there is one, otherwise just continues. */
@@ -193,15 +186,8 @@ export function initComposer(opts: {
       text.focus();
     }
   });
-  let keyInterceptor: ((e: KeyboardEvent) => boolean) | null = null;
-  /** The next send is of spoken text (send({ voice: true })). */
-  let spoken = false;
   // Enter sends, Shift+Enter adds a line (like chat apps). Tab takes a shown suggestion, Esc dismisses it.
   text.addEventListener("keydown", (e) => {
-    if (keyInterceptor?.(e)) {
-      e.preventDefault();
-      return;
-    }
     const took = suggestion.onKey(e, text.value);
     if (took) {
       e.preventDefault();
@@ -231,8 +217,6 @@ export function initComposer(opts: {
 
   form.addEventListener("submit", (e) => {
     e.preventDefault();
-    const voice = spoken ? { voice: true } : {};
-    spoken = false;
     const value = text.value.trim();
     if (!value) return sendEmpty();
     const m = mode();
@@ -245,7 +229,7 @@ export function initComposer(opts: {
           clearInput();
           if (m === "conversation") progress("Sending…");
           try {
-            await uiRequest({ type: "run.message", sessionId: t.sessionId, text: value, ...voice, ...tab() });
+            await uiRequest({ type: "run.message", sessionId: t.sessionId, text: value, ...tab() });
           } catch (err) {
             // Not sent: the text goes back into the box.
             text.value = value;
@@ -259,7 +243,7 @@ export function initComposer(opts: {
         progress("Starting…");
         const media = await filesToUploads(files.files());
         // No account field here: the agent picks up accounts named in the text ("post this from @beta").
-        const { sessionId } = await uiRequest({ type: "run.adhoc", instructions: value, ...(media.length ? { media } : {}), ...voice, ...tab() });
+        const { sessionId } = await uiRequest({ type: "run.adhoc", instructions: value, ...(media.length ? { media } : {}), ...tab() });
         clearInput();
         files.clear();
         settled();
@@ -335,13 +319,6 @@ export function initComposer(opts: {
     setDictating(on) {
       suggestion.setDictating(on);
       fit();
-    },
-    send(o) {
-      spoken = !!o?.voice;
-      form.requestSubmit();
-    },
-    interceptKeys(handler) {
-      keyInterceptor = handler;
     },
     focus() {
       text.focus();

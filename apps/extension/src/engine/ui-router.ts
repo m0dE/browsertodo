@@ -161,7 +161,6 @@ export class UiRouter {
         const tab = optTab(msg.tabId);
         if (tab !== undefined) input.tabId = tab;
         if (msg.screen === true) input.screen = true;
-        if (msg.voice === true) input.voice = true;
         return d.runner.runAdhoc(input) satisfies Promise<UiResults["run.adhoc"]>;
       }
       case "run.continue": {
@@ -311,6 +310,14 @@ export class UiRouter {
         const sessionId = optId(msg.sessionId);
         if (!sessionId || !text) throw new Error("sessionId and text are required");
         return { ok: !!(await d.sessions.note(sessionId, { type: "spoken", text })) } satisfies UiResults["voice.spoken"];
+      }
+      case "voice.heard": {
+        const text = typeof msg.text === "string" ? msg.text.trim() : "";
+        const sent = typeof msg.sent === "string" ? msg.sent.trim() : "";
+        const sessionId = optId(msg.sessionId);
+        if (!sessionId || !text) throw new Error("sessionId and text are required");
+        const heard = { type: "heard" as const, text, ...(sent ? { sent } : {}) };
+        return { ok: !!(await d.sessions.note(sessionId, heard)) } satisfies UiResults["voice.heard"];
       }
       default:
         throw new Error(`Unknown request type: ${String((msg as { type?: unknown }).type)}`);

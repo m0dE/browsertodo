@@ -1,9 +1,9 @@
 /**
- * The hands-free session in the side panel (the voice shortcut starts and
- * ends it): runs the state machine (voice/hands-free.ts) on what the engine
- * hears, carries out its effects (send the message, say a line, stop
- * talking), and shows it: the orb until something was sent, then a compact
- * pill in the notice row above the input ("Hands-free · listening").
+ * The hands-free session in the side panel (the voice shortcut and the mic
+ * button start and end it): runs the state machine (voice/hands-free.ts) on
+ * what the engine hears, carries out its effects (send the message, say a
+ * line, stop talking), and shows it: the orb until something was sent, then
+ * a compact pill in the notice row above the input ("Hands-free · listening").
  *
  * A session belongs to the browser tab it started in (voice/hands-free-tab.ts):
  * what is said goes to that tab's chat by its id, and that chat's events are
@@ -13,7 +13,11 @@
  *
  * What is said aloud is part of the chat: each line (not the milestones,
  * which repeat the tool rows) is kept in its chat as a "spoken" event, shown
- * playing while it is said.
+ * playing while it is said. With Realtime, what the user said is kept too,
+ * word for word (a "heard" event), with the request the narrator sent for it;
+ * the request itself goes out at once and the box is left alone. Standard
+ * shows the user's words in the box while they speak, then sends them after
+ * a short window in which "cancel" or Esc takes them back.
  *
  * The engine is the one picked in Settings (voice/engine-choice.ts):
  * Realtime unless the server cannot run it or the credit is low; a Realtime
@@ -97,6 +101,8 @@ export interface HandsFreeDeps {
   onSpeaking(line: { sessionId: string; text: string } | null): void;
   /** Keeps a said line in its chat. */
   keepSpoken(sessionId: string, text: string): void;
+  /** Keeps what the user said (Realtime) in its chat, with the request sent for it (null: none). */
+  keepHeard(sessionId: string, text: string, sent: string | null): void;
   settings(): ExtensionSettings | null;
   account(): AccountView | undefined;
   /** The server's voice engines (null: could not be loaded). */
@@ -161,6 +167,8 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   const passing = new Set<string>();
   /** Starting (engine choice, microphone, connection). */
   let starting = false;
+  /** The last message going out (it may be starting a new chat): the user's words for it wait for it. */
+  let sending: Promise<void> = Promise.resolve();
   const chatNow = () => chatId ?? deps.chatOf(tab);
   const follower = new ChatFollower(chatNow);
   const on = () => state.phase !== "off" || starting;
@@ -260,7 +268,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   function run(effect: HandsFreeEffect): void {
     switch (effect.type) {
       case "send":
-        void sendNow(effect.text);
+        sending = sendNow(effect.text);
         break;
       case "speak":
         beginLine(effect.text);
@@ -276,7 +284,6 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       case "cancelled":
         if (wroteBox) deps.composer.setDraft(boxBase);
         wroteBox = false;
-        engine?.cancelled();
         deps.notify({ text: "Cancelled.", level: "info" });
         break;
       case "end":
@@ -300,7 +307,14 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     syncChat();
   }
 
-  /** The user's words so far, in the box (after what was typed there) while the session's tab is shown. */
+  /** What the user said (Realtime), kept in the chat its request went to, or else the session's chat. */
+  async function keepWords(words: string, sent: string | null): Promise<void> {
+    if (sent) await sending;
+    const chat = state.phase === "off" ? null : chatNow();
+    if (chat) deps.keepHeard(chat, words, sent);
+  }
+
+  /** The user's words so far (Standard), in the box (after what was typed there) while the session's tab is shown. */
   function showWords(text: string): void {
     if (!here()) return;
     if (!wroteBox) boxBase = deps.composer.draft();
@@ -331,16 +345,8 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
           dispatch({ type: "said", now: now() });
         })(),
       narratorText: (t) => alive(() => narratorWords(t))(),
-      forward: (text) =>
-        alive(() => {
-          dispatch({ type: "forward", text, now: now() });
-          showWords("");
-        })(),
-      cancelRequest: () => {
-        if (state.phase !== "sending") return false;
-        dispatch({ type: "cancel", now: now() });
-        return true;
-      },
+      forward: (text) => alive(() => dispatch({ type: "forward", text, now: now() }))(),
+      userWords: (words, sent) => alive(() => void keepWords(words, sent))(),
       stopTask: () => deps.stopTask(chatNow()),
       endVoice: () => stop("narrator"),
       failed: (err) => void onEngineFailure(err),
@@ -425,7 +431,9 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       const choice = chooseEngine({ preferred: settings?.voiceEngine ?? "realtime", engines, creditCents: deps.account()?.credit?.totalCents });
       if (choice.note) deps.notify({ key: ENGINE_NOTICE, text: choice.note, level: "fallback" });
       else if (choice.engine === "realtime" && settings && !settings.realtimeCostNoticed) costNotice(engines?.engines ?? null);
-      if (!(await openEngine(choice.engine))) return;
+      // Replaced while it started (Standard took over, or the cost notice switched to it), the session goes on with
+      // the new engine and needs the clock just the same; stopped meanwhile, there is none.
+      if (!(await openEngine(choice.engine)) && !engine) return;
       syncChat();
       timer = setInterval(() => {
         const t = now();

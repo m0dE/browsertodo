@@ -41,9 +41,12 @@ export function renderEvent(v: EventView, onContinue?: () => void): HTMLElement 
         h("span.chip", { "data-tone": v.executed ? "accent" : "muted" }, v.label),
         h("span.ms", null, `${v.ms} ms`),
       );
-    case "user":
+    case "user": {
       if (v.screen) return renderScreenHelp(v.text);
-      return v.voice ? h("div.ev-user.voice", { title: "Sent by voice" }, voiceMark(), h("span.ev-user-text", null, v.text)) : h("div.ev-user", null, v.text);
+      if (!v.voice) return h("div.ev-user", null, v.text);
+      const bubble = h("div.ev-user.voice", { title: "Sent by voice" }, voiceMark(), h("span.ev-user-text", null, v.text));
+      return v.sent ? h("div.ev-said", null, bubble, renderSent(v.sent)) : bubble;
+    }
     case "spoken":
       return renderSpoken(v);
     case "end":
@@ -99,6 +102,11 @@ export function renderSpoken(v: Extract<EventView, { kind: "spoken" }>): HTMLEle
     h("span.ev-spoken-text", null, v.text),
     h("span.ev-spoken-wave", { "aria-hidden": "true" }, h("i"), h("i"), h("i"), h("i")),
   );
+}
+
+/** Under the user's own words: what the Realtime narrator passed to the agent for them (it said something else). */
+function renderSent(text: string): HTMLElement {
+  return h("div.ev-sent", { title: "What the voice assistant passed to the agent" }, h("span.ev-sent-label", null, "Sent to agent: "), text);
 }
 
 /** The mic in a message the user spoke (read out as "Voice"). */
@@ -206,7 +214,7 @@ export function renderOpening(v: OpeningView, onDetails: (trigger: HTMLElement) 
     onDetails(bubble);
   });
   const started = new Date(v.at);
-  return h("div.ev-opening", null, bubble, h("time.ev-when", { datetime: v.at, title: `Started ${started.toLocaleString()}` }, v.when));
+  return h("div.ev-opening", null, bubble, v.sent ? renderSent(v.sent) : null, h("time.ev-when", { datetime: v.at, title: `Started ${started.toLocaleString()}` }, v.when));
 }
 
 const CLIP_ICON =

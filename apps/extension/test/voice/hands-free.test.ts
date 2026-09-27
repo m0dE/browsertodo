@@ -170,9 +170,14 @@ describe("hands-free: barge-in, cancel, stop words, silence", () => {
     expect(run([heard("what is it doing?", 500, false)], started()).effects).toEqual([]);
   });
 
-  it("a forwarded request (the narrator's send_to_agent) goes through the same sending window", () => {
-    const r = run([{ type: "forward", text: "Post gm on X", now: 100 }, { type: "tick", now: 100 + HANDS_FREE.sendDelayMs }], started({ halfDuplex: false }));
+  it("a forwarded request (the narrator's send_to_agent) goes out at once, with no sending window, and the narrator talks on", () => {
+    const r = run([{ type: "forward", text: " Post gm on X ", now: 100 }], started({ halfDuplex: false }));
     expect(r.effects).toEqual([{ type: "send", text: "Post gm on X" }]);
+    expect(r.state).toMatchObject({ phase: "listening", pending: "", sendAt: null });
+    const speaking = run([{ type: "narrating", now: 50 }, { type: "forward", text: "Post gm on X", now: 100 }], started({ halfDuplex: false }));
+    expect(speaking.effects).toEqual([{ type: "send", text: "Post gm on X" }]);
+    expect(speaking.state.phase).toBe("speaking");
+    expect(run([{ type: "forward", text: "  ", now: 100 }], started({ halfDuplex: false })).effects).toEqual([]);
   });
 
   it("ends after HANDS_FREE.silenceTimeoutMs without speech, but not while the agent works or a line is said", () => {

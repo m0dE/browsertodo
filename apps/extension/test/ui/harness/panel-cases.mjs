@@ -818,7 +818,7 @@ export const PANEL_CASES = [
           { value: typed, css: "#now-text { color: transparent !important; } .now-ghost-typed { color: var(--text) !important; } .now-ghost-rest, .now-ghost-key { visibility: hidden !important; }" },
         );
 
-      const p = await openPanel(ctx, "suggest", "#chat-log .ev-end");
+      const p = await openPanel(ctx, "suggest", "#chat-log .ev-end", { edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
       await p.waitForSelector("#now-ghost:not([hidden])");
       const described = `Suggestion: “${SUGGESTION}”. Press Tab to use it.`;
       await expectBox(p, { value: "", ghost: SUGGESTION, key: "Tab", placeholder: "", described }, "in the empty box");
@@ -850,15 +850,16 @@ export const PANEL_CASES = [
       await p.fill("#now-text", "");
       await expectBox(p, { ghost: SUGGESTION }, "after emptying the box");
 
-      // Voice input hides it while it writes into the box; cancelling restores the empty box, and the suggestion.
+      // Hands-free voice (the mic, on Standard) hides it while it writes into the box; ending it before anything was
+      // sent restores the empty box, and the suggestion.
       await p.click("#now-actions .voice-mic");
-      await voiceIs(p, ["opening", "listening"]);
+      await voiceIs(p, ["handsfree"]);
       await expectBox(p, { ghost: null }, "while voice starts");
       await p.waitForFunction(() => document.getElementById("now-text").value.length > 0, null, { timeout: 15_000 });
-      await expectBox(p, { ghost: null }, "with dictated text");
-      await p.keyboard.press("Escape");
+      await expectBox(p, { ghost: null }, "with the words in the box");
+      await p.click("#now-actions .voice-mic");
       await voiceIs(p, ["idle"]);
-      await expectBox(p, { value: "", ghost: SUGGESTION }, "after voice was cancelled");
+      await expectBox(p, { value: "", ghost: SUGGESTION }, "after voice ended");
 
       // Under TODO the box never offers it.
       await p.click("#tab-btn-todo");
@@ -1413,10 +1414,10 @@ export const PANEL_CASES = [
       await p.close();
     },
   },
-  // Voice input: the mic left of Send (locked on Free), listening with the orb and live text, finishing,
-  // Enter sends, Esc cancels, and the microphone permission asked in a tab.
+  // Voice: the mic left of Send (locked on Free) starts hands-free voice on the engine picked in Settings, as the
+  // voice shortcut does, and ends it; the microphone permission asked in a tab.
   {
-    names: ["panel-voice-locked", "panel-voice-idle", "panel-voice-listening", "panel-voice-transcribing", "panel-voice-permission", "panel-voice-stopped"],
+    names: ["panel-voice-locked", "panel-voice-idle", "panel-voice-mic-standard", "panel-voice-mic-realtime", "panel-voice-permission"],
     async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, checkLayout, reportErrors, base }) {
       // The microphone is allowed (a grant for the origin replaces earlier ones, e.g. the clipboard's above).
       await ctx.grantPermissions(["microphone"], { origin: base });
@@ -1428,6 +1429,8 @@ export const PANEL_CASES = [
           const seen = await p.evaluate(() => ({ state: document.querySelector(".voice-mic").dataset.state, tip: document.querySelector("#now-notice").textContent }));
           throw new Error(`waiting for voice "${state}": ${JSON.stringify(seen)} (${err.message.split("\n")[0]})`);
         });
+      const waitPill = (p, phase) =>
+        p.waitForFunction((w) => document.querySelector(".hf-pill:not([hidden])")?.dataset.phase === w, phase, { timeout: 15_000 });
       const orbCheck = (p) =>
         p.evaluate(() => {
           const orb = document.querySelector(".voice-orb");
@@ -1443,6 +1446,7 @@ export const PANEL_CASES = [
           if (document.elementFromPoint(box.left + 10, box.top + box.height / 2)?.id !== "now-text") out.push("the veil covers the input");
           return out;
         });
+      const listeningReported = (p) => p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.listening").at(-1)?.listening);
 
       // Free plan: a lock; the tooltip and a click explain, "Choose a plan" opens the dashboard's Billing page.
       {
@@ -1453,6 +1457,7 @@ export const PANEL_CASES = [
         await p.waitForSelector("#now-notice:not([hidden])");
         const tipText = await p.textContent("#now-notice");
         if (!/Voice needs the Plus or Pro plan/.test(tipText) || !/Choose a plan/.test(tipText)) fail(`locked tip "${tipText}"`);
+        if (await p.evaluate(() => !document.querySelector(".hf-pill").hidden)) fail("the locked mic started hands-free");
         await checkLayout(p, `voice-locked ${label}`);
         await shoot(p, "panel-voice-locked", size, scheme);
         await p.click("#now-notice .notice-action");
@@ -1465,77 +1470,67 @@ export const PANEL_CASES = [
         await p.close();
       }
 
-      // Paid plan: idle, listening (live text, orb), finishing; toggling off keeps the text unsent.
-      {
+      // Paid plan: the mic is ready, its tooltip names the voice shortcut (both do the same).
+      if (want("panel-voice-idle", size, scheme)) {
         const p = await openPanel(ctx, "account", ".chat-empty");
         if ((await voiceState(p)) !== "idle") fail(`paid plan mic ${await voiceState(p)}`);
         if ((await p.getAttribute(mic, "title")) !== `Voice · ${VOICE_SHORTCUT_LABEL}`) fail(`mic tooltip "${await p.getAttribute(mic, "title")}"`);
         await checkLayout(p, `voice-idle ${label}`);
         await shoot(p, "panel-voice-idle", size, scheme);
+        reportErrors(p, `voice-idle ${label}`);
+        await p.close();
+      }
 
+      // Standard picked in Settings: the mic starts hands-free on Standard (the orb, the words streaming into the box),
+      // never the old one-shot dictation; pressed again it ends the session and the box is as it was.
+      if (want("panel-voice-mic-standard", size, scheme)) {
+        const p = await openPanel(ctx, "account", ".chat-empty", { edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
         await p.click(mic);
-        await waitVoice(p, "listening");
-        await p.waitForFunction(() => document.getElementById("now-text").value.split(" ").length >= 6, null, { timeout: 15_000 });
+        await waitPill(p, "listening");
+        await waitVoice(p, "handsfree");
+        if ((await p.getAttribute(mic, "title")) !== `Stop hands-free · ${VOICE_SHORTCUT_LABEL}`) fail(`mic tooltip while on "${await p.getAttribute(mic, "title")}"`);
+        if ((await listeningReported(p)) !== true) fail("the mic's hands-free not reported to the background");
+        if (await p.evaluate(() => window.__requests.some((r) => r.type === "voice.realtime"))) fail("Standard asked for the realtime relay");
         const problems = await orbCheck(p);
-        if (problems.length) fail(`listening orb: ${problems.join("; ")}`);
-        if ((await p.textContent(".voice-caption")) !== "Listening… Esc to cancel · Enter to send") fail("listening caption");
-        if (!(await p.evaluate(() => document.activeElement === document.getElementById("now-text")))) fail("the box lost the cursor while listening");
-        await checkLayout(p, `voice-listening ${label}`);
-        await shoot(p, "panel-voice-listening", size, scheme);
-
-        await p.evaluate(() => (window.__voiceHold = true));
+        if (problems.length) fail(`hands-free orb: ${problems.join("; ")}`);
+        if ((await p.textContent(".voice-caption")) !== "Hands-free: say what to do · “stop” to end") fail(`orb caption "${await p.textContent(".voice-caption")}"`);
+        await p.waitForFunction(() => document.getElementById("now-text").value.length > 0, null, { timeout: 15_000 });
+        if (!(await p.evaluate(() => document.activeElement === document.getElementById("now-text")))) fail("the box lost the cursor");
+        await checkLayout(p, `voice-mic-standard ${label}`);
+        await shoot(p, "panel-voice-mic-standard", size, scheme);
         await p.click(mic);
-        await waitVoice(p, "transcribing");
-        if ((await p.textContent(".voice-caption")) !== "Finishing…") fail("finishing caption");
-        await shoot(p, "panel-voice-transcribing", size, scheme);
-        await p.evaluate(() => {
-          window.__voiceHold = false;
-          window.__voiceRelease?.();
-        });
         await waitVoice(p, "idle");
-        const kept = await p.inputValue("#now-text");
-        if (kept !== "Open Gmail and reply to Sarah that I will be there at seven.") fail(`toggled off: box "${kept}"`);
-        if (await p.evaluate(() => window.__requests.some((r) => r.type === "run.adhoc"))) fail("toggling voice off sent the message");
+        if (await p.evaluate(() => !document.querySelector(".hf-pill").hidden)) fail("the mic did not end hands-free");
         if (!(await p.evaluate(() => document.querySelector(".voice-orb").hidden))) fail("orb still shown after stopping");
+        if ((await listeningReported(p)) !== false) fail("the end not reported to the background");
+        if (await p.evaluate(() => window.__requests.some((r) => r.type === "run.message" || r.type === "run.adhoc"))) fail("ending hands-free sent the words");
+        if ((await p.inputValue("#now-text")) !== "") fail(`the box kept "${await p.inputValue("#now-text")}"`);
+        reportErrors(p, `voice-mic-standard ${label}`);
+        await p.close();
+      }
 
-        // Esc: what was typed before stays, the voice text goes.
-        await p.fill("#now-text", "On LinkedIn:");
+      // Realtime (the default): the mic opens the narrator's session through the relay; pressed again it closes it.
+      if (want("panel-voice-mic-realtime", size, scheme)) {
+        const p = await openPanel(ctx, "account", ".chat-empty", { init: [installVoiceFakes] });
         await p.click(mic);
-        await p.waitForFunction(() => document.getElementById("now-text").value.length > "On LinkedIn:".length, null, { timeout: 15_000 });
-        await p.keyboard.press("Escape");
-        await waitVoice(p, "idle");
-        if ((await p.inputValue("#now-text")) !== "On LinkedIn:") fail(`Esc left "${await p.inputValue("#now-text")}"`);
-
-        // Dictating (the mic): the panel tells the background, so the voice shortcut reaches it; Enter stops,
-        // finishes the text and sends it like a typed message.
-        await p.fill("#now-text", "");
-        await p.evaluate(() => (window.__voiceClips = 0));
+        await waitPill(p, "listening");
+        await waitVoice(p, "handsfree");
+        const rt = await p.evaluate(() => ({ first: window.__rt?.sent[0]?.type, transcription: window.__rt?.sent[0]?.session?.audio?.input?.transcription }));
+        if (rt.first !== "session.update" || rt.transcription?.model !== "gpt-transcribe") fail(`the mic's Realtime session ${JSON.stringify(rt)}`);
+        if (!(await p.evaluate(() => window.__requests.some((r) => r.type === "voice.realtime")))) fail("the mic did not ask for the realtime relay");
+        if (await p.evaluate(() => window.__requests.some((r) => r.type === "voice.transcribe"))) fail("Realtime used Standard's transcription");
+        await checkLayout(p, `voice-mic-realtime ${label}`);
+        await shoot(p, "panel-voice-mic-realtime", size, scheme);
         await p.click(mic);
-        await waitVoice(p, "listening");
-        if (!(await p.evaluate(() => window.__portSent.some((m) => m.type === "panel.listening" && m.listening === true)))) fail("listening not reported to the background");
-        await p.waitForFunction(() => document.getElementById("now-text").value.length > 0, null, { timeout: 15_000 });
-        await p.keyboard.press("Enter");
-        await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.adhoc"));
-        const dictated = await p.evaluate(() => window.__requests.find((r) => r.type === "run.adhoc"));
-        if (!/^Open Gmail/.test(dictated.instructions) || dictated.voice !== true) fail(`Enter sent ${JSON.stringify(dictated)}`);
-        if ((await p.inputValue("#now-text")) !== "") fail("the box was not cleared after sending");
         await waitVoice(p, "idle");
-        if ((await p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.listening").at(-1)?.listening)) !== false) fail("stopping not reported to the background");
-
-        // The voice shortcut while dictating stops and sends (it does not just stop, as the mic does); it starts
-        // hands-free voice only when nothing is being dictated (see the hands-free case).
-        await p.click(mic);
-        await waitVoice(p, "listening");
-        await p.waitForFunction(() => document.getElementById("now-text").value.length > 0, null, { timeout: 15_000 });
-        await p.evaluate(() => window.__push({ type: "panel.voice" }));
-        await p.waitForFunction(() => window.__requests.filter((r) => r.type === "run.adhoc" || r.type === "run.message").length === 2, null, { timeout: 15_000 });
-        await waitVoice(p, "idle");
-        reportErrors(p, `voice ${label}`);
+        await p.waitForFunction(() => window.__rt.closedWith === 1000);
+        if ((await p.inputValue("#now-text")) !== "") fail(`Realtime wrote "${await p.inputValue("#now-text")}" into the box`);
+        reportErrors(p, `voice-mic-realtime ${label}`);
         await p.close();
       }
 
       // No microphone permission yet: the mic opens the permission page and says so.
-      {
+      if (want("panel-voice-permission", size, scheme)) {
         const p = await ctx.newPage();
         const errors = [];
         p.on("pageerror", (e) => errors.push(String(e.stack ?? e)));
@@ -1552,53 +1547,18 @@ export const PANEL_CASES = [
         await p.waitForSelector("#now-notice:not([hidden])");
         if (!(await p.evaluate(() => window.__created.some((u) => u.endsWith("/mic-permission.html"))))) fail("the permission page did not open");
         if (!/Allow the microphone/.test(await p.textContent("#now-notice"))) fail(`permission tip "${await p.textContent("#now-notice")}"`);
-        if ((await voiceState(p)) !== "idle") fail(`mic after asking: ${await voiceState(p)}`);
+        await waitVoice(p, "idle");
         await checkLayout(p, `voice-permission ${label}`);
         await shoot(p, "panel-voice-permission", size, scheme);
         reportErrors(p, `voice-permission ${label}`);
         await p.close();
       }
-
-      // Listening stops by itself after a long quiet (a silent microphone here): the notice sits above the box with
-      // the text, never over it, and says so in a few words.
-      if (want("panel-voice-stopped", size, scheme)) {
-        const p = await openPanel(ctx, "account", ".chat-empty", {
-          init: [
-            () => {
-              navigator.mediaDevices.getUserMedia = async () => {
-                const ac = new AudioContext();
-                const quiet = ac.createConstantSource();
-                quiet.offset.value = 0;
-                const out = ac.createMediaStreamDestination();
-                quiet.connect(out);
-                quiet.start();
-                return out.stream;
-              };
-            },
-          ],
-        });
-        const typed = "Reply to Sarah that I will be there at seven, and ask whether I should bring dessert";
-        await p.fill("#now-text", typed);
-        await p.click(mic);
-        await waitVoice(p, "listening");
-        await p.waitForSelector("#now-notice:not([hidden])", { timeout: 20_000 });
-        const got = await p.evaluate(() => ({ note: document.querySelector("#now-notice .notice-text")?.textContent, level: document.getElementById("now-notice").dataset.level, box: document.getElementById("now-text").value }));
-        if (got.note !== "Stopped listening. Your text is in the box." || got.level !== "info" || got.box !== typed) fail(`voice stopped ${JSON.stringify(got)}`);
-        await waitVoice(p, "idle");
-        await checkLayout(p, `voice-stopped ${label}`);
-        await shoot(p, "panel-voice-stopped", size, scheme);
-        // Typing takes the note away.
-        await p.click("#now-text");
-        await p.keyboard.type("!");
-        if (await p.evaluate(() => !document.getElementById("now-notice").hidden)) fail("voice stopped: typing did not take the note away");
-        reportErrors(p, `voice-stopped ${label}`);
-        await p.close();
-      }
     },
   },
   // Hands-free voice (the voice shortcut): the orb and the pill while listening, "Sending…" with the utterance in the
-  // box, the pill while the agent works, a spoken line with its caption; Realtime's one-time cost notice, the
-  // narrator speaking and its send_to_agent starting a task; the fallback note when Realtime is unavailable.
+  // box (Standard), the pill while the agent works, a spoken line with its caption; Realtime's one-time cost notice,
+  // the narrator speaking, its send_to_agent starting a task at once with one acknowledgement, and the user's own
+  // words in the chat with "Sent to agent: …" under them; the fallback note when Realtime is unavailable.
   {
     names: [
       "panel-handsfree-listening",
@@ -1607,6 +1567,7 @@ export const PANEL_CASES = [
       "panel-handsfree-working",
       "panel-handsfree-cost",
       "panel-handsfree-narrator",
+      "panel-handsfree-heard",
       "panel-handsfree-fallback",
       "panel-handsfree-elsewhere",
     ],
@@ -1736,13 +1697,13 @@ export const PANEL_CASES = [
       }
 
       // Realtime: the cost notice the first time, the narrator talking (caption), and its send_to_agent starting a task.
-      if (want("panel-handsfree-cost", size, scheme) || want("panel-handsfree-narrator", size, scheme)) {
+      if (["cost", "narrator", "heard"].some((n) => want(`panel-handsfree-${n}`, size, scheme))) {
         const p = await openPanel(ctx, "account", ".chat-empty", { edit: (d) => (d.state.settings.realtimeCostNoticed = false), init: [installVoiceFakes] });
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
         await p.waitForSelector("#now-notice:not([hidden])");
         const tip = await p.textContent("#now-notice:not([hidden])");
-        if (!/^Realtime voice uses about 5¢ of usage credit a minute\. Standard costs much less\.Use Standard×$/.test(tip)) fail(`cost notice "${tip}"`);
+        if (!/^Realtime voice uses about 6¢ of usage credit a minute\. Standard costs much less\.Use Standard×$/.test(tip)) fail(`cost notice "${tip}"`);
         if (!(await p.evaluate(() => window.__requests.some((r) => r.type === "settings.save" && r.settings.realtimeCostNoticed === true)))) fail("the cost notice is not remembered");
         const rt = await p.evaluate(() => ({ protocols: window.__rt.protocols, sent: window.__rt.sent.map((e) => e.type), first: window.__rt.sent[0] }));
         if (JSON.stringify(rt.protocols) !== JSON.stringify(["browsertodo", "bt.tok"])) fail(`subprotocols ${JSON.stringify(rt.protocols)}`);
@@ -1763,21 +1724,61 @@ export const PANEL_CASES = [
         if ((await p.textContent(".voice-caption")) !== "Hi! What should I do?") fail(`narrator caption "${await p.textContent(".voice-caption")}"`);
         await shoot(p, "panel-handsfree-narrator", size, scheme);
 
-        // The user asks; the narrator hands it to the agent: after the sending window it goes out as a new task.
+        // The user asks (their turn is input item in1); the narrator calls send_to_agent before saying anything, and
+        // the request goes out at once as a new task: no sending window, nothing written into the box.
         await p.evaluate(() => {
           window.__rt.emit({ type: "response.done", response: { id: "r1", status: "completed", output: [] } });
+          window.__rt.emit({ type: "input_audio_buffer.speech_started", item_id: "in1" });
+          window.__rt.emit({ type: "input_audio_buffer.speech_stopped", item_id: "in1" });
+          window.__rt.emit({ type: "input_audio_buffer.committed", item_id: "in1", previous_item_id: null });
           window.__rt.emit({ type: "response.created", response: { id: "r2" } });
           window.__rt.emit({ type: "response.function_call_arguments.done", call_id: "c1", name: "send_to_agent", arguments: JSON.stringify({ text: "Open Gmail and read my newest email" }) });
         });
-        await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.message"), null, { timeout: 5000 });
+        await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.message"), null, { timeout: 500 }).catch(() => fail("send_to_agent was not sent at once"));
         const req = await p.evaluate(() => window.__requests.find((r) => r.type === "run.message"));
         if (req.text !== "Open Gmail and read my newest email" || req.voice !== true || req.tabId !== 1) fail(`send_to_agent sent ${JSON.stringify(req)}`);
+        if ((await phase(p)) === "sending") fail("a Realtime request waited in a sending window");
         const sent = req.text;
+        await p.waitForFunction(() => window.__rt.sent.some((e) => e.item?.type === "function_call_output"));
         const output = await p.evaluate(() => window.__rt.sent.find((e) => e.item?.type === "function_call_output")?.item.output);
-        if (!/^Sent to the agent/.test(output ?? "")) fail(`tool output "${output}"`);
+        if (output !== "Sent to the agent. Its updates will follow.") fail(`tool output "${output}"`);
+        // One short acknowledgement once that reply is done (it said nothing), and no other reply.
+        const replies = () => p.evaluate(() => window.__rt.sent.filter((e) => e.type === "response.create"));
+        if ((await replies()).length) fail("a reply was asked for while the narrator's reply was still being made");
+        await p.evaluate(() => window.__rt.emit({ type: "response.done", response: { id: "r2", status: "completed", output: [] } }));
+        await p.waitForFunction(() => window.__rt.sent.some((e) => e.type === "response.create"));
+        const ack = await replies();
+        if (ack.length !== 1 || !/one very short acknowledgement/.test(ack[0].response?.instructions ?? "")) fail(`acknowledgement ${JSON.stringify(ack)}`);
+        await p.evaluate(() => {
+          const pcm = btoa(String.fromCharCode(...new Uint8Array(24_000 * 2 * 0.5)));
+          window.__rt.emit({ type: "response.created", response: { id: "r3" } });
+          window.__rt.emit({ type: "response.output_audio_transcript.delta", item_id: "a3", delta: "On it." });
+          window.__rt.emit({ type: "response.output_audio.delta", item_id: "a3", response_id: "r3", delta: pcm });
+          window.__rt.emit({ type: "response.done", response: { id: "r3", status: "completed", output: [] } });
+        });
+        if ((await p.inputValue("#now-text")) !== "") fail(`Realtime wrote "${await p.inputValue("#now-text")}" into the box`);
+
+        // The user's own words arrive (after the request went out): kept in the new chat, shown as their message with
+        // what the narrator sent under it, since it says something else.
+        await pushRunning(p, { ...newSession(sent), voice: true });
+        const heardText = "Could you check what Sarah wrote me?";
+        await p.evaluate((t) => window.__rt.emit({ type: "conversation.item.input_audio_transcription.completed", item_id: "in1", content_index: 0, transcript: t }), heardText);
+        await p.waitForFunction(() => window.__requests.some((r) => r.type === "voice.heard"));
+        const kept = await p.evaluate(() => window.__requests.find((r) => r.type === "voice.heard"));
+        if (kept.sessionId !== "s-new" || kept.text !== heardText || kept.sent !== sent) fail(`kept words ${JSON.stringify(kept)}`);
+        await p.waitForFunction((t) => document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent === t, heardText, { timeout: 5000 }).catch(() => undefined);
+        const bubble = await p.evaluate(() => ({
+          first: document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent,
+          voice: !!document.querySelector("#chat-log .ev-first .ev-voice"),
+          sentLine: document.querySelector("#chat-log .ev-opening .ev-sent")?.textContent,
+          users: document.querySelectorAll("#chat-log .ev-user").length,
+        }));
+        if (bubble.first !== heardText || !bubble.voice || bubble.sentLine !== `Sent to agent: ${sent}` || bubble.users !== 1) fail(`the user's words in the chat ${JSON.stringify(bubble)}`);
+        await checkLayout(p, `handsfree-heard ${label}`);
+        await shoot(p, "panel-handsfree-heard", size, scheme);
+        if ((await replies()).length !== 1) fail(`more than one reply for the turn: ${JSON.stringify(await replies())}`);
 
         // The chat's events reach the narrator as notes; the result asks it to reply.
-        await pushRunning(p, newSession(sent));
         await p.evaluate(() =>
           window.__push({ type: "event", event: { type: "task_end", outcome: "done", summary: "Read the newest email", spoken: "Sarah says dinner moved to eight.", ts: new Date().toISOString(), sessionId: "s-new" } }),
         );

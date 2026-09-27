@@ -11,11 +11,11 @@
  * its tools (send_to_agent, cancel_request, stop_task, end_voice), which the
  * side panel runs.
  *
- * Input transcription is off: it is billed on top of the Realtime minute and
- * the server's price (approxCentsPerMinute) leaves it out, so the cost shown
- * would be wrong. What the user asked for reaches the chat as the message the
- * narrator forwards (send_to_agent, in the user's words); "stop" and
- * "cancel" are the narrator's tools rather than words matched here.
+ * Input transcription is on (REALTIME_INPUT_TRANSCRIPTION_MODEL, which the
+ * relay bills and the server's price includes): the user's own words, keyed
+ * by their input item, are what the chat shows. The agent gets the request
+ * the narrator forwards (send_to_agent) at once, without waiting for them.
+ * "stop" and "cancel" are the narrator's tools rather than words matched here.
  *
  * OpenAI event names and shapes as documented (read 2026-09-26):
  * developers.openai.com/api/docs/guides/realtime-conversations,
@@ -26,6 +26,7 @@ import {
   OUT_OF_CREDIT,
   REALTIME_CLOSE,
   REALTIME_ERROR_EVENT,
+  REALTIME_INPUT_TRANSCRIPTION_MODEL,
   REALTIME_LIMITS,
   REALTIME_PATH,
   REALTIME_PROTOCOL,
@@ -50,13 +51,17 @@ const TURN_SILENCE_MS = 700;
 export const NARRATOR_INSTRUCTIONS = [
   "You are the voice of BrowserTODO, an assistant that works in the user's Chrome browser.",
   "A separate agent does all the work in the browser. You never do anything yourself: you listen, pass requests on, and tell the user what the agent is doing.",
-  "When the user asks for something to be done, or tells the running task something (for example 'use the second draft'), call send_to_agent with their request in their own words, keeping every detail (names, the text to post, times). Then say one short line such as 'On it.'",
-  "If right after that the user says 'cancel', 'never mind' or 'don't send it', call cancel_request. If the task already started, call stop_task instead.",
+  "When the user asks for something, call send_to_agent immediately, before saying anything. After it returns, say at most one short acknowledgement.",
+  "Pass the request in the user's own words, keeping every detail (names, the text to post, times). A message for the running task (for example 'use the second draft') goes the same way.",
+  "If right after that the user says 'cancel', 'never mind' or 'don't send it', call cancel_request: the request already went to the agent, and this stops its task.",
   "You get 'Agent update' messages about what the agent does. When asked to reply, say it in one short sentence for progress, and one or two sentences for a result. Never read long text, lists, links, code or numbers of steps aloud. Never make up results: say only what the updates say.",
   "When the agent needs the user (a question, a login, a code), ask the user in your own words and pass their answer on with send_to_agent.",
   "If the user asks to stop the task, call stop_task. If they say goodbye or ask you to stop listening, call end_voice.",
   "Be friendly and brief. Speak the user's language.",
 ].join("\n");
+
+/** The one reply after send_to_agent, when the narrator did not speak before calling it. */
+export const ACKNOWLEDGE_INSTRUCTIONS = "Say one very short acknowledgement, a few words such as 'On it.', and nothing else.";
 
 /** The narrator's tools (function tools only: the relay refuses others). */
 export const NARRATOR_TOOLS = [
@@ -64,7 +69,7 @@ export const NARRATOR_TOOLS = [
     type: "function",
     name: "send_to_agent",
     description:
-      "Give the browser agent a request from the user: a new task, or a message for the task it is running. Use the user's own words and keep every detail.",
+      "Give the browser agent a request from the user: a new task, or a message for the task it is running. It goes to the agent at once. Use the user's own words and keep every detail.",
     parameters: {
       type: "object",
       properties: { text: { type: "string", description: "The request, in the user's words" } },
@@ -74,7 +79,7 @@ export const NARRATOR_TOOLS = [
   {
     type: "function",
     name: "cancel_request",
-    description: "Take back the request just given to send_to_agent, when the user says cancel or never mind right after it (it goes out about a second later).",
+    description: "The user takes back the request just given to send_to_agent (cancel, never mind). It already went to the agent, so this stops the task it started.",
     parameters: { type: "object", properties: {}, required: [] },
   },
   {
@@ -187,8 +192,15 @@ export interface RealtimeHandlers {
   onReplyDone?(): void;
   /** The user started talking (server VAD): the narrator stops; local playback must too. */
   onUserSpeech?(): void;
-  /** A narrator tool call; the answer goes back to the narrator (a throw is answered as an error). */
-  onTool?(name: NarratorTool, args: Record<string, unknown>): Promise<string> | string;
+  /**
+   * A narrator tool call; the answer goes back to the narrator (a throw is answered as an error).
+   * inputId: the user's input item the reply making the call answers (null: a reply we asked for).
+   */
+  onTool?(name: NarratorTool, args: Record<string, unknown>, inputId: string | null): Promise<string> | string;
+  /** The user's words of input item `inputId`, word for word ("" when they could not be transcribed). */
+  onUserWords?(inputId: string, text: string): void;
+  /** The reply to input item `inputId` is done (its tool calls, if any, came before). */
+  onTurnDone?(inputId: string): void;
   /** The session ended: null when we closed it, else why. */
   onClose?(failure: RealtimeFailure | null): void;
   log?(message: string): void;
@@ -214,8 +226,13 @@ export class RealtimeClient {
   private ended = false;
   /** A reply is being made (response.created .. response.done). */
   private responding = false;
-  /** Ask for a reply once the current one is done. */
-  private wantReply = false;
+  /** The current (or last) reply has audio: the narrator spoke in it. */
+  private spoke = false;
+  /** A reply to ask for once the current one is done: one for the notes, or only the acknowledgement of a request. */
+  private wantReply: "reply" | "acknowledge" | null = null;
+  /** The user's latest input item that no reply answered yet, and the one the current reply answers. */
+  private unansweredInput: string | null = null;
+  private replyInput: string | null = null;
   private lastError: RealtimeErrorCode | undefined;
   private narratorText = "";
   private ready = false;
@@ -249,7 +266,7 @@ export class RealtimeClient {
 
   /** Stops the reply being made (the user pressed Esc or the shortcut while it spoke). */
   cancelResponse(): void {
-    this.wantReply = false;
+    this.wantReply = null;
     if (this.responding) this.send({ type: "response.cancel" });
   }
 
@@ -274,6 +291,7 @@ export class RealtimeClient {
       audio: {
         input: {
           format,
+          transcription: { model: REALTIME_INPUT_TRANSCRIPTION_MODEL },
           turn_detection: { type: "server_vad", silence_duration_ms: TURN_SILENCE_MS, create_response: true, interrupt_response: true },
         },
         output: { format, voice: this.opts.voice ?? DEFAULT_REALTIME_VOICE, speed: clampSpeed(this.opts.speed ?? REALTIME_SPEED.default, REALTIME_SPEED) },
@@ -289,12 +307,18 @@ export class RealtimeClient {
     if (this.isOpen()) this.socket!.send(JSON.stringify(event));
   }
 
-  private requestReply(): void {
-    if (this.responding) this.wantReply = true;
-    else {
-      this.wantReply = false;
-      this.send({ type: "response.create" });
+  /**
+   * Asks for a reply now, or once the one being made is done. An acknowledgement is only wanted when the reply that
+   * called send_to_agent said nothing: it is dropped when that reply spoke, and a reply for the notes covers it.
+   */
+  private requestReply(kind: "reply" | "acknowledge" = "reply"): void {
+    if (this.responding) {
+      if (this.wantReply !== "reply") this.wantReply = kind;
+      return;
     }
+    this.wantReply = null;
+    if (kind === "acknowledge" && this.spoke) return;
+    this.send(kind === "acknowledge" ? { type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS } } : { type: "response.create" });
   }
 
   private onMessage(data: unknown): void {
@@ -317,15 +341,34 @@ export class RealtimeClient {
         break;
       case "response.created":
         this.responding = true;
+        this.spoke = false;
         this.narratorText = "";
+        this.replyInput = this.unansweredInput;
+        this.unansweredInput = null;
         break;
-      case "response.done":
+      case "response.done": {
         this.responding = false;
+        const answered = this.replyInput;
+        this.replyInput = null;
         h.onReplyDone?.();
-        if (this.wantReply) this.requestReply();
+        if (answered) h.onTurnDone?.(answered);
+        if (this.wantReply) this.requestReply(this.wantReply);
         break;
+      }
       case "response.output_audio.delta":
+        this.spoke = true;
         h.onAudio?.(str("delta"), str("item_id"));
+        break;
+      case "input_audio_buffer.committed":
+        // The user's turn is in: the reply the server makes next answers it.
+        if (str("item_id")) this.unansweredInput = str("item_id");
+        break;
+      case "conversation.item.input_audio_transcription.completed":
+        if (str("item_id")) h.onUserWords?.(str("item_id"), str("transcript").trim());
+        break;
+      case "conversation.item.input_audio_transcription.failed":
+        this.log("realtime: the user's words could not be transcribed");
+        if (str("item_id")) h.onUserWords?.(str("item_id"), "");
         break;
       case "response.output_audio_transcript.delta":
         this.narratorText += str("delta");
@@ -333,11 +376,11 @@ export class RealtimeClient {
         break;
       case "input_audio_buffer.speech_started":
         // The user's turn gets its own reply; ours would talk over it.
-        this.wantReply = false;
+        this.wantReply = null;
         h.onUserSpeech?.();
         break;
       case "response.function_call_arguments.done":
-        void this.runTool(str("call_id"), str("name"), str("arguments"));
+        void this.runTool(str("call_id"), str("name"), str("arguments"), this.replyInput);
         break;
       case REALTIME_ERROR_EVENT: {
         const parsed = RealtimeErrorEvent.safeParse(ev);
@@ -355,7 +398,7 @@ export class RealtimeClient {
     }
   }
 
-  private async runTool(callId: string, name: string, rawArgs: string): Promise<void> {
+  private async runTool(callId: string, name: string, rawArgs: string, inputId: string | null): Promise<void> {
     let output: string;
     let args: Record<string, unknown> | null = null;
     try {
@@ -368,13 +411,14 @@ export class RealtimeClient {
     else if (!args) output = "Error: the arguments are not valid JSON";
     else {
       try {
-        output = (await this.opts.handlers.onTool?.(name as NarratorTool, args)) ?? "Done.";
+        output = (await this.opts.handlers.onTool?.(name as NarratorTool, args, inputId)) ?? "Done.";
       } catch (err) {
         output = `Error: ${err instanceof Error ? err.message : String(err)}`;
       }
     }
     this.send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output } });
-    this.requestReply();
+    // Tool first, then at most one short acknowledgement (none when the narrator already spoke in that reply).
+    this.requestReply(name === "send_to_agent" ? "acknowledge" : "reply");
   }
 
   private onClosed(code: number): void {
@@ -386,7 +430,7 @@ export class RealtimeClient {
     if (this.ended) return;
     this.ended = true;
     this.responding = false;
-    this.wantReply = false;
+    this.wantReply = null;
     this.opts.handlers.onClose?.(failure);
   }
 

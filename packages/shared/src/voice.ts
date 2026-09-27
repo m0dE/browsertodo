@@ -78,12 +78,8 @@ export const VOICE_TUNING = {
   commitPauseMs: 200,
   /** With no such pause for this long, finalise at the quietest moment anyway. */
   forceCommitMs: 20_000,
-  /** Offer to stop after this much silence (listening stops; the text is kept, not sent). */
-  longSilenceMs: 8_000,
   /** Level meter smoothing (0..1 per frame; higher follows faster). */
   levelSmoothing: 0.35,
-  /** Holding the mic button at least this long is push-to-talk: letting go stops listening. */
-  pushToTalkMs: 400,
 } as const;
 
 // ---- Realtime voice (GET /v1/ai/realtime) ----------------------------------------------------
@@ -101,6 +97,13 @@ export const REALTIME_PATH = "/v1/ai/realtime";
  */
 export const REALTIME_PROTOCOL = "browsertodo";
 export const REALTIME_TOKEN_PROTOCOL_PREFIX = "bt.";
+
+/**
+ * The input transcription model the extension turns on in a realtime session (the user's own
+ * words for the chat). The relay allows and bills it (the server's REALTIME_TRANSCRIBE_PRICES),
+ * and the voice engines' Realtime price includes it.
+ */
+export const REALTIME_INPUT_TRANSCRIPTION_MODEL = "gpt-transcribe";
 
 /** Query parameters of REALTIME_PATH. */
 export const REALTIME_QUERY = {

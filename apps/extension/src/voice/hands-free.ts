@@ -9,7 +9,9 @@
  *
  * "working" is listening while the agent runs a task: what the user says
  * then goes into that task as a message. "sending" is the short window in
- * which an utterance can still be cancelled (saying "cancel", or Esc).
+ * which a Standard utterance can still be cancelled (saying "cancel", or
+ * Esc). A Realtime request (the narrator's send_to_agent) goes out at once:
+ * the narrator already heard the user out, and "cancel" then stops the task.
  * Saying "stop" / "stop listening", the shortcut or Esc end the session, as
  * does HANDS_FREE.silenceTimeoutMs without speech while nothing runs.
  *
@@ -23,7 +25,7 @@
  */
 
 export const HANDS_FREE = {
-  /** The "Sending…" window after an utterance, in which it can still be cancelled. */
+  /** The "Sending…" window after a Standard utterance, in which it can still be cancelled. */
   sendDelayMs: 1_200,
   /** No speech for this long, while no task runs, ends the session. */
   silenceTimeoutMs: 3 * 60_000,
@@ -63,7 +65,7 @@ export type HandsFreeEvent =
   | { type: "speech"; now: number }
   /** What the user said. forward: it is a message for the agent (Standard); else it is only checked for stop and cancel words. */
   | { type: "heard"; text: string; forward: boolean; now: number }
-  /** A message for the agent from the Realtime narrator (its send_to_agent tool). */
+  /** A message for the agent from the Realtime narrator (its send_to_agent tool): sent at once, the narrator talking on. */
   | { type: "forward"; text: string; now: number }
   /** Esc. */
   | { type: "cancel"; now: number }
@@ -135,7 +137,7 @@ export function handsFree(s: HandsFreeState, e: HandsFreeEvent): HandsFreeStep {
     case "heard":
       return heard(s, e.text, e.forward, e.now);
     case "forward":
-      return e.text.trim() ? waitToSend({ ...s, lastActivityAt: e.now }, e.text, e.now) : { state: s, effects: [] };
+      return e.text.trim() ? { state: { ...s, lastActivityAt: e.now }, effects: [{ type: "send", text: e.text.trim() }] } : { state: s, effects: [] };
     case "cancel":
       if (s.phase === "sending") return cancelPending(s);
       if (s.phase === "speaking") return interrupt(s, e.now);

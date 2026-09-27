@@ -22,11 +22,8 @@ import { encodeWav, toInt16 } from "./wav.js";
 
 export type DictationState = "idle" | "listening" | "transcribing" | "done" | "error" | "cancelled";
 
-/**
- * Why listening stopped: `send` (Enter), `toggle` (the button or shortcut),
- * `silence` (no speech for `longSilenceMs`), `cap` (`maxClipMs` reached) or `cancel` (Esc).
- */
-export type StopReason = "send" | "toggle" | "silence" | "cap" | "cancel";
+/** Why listening stopped: `send` (the utterance ended), `cap` (`maxClipMs` reached) or `cancel`. */
+export type StopReason = "send" | "cap" | "cancel";
 
 export interface DictationResult {
   /** The voice text (empty when cancelled). */
@@ -100,7 +97,6 @@ export class Dictation {
   private readonly partialFrames: number;
   private readonly windowFrames: number;
   private readonly forceFrames: number;
-  private readonly silenceFrames: number;
   /** Text finalised up to frame `committedTo`. */
   private committedText = "";
   private committedTo = 0;
@@ -119,7 +115,6 @@ export class Dictation {
     this.partialFrames = this.buf.framesIn(this.t.partialIntervalMs);
     this.windowFrames = this.buf.framesIn(this.t.windowMs);
     this.forceFrames = this.buf.framesIn(this.t.forceCommitMs);
-    this.silenceFrames = this.buf.framesIn(this.t.longSilenceMs);
     this.result = new Promise((resolve, reject) => (this.settle = { resolve, reject }));
     // The caller awaits run(); this keeps an unobserved rejection from being reported twice.
     this.result.catch(() => undefined);
@@ -134,7 +129,7 @@ export class Dictation {
     return joinText(this.committedText, this.partialText);
   }
 
-  /** Starts listening; resolves when the session ends (stop, silence, cap or cancel), rejects on an error. */
+  /** Starts listening; resolves when the session ends (stop, cap or cancel), rejects on an error. */
   run(): Promise<DictationResult> {
     if (this._state !== "idle") return this.result;
     this.opts.source.start((s) => this.onSamples(s)).then(
@@ -147,8 +142,8 @@ export class Dictation {
     return this.result;
   }
 
-  /** Stops listening and finalises the text (Enter: `send`; the button or shortcut: `toggle`). */
-  stop(reason: Exclude<StopReason, "cancel"> = "toggle"): Promise<DictationResult> {
+  /** Stops listening and finalises the text. */
+  stop(reason: Exclude<StopReason, "cancel"> = "send"): Promise<DictationResult> {
     if (this._state === "idle") {
       // The microphone is still opening: end as soon as it is open, with nothing heard.
       this.opts.source.stop();
@@ -157,7 +152,7 @@ export class Dictation {
     return this.result;
   }
 
-  /** Stops and discards everything (Esc). */
+  /** Stops and discards everything. */
   cancel(): void {
     if (this._state === "done" || this._state === "error" || this._state === "cancelled") return;
     this.opts.source.stop();
@@ -173,7 +168,6 @@ export class Dictation {
     for (const v of verdicts) this.level += (meterLevel(v.rms) - this.level) * this.t.levelSmoothing;
     this.opts.events?.onLevel?.(this.level);
     if (this.buf.length >= this.maxFrames) return void this.finalize("cap");
-    if (this.buf.silentTail() >= this.silenceFrames) return void this.finalize("silence");
     this.pump();
   }
 

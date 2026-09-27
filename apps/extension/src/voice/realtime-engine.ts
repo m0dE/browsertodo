@@ -2,8 +2,10 @@
  * The Realtime hands-free engine: the microphone streams to the narrator
  * (PCM16 at 24 kHz, about every 100 ms), its speech plays back (PcmPlayer),
  * the chat's events go to it as notes (NarratorFeed), and its tools reach
- * the panel (send_to_agent, stop_task, end_voice). Turn-taking and barge-in
- * are OpenAI's server VAD; local playback stops the moment the user speaks.
+ * the panel (send_to_agent at once, stop_task and cancel_request, end_voice).
+ * Each turn's own words (the input transcription) reach the panel paired with
+ * the request sent for them (RealtimeTurns). Turn-taking and barge-in are
+ * OpenAI's server VAD; local playback stops the moment the user speaks.
  */
 import type { AgentEvent, RealtimeVoiceId } from "@browsertodo/shared";
 import type { AudioSource } from "./dictation.js";
@@ -12,6 +14,7 @@ import { PcmPlayer } from "./pcm-player.js";
 import { RealtimeClient, realtimeFailure, REALTIME_SAMPLE_RATE, type NarratorTool, type OpenSocket, type RealtimeFailure } from "./realtime-client.js";
 import type { RealtimeTicket } from "./realtime-access.js";
 import { NarratorFeed } from "./realtime-feed.js";
+import { RealtimeTurns } from "./realtime-turns.js";
 import { meterLevel, rms } from "./speech.js";
 import { toInt16 } from "./wav.js";
 
@@ -39,6 +42,7 @@ export class RealtimeEngine implements HandsFreeEngine {
   private client: RealtimeClient | null = null;
   private source: AudioSource | null = null;
   private readonly feed = new NarratorFeed();
+  private readonly turns: RealtimeTurns;
   private readonly player: Pick<PcmPlayer, "play" | "stop" | "close" | "playing">;
   private chunks: Float32Array[] = [];
   private chunked = 0;
@@ -48,11 +52,15 @@ export class RealtimeEngine implements HandsFreeEngine {
   constructor(private readonly deps: RealtimeEngineDeps) {
     const ev = deps.events;
     this.player = deps.player ?? new PcmPlayer(REALTIME_SAMPLE_RATE, { onStart: () => ev.narrating(), onIdle: () => !this.stopped && ev.said() });
+    this.turns = new RealtimeTurns((words, sent) => !this.stopped && ev.userWords(words, sent));
   }
 
+  /** Resolves once the narrator listens; stopped meanwhile (stop()), it closes what it opened and resolves. */
   async start(): Promise<void> {
     const ticket = await this.deps.ticket();
+    if (this.stopped) return;
     const ev = this.deps.events;
+    let client!: RealtimeClient;
     await new Promise<void>((resolve, reject) => {
       let started = false;
       const timer = setTimeout(() => fail(realtimeFailure({ closeCode: 1006, opened: false })), START_TIMEOUT_MS);
@@ -64,7 +72,7 @@ export class RealtimeEngine implements HandsFreeEngine {
           reject(f);
         } else if (!this.stopped) ev.failed(f);
       };
-      this.client = new RealtimeClient({
+      client = this.client = new RealtimeClient({
         url: ticket.url,
         token: ticket.token,
         ...(this.deps.voice ? { voice: this.deps.voice.voice, speed: this.deps.voice.speed } : {}),
@@ -82,17 +90,32 @@ export class RealtimeEngine implements HandsFreeEngine {
             this.cutOff();
             ev.speech();
           },
-          onTool: (name, args) => this.tool(name, args),
-          onClose: (f) => f && fail(f),
+          onTool: (name, args, inputId) => this.tool(name, args, inputId),
+          onUserWords: (inputId, text) => this.turns.words(inputId, text),
+          onTurnDone: (inputId) => this.turns.replied(inputId),
+          onClose: (f) => {
+            if (f) return fail(f);
+            // We closed it before it was ready (stop() while connecting): starting is over.
+            if (started) return;
+            started = true;
+            clearTimeout(timer);
+            resolve();
+          },
           log: (m) => this.deps.log?.(m),
         },
       });
-      this.client.connect();
+      client.connect();
     });
-    if (this.stopped) return;
+    if (this.stopped) {
+      // stop() came while connecting: nothing of this session may stay open.
+      client.close();
+      this.client = null;
+      return;
+    }
     const source = this.deps.createSource();
     this.source = source;
     await source.start((s) => this.onSamples(s));
+    if (this.stopped) source.stop();
   }
 
   stop(): void {
@@ -121,10 +144,6 @@ export class RealtimeEngine implements HandsFreeEngine {
     for (const n of this.feed.push(ev, now)) this.client?.note(n.text, n.respond);
   }
 
-  cancelled(): void {
-    this.client?.note("Agent update: the user cancelled that request before it was sent; the agent did not get it.", false);
-  }
-
   tick(now: number): void {
     for (const n of this.feed.tick(now)) this.client?.note(n.text, n.respond);
   }
@@ -135,17 +154,18 @@ export class RealtimeEngine implements HandsFreeEngine {
     if (cut) this.client?.truncate(cut.itemId, cut.playedMs);
   }
 
-  private async tool(name: NarratorTool, args: Record<string, unknown>): Promise<string> {
+  private async tool(name: NarratorTool, args: Record<string, unknown>, inputId: string | null): Promise<string> {
     const ev = this.deps.events;
     switch (name) {
       case "send_to_agent": {
         const text = typeof args.text === "string" ? args.text.trim() : "";
         if (!text) return "Error: say what to send (text).";
         ev.forward(text);
-        return "Sent to the agent (the user can still cancel it in the next second). Its updates will follow.";
+        this.turns.sent(inputId, text);
+        return "Sent to the agent. Its updates will follow.";
       }
+      // The request already went out: taking it back stops its task.
       case "cancel_request":
-        return ev.cancelRequest() ? "Cancelled: the agent did not get it." : "It was already sent. Call stop_task to stop the task.";
       case "stop_task":
         return ev.stopTask();
       case "end_voice":

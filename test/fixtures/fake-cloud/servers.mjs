@@ -12,8 +12,10 @@
 //   (enough for the checkout/topup/portal routes); records what was created.
 // - createFakeTypeSafe(): the Jev systemOne endpoint.
 // - createFakeOpenAiRealtime(): OpenAI's Realtime WebSocket (/v1/realtime), a minimal RFC 6455
-//   server (no dependencies): session.created on connect, and each response.create answered with
-//   response.created, one audio delta and a response.done carrying FAKE_REALTIME_USAGE.
+//   server (no dependencies): session.created on connect, each session.update answered with
+//   session.updated (the session so far), each response.create answered with response.created,
+//   one audio delta and a response.done carrying FAKE_REALTIME_USAGE; userSpoke() and
+//   transcribed() play the user's turn and its input transcription.
 // - stripeEvent(), signStripeWebhook(): a Stripe event and its Stripe-Signature
 //   header, the way Stripe sends webhooks.
 
@@ -475,6 +477,7 @@ export function createFakeOpenAiRealtime() {
     const accept = createHash("sha1").update(key + WS_GUID).digest("base64");
     socket.write(head("HTTP/1.1 101 Switching Protocols", ["Upgrade: websocket", "Connection: Upgrade", `Sec-WebSocket-Accept: ${accept}`]));
     const conn = { model: url.searchParams.get("model"), headers: req.headers, received: [], closedWith: null };
+    conn.session = { type: "realtime", model: conn.model };
     connections.push(conn);
     let responses = 0;
     const ws = serverSocket(socket, {
@@ -485,6 +488,11 @@ export function createFakeOpenAiRealtime() {
           event = JSON.parse(text);
         } catch {
           return;
+        }
+        if (event.type === "session.update") {
+          // As OpenAI does: the whole session as it is now (the relay reads the input transcription model from it).
+          conn.session = { ...conn.session, ...event.session };
+          ws.send(JSON.stringify({ type: "session.updated", event_id: `ev_update_${conn.received.length}`, session: conn.session }));
         }
         if (event.type === "response.create") {
           const id = `resp_fake_${++responses}`;
@@ -499,6 +507,22 @@ export function createFakeOpenAiRealtime() {
     });
     /** Plays a server event to the client (e.g. a function call of the model), as OpenAI would send it. */
     conn.emit = (event) => ws.send(JSON.stringify(event));
+    /** The user's turn as server VAD reports it: speech starts and stops, and the audio is committed as input item `itemId`. */
+    conn.userSpoke = (itemId) => {
+      conn.emit({ type: "input_audio_buffer.speech_started", event_id: `ev_${itemId}_start`, audio_start_ms: 1000, item_id: itemId });
+      conn.emit({ type: "input_audio_buffer.speech_stopped", event_id: `ev_${itemId}_stop`, audio_end_ms: 3000, item_id: itemId });
+      conn.emit({ type: "input_audio_buffer.committed", event_id: `ev_${itemId}_commit`, previous_item_id: null, item_id: itemId });
+    };
+    /** The input transcription of item `itemId` (it arrives on its own time, often after the reply began), with its usage. */
+    conn.transcribed = (itemId, transcript, seconds = 2) =>
+      conn.emit({
+        type: "conversation.item.input_audio_transcription.completed",
+        event_id: `ev_${itemId}_transcript`,
+        item_id: itemId,
+        content_index: 0,
+        transcript,
+        usage: { type: "duration", seconds },
+      });
     ws.send(JSON.stringify({ type: "session.created", event_id: "ev_session", session: { type: "realtime", model: conn.model } }));
   });
   return Object.assign(srv, { connections: () => connections });

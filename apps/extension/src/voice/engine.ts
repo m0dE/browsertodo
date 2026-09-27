@@ -22,11 +22,14 @@ export interface EngineEvents {
   said(): void;
   /** What the narrator is saying so far (Realtime). */
   narratorText(text: string): void;
-  /** A request for the agent from the narrator (Realtime send_to_agent). */
+  /** A request for the agent from the narrator (Realtime send_to_agent): it goes out at once. */
   forward(text: string): void;
-  /** The narrator takes the request back (cancel_request): true when it was still waiting to be sent. */
-  cancelRequest(): boolean;
-  /** The narrator asks to stop the running task; the answer goes back to it. */
+  /**
+   * What the user said in a turn, word for word (Realtime input transcription), with what the narrator
+   * sent the agent for that turn (null: nothing was sent); after that request's forward().
+   */
+  userWords(words: string, sent: string | null): void;
+  /** The narrator asks to stop the running task (stop_task, cancel_request); the answer goes back to it. */
   stopTask(): Promise<string>;
   /** The narrator ends the session (the user said goodbye). */
   endVoice(): void;
@@ -49,7 +52,5 @@ export interface HandsFreeEngine {
   setTranscribing(on: boolean): void;
   /** An event of the chat the session follows (Realtime tells the narrator). */
   agentEvent(ev: AgentEvent, now: number): void;
-  /** A message waiting in the sending window was cancelled (Realtime tells the narrator). */
-  cancelled(): void;
   tick(now: number): void;
 }

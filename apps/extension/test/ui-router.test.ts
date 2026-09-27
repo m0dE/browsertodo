@@ -478,8 +478,6 @@ describe("UiRouter: a chat per browser tab", () => {
 
   it("a spoken message (voice) reaches the runner marked as spoken", async () => {
     const t = await withTabs();
-    await t.req({ type: "run.adhoc", instructions: "read my mail", voice: true, tabId: 7 });
-    expect(t.runner.runAdhoc.mock.calls.at(-1)![0]).toMatchObject({ instructions: "read my mail", voice: true, tabId: 7 });
     await t.req({ type: "run.message", sessionId: "S1", text: "and reply", voice: true, tabId: 5 });
     expect(t.runner.message).toHaveBeenLastCalledWith("S1", "and reply", { tabId: 5, voice: true });
     // Anything but true is not spoken.
@@ -499,6 +497,19 @@ describe("UiRouter: a chat per browser tab", () => {
     ]);
     expect(await t.req({ type: "voice.spoken", sessionId: "nope", text: "x" })).toEqual({ ok: false });
     expect(await t.router.handle({ type: "voice.spoken", sessionId: "s1", text: " " })).toEqual({ ok: false, error: "sessionId and text are required" });
+  });
+
+  it("voice.heard keeps the user's own words in their conversation, with the request sent for them", async () => {
+    const t = setup();
+    await t.sessions.create({ sessionId: "s1", source: "adhoc", title: "t", brain: "claude-api", jev: false, startedAt: "2026-09-24T10:00:00Z" });
+    expect(await t.req({ type: "voice.heard", sessionId: "s1", text: " uh, open gmail please ", sent: " Open Gmail " })).toEqual({ ok: true });
+    expect(await t.req({ type: "voice.heard", sessionId: "s1", text: "what is it doing?" })).toEqual({ ok: true });
+    expect((await t.sessions.eventsOf("s1")).map(({ type, text, sent }: { type: string; text?: string; sent?: string }) => ({ type, text, sent }))).toEqual([
+      { type: "heard", text: "uh, open gmail please", sent: "Open Gmail" },
+      { type: "heard", text: "what is it doing?", sent: undefined },
+    ]);
+    expect(await t.req({ type: "voice.heard", sessionId: "nope", text: "x" })).toEqual({ ok: false });
+    expect(await t.router.handle({ type: "voice.heard", sessionId: "s1", text: "" })).toEqual({ ok: false, error: "sessionId and text are required" });
   });
 
   it("a message or Continue to a conversation passes the tab it was sent from to the runner (which binds it once taken)", async () => {

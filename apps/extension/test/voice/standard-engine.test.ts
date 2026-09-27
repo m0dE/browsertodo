@@ -36,7 +36,7 @@ function events(): EngineEvents & { log: string[] } {
     said: () => void log.push("said"),
     narratorText: () => {},
     forward: () => {},
-    cancelRequest: () => false,
+    userWords: () => {},
     stopTask: async () => "",
     endVoice: () => {},
     failed: (err) => void log.push(`failed:${String(err)}`),

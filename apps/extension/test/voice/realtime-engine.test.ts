@@ -47,8 +47,8 @@ function setup() {
     said: () => void log.push("said"),
     narratorText: (t) => void log.push(`narrator:${t}`),
     forward: (t) => void log.push(`forward:${t}`),
-    cancelRequest: () => (log.push("cancel"), true),
-    stopTask: async () => "Stopped the task.",
+    userWords: (w, s) => void log.push(`words:${w}:${s}`),
+    stopTask: async () => (log.push("stopTask"), "Stopped the task."),
     endVoice: () => void log.push("end"),
     failed: (f) => void log.push(`failed:${(f as { kind: string }).kind}`),
   };
@@ -101,7 +101,7 @@ describe("RealtimeEngine", () => {
     t.socket.event({ type: "response.function_call_arguments.done", call_id: "c1", name: "send_to_agent", arguments: JSON.stringify({ text: "Post gm on X" }) });
     await settle();
     expect(t.log).toContain("forward:Post gm on X");
-    expect(t.socket.sent.find((e) => e.type === "conversation.item.create" && e.item.type === "function_call_output")!.item.output).toMatch(/^Sent to the agent/);
+    expect(t.socket.sent.find((e) => e.type === "conversation.item.create" && e.item.type === "function_call_output")!.item.output).toBe("Sent to the agent. Its updates will follow.");
   });
 
   it("stop_task and end_voice reach the panel", async () => {
@@ -125,12 +125,12 @@ describe("RealtimeEngine", () => {
     expect(t.log).toContain("speech");
   });
 
-  it("cancel_request takes back a request still waiting to be sent", async () => {
+  it("cancel_request stops the task (the request already went to the agent)", async () => {
     const t = await started();
     t.socket.event({ type: "response.function_call_arguments.done", call_id: "c1", name: "cancel_request", arguments: "{}" });
     await settle();
-    expect(t.log).toContain("cancel");
-    expect(t.socket.sent.find((e) => e.item?.type === "function_call_output")!.item.output).toBe("Cancelled: the agent did not get it.");
+    expect(t.log).toContain("stopTask");
+    expect(t.socket.sent.find((e) => e.item?.type === "function_call_output")!.item.output).toBe("Stopped the task.");
   });
 
   it("the chat's events become notes for the narrator", async () => {

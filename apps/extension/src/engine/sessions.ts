@@ -33,6 +33,8 @@ function clipEvent(e: AgentEvent): AgentEvent {
     case "spoken":
     case "error":
       return { ...e, text: clipEventText(e.text) };
+    case "heard":
+      return { ...e, text: clipEventText(e.text), ...(e.sent === undefined ? {} : { sent: clipEventText(e.sent) }) };
     case "tool_result": {
       const out = { ...e };
       if (out.text !== undefined) out.text = clipEventText(out.text);

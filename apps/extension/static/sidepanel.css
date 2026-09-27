@@ -260,6 +260,13 @@ button.title-btn:hover { color: var(--accent); }
 /* A message the user spoke: the bubble with a small mic. */
 .log .ev-voice { display: inline-flex; vertical-align: -1px; margin-right: 5px; color: var(--accent); }
 .log .ev-voice svg { display: block; }
+/* The user's own words (Realtime) with, under them, the request the narrator passed to the agent when it differs. */
+.log .ev-said { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+.log .ev-sent {
+  max-width: 85%; padding-right: 4px; font-size: var(--text-xs); line-height: 1.4; color: var(--muted);
+  text-align: right; overflow-wrap: anywhere;
+}
+.log .ev-sent-label { color: var(--faint); }
 
 /* A line hands-free voice said (event-render.ts renderSpoken): quieter than the answer, an accent bar and a speaker;
    the wave moves while it plays. .echo: it repeats the text above it, so one clamped line. */
@@ -555,10 +562,10 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / 0.35); }
   display: block; position: absolute; right: 2px; bottom: 3px;
   color: var(--muted); background: var(--surface); border-radius: 3px; padding: 0.5px;
 }
-.voice-mic[data-state="listening"], .voice-mic[data-state="opening"], .voice-mic[data-state="transcribing"], .voice-mic[data-state="handsfree"] {
+.voice-mic[data-state="handsfree"] {
   color: var(--on-accent); background: var(--accent);
 }
-.voice-mic[data-state="listening"]:hover, .voice-mic[data-state="handsfree"]:hover { color: var(--on-accent); background: var(--accent); filter: brightness(1.08); }
+.voice-mic[data-state="handsfree"]:hover { color: var(--on-accent); background: var(--accent); filter: brightness(1.08); }
 /* The level ring around the button while listening. */
 .voice-mic::after {
   content: ""; position: absolute; inset: -3px; border-radius: var(--radius-lg); pointer-events: none;
@@ -566,7 +573,7 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / 0.35); }
   opacity: 0; transform: scale(1);
   transition: transform 90ms linear, opacity 160ms ease;
 }
-.voice-mic[data-state="listening"]::after, .voice-mic[data-state="handsfree"]::after { opacity: calc(0.35 + var(--level, 0) * 0.65); transform: scale(calc(1 + var(--level, 0) * 0.18)); }
+.voice-mic[data-state="handsfree"]::after { opacity: calc(0.35 + var(--level, 0) * 0.65); transform: scale(calc(1 + var(--level, 0) * 0.18)); }
 .voice-mic.nudge { animation: voice-nudge 1.2s ease 2; }
 @keyframes voice-nudge {
   0%, 100% { box-shadow: 0 0 0 0 transparent; }
@@ -603,8 +610,8 @@ body:has(.voice-orb:not([hidden])) .composer { z-index: var(--z-above-veil); }
   color: var(--muted); font-size: var(--text-sm); line-height: 1.4; text-align: center;
   max-width: min(320px, calc(100vw - 48px)); overflow-wrap: anywhere;
 }
-.voice-orb[data-state="opening"] .voice-orb-core, .voice-orb[data-state="transcribing"] .voice-orb-core { opacity: 0.7; }
-.voice-orb[data-state="transcribing"] .voice-orb-halo { animation-duration: 1.4s; }
+/* Hands-free starting (the microphone, the connection): the core dimmed. */
+.voice-orb[data-state="opening"] .voice-orb-core { opacity: 0.7; }
 /* Hands-free: a quicker breath while a message waits to be sent; the core breathes while a line is said. */
 .voice-orb[data-state="sending"] .voice-orb-halo { animation-duration: 0.9s; }
 .voice-orb[data-state="speaking"] .voice-orb-core { animation: voice-breathe 1.2s ease-in-out infinite; }

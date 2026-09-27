@@ -1,7 +1,8 @@
 /**
- * Just enough of a DOM for the Markdown renderer's tests in node: elements,
- * text nodes, fragments, attributes, children, textContent, remove,
- * replaceWith, and an HTML serializer that escapes like a browser.
+ * Just enough of a DOM for tests in node (the Markdown renderer, the
+ * hands-free panel): elements, text nodes, fragments, attributes, children,
+ * textContent, remove, replaceWith, hidden, dataset, classList, and an HTML
+ * serializer that escapes like a browser.
  */
 class MiniNode {
   parent: MiniElement | MiniFragment | null = null;
@@ -38,6 +39,12 @@ const escAttr = (s: string) => esc(s).replace(/"/g, "&quot;");
 
 class Parent extends MiniNode {
   childNodes: MiniNode[] = [];
+  prepend(...nodes: (MiniNode | string)[]): void {
+    const rest = this.childNodes;
+    this.childNodes = [];
+    this.append(...nodes);
+    this.childNodes.push(...rest);
+  }
   append(...nodes: (MiniNode | string)[]): void {
     for (const n0 of nodes) {
       const n = typeof n0 === "string" ? new MiniText(n0) : n0;
@@ -78,7 +85,18 @@ export class MiniFragment extends Parent {}
 
 export class MiniElement extends Parent {
   readonly attributes = new Map<string, string>();
+  readonly dataset: Record<string, string> = {};
   private readonly listeners = new Map<string, ((e: unknown) => void)[]>();
+  readonly classList = {
+    contains: (c: string) => this.className.split(" ").includes(c),
+    add: (c: string) => this.classList.toggle(c, true),
+    remove: (c: string) => this.classList.toggle(c, false),
+    toggle: (c: string, on = !this.classList.contains(c)) => {
+      const rest = this.className.split(" ").filter((x) => x && x !== c);
+      this.className = (on ? [...rest, c] : rest).join(" ");
+      return on;
+    },
+  };
   constructor(readonly tagName: string) {
     super();
   }
@@ -88,6 +106,19 @@ export class MiniElement extends Parent {
   /** Runs the element's click listeners (there is no event propagation). */
   click(): void {
     for (const fn of this.listeners.get("click") ?? []) fn({ type: "click", target: this });
+  }
+  get hidden(): boolean {
+    return this.attributes.has("hidden");
+  }
+  set hidden(on: boolean) {
+    if (on) this.setAttribute("hidden", "");
+    else this.attributes.delete("hidden");
+  }
+  get title(): string {
+    return this.getAttribute("title") ?? "";
+  }
+  set title(v: string) {
+    this.setAttribute("title", v);
   }
   setAttribute(k: string, v: string): void {
     this.attributes.set(k.toLowerCase(), String(v));
@@ -114,6 +145,7 @@ export function installMiniDom(): void {
     createElement: (tag: string) => new MiniElement(tag.toLowerCase()),
     createTextNode: (t: string) => new MiniText(t),
     createDocumentFragment: () => new MiniFragment(),
+    addEventListener: () => {},
   };
 }
 

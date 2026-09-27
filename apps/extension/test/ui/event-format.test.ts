@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { SCREEN_HELP_TEXT, type AgentEvent, type SessionInfo } from "@browsertodo/shared";
-import { describeEvent, isBrainStartLine, isNearBottom, openingTurn, sameWords, spokenEchoes, turnPicks } from "../../src/sidepanel/event-format.js";
+import {
+  describeEvent,
+  handoffDiffers,
+  HANDOFF_OVERLAP_MIN,
+  isBrainStartLine,
+  isNearBottom,
+  openingText,
+  openingTurn,
+  pairHeard,
+  sameWords,
+  spokenEchoes,
+  turnPicks,
+} from "../../src/sidepanel/event-format.js";
 import { shortUrl, toolArgsSummary } from "../../src/text.js";
 
 describe("toolArgsSummary", () => {
@@ -208,5 +220,45 @@ describe("voice in the chat: spoken messages and lines said aloud", () => {
   it("sameWords ignores case, spacing and punctuation", () => {
     expect(sameWords("Hi! What should I do?", "hi what should i do")).toBe(true);
     expect(sameWords("Hi", "Hi there")).toBe(false);
+  });
+});
+
+describe("Realtime voice in the chat: the user's own words, and the request sent for them", () => {
+  const said = "could you check what Sarah wrote me";
+  const sent = "Open Gmail and read the newest email from Sarah";
+
+  it("the request shows under the words only when it says something else", () => {
+    expect(HANDOFF_OVERLAP_MIN).toBeGreaterThan(0);
+    expect(handoffDiffers(said, sent)).toBe(true);
+    expect(handoffDiffers("uh can you open gmail and read my newest email", "Open Gmail and read my newest email")).toBe(false);
+    expect(handoffDiffers("Post gm on X.", "post GM on x")).toBe(false);
+    expect(describeEvent({ type: "heard", text: said, sent })).toEqual({ kind: "user", text: said, voice: true, sent });
+    expect(describeEvent({ type: "heard", text: "open gmail please", sent: "Open Gmail" })).toEqual({ kind: "user", text: "open gmail please", voice: true });
+    expect(describeEvent({ type: "heard", text: "thanks" })).toEqual({ kind: "user", text: "thanks", voice: true });
+  });
+
+  it("the words take the place of the voice message their request became, kept before or after it", () => {
+    const after: AgentEvent[] = [
+      { type: "user_message", text: sent, voice: true },
+      { type: "tool_call", id: "1", name: "navigate", args: {} },
+      { type: "heard", text: said, sent },
+    ];
+    expect(pairHeard(after, null)).toEqual({ messages: new Map([[0, 2]]), placed: new Set([2]) });
+    const before: AgentEvent[] = [{ type: "heard", text: said, sent }, { type: "user_message", text: sent, voice: true }];
+    expect(pairHeard(before, null)).toEqual({ messages: new Map([[1, 0]]), placed: new Set([0]) });
+    // A typed message with the same words, or words without a request, stay as they are.
+    const typed: AgentEvent[] = [{ type: "user_message", text: sent }, { type: "heard", text: said, sent }, { type: "heard", text: "thanks" }];
+    expect(pairHeard(typed, null)).toEqual({ messages: new Map(), placed: new Set() });
+  });
+
+  it("the first message of a voice chat shows the words, and the request when it differs", () => {
+    const s: SessionInfo = { sessionId: "s", source: "adhoc", title: sent, instructions: sent, brain: "claude-api", jev: false, startedAt: "2026-09-24T10:00:00Z", voice: true };
+    const events: AgentEvent[] = [{ type: "status", text: "x" }, { type: "heard", text: said, sent }];
+    expect(openingText(s)).toBe(sent);
+    expect(openingText({ ...s, voice: undefined } as SessionInfo)).toBeNull();
+    const pairs = pairHeard(events, openingText(s));
+    expect(pairs).toEqual({ opening: 1, messages: new Map(), placed: new Set([1]) });
+    expect(openingTurn(s, events, undefined, { type: "heard", text: said, sent })).toMatchObject({ text: said, voice: true, sent });
+    expect(openingTurn(s, events, undefined, { type: "heard", text: "open gmail and read the newest email from sarah please", sent })).not.toHaveProperty("sent");
   });
 });

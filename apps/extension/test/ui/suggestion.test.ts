@@ -81,7 +81,7 @@ describe("FollowUpSuggestion", () => {
     expect(s.shown("")).toBeNull();
   });
 
-  it("voice dictation hides it while it writes into the box", () => {
+  it("hands-free voice hides it while it is on (it may write into the box)", () => {
     const s = offered();
     s.setDictating(true);
     expect(s.rest("")).toBeNull();

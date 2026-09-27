@@ -68,18 +68,6 @@ describe("Dictation state machine", () => {
     expect(states).toEqual(["listening", "transcribing", "done"]);
   });
 
-  it("toggling off keeps the text (reason toggle)", async () => {
-    const t = manualTranscriber();
-    const { d, source } = setup(t.fn);
-    const result = d.run();
-    await flush();
-    source.feed(tone(600));
-    void d.stop("toggle");
-    await flush();
-    t.pending()[0]!.resolve("Scroll down");
-    expect(await result).toEqual({ text: "Scroll down", reason: "toggle" });
-  });
-
   it("sends only the speech, with a little audio around it, and says how much speech it heard", async () => {
     const t = manualTranscriber();
     const { d, source } = setup(t.fn);
@@ -97,27 +85,16 @@ describe("Dictation state machine", () => {
     await result;
   });
 
-  it("sends nothing for silence, and stops by itself after the long silence", async () => {
+  it("sends nothing for silence and keeps listening (the utterance's end is the endpointer's to find)", async () => {
     const t = manualTranscriber();
     const { d, source } = setup(t.fn);
-    const result = d.run();
+    void d.run();
     await flush();
-    source.feed(hush(VOICE_TUNING.longSilenceMs - 100));
+    source.feed(hush(20_000));
     expect(d.state).toBe("listening");
-    source.feed(hush(200));
-    expect(await result).toEqual({ text: "", reason: "silence" });
     expect(t.calls).toHaveLength(0);
-    expect(source.stopped).toBe(true);
-  });
-
-  it("offers to stop after a long silence following speech, keeping the text", async () => {
-    const t = instantTranscriber(() => "Book a table");
-    const { d, source } = setup(t.fn);
-    const result = d.run();
-    await flush();
-    await speak(source, tone(1200));
-    await speak(source, hush(VOICE_TUNING.longSilenceMs + 200));
-    expect(await result).toEqual({ text: "Book a table", reason: "silence" });
+    expect(source.stopped).toBe(false);
+    d.cancel();
   });
 
   it("stops at the 60 second cap", async () => {

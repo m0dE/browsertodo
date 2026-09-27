@@ -150,12 +150,6 @@ export class FrameBuffer {
     };
   }
 
-  /** Frames since the last speech frame (all frames when there was none). */
-  silentTail(): number {
-    for (let i = this.speech.length - 1; i >= 0; i--) if (this.speech[i]) return this.speech.length - 1 - i;
-    return this.speech.length;
-  }
-
   /**
    * Where finalised text may end inside `r`: the middle of the latest pause of
    * at least `commitPauseMs`, or null when there is none.

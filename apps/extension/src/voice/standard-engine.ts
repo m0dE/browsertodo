@@ -93,8 +93,6 @@ export class StandardEngine implements HandsFreeEngine {
     // The panel picks the lines to say (narration.ts).
   }
 
-  cancelled(): void {}
-
   tick(_now: number): void {}
 
   /** Starts the next utterance's dictation (with the audio just before, after a barge-in). */
@@ -109,9 +107,9 @@ export class StandardEngine implements HandsFreeEngine {
     d.run().then(
       (r) => {
         if (this.dictation === d) this.dictation = null;
-        // Stopped at an utterance's end (send), or by itself (long silence, the clip cap).
+        // Stopped at an utterance's end (send), or by itself (the clip cap).
         if (r.reason !== "cancel" && !this.stopped) {
-          if (r.reason !== "silence" || r.text) this.deps.events.heard(r.text, true);
+          this.deps.events.heard(r.text, true);
           if (this.transcribing && !this.dictation) this.listen(false);
         }
       },

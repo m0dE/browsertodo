@@ -6,7 +6,7 @@
 export function installChromeStub(data) {
   const VOICE_ENGINES = {
     engines: [
-      { id: "realtime", name: "Realtime", model: "gpt-realtime-2.1", approxCentsPerMinute: 5.4912, assumption: "Per minute of conversation: you talk or it listens for 1 minute and it speaks for 18 seconds.", available: true },
+      { id: "realtime", name: "Realtime", model: "gpt-realtime-2.1", approxCentsPerMinute: 6.0762, assumption: "Per minute of conversation: you talk or it listens for 1 minute and it speaks for 18 seconds; includes transcribing what you say for the chat.", available: true },
       { id: "standard", name: "Standard", model: "whisper-large-v3-turbo", approxCentsPerMinute: 0.0667, assumption: "Per minute of speech transcribed; replies are read aloud by your browser at no charge.", available: true },
     ],
     default: "realtime",
@@ -139,6 +139,12 @@ export function installChromeStub(data) {
     // A said line is kept in its chat: the background pushes it back as a "spoken" event.
     "voice.spoken": (req) => {
       setTimeout(() => window.__push({ type: "event", event: { type: "spoken", text: req.text, ts: new Date().toISOString(), sessionId: req.sessionId } }), 0);
+      return { ok: true };
+    },
+    // What the user said (Realtime) is kept in its chat: pushed back as a "heard" event.
+    "voice.heard": (req) => {
+      const event = { type: "heard", text: req.text, ...(req.sent ? { sent: req.sent } : {}), ts: new Date().toISOString(), sessionId: req.sessionId };
+      setTimeout(() => window.__push({ type: "event", event }), 0);
       return { ok: true };
     },
     "voice.transcribe": () => {

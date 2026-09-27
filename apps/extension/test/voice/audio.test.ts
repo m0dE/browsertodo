@@ -132,12 +132,6 @@ describe("FrameBuffer", () => {
     expect(b.latestPause({ from: 0, to: b.framesIn(2000) })).toBeNull();
   });
 
-  it("counts the silence since the last speech", () => {
-    const b = buffer(tone(1000), hush(2000));
-    expect(Math.abs(ms(b, b.silentTail()) - (2000 - VOICE_TUNING.speechHangoverMs))).toBeLessThanOrEqual(60);
-    expect(buffer(hush(500)).silentTail()).toBe(25);
-  });
-
   it("gives back the samples of a range and finds its quietest frame", () => {
     const b = buffer(tone(500), hush(100), tone(500));
     expect(b.samples({ from: 2, to: 5 })).toHaveLength(3 * FRAME);

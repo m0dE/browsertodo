@@ -181,7 +181,7 @@ export const OPTION_CASES = [
     ["Realtime checked by default", () => p.isChecked("input[name=voiceEngine][value=realtime]")],
     ["names", async () => (await p.locator(".opt[data-voice] .voice-name").allTextContents()).join(" | ") === "Realtime (OpenAI) | Standard"],
     ["costs from the server", () =>
-      eventually(async () => (await p.locator(".opt[data-voice] .voice-cost").allTextContents()).join(" | ") === "about 5¢ of usage credit a minute | about 0.067¢ of usage credit a minute")],
+      eventually(async () => (await p.locator(".opt[data-voice] .voice-cost").allTextContents()).join(" | ") === "about 6¢ of usage credit a minute | about 0.067¢ of usage credit a minute")],
     ["cost assumption and model as tooltip", async () => /speaks for 18 seconds.*Model: gpt-realtime-2\.1\.$/.test(await p.getAttribute(".opt[data-voice=realtime] .voice-cost", "title"))],
     ["Standard names no vendor", async () => (await p.textContent(".opt[data-voice=standard] .voice-detail")) === "Your words become text on our server; short summaries are read aloud by your browser."],
     ["no plan note on Plus", async () => !(await shown(p, "#voice-note"))],

@@ -47,7 +47,7 @@ export type AgentEvent =
       executed: boolean;
       ms: number;
     }
-  /** A message the human sent in the conversation (voice: it was spoken, hands-free or dictated). */
+  /** A message the human sent in the conversation (voice: it was spoken, in hands-free voice). */
   | { type: "user_message"; text: string; voice?: true }
   /**
    * suggestion: the agent's proposed next request (TaskRunResult.suggestion);
@@ -60,7 +60,15 @@ export type AgentEvent =
    * question, the result, the Realtime narrator's reply), kept in the thread.
    * Written by the side panel, never by a brain.
    */
-  | { type: "spoken"; text: string };
+  | { type: "spoken"; text: string }
+  /**
+   * What the user said in a Realtime hands-free turn, word for word (the
+   * narrator's input transcription), kept in the thread as their voice
+   * message. sent: what the narrator passed to the agent for it (that
+   * request's own voice message then shows these words instead). Written by
+   * the side panel, never by a brain.
+   */
+  | { type: "heard"; text: string; sent?: string };
 
 /** Element picks of act steps (clicks and typing) in a turn: by Jev, or by Claude naming an index. */
 export interface ElementPicks {
@@ -108,7 +116,7 @@ export interface SessionInfo {
   /** Adhoc runs: the full instructions and account, so the run can be continued later. */
   instructions?: string;
   account?: string;
-  /** The first message was spoken (hands-free or dictated), not typed. */
+  /** The first message was spoken (hands-free voice), not typed. */
   voice?: true;
   /** Set when this run continues an earlier stopped one ("Continue"). */
   continuedFrom?: string;

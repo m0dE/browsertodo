@@ -3,6 +3,7 @@ import { REALTIME_CLOSE, REALTIME_PROTOCOL, REALTIME_TOKEN_PROTOCOL_PREFIX } fro
 import { base64ToBytes } from "../../src/base64.js";
 import { errorHelp } from "../../src/sidepanel/error-help.js";
 import {
+  ACKNOWLEDGE_INSTRUCTIONS,
   NARRATOR_TOOLS,
   REALTIME_SAMPLE_RATE,
   RealtimeClient,
@@ -84,8 +85,8 @@ describe("RealtimeClient: connecting", () => {
     expect(update.session.audio.input.format).toEqual({ type: "audio/pcm", rate: REALTIME_SAMPLE_RATE });
     expect(update.session.audio.output.format).toEqual({ type: "audio/pcm", rate: REALTIME_SAMPLE_RATE });
     expect(update.session.audio.input.turn_detection).toMatchObject({ type: "server_vad", create_response: true, interrupt_response: true });
-    // Input transcription is billed on top of the price the server states: off.
-    expect(update.session.audio.input.transcription).toBeUndefined();
+    // The user's own words for the chat (the server's price includes them).
+    expect(update.session.audio.input.transcription).toEqual({ model: "gpt-transcribe" });
     expect(update.session.tools.map((t: { name: string }) => t.name)).toEqual(["send_to_agent", "cancel_request", "stop_task", "end_voice"]);
     expect(update.session.tools.every((t: { type: string }) => t.type === "function")).toBe(true);
     expect(NARRATOR_TOOLS).toHaveLength(4);
@@ -171,16 +172,24 @@ describe("RealtimeClient: the feed, the narrator's replies and its tools", () =>
     expect(onNarratorText.mock.calls.map((c) => c[0])).toEqual(["On ", "On it."]);
   });
 
-  it("send_to_agent runs through onTool, its output goes back, and the narrator may then reply", async () => {
+  it("send_to_agent runs through onTool (with the user's input item it answers), its output goes back, then one short acknowledgement", async () => {
     const onTool = vi.fn(async () => "Sent to the agent.");
     const { socket } = ready({ onTool });
+    socket().event({ type: "input_audio_buffer.committed", item_id: "in1", previous_item_id: null });
     socket().event({ type: "response.created", response: { id: "r1" } });
     socket().event({ type: "response.function_call_arguments.done", call_id: "c1", name: "send_to_agent", arguments: '{"text":"Post gm on X"}', item_id: "f1" });
     await flush();
-    expect(onTool).toHaveBeenCalledWith("send_to_agent", { text: "Post gm on X" });
+    expect(onTool).toHaveBeenCalledWith("send_to_agent", { text: "Post gm on X" }, "in1");
     expect(socket().sent.at(-1)).toEqual({ type: "conversation.item.create", item: { type: "function_call_output", call_id: "c1", output: "Sent to the agent." } });
     socket().event({ type: "response.done", response: { id: "r1", status: "completed", output: [] } });
-    expect(socket().types().at(-1)).toBe("response.create");
+    expect(socket().sent.at(-1)).toEqual({ type: "response.create", response: { instructions: ACKNOWLEDGE_INSTRUCTIONS } });
+  });
+
+  it("other tools ask for a plain reply after their output (the narrator says what happened)", async () => {
+    const { socket } = ready({ onTool: async () => "Stopped the task." });
+    socket().event({ type: "response.function_call_arguments.done", call_id: "c1", name: "stop_task", arguments: "{}" });
+    await flush();
+    expect(socket().sent.at(-1)).toEqual({ type: "response.create" });
   });
 
   it("a tool that throws answers with its error; unknown tools and bad arguments are answered, not run", async () => {

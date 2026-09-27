@@ -14,8 +14,8 @@ describe("NoticeQueue: one notice above the input at a time", () => {
 
   it("an error goes before a fallback, a fallback before info, whatever the order they came in", () => {
     const q = new NoticeQueue<N>();
-    q.put(note("voice", "info", "Stopped listening. Your text is in the box."));
-    expect(shown(q)).toBe("Stopped listening. Your text is in the box.");
+    q.put(note("voice", "info", "Microphone allowed. Press the mic to talk."));
+    expect(shown(q)).toBe("Microphone allowed. Press the mic to talk.");
     q.put(note("voice.engine", "fallback", "Realtime voice is unavailable. Using Standard."));
     expect(shown(q)).toBe("Realtime voice is unavailable. Using Standard.");
     q.put(note("composer", "error", "Out of usage credit"));
@@ -24,7 +24,7 @@ describe("NoticeQueue: one notice above the input at a time", () => {
     q.clear("composer");
     expect(shown(q)).toBe("Realtime voice is unavailable. Using Standard.");
     q.clear("voice.engine");
-    expect(shown(q)).toBe("Stopped listening. Your text is in the box.");
+    expect(shown(q)).toBe("Microphone allowed. Press the mic to talk.");
     q.clear("voice");
     expect(q.current).toBeNull();
   });

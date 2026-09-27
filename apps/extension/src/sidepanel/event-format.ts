@@ -13,8 +13,11 @@ export type EventView =
   | { kind: "tool"; id: string; name: string; args: string }
   | { kind: "result"; id: string; name: string; preview: string; full: string; isError: boolean; thumbnail?: string }
   | { kind: "jev"; label: string; ms: number; executed: boolean; title: string }
-  /** screen: an empty message, "look at the page and do what is needed" (shown quieter, with an eye). voice: it was spoken. */
-  | { kind: "user"; text: string; screen?: true; voice?: true }
+  /**
+   * screen: an empty message, "look at the page and do what is needed" (shown quieter, with an eye). voice: it was
+   * spoken. sent: what the Realtime narrator passed to the agent for these words, when it says something else.
+   */
+  | { kind: "user"; text: string; screen?: true; voice?: true; sent?: string }
   /** A line hands-free voice said aloud. echo: it repeats the start of the text written above it (shown compact). */
   | { kind: "spoken"; text: string; echo?: true }
   /**
@@ -161,6 +164,8 @@ export function describeEvent(ev: AgentEvent, turn: TurnContext = {}): EventView
       return ev.voice ? { kind: "user", text: ev.text, voice: true } : { kind: "user", text: ev.text };
     case "spoken":
       return turn.echo ? { kind: "spoken", text: ev.text, echo: true } : { kind: "spoken", text: ev.text };
+    case "heard":
+      return ev.sent && handoffDiffers(ev.text, ev.sent) ? { kind: "user", text: ev.text, voice: true, sent: ev.sent } : { kind: "user", text: ev.text, voice: true };
     case "task_end":
       return describeEnd(ev, turn);
     case "error":
@@ -176,8 +181,10 @@ export interface OpeningView {
   screen?: true;
   /** Not typed in Chat: where the instructions came from. */
   origin?: string;
-  /** Spoken, not typed (hands-free or dictated). */
+  /** Spoken (hands-free voice), not typed. */
   voice?: true;
+  /** What the Realtime narrator passed to the agent, when the text is the user's own words and it says something else. */
+  sent?: string;
   /** How many files the first turn came with (their names are not saved with the run). */
   files?: number;
   /** When the conversation started: "14:30", "yesterday 23:00". */
@@ -190,13 +197,26 @@ const ORIGIN_OF: Partial<Record<TaskSource, string>> = { local: "From your TODO 
 /** The status line a first turn with files starts with (see run/turn.ts). */
 const PREPARING_FILES = /^Preparing (\d+) file\(s\)$/;
 
-/** The first message of a conversation, from its session and its events (the first turn's files). */
-export function openingTurn(s: SessionInfo, events: readonly AgentEvent[], now = Date.now()): OpeningView {
-  const text = (s.source === "adhoc" && s.instructions?.trim()) || s.title;
+/** The prompt as typed, or the task's instructions (only its one-line title for runs that did not save them). */
+const firstMessage = (s: SessionInfo): string => (s.source === "adhoc" && s.instructions?.trim()) || s.title;
+
+/** The spoken first message as the agent got it, for pairHeard (null: it was not spoken). */
+export const openingText = (s: SessionInfo): string | null => (s.voice ? firstMessage(s) : null);
+
+/**
+ * The first message of a conversation, from its session and its events (the first turn's files). `heard`: the
+ * user's own words for it (see pairHeard), shown in place of the request the agent got.
+ */
+export function openingTurn(s: SessionInfo, events: readonly AgentEvent[], now = Date.now(), heard?: Extract<AgentEvent, { type: "heard" }>): OpeningView {
+  const text = firstMessage(s);
   const at = s.firstStartedAt ?? s.startedAt;
   const v: OpeningView = { text, when: clockLabel(at, now).replace(/^today /, ""), at };
   if (s.source === "adhoc" && isScreenHelp(text)) v.screen = true;
   else if (s.voice) v.voice = true;
+  if (v.voice && heard) {
+    v.text = heard.text;
+    if (heard.sent && handoffDiffers(heard.text, heard.sent)) v.sent = heard.sent;
+  }
   const origin = ORIGIN_OF[s.source];
   if (origin) v.origin = origin;
   const firstEnd = events.findIndex((e) => e.type === "task_end");
@@ -223,6 +243,73 @@ export function isBrainStartLine(text: string): boolean {
 export function isScreenHelp(text: string | undefined): boolean {
   return text?.trim() === SCREEN_HELP_TEXT;
 }
+
+/**
+ * Below this share of words in common, the narrator's request says something else than the user's own words, and
+ * the request is shown under them ("Sent to agent: ..."). At or above it, it only rephrased them.
+ */
+export const HANDOFF_OVERLAP_MIN = 0.6;
+
+/** Lower-case words (letters and digits). */
+const wordsOf = (text: string): string[] => text.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? [];
+
+/**
+ * The narrator's request differs meaningfully from what the user said: the words they share (each counted as
+ * often as both have it) make up less than HANDOFF_OVERLAP_MIN of the longer of the two.
+ */
+export function handoffDiffers(said: string, sent: string): boolean {
+  const a = wordsOf(said);
+  const b = wordsOf(sent);
+  const left = new Map<string, number>();
+  for (const w of a) left.set(w, (left.get(w) ?? 0) + 1);
+  let shared = 0;
+  for (const w of b) {
+    const n = left.get(w) ?? 0;
+    if (n > 0) {
+      shared++;
+      left.set(w, n - 1);
+    }
+  }
+  const longer = Math.max(a.length, b.length);
+  return longer > 0 && shared / longer < HANDOFF_OVERLAP_MIN;
+}
+
+/** Which user's own words (heard events) take the place of which voice message (see pairHeard). */
+export interface HeardPairs {
+  /** The heard event shown as the conversation's first message. */
+  opening?: number;
+  /** A voice user_message's index -> the heard event shown in its place. */
+  messages: Map<number, number>;
+  /** Heard events shown in a message's place (not on their own). */
+  placed: Set<number>;
+}
+
+/**
+ * Pairs each heard event that carries a request (sent) with the voice message that request became: the first
+ * message (`opening`: its text; null when it was not spoken) or a voice user_message with the same words. Keyed by
+ * the words, not the order: the heard event may be kept before or after its message. The nearest message before it
+ * wins, else the first after it. Heard events without a message stay on their own.
+ */
+export function pairHeard(events: readonly AgentEvent[], opening: string | null): HeardPairs {
+  const pairs: HeardPairs = { messages: new Map(), placed: new Set() };
+  const taken = new Set<number>();
+  events.forEach((ev, h) => {
+    if (ev.type !== "heard" || !ev.sent) return;
+    const sent = ev.sent;
+    const fits = (i: number) => !taken.has(i) && (i < 0 ? opening !== null && sameWords(opening, sent) : isVoiceMessage(events[i], sent));
+    let at: number | null = null;
+    for (let i = h - 1; i >= -1 && at === null; i--) if (fits(i)) at = i;
+    for (let i = h + 1; i < events.length && at === null; i++) if (fits(i)) at = i;
+    if (at === null) return;
+    taken.add(at);
+    pairs.placed.add(h);
+    if (at < 0) pairs.opening = h;
+    else pairs.messages.set(at, h);
+  });
+  return pairs;
+}
+
+const isVoiceMessage = (ev: AgentEvent | undefined, text: string) => ev?.type === "user_message" && !!ev.voice && sameWords(ev.text, text);
 
 /** Should a scroll container keep following new content? (within `slack` px of the bottom) */
 export function isNearBottom(el: { scrollTop: number; clientHeight: number; scrollHeight: number }, slack = 24): boolean {

@@ -3,7 +3,8 @@
  * panel's window, live (every turn of it in one thread: the user's messages
  * as bubbles, starting with the prompt or task that opened it, the agent's
  * text, tool calls, results and Jev decisions, and what hands-free voice said
- * aloud, shown playing while it is said), its
+ * aloud, shown playing while it is said; with Realtime voice the user's own
+ * words take the place of the request the narrator sent for them), its
  * action bar (New chat | Show tab) and, while conversations of
  * other tabs run, one chip each to switch to their tab. Which conversation
  * that is comes from sidepanel.ts (see tab-chat.ts); past runs live in the
@@ -16,7 +17,20 @@ import { chatActions, type BarAction } from "./chat-actions.js";
 import { $, busy, h } from "../ui/dom.js";
 import { errorHelp } from "./error-help.js";
 import { renderErrorHelp } from "./error-view.js";
-import { describeEvent, isBrainStartLine, isNearBottom, openingTurn, sameWords, spokenEchoes, turnError, turnPicks, type TurnContext } from "./event-format.js";
+import {
+  describeEvent,
+  isBrainStartLine,
+  isNearBottom,
+  openingText,
+  openingTurn,
+  pairHeard,
+  sameWords,
+  spokenEchoes,
+  turnError,
+  turnPicks,
+  type HeardPairs,
+  type TurnContext,
+} from "./event-format.js";
 import { placeEvent, pruneContinue, renderEvent, renderOpening, renderSessionHead, renderSpoken, renderText } from "./event-render.js";
 import { LiveTexts } from "./live-text.js";
 import { MarkdownView } from "./markdown.js";
@@ -105,9 +119,16 @@ export function initChat(opts: ChatOptions = {}): ChatView {
   const liveEls = new Map<string, { el: HTMLElement; view: MarkdownView }>();
   let paintQueued = false;
 
-  function renderOne(e: StampedAgentEvent, i: number): void {
+  /** The user's own words (Realtime) shown in place of the voice messages that carried them (see pairHeard). */
+  let heard: HeardPairs = pairHeard([], null);
+  const pairsNow = () => pairHeard(events, current ? openingText(current) : null);
+
+  function renderOne(ev: StampedAgentEvent, i: number): void {
     // The brain chip under the first message already says which brain started.
-    if (e.type === "status" && isBrainStartLine(e.text)) return;
+    if (ev.type === "status" && isBrainStartLine(ev.text)) return;
+    if (heard.placed.has(i)) return;
+    const words = heard.messages.get(i);
+    const e = words === undefined ? ev : events[words]!;
     const s = e.type === "task_end" && current?.sessionId === e.sessionId ? current : null;
     const canContinue = !!opts.onContinue && e.type === "task_end" && isContinuableOutcome(e.outcome) && s?.source !== "cloud";
     const turn: TurnContext = e.type === "task_end" ? { picks: turnPicks(events, i), error: turnError(events, i) } : e.type === "spoken" ? { echo: spokenEchoes(events, i) } : {};
@@ -218,6 +239,7 @@ export function initChat(opts: ChatOptions = {}): ChatView {
       return;
     }
     lives = [];
+    heard = pairsNow();
     log.replaceChildren(renderOpeningOf(current), renderSessionHead(current));
     events.forEach(renderOne);
     liveEls.clear();
@@ -250,7 +272,8 @@ export function initChat(opts: ChatOptions = {}): ChatView {
 
   /** The conversation's first message (its prompt), which opens its details. */
   function renderOpeningOf(s: SessionInfo): HTMLElement {
-    const v = openingTurn(s, events);
+    const words = heard.opening === undefined ? undefined : events[heard.opening];
+    const v = openingTurn(s, events, undefined, words?.type === "heard" ? words : undefined);
     // The details of the session as it is now (it ends, gets an outcome, ...).
     const el = renderOpening(v, (trigger) => opts.onDetails?.(current ?? s, trigger));
     el.dataset.files = String(v.files ?? 0);
@@ -310,6 +333,15 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     if (backfilling || !current) {
       settleLive(ev);
       return;
+    }
+    // The user's own words found their message (or the message its words): they are shown in its place.
+    if (ev.type === "heard" || (ev.type === "user_message" && ev.voice)) {
+      const next = pairsNow();
+      if (next.placed.size !== heard.placed.size) {
+        settleLive(ev);
+        renderLog();
+        return;
+      }
     }
     const follow = isNearBottom(log);
     log.querySelector(":scope > p.empty")?.remove();

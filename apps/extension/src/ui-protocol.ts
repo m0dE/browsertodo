@@ -135,8 +135,6 @@ export type UiRequest =
       tabId?: number;
       /** An empty message in Chat: look at the tab's page and do what is needed (instructions may be empty). */
       screen?: boolean;
-      /** The instructions were spoken (hands-free or dictated): the chat marks the message. */
-      voice?: boolean;
     }
   /** Run everything that is due now (local, then cloud if enabled). */
   | { type: "run.due" }
@@ -209,14 +207,19 @@ export type UiRequest =
   | { type: "vault.delete"; site: string }
   /** Erase every saved login and the passphrase (the only way out of a forgotten passphrase). */
   | { type: "vault.reset" }
-  /** Voice input: one clip of the live dictation to text, with the signed-in account (see voice/transcribe.ts). */
+  /** Standard hands-free voice: one clip of the live transcription to text, with the signed-in account (see voice/transcribe.ts). */
   | ({ type: "voice.transcribe" } & VoiceClipRequest)
   /** Hands-free voice: the engines and what a minute of each costs (the account server's list). */
   | { type: "voice.engines" }
   /** Realtime voice: where to connect and the token to offer (sessionId: the chat, recorded with the usage). */
   | { type: "voice.realtime"; sessionId?: string }
   /** Hands-free voice said a line in this conversation: kept in its thread (a "spoken" event). */
-  | { type: "voice.spoken"; sessionId: string; text: string };
+  | { type: "voice.spoken"; sessionId: string; text: string }
+  /**
+   * What the user said in Realtime hands-free voice, word for word: kept in its thread (a "heard" event).
+   * sent: the request the narrator passed to the agent for it.
+   */
+  | { type: "voice.heard"; sessionId: string; text: string; sent?: string };
 
 export type UiResponse<T = unknown> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -282,6 +285,7 @@ export interface UiResults {
   "voice.engines": VoiceEnginesResult;
   "voice.realtime": RealtimeTicketResult;
   "voice.spoken": { ok: boolean };
+  "voice.heard": { ok: boolean };
 }
 
 /** Pushed by the background on the UI port. */
@@ -295,7 +299,7 @@ export type UiPush =
    * `draft`: the text the box had before the shortcut recreated the panel.
    */
   | { type: "panel.focus"; draft?: string }
-  /** The voice shortcut: hands-free voice on or off (a dictation from the mic button is stopped and sent). */
+  /** The voice shortcut: hands-free voice on or off (as the mic button). */
   | { type: "panel.voice" };
 
 /** Typed helper for UI pages. */

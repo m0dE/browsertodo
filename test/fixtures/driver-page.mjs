@@ -3,7 +3,7 @@
 // tall body to scroll, each reporting what happened to it in the page's text (Count, trusted,
 // Submitted, Files, Last key, Country, ScrollY).
 
-/** The page's HTML. `head`: more markup for <head> (e.g. the iframe-injector's meta tags). */
+/** The page's HTML. `head`: more HTML for <head> (e.g. the iframe-injector's meta tags). */
 export const driverPage = ({ title, heading, head = "" }) => `<!doctype html><html><head><title>${title}</title>${head}
 <style>body{font-family:sans-serif} .tall{height:3000px} #gone{display:none}</style></head><body>
 <h1>${heading}</h1>

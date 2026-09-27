@@ -220,7 +220,7 @@ export function nextPostingStep(body) {
   return { text: "", tool: { name: "read_page", input: {} } };
 }
 
-/** Usage each reply reports (claude-sonnet-5: 10k in = 2 c, 2k out = 2 c; x 1.30 = 5.2 -> 6 c charged). */
+/** Usage each reply reports (claude-sonnet-5: 10k in, 2k out). */
 export const FAKE_USAGE = { input_tokens: 10_000, output_tokens: 2_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
 
 /**

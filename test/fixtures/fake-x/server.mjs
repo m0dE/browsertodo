@@ -2,7 +2,7 @@
 // load it as https://x.com via --host-resolver-rules and
 // --ignore-certificate-errors. Mimics the parts of X the agent touches: the
 // account switcher, the inline composer with a hidden file input, the Post
-// button, and a lock page. The data-testid values mirror X's markup as of
+// button, and a lock page. The data-testid values mirror X's HTML as of
 // 2026 and must be re-checked against the live site.
 //
 // Usage: node test/fixtures/fake-x/server.mjs [--port 443]

@@ -2,7 +2,7 @@
  * Labelled actions for measuring the consequence classifier (consequence.test.ts, and
  * consequence-jev.eval.test.ts with real Jev). Elements are as read_page lists them: from the
  * fake X (test/fixtures/fake-x), the bench pages (test/bench/pages.mjs: signup form, inbox,
- * pricing), the owner's traces (X Post, Gmail) and the markup of real sites (X, Gmail, Stripe
+ * pricing), the owner's traces (X Post, Gmail) and the HTML of real sites (X, Gmail, Stripe
  * Checkout, Amazon, GitHub settings, Slack, LinkedIn, DocuSign). `ask`: the action needs the
  * user's OK at "Ask before posting, sending or paying" (it publishes, sends, pays, deletes,
  * submits a binding form, or changes the account).

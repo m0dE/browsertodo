@@ -359,13 +359,13 @@ const EYE_ICON =
   '<path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8Z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2" fill="currentColor"/>';
 
 /** A decorative 16×16 icon drawn at `size` px. */
-function svgIcon(size: number, markup: string): SVGSVGElement {
+function svgIcon(size: number, paths: string): SVGSVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 16 16");
   svg.setAttribute("width", String(size));
   svg.setAttribute("height", String(size));
   svg.setAttribute("aria-hidden", "true");
-  svg.innerHTML = markup;
+  svg.innerHTML = paths;
   return svg;
 }
 

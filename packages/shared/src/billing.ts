@@ -142,7 +142,6 @@ export const API_KEY_LIMITS = { requestsPerMinute: 60, taskCreationsPerDay: 10_0
 /** Top-up amounts that can be bought, in cents. */
 /** The one-time top-up amounts, from the catalog. */
 export const TOPUP_AMOUNTS_CENTS: readonly number[] = z.array(z.number().int().positive()).min(1).parse(catalog.topupAmountsCents);
-export const MARKUP_PERCENT = 30;
 
 /** GET /v1/billing/plans (public). */
 export const BillingPlansResponse = z.object({
@@ -241,7 +240,6 @@ export const UsageEvent = z.object({
   outputTokens: z.number().int(),
   cacheWriteTokens: z.number().int(),
   cacheReadTokens: z.number().int(),
-  costMicroCents: z.number().int(),
   chargedCents: z.number(),
   sessionId: z.string().nullable().optional(),
   /** Seconds of audio billed by length (transcribe, and realtime input transcription). */

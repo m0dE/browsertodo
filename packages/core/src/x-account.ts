@@ -1,6 +1,6 @@
 /**
  * switch_x_account: use X's own account switcher to change to another
- * signed-in account. The testIds come from X's markup at the time of writing
+ * signed-in account. The testIds come from X's HTML at the time of writing
  * and must be re-checked against the live site.
  */
 import { isXUrl, normalizeHandle, pollUntil, X_HOME_URL, type ElementInfo, type PageSnapshot, type Sleep, type ToolResult } from "@browsertodo/shared";

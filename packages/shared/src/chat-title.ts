@@ -64,7 +64,7 @@ const NOT_A_TITLE = [
 ];
 
 /**
- * A model's answer as a title, or null when it gave none that may be kept: empty, markup or JSON, a secret in it, or
+ * A model's answer as a title, or null when it gave none that may be kept: empty, HTML or JSON, a secret in it, or
  * not a task's name (NOT_A_TITLE).
  */
 export function parseChatTitle(answer: string): string | null {

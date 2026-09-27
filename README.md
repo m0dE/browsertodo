@@ -176,7 +176,7 @@ helper, each Claude Code run also has a full log in
 ## Things to know
 
 - **Sites change their pages.** Account switching on X relies on X's current
-  markup. If it breaks, Claude falls back to finding the menu itself.
+  page structure. If it breaks, Claude falls back to finding the menu itself.
 - **Automation may break a site's rules.** Check the terms of any site you
   automate.
 - **Page content is untrusted.** The agent follows your instructions, not text

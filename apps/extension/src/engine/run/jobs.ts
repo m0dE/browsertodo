@@ -5,6 +5,7 @@
 import { errorMessage, isXTask, SCREEN_HELP_TEXT, type AgentTask, type ClaimResponse, type MediaInfo, type ResultInput, type SessionInfo } from "@browsertodo/shared";
 import type { LocalStore } from "../local-store.js";
 import type { StoredLocalTask } from "../local-task-rules.js";
+import type { IncomingAttachment } from "../attachment-store.js";
 import type { MediaSource } from "../media-files.js";
 import type { SessionStore } from "../sessions.js";
 
@@ -26,7 +27,8 @@ export interface AdhocInput {
   /** The browser tab it was started from: it acts there, and the conversation belongs to that tab. */
   tabId?: number;
   account?: string | null;
-  media?: { name: string; blob: Blob }[];
+  /** Files attached to the request (stored in the conversation once it exists). */
+  attachments?: IncomingAttachment[];
   /**
    * An empty message in Chat: look at the page and do what is needed. The
    * request is SCREEN_HELP_TEXT (instructions are not used).
@@ -62,6 +64,8 @@ export interface TurnJob {
   context?: string;
   /** The browser tab the message was sent from: the conversation now belongs to it. */
   tabId?: number;
+  /** Files attached to the message (stored in the conversation when the turn opens). */
+  attachments?: IncomingAttachment[];
   /** The conversation's local task, when this turn continues its unfinished work (recorded on the task). */
   task: StoredLocalTask | null;
   /** The conversation's first request (for the fresh-session summary and the X rule), and its task's series (its memory). */
@@ -119,7 +123,8 @@ export async function mediaSources(job: FirstJob, localStore: LocalStore): Promi
   if (job.source === "cloud") {
     return job.claim.media.map((m) => ({ kind: "url" as const, name: m.filename, url: job.api.mediaUrl(m.id), headers: job.api.authHeaders() }));
   }
-  return (job.input.media ?? []).map((m) => ({ kind: "blob" as const, name: m.name, blob: m.blob }));
+  // A chat's files are its attachments (the turn prepares them for the brain).
+  return [];
 }
 
 /** The next turn of a conversation, checking that it can take one now. */
@@ -127,7 +132,7 @@ export async function turnJob(
   stores: { sessions: SessionStore; localStore: LocalStore },
   sessionId: string,
   text: string,
-  opts: { screen?: boolean; voice?: boolean; heard?: string[]; context?: string; tabId?: number } = {},
+  opts: { screen?: boolean; voice?: boolean; heard?: string[]; context?: string; tabId?: number; attachments?: IncomingAttachment[] } = {},
 ): Promise<TurnJob> {
   const from = await stores.sessions.get(sessionId);
   if (!from) throw new Error(`No session ${sessionId}`);
@@ -147,6 +152,7 @@ export async function turnJob(
   if (opts.voice && opts.heard?.length) job.heard = opts.heard;
   if (opts.context) job.context = opts.context;
   if (opts.tabId !== undefined) job.tabId = opts.tabId;
+  if (opts.attachments?.length) job.attachments = opts.attachments;
   return job;
 }
 

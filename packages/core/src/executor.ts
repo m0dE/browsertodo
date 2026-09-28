@@ -234,7 +234,7 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
         const { index, paths } = a as ToolArgsOf<"upload">;
         const bad = paths.filter((p) => !allowedMedia.has(pathKey(p)));
         if (bad.length) {
-          const allowed = opts.mediaPaths.length ? opts.mediaPaths.map((p) => `- ${p}`).join("\n") : "(none)";
+          const allowed = allowedMedia.size ? [...allowedMedia.values()].map((p) => `- ${p}`).join("\n") : "(none)";
           return err(`upload refused: ${bad.join(", ")} ${bad.length === 1 ? "is" : "are"} not in the task's media list. Allowed files:\n${allowed}`);
         }
         // The files exactly as the task listed them: the check above ignores case and slashes, a file system may not.
@@ -324,6 +324,9 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
   }
 
   return {
+    allowMedia(paths) {
+      for (const p of paths) allowedMedia.set(pathKey(p), p);
+    },
     takePicks() {
       const p = { ...gate.picks };
       gate.picks = { jev: 0, claude: 0 };

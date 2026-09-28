@@ -156,9 +156,10 @@ export const PANEL_CASES = [
       }
       if (want("panel-composer-files", size, scheme)) {
         await p.setInputFiles("#now-files", [
-          { name: "week38-photo-of-the-week-final.jpg", mimeType: "image/jpeg", buffer: Buffer.from("x") },
+          { name: "week38-photo-of-the-week-final.jpg", mimeType: "image/jpeg", buffer: Buffer.from(thumbnail, "base64") },
           { name: "caption.txt", mimeType: "text/plain", buffer: Buffer.from("x") },
         ]);
+        await p.waitForFunction(() => document.querySelectorAll("#now-files-list .att-chip:not(.preparing)").length === 2);
         await p.click("#now-text");
         await p.keyboard.insertText("Post the photo of the week with this caption");
         await checkLayout(p, `composer-files ${label}`);
@@ -532,22 +533,23 @@ export const PANEL_CASES = [
     async run({ ctx, size, scheme, label, fail, firstMessage, openPanel, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "idle", ".chat-empty");
       await p.setInputFiles("#now-files", [
-        { name: "week38-photo-of-the-week-final.jpg", mimeType: "image/jpeg", buffer: Buffer.from("x") },
+        { name: "week38-photo-of-the-week-final.jpg", mimeType: "image/jpeg", buffer: Buffer.from(thumbnail, "base64") },
         { name: "caption.txt", mimeType: "text/plain", buffer: Buffer.from("x") },
       ]);
+      await p.waitForFunction(() => document.querySelectorAll("#now-files-list .att-chip:not(.preparing)").length === 2);
       await p.click("#now-text");
       await p.keyboard.insertText(LONG_TEXT);
       await p.keyboard.press("Enter");
       await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.adhoc"));
       await p.waitForSelector("#chat-log .ev-first");
       const push = (e) => p.evaluate((ev) => window.__push({ type: "event", event: { ...ev, ts: new Date().toISOString(), sessionId: "s-new" } }), e);
-      await push({ type: "status", text: "Preparing 2 file(s)" });
       await push({ type: "status", text: "Claude API (claude-sonnet-5) with Jev" });
       await push({ type: "assistant_text", text: "I'll open X, check the account, then write the thread with the photo." });
       await push({ type: "tool_call", id: "1", name: "navigate", args: { url: "https://x.com/compose/post" } });
-      await p.waitForSelector("#chat-log .ev-first .ev-files");
+      await p.waitForSelector("#chat-log .ev-first .ev-attachments");
       const first = await firstMessage(p);
-      if (!first.first || first.text !== LONG_TEXT || first.files !== "2 files" || first.origin !== null || !first.when || first.header) fail(`first message with files ${JSON.stringify(first)}`);
+      const sentFiles = await p.evaluate(() => document.querySelectorAll("#chat-log .ev-first .att-sent").length);
+      if (!first.first || first.text !== LONG_TEXT || sentFiles !== 2 || first.origin !== null || !first.when || first.header) fail(`first message with files ${JSON.stringify({ ...first, sentFiles })}`);
       if (first.head !== "Claude API · claude-sonnet-5 · Jev on" || first.startLines !== 0) fail(`brain shown more than once ${JSON.stringify(first)}`);
       const box = await p.evaluate(() => {
         const b = document.querySelector("#chat-log .ev-first").getBoundingClientRect();
@@ -568,7 +570,8 @@ export const PANEL_CASES = [
       await p.waitForFunction(() => !document.querySelector("dialog.sheet"));
       if (!(await p.evaluate(() => document.activeElement?.classList.contains("ev-first")))) fail("Esc did not return focus to the first message");
       // Selecting text in the bubble (to copy it) does not open the sheet.
-      const b = await p.locator("#chat-log .ev-first").boundingBox();
+      // (The text, below the files strip.)
+      const b = await p.locator("#chat-log .ev-first .ev-user-text").boundingBox();
       const y = b.y + b.height / 2;
       await p.mouse.move(b.x + 14, y);
       await p.mouse.down();
@@ -594,7 +597,7 @@ export const PANEL_CASES = [
           attach: !document.getElementById("now-attach").hidden,
           stop: !document.getElementById("now-stop").hidden,
         }));
-      const CHAT = { placeholder: "Message BrowserTODO…", submit: "Send", newChat: true, attach: false, stop: false };
+      const CHAT = { placeholder: "Message BrowserTODO…", submit: "Send", newChat: true, attach: true, stop: false };
       const NEW = { placeholder: "Figure out what to do based on the current screen", submit: "Send", newChat: false, attach: true, stop: false };
       const expectComposer = async (want, what) => {
         const got = await composer();
@@ -1599,7 +1602,7 @@ export const PANEL_CASES = [
         const got = await mode();
         if (got.placeholder !== want.placeholder || got.submit !== want.submit || got.newChat !== want.newChat || got.attach !== want.attach) fail(`composer ${what}: ${JSON.stringify(got)}`);
       };
-      const CHAT = { placeholder: "Message BrowserTODO…", submit: "Send", newChat: true, attach: false };
+      const CHAT = { placeholder: "Message BrowserTODO…", submit: "Send", newChat: true, attach: true };
       const NEW = { placeholder: "Figure out what to do based on the current screen", submit: "Send", newChat: false, attach: true };
       const lastMessage = () => p.evaluate(() => window.__requests.filter((r) => r.type === "run.message").at(-1) ?? null);
       await expectMode(CHAT, "not talking to the stopped conversation");

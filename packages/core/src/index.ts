@@ -51,3 +51,5 @@ export {
 export { startApiAgent } from "./api-agent.js";
 /** Token counts of a Messages API usage object, as the trace records them (Claude Code reports the same shape). */
 export { usageOf } from "./api-agent.js";
+/** Files the user attached, as the model gets them: listed in the message, images and PDFs as blocks or for Claude Code's Read. */
+export { attachmentBlocks, attachmentLines, withAttachmentLines, type ApiAttachment, type AttachmentView } from "./attachments.js";

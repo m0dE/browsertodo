@@ -1,3 +1,4 @@
+import type { AttachmentRef } from "./attachments.js";
 import type { ApprovalAnsweredBy, ApprovalOutcome, ApprovalRequest } from "./automation.js";
 import type { TitleBy } from "./chat-title.js";
 import type { MemoryEntry } from "./memory.js";
@@ -60,8 +61,9 @@ export type AgentEvent =
    * A message the human sent in the conversation (voice: it was spoken, in hands-free voice). heard: with Realtime
    * voice, the text is the request as the narrator understood it; these are the user's words for it, word for word
    * (the input transcription of each part of their speech that led to it, in order), shown folded under it.
+   * attachments: the files sent with it (their bytes are in the extension's attachment store).
    */
-  | { type: "user_message"; text: string; voice?: true; heard?: string[] }
+  | { type: "user_message"; text: string; voice?: true; heard?: string[]; attachments?: AttachmentRef[] }
   /**
    * suggestion: the agent's proposed next request (TaskRunResult.suggestion);
    * spoken: the outcome as one or two sentences hands-free voice reads aloud (TaskRunResult.spoken).
@@ -177,6 +179,8 @@ export interface SessionInfo {
   voice?: true;
   /** The user's words for the first message, word for word (see the user_message event's heard). */
   heard?: string[];
+  /** Files sent with the first message (the bytes are in the extension's attachment store). */
+  attachments?: AttachmentRef[];
   /** Set when this run continues an earlier stopped one ("Continue"). */
   continuedFrom?: string;
   /** Turns in this conversation so far (absent: 1). */

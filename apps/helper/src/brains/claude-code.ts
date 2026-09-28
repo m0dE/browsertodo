@@ -5,8 +5,10 @@
  * open so the human can add messages while it runs. Single-turn: stdin is
  * closed after a task_* tool call (or when Claude ends its turn without
  * one). Persistent: stdin stays open for follow-up turns until the runner
- * ends the session. Claude only gets the browsertodo MCP tools: no shell,
- * file or web access.
+ * ends the session. Claude gets the browsertodo MCP tools and, in a task
+ * session, its own Read on the files the user attached (it runs in the
+ * attachments folder and may read nothing else): no shell, web or other file
+ * access.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { dirname } from "node:path";
@@ -21,7 +23,14 @@ import type { Brain, BrainContext } from "./brain.js";
 /** Claude Code's settings that turn its extended thinking off (it then answers at once). */
 export const NO_THINKING_SETTINGS = JSON.stringify({ alwaysThinkingEnabled: false });
 
-export function buildClaudeArgs(opts: { systemPrompt: string; mcpConfigPath: string; allowedTools: string[]; model: string; thinking?: boolean }): string[] {
+/**
+ * Claude Code's own Read, for a session's attachments: allowed in its working directory (the attachments folder,
+ * see WarmSpec.readDir); dontAsk refuses every call that would need a permission prompt, so any other path is refused.
+ */
+export const READ_ATTACHMENTS_ARGS = { tool: "Read", allow: "Read(./**)", permissionMode: "dontAsk" } as const;
+
+export function buildClaudeArgs(opts: { systemPrompt: string; mcpConfigPath: string; allowedTools: string[]; read?: boolean; model: string; thinking?: boolean }): string[] {
+  const read = opts.read === true;
   return [
     "-p",
     "--input-format",
@@ -37,11 +46,12 @@ export function buildClaudeArgs(opts: { systemPrompt: string; mcpConfigPath: str
     "--mcp-config",
     opts.mcpConfigPath,
     "--allowedTools",
-    opts.allowedTools.join(","),
+    [...opts.allowedTools, ...(read ? [READ_ATTACHMENTS_ARGS.allow] : [])].join(","),
+    ...(read ? ["--permission-mode", READ_ATTACHMENTS_ARGS.permissionMode] : []),
     "--append-system-prompt",
     opts.systemPrompt,
     ...(opts.thinking === false ? ["--settings", NO_THINKING_SETTINGS] : []),
-    ...isolatedClaudeArgs(opts.model),
+    ...isolatedClaudeArgs(opts.model, read ? [READ_ATTACHMENTS_ARGS.tool] : []),
   ];
 }
 
@@ -202,6 +212,8 @@ export interface WarmSpec {
   systemPrompt: string;
   mcpConfigPath: string;
   allowedTools: string[];
+  /** The attachments folder: Claude Code runs there, with its Read tool (see READ_ATTACHMENTS_ARGS). */
+  readDir?: string;
   model?: string;
   /** The Reasoning setting's thinking; absent: DEFAULT_REASONING's. */
   thinking?: boolean;
@@ -291,15 +303,16 @@ export class ClaudeCodeBrain implements Brain {
       systemPrompt: spec.systemPrompt,
       mcpConfigPath: spec.mcpConfigPath,
       allowedTools: spec.allowedTools,
+      ...(spec.readDir ? { read: true } : {}),
       model,
       ...(thinking ? {} : { thinking: false }),
     });
     return { args, model, thinking };
   }
 
-  private spawnClaude(args: string[], mcpConfigPath: string): ChildProcess {
+  private spawnClaude(args: string[], spec: Pick<WarmSpec, "mcpConfigPath" | "readDir">): ChildProcess {
     return spawn(this.opts.claudePath, [...(this.opts.prefixArgs ?? []), ...args], {
-      cwd: dirname(mcpConfigPath),
+      cwd: spec.readDir ?? dirname(spec.mcpConfigPath),
       windowsHide: true,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
@@ -315,7 +328,7 @@ export class ClaudeCodeBrain implements Brain {
    */
   warm(spec: WarmSpec): WarmClaude {
     const { args } = this.plan(spec);
-    return new WarmClaude(args, this.spawnClaude(args, spec.mcpConfigPath));
+    return new WarmClaude(args, this.spawnClaude(args, spec));
   }
 
   run(ctx: BrainContext): Promise<void> {
@@ -336,7 +349,7 @@ export class ClaudeCodeBrain implements Brain {
       if (ctx.signal.aborted) return resolve();
       let child: ChildProcess;
       try {
-        child = warm ?? this.spawnClaude(args, ctx.mcpConfigPath);
+        child = warm ?? this.spawnClaude(args, ctx);
       } catch (e) {
         return reject(e);
       }

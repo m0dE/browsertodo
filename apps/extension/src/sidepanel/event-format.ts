@@ -1,5 +1,5 @@
 /** Pure view models for agent events in Chat and the History tab. */
-import { describeSchedule, localTimeZone, picksText, SCREEN_HELP_TEXT, type AgentEvent, type Chip, type ElementPicks, type SessionInfo, type TaskSource, type TodoChange } from "@browsertodo/shared";
+import { describeSchedule, localTimeZone, picksText, SCREEN_HELP_TEXT, type AgentEvent, type AttachmentRef, type Chip, type ElementPicks, type SessionInfo, type TaskSource, type TodoChange } from "@browsertodo/shared";
 import { clip, isLongSummary, toolArgsSummary } from "../text.js";
 import { speakable } from "../voice/spoken-line.js";
 import { errorHelp, type ErrorHelp } from "./error-help.js";
@@ -20,7 +20,7 @@ export type EventView =
    * spoken. heard: the user's words for a spoken request, word for word, when they read otherwise than the request
    * (Realtime: the text is what the narrator understood and passed on), shown folded under it.
    */
-  | { kind: "user"; text: string; screen?: true; voice?: true; heard?: string[] }
+  | { kind: "user"; text: string; screen?: true; voice?: true; heard?: string[]; attachments?: AttachmentRef[] }
   /** A line hands-free voice said aloud. echo: it repeats the start of the text written above it (shown compact). */
   | { kind: "spoken"; text: string; echo?: true }
   /**
@@ -200,9 +200,11 @@ export function describeEvent(ev: AgentEvent, turn: TurnContext = {}): EventView
         title: `Jev (a faster helper for simple clicks and typing): ${ev.goal}${ev.executed ? "" : " (not confident, left to Claude)"}`,
       };
     }
-    case "user_message":
+    case "user_message": {
       if (isScreenHelp(ev.text)) return { kind: "user", text: ev.text, screen: true };
-      return ev.voice ? { kind: "user", text: ev.text, voice: true, ...wordForWord(ev.text, ev.heard) } : { kind: "user", text: ev.text };
+      const files = ev.attachments?.length ? { attachments: ev.attachments } : {};
+      return ev.voice ? { kind: "user", text: ev.text, voice: true, ...wordForWord(ev.text, ev.heard), ...files } : { kind: "user", text: ev.text, ...files };
+    }
     case "spoken":
       return turn.echo ? { kind: "spoken", text: ev.text, echo: true } : { kind: "spoken", text: ev.text };
     case "heard":
@@ -250,8 +252,10 @@ export interface OpeningView {
   voice?: true;
   /** The user's words for it, word for word, when they read otherwise than the request (see the user view's heard). */
   heard?: string[];
-  /** How many files the first turn came with (their names are not saved with the run). */
+  /** How many files the first turn came with (a TODO task's media: their names are not saved with the run). */
   files?: number;
+  /** The files the first message was sent with (chat attachments). */
+  attachments?: AttachmentRef[];
   /** When the conversation started: "14:30", "yesterday 23:00". */
   when: string;
   /** The same moment (ISO), for the timestamp's tooltip. */
@@ -277,6 +281,7 @@ export function openingTurn(s: SessionInfo, events: readonly AgentEvent[], now =
   }
   const origin = ORIGIN_OF[s.source];
   if (origin) v.origin = origin;
+  if (s.attachments?.length) v.attachments = s.attachments;
   const firstEnd = events.findIndex((e) => e.type === "task_end");
   for (const e of firstEnd < 0 ? events : events.slice(0, firstEnd)) {
     const n = e.type === "status" ? PREPARING_FILES.exec(e.text)?.[1] : undefined;

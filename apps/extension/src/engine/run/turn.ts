@@ -4,9 +4,11 @@
  * brain's events into the session, and the checks on the result (X post
  * verification, failure classification). Next turns: conversation.ts.
  */
-import { automationPromptLine, bareToolName, effectiveLevel, errorMessage, isXStatusUrl, localTimeZone, traceStart, TURN_WALL_MINUTES, type AgentEvent, type AgentTask, type ExtensionSettings, type RunConfig, type SessionInfo, type TaskRunResult, type TraceCategory, type TraceValue, type UserTab } from "@browsertodo/shared";
+import { automationPromptLine, bareToolName, effectiveLevel, errorMessage, isXStatusUrl, localTimeZone, traceStart, TURN_WALL_MINUTES, type AgentEvent, type AgentTask, type AttachmentRef, type ExtensionSettings, type RunConfig, type SessionInfo, type TaskRunResult, type TraceCategory, type TraceValue, type UserTab } from "@browsertodo/shared";
 import type { AgentSlot } from "../../agent-slots.js";
-import { SessionEndedError, type Brain, type BrainRun, type ContinuableBrain, type CoreApi } from "../brains.js";
+import { bytesToBase64 } from "../../base64.js";
+import type { AttachmentStore } from "../attachment-store.js";
+import { SessionEndedError, type Brain, type BrainRun, type ContinuableBrain, type CoreApi, type TurnAttachment } from "../brains.js";
 import type { LocalStore } from "../local-store.js";
 import type { MaterializedMedia, MediaSource } from "../media-files.js";
 import type { SessionStore } from "../sessions.js";
@@ -47,6 +49,8 @@ export interface ActiveSession {
   localTaskId: string | null;
   /** The instructions the agent got this turn (scheduled runs: approvals hold what they do not ask for). */
   instructions?: string;
+  /** Files sent with this turn's message (stored in the conversation's attachments). */
+  attachments?: AttachmentRef[];
   /** When the turn's wall-time ceiling ends it (epoch ms, TURN_WALL_MINUTES): an approval waits at most until shortly before. */
   turnEndsAt?: number;
   /**
@@ -139,6 +143,8 @@ export interface TurnDeps {
   pageOf?(tabId?: number): Promise<TabPage | null>;
   /** The agent's long-term memory: what each turn is given at its start (absent: none). */
   memory?: Pick<MemoryService, "begin">;
+  /** The files sent in chats (absent: none). */
+  attachments?: Pick<AttachmentStore, "list">;
   log(message: string): void;
 }
 
@@ -212,9 +218,10 @@ export class TurnRunner {
     const sources = await mediaSources(job, this.deps.localStore);
     if (sources.length) this.emit(active, { type: "status", text: `Preparing ${sources.length} file(s)` });
     const mediaPaths = await this.materialize(active, sources, cleanups);
+    const attachments = await this.attachmentsFor(active, brain, cleanups);
     if (active.forced) throw new Error(active.forced.reason);
     const memory = await this.timed(active, "memory.wait", () => memoryReady);
-    const run = this.start(active, brain, { task: memory ? { ...task, memory } : task, mediaPaths, config, settings });
+    const run = this.start(active, brain, { task: memory ? { ...task, memory } : task, mediaPaths, attachments, config, settings });
     return this.drive(active, run, settings, cleanups);
   }
 
@@ -278,8 +285,46 @@ export class TurnRunner {
     return media.paths;
   }
 
+  /**
+   * The conversation's files for this turn's brain (fresh: sent with this turn's message). A brain that does not
+   * keep them itself gets each written to Downloads for upload (deleted when the turn ends), and a fresh image's
+   * or PDF's bytes to send to the model.
+   */
+  async attachmentsFor(active: ActiveSession, brain: Brain, cleanups: Cleanup[]): Promise<TurnAttachment[]> {
+    const sessionId = active.session.sessionId;
+    const records = (await this.deps.attachments?.list(sessionId)) ?? [];
+    if (!records.length) return [];
+    const fresh = new Set((active.attachments ?? []).map((r) => r.id));
+    const list: TurnAttachment[] = records.map(({ ref: { thumb: _thumb, ...ref }, blob, text }) => ({
+      ref,
+      fresh: fresh.has(ref.id),
+      blob,
+      ...(text === undefined ? {} : { text }),
+    }));
+    if (brain.keepsAttachments) return list;
+    const files = list.map((a) => ({ kind: "blob" as const, name: a.ref.name, blob: a.blob }));
+    const media = await this.timed(active, "engine.attachments", () => this.deps.media.materialize(sessionId, files), { files: files.length });
+    cleanups.push(() => media.cleanup());
+    return withBytes(
+      list.map((a, i) => ({ ...a, path: media.paths[i]! })),
+      (a) => a.fresh,
+    );
+  }
+
+  /**
+   * A fresh agent session for a conversation that had files (its earlier session is gone): it has not seen the
+   * earlier images and PDFs either, so they go along too (brains that keep files themselves read them anew).
+   */
+  async forFreshSession(brain: Brain, attachments: TurnAttachment[]): Promise<TurnAttachment[]> {
+    return brain.keepsAttachments ? attachments : withBytes(attachments, () => true);
+  }
+
   /** Starts the brain on a task in the session's tab. */
-  start(active: ActiveSession, brain: Brain, opts: { task: AgentTask; mediaPaths: string[]; config: RunConfig; settings: ExtensionSettings }): BrainRun {
+  start(
+    active: ActiveSession,
+    brain: Brain,
+    opts: { task: AgentTask; mediaPaths: string[]; attachments?: TurnAttachment[]; config: RunConfig; settings: ExtensionSettings },
+  ): BrainRun {
     this.mark(active, "brain.start", { brain: brain.kind, fresh: true, chars: opts.task.instructions.length });
     active.instructions = opts.task.instructions;
     const approvals = opts.task.approvals ?? approvalsLine(opts.settings, active.scheduled);
@@ -294,7 +339,7 @@ export class TurnRunner {
   }
 
   /** The next turn in the conversation's own agent session (the brain has continue()). */
-  continue(active: ActiveSession, brain: ContinuableBrain, opts: { text: string; config: RunConfig; settings: ExtensionSettings }): BrainRun {
+  continue(active: ActiveSession, brain: ContinuableBrain, opts: { text: string; attachments?: TurnAttachment[]; config: RunConfig; settings: ExtensionSettings }): BrainRun {
     this.mark(active, "brain.start", { brain: brain.kind, fresh: false, chars: opts.text.length });
     return brain.continue({
       sessionId: active.session.sessionId,
@@ -413,4 +458,13 @@ function withTimeLimits(run: BrainRun, slot: AgentSlot, settings: ExtensionSetti
     return { outcome: "failed", reason: errorMessage(err) };
   });
   return Promise.race([done, safety]);
+}
+
+/** The attachments, with the bytes (base64) of each image or PDF that `send` picks, for the model to see. */
+function withBytes(attachments: TurnAttachment[], send: (a: TurnAttachment) => boolean): Promise<TurnAttachment[]> {
+  return Promise.all(
+    attachments.map(async (a) =>
+      a.base64 === undefined && send(a) && (a.ref.kind === "image" || a.ref.kind === "pdf") ? { ...a, base64: bytesToBase64(new Uint8Array(await a.blob.arrayBuffer())) } : a,
+    ),
+  );
 }

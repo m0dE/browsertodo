@@ -1,4 +1,5 @@
 /** Shared fakes for the Runner tests: a scripted brain, a harness around a Runner, agent slots. */
+import { AttachmentStore } from "../../src/engine/attachment-store.js";
 import { afterEach, beforeEach, expect, vi } from "vitest";
 import { automationPromptLine, DEFAULT_SETTINGS, type AgentEvent, type ClaimResponse, type ExtensionSettings, type ResultInput, type TaskRunResult } from "@browsertodo/shared";
 import type { BrowserCaller } from "@browsertodo/core";
@@ -49,6 +50,8 @@ export class FakeBrain implements Brain {
   readonly open = new Set<string>();
   readonly ended: string[] = [];
   script: Script = () => ({ outcome: "done", summary: "ok" });
+  /** Set: the brain keeps attachments itself (as Claude Code does); the runner writes none to Downloads. */
+  keepsAttachments?: true;
   continueScript: ContinueScript = () => ({ outcome: "done", summary: "continued" });
   /** Result used when a hanging run is aborted. */
   onAbort: (reason: string, outcome: string) => TaskRunResult = (reason) => ({ outcome: "failed", reason: `aborted: ${reason}` });
@@ -121,6 +124,7 @@ export interface Harness {
   brain: FakeBrain;
   store: LocalStore;
   sessions: SessionStore;
+  attachments: AttachmentStore;
   settings: ExtensionSettings;
   notifications: { title: string; message: string }[];
   sleeps: number[];
@@ -178,12 +182,15 @@ export function harness(overrides: Partial<ExtensionSettings> = {}): Harness {
   let n = 0;
   const now = () => new Date(env.clock);
   const store = new LocalStore({ db, now, newId: () => `t${++n}` });
-  const sessions = new SessionStore(db, { now, trace: new TraceStore(db) });
+  let a = 0;
+  const attachments = new AttachmentStore(db, { newId: () => `a${++a}`, now: () => env.clock });
+  const sessions = new SessionStore(db, { now, trace: new TraceStore(db), attachments });
   const brain = new FakeBrain();
   const h = {
     brain,
     store,
     sessions,
+    attachments,
     // Full autonomy: the prompts carry no approvals line unless a test sets a level (see approvals.test.ts).
     settings: { ...DEFAULT_SETTINGS, delayMinSec: 1, delayMaxSec: 2, automationLevel: "full", ...overrides },
     notifications: [],
@@ -221,6 +228,7 @@ export function harness(overrides: Partial<ExtensionSettings> = {}): Harness {
     }),
     localStore: store,
     sessions,
+    attachments,
     media: {
       materialize: async (sessionId, sources) => {
         h.materialized.push({ sessionId, sources });

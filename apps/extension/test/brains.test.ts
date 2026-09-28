@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_SETTINGS, HelperErrorCode, RpcError, type AgentEvent, type HelperNotifications, type TaskRunResult } from "@browsertodo/shared";
+import { ATTACHMENT_CHUNK_BYTES, DEFAULT_SETTINGS, HelperErrorCode, RpcError, type AgentEvent, type HelperNotifications, type TaskRunResult } from "@browsertodo/shared";
 import type { AgentSession, ApiAgentOptions } from "@browsertodo/core";
 import { ApiBrain } from "../src/engine/api-brain.js";
 import { SessionEndedError, type BrainContinueOptions, type BrainStartOptions } from "../src/engine/brains.js";
@@ -342,5 +342,55 @@ describe("ApiBrain", () => {
     };
     const run = new ApiBrain({ core, browser: { call: vi.fn() as never } }).start(opts([]));
     expect(await run.done).toEqual({ outcome: "failed", reason: "Could not start the Claude API agent: not implemented" });
+  });
+});
+
+describe("ClaudeCodeBrain: attachments", () => {
+  const big = { ref: { id: "a1", name: "cat.png", type: "image/png", size: 1_200_000, kind: "image" as const }, fresh: true, blob: new Blob([new Uint8Array(1_200_000).fill(7)]) };
+  const small = { ref: { id: "a2", name: "n.txt", type: "text/plain", size: 2, kind: "text" as const }, fresh: true, blob: new Blob(["hi"]), text: "hi" };
+
+  it("sends each file to the helper in pieces of ATTACHMENT_CHUNK_BYTES, then starts the task naming them (bytes and paths stay out)", async () => {
+    const f = fakeHelper();
+    const run = new ClaudeCodeBrain(f.helper).start(opts([], { attachments: [big, small] }));
+    await vi.waitFor(() => expect(f.calls.some((c) => c.method === "helper.runTask")).toBe(true));
+    const pieces = f.calls.filter((c) => c.method === "helper.putAttachment").map((c) => [c.params.id, c.params.offset, atob(c.params.dataBase64).length]);
+    expect(pieces).toEqual([
+      ["a1", 0, ATTACHMENT_CHUNK_BYTES],
+      ["a1", ATTACHMENT_CHUNK_BYTES, ATTACHMENT_CHUNK_BYTES],
+      ["a1", 2 * ATTACHMENT_CHUNK_BYTES, 1_200_000 - 2 * ATTACHMENT_CHUNK_BYTES],
+      ["a2", 0, 2],
+    ]);
+    expect(f.calls.at(-1)!.params.attachments).toEqual([
+      { ref: big.ref, fresh: true },
+      { ref: small.ref, fresh: true, text: "hi" },
+    ]);
+    f.finish({ outcome: "done" });
+    await run.done;
+  });
+
+  it("a follow-up sends only its own files; the earlier ones are named again", async () => {
+    const f = fakeHelper();
+    const brain = new ClaudeCodeBrain(f.helper);
+    f.hello(["s1"]);
+    const run = brain.continue({ ...opts([]), text: "more", attachments: [{ ...big, fresh: false }, small] } as BrainContinueOptions);
+    await vi.waitFor(() => expect(f.calls.some((c) => c.method === "helper.continueSession")).toBe(true));
+    expect(f.calls.filter((c) => c.method === "helper.putAttachment").map((c) => c.params.id)).toEqual(["a2"]);
+    expect(f.calls.at(-1)!.params.attachments.map((a: { ref: { id: string }; fresh: boolean }) => [a.ref.id, a.fresh])).toEqual([
+      ["a1", false],
+      ["a2", true],
+    ]);
+    f.finish({ outcome: "done" });
+    await run.done;
+  });
+});
+
+describe("ApiBrain: attachments", () => {
+  it("gives the agent loop the files without their Blob: a fresh image's bytes as base64, each with its upload path", () => {
+    let got: ApiAgentOptions | null = null;
+    const agent: AgentSession = { sessionId: "s1", sendUserMessage: vi.fn(), abort: vi.fn(), done: new Promise(() => {}) };
+    const core = { createJev: vi.fn(), startApiAgent: vi.fn((o: ApiAgentOptions) => ((got = o), agent)) };
+    const ref = { id: "a1", name: "cat.png", type: "image/png", size: 3, kind: "image" as const };
+    new ApiBrain({ core, browser: { call: vi.fn() as never } }).start(opts([], { attachments: [{ ref, fresh: true, blob: new Blob(["png"]), base64: "cG5n", path: "C:\dl\cat.png" }] }));
+    expect(got!.attachments).toEqual([{ ref, fresh: true, base64: "cG5n", path: "C:\dl\cat.png" }]);
   });
 });

@@ -12,7 +12,17 @@
  */
 import type * as core from "@browsertodo/core";
 import type { BrowserCaller } from "@browsertodo/core";
-import type { AgentEvent, AgentTask, BrainKind, ExtensionSettings, RunConfig, TaskRunResult } from "@browsertodo/shared";
+import type { AgentAttachment, AgentEvent, AgentTask, BrainKind, ExtensionSettings, RunConfig, TaskRunResult } from "@browsertodo/shared";
+
+/**
+ * A file the user attached to the conversation, for a turn: what the model is told (AgentAttachment), its bytes,
+ * and for brains that do not keep files themselves, the downloaded copy upload takes (path) and a fresh image's or
+ * PDF's bytes as base64.
+ */
+export interface TurnAttachment extends AgentAttachment {
+  blob: Blob;
+  base64?: string;
+}
 
 /** The core functions the engine uses; injected so tests can fake them. */
 export type CoreApi = Pick<typeof core, "startApiAgent" | "createJev" | "verifyXPost" | "classifyFailure">;
@@ -21,6 +31,8 @@ export interface BrainStartOptions {
   sessionId: string;
   task: AgentTask;
   mediaPaths: string[];
+  /** Files the user attached to the conversation (fresh: with this turn's message). */
+  attachments?: TurnAttachment[];
   config: RunConfig;
   settings: ExtensionSettings;
   /**
@@ -36,6 +48,8 @@ export interface BrainContinueOptions {
   sessionId: string;
   /** The user's message. */
   text: string;
+  /** Files the user attached to the conversation (fresh: with this message; earlier ones to list again). */
+  attachments?: TurnAttachment[];
   config: RunConfig;
   settings: ExtensionSettings;
   /** The turn's tab (it may differ from the earlier turns' when that slot was busy). */
@@ -64,6 +78,11 @@ export class SessionEndedError extends Error {
 
 export interface Brain {
   readonly kind: BrainKind;
+  /**
+   * The brain keeps the conversation's attachments itself (Claude Code: in its session's folder, where it can
+   * Read and upload them). Otherwise the runner writes them to Downloads for upload, each turn.
+   */
+  readonly keepsAttachments?: true;
   start(opts: BrainStartOptions): BrainRun;
   /** The next turn in the conversation's own agent session (see SessionEndedError). */
   continue?(opts: BrainContinueOptions): BrainRun;

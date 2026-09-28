@@ -8,6 +8,7 @@ import { HelperErrorCode, TODO_TOOLS, type AgentEvent, type AgentTask, type RunC
 import { agentError, classifyFailure, ENDED_WITHOUT_RESULT, EXITED_WITHOUT_RESULT, TASK_FAIL_RECHECK, type JevLike } from "@browsertodo/core";
 import { TaskRunner, type RunTaskParams, type TaskRunnerDeps } from "../src/task-runner.js";
 import { ToolRouter } from "../src/tool-router.js";
+import { AttachmentInbox } from "../src/session/attachments.js";
 import { LiveLog } from "../src/logger.js";
 import { INTERACTIVE_TASK_ID } from "../src/mcp-tools.js";
 import { ScriptedBrain } from "../src/brains/scripted.js";
@@ -50,6 +51,7 @@ function setup(x: FakeX, over: Partial<TaskRunnerDeps> & { brain?: (router: Tool
     notify: (sessionId, event) => events.push({ sessionId, event }),
     sleep: noSleep,
     ...over,
+    inbox: over.inbox ?? new AttachmentInbox(join(dir, "incoming")),
   });
   return { runner, router, events };
 }
@@ -829,5 +831,96 @@ describe("TaskRunner: the TODO tools", () => {
     expect(result).toMatchObject({ outcome: "done", summary: "done" });
     for (const tool of TODO_TOOLS) expect(seen!.allowedTools).toContain(`mcp__browsertodo__${tool}`);
     expect(seen!.systemPrompt).toMatch(/Scheduling: when the user asks/);
+  });
+});
+
+describe("TaskRunner: attachments", () => {
+  const photo = { ref: { id: "a1", name: "cat.png", type: "image/png", size: 4, kind: "image" as const, width: 2, height: 2 }, fresh: true };
+  const notes = { ref: { id: "a2", name: "notes.txt", type: "text/plain", size: 5, kind: "text" as const }, fresh: true, text: "hello" };
+
+  /** A kept-open brain that records the prompt and each follow-up, and answers each with task_complete. */
+  function recordingBrain(router: ToolRouter, seen: { ctx?: BrainContext; messages: string[]; results?: string[] }, followUp?: (taskId: string) => Promise<string>): Brain {
+    return {
+      persistent: true,
+      run: async (ctx) => {
+        seen.ctx = ctx;
+        void router.call(ctx.taskId, "task_complete", { summary: "first" });
+        ctx.input.onMessage((text) => {
+          seen.messages.push(text);
+          void (async () => {
+            if (followUp) (seen.results ??= []).push(await followUp(ctx.taskId));
+            await router.call(ctx.taskId, "task_complete", { summary: "next" });
+          })();
+        });
+        await new Promise<void>((resolve) => ctx.input.onClose(resolve));
+      },
+    };
+  }
+
+  it("moves sent files into the run folder's attachments folder, where Claude Code runs and may Read them", async () => {
+    const seen: { ctx?: BrainContext; messages: string[] } = { messages: [] };
+    const inbox = new AttachmentInbox(join(dir, "incoming"));
+    const { runner } = setup(new FakeX(), { inbox, brain: (router) => recordingBrain(router, seen) });
+    // Two pieces, in order.
+    expect(inbox.put({ sessionId: "S1", id: "a1", offset: 0, dataBase64: Buffer.from("PN").toString("base64") })).toEqual({ size: 2 });
+    expect(inbox.put({ sessionId: "S1", id: "a1", offset: 2, dataBase64: Buffer.from("G!").toString("base64") })).toEqual({ size: 4 });
+    inbox.put({ sessionId: "S1", id: "a2", offset: 0, dataBase64: Buffer.from("hello").toString("base64") });
+    await runner.run(params({ instructions: "What is in the picture?" }, { attachments: [photo, notes] }));
+    const ctx = seen.ctx!;
+    const readDir = join(join(ctx.mcpConfigPath, ".."), "attachments");
+    expect(ctx.readDir).toBe(readDir);
+    expect(readFileSync(join(readDir, "cat.png"), "utf8")).toBe("PNG!");
+    expect(ctx.prompt).toContain(`1. cat.png (image, 2x2): to look at it, Read ${join(readDir, "cat.png")}`);
+    expect(ctx.prompt).toContain("2. notes.txt (text file, 5 B), its text:\n<<<\nhello\n>>>");
+    expect(ctx.systemPrompt).toMatch(/no file access except Read on the files the user attached/);
+    // The scripted brain uploads what the task has: its files are among them.
+    expect(ctx.task!.mediaPaths).toEqual([join(readDir, "cat.png"), join(readDir, "notes.txt")]);
+    // Nothing is left waiting.
+    expect(existsSync(join(dir, "incoming", "S1", "a1"))).toBe(false);
+    runner.endSession("S1");
+  });
+
+  it("a follow-up's files are placed beside the earlier ones; upload may attach them, and the message lists them", async () => {
+    const seen: { ctx?: BrainContext; messages: string[]; results?: string[] } = { messages: [] };
+    const inbox = new AttachmentInbox(join(dir, "incoming"));
+    const x = new FakeX({ url: "https://x.com/compose/post" });
+    // The follow-up's turn uploads the new file.
+    const upload = async (taskId: string) => {
+      await router.call(taskId, "read_page", {});
+      const r = await router.call(taskId, "upload", { index: 3, paths: [join(seen.ctx!.readDir!, "cat-2.png")] });
+      return r.text ?? "";
+    };
+    const { runner, router } = setup(x, { inbox, brain: (r) => recordingBrain(r, seen, upload) });
+    inbox.put({ sessionId: "S1", id: "a1", offset: 0, dataBase64: Buffer.from("one").toString("base64") });
+    await runner.run(params({}, { attachments: [photo] }));
+    inbox.put({ sessionId: "S1", id: "a3", offset: 0, dataBase64: Buffer.from("two").toString("base64") });
+    const second = { ref: { ...photo.ref, id: "a3" }, fresh: true };
+    await runner.continueSession({ sessionId: "S1", text: "and this one", config: CONFIG, attachments: [{ ...photo, fresh: false }, second] });
+    const readDir = seen.ctx!.readDir!;
+    // Same name: made unique.
+    expect(readFileSync(join(readDir, "cat-2.png"), "utf8")).toBe("two");
+    expect(seen.messages[0]).toMatch(/and this one\n\nFiles the user attached to this message \(1\):\n1\. cat\.png \(image, 2x2\): to look at it, Read .*cat-2\.png/);
+    expect(seen.messages[0]).toMatch(/Files the user attached earlier in this conversation \(1\):\n2\. cat\.png .*Read .*cat\.png/);
+    // upload took the new file (the session's tools allow it from that turn on).
+    expect(seen.results).toEqual(["Attached 1 file(s) to [3]."]);
+    expect(x.files).toEqual([join(readDir, "cat-2.png")]);
+    runner.endSession("S1");
+  });
+
+  it("refuses pieces out of order, too large, or with ids that are not plain names", () => {
+    const inbox = new AttachmentInbox(join(dir, "incoming"));
+    expect(() => inbox.put({ sessionId: "S1", id: "a1", offset: 5, dataBase64: "AAAA" })).toThrow(/expected the piece at 0, got 5/);
+    expect(() => inbox.put({ sessionId: "S1", id: "../evil", offset: 0, dataBase64: "AAAA" })).toThrow(/invalid attachment id/);
+    expect(() => inbox.put({ sessionId: "..", id: "a1", offset: 0, dataBase64: "AAAA" })).toThrow(/invalid session id/);
+    const big = Buffer.alloc(600 * 1024).toString("base64");
+    expect(() => inbox.put({ sessionId: "S1", id: "a1", offset: 0, dataBase64: big })).toThrow(/a piece can be at most/);
+  });
+
+  it("an attachment that never arrived is listed without a path (the model is told it cannot open it)", async () => {
+    const seen: { ctx?: BrainContext; messages: string[] } = { messages: [] };
+    const { runner } = setup(new FakeX(), { brain: (router) => recordingBrain(router, seen) });
+    await runner.run(params({}, { attachments: [photo] }));
+    expect(seen.ctx!.prompt).toContain("1. cat.png (image, 2x2): you cannot open this kind of file; you can upload it.");
+    runner.endSession("S1");
   });
 });

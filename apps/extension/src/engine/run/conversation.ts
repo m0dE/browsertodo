@@ -76,6 +76,7 @@ export async function runNextTurn(
     await turns.follow(active, tab, picked, restricted, restricted && asksAboutThePage(job.text, !!job.screen));
     if (page) userTab = userTabOf(page, picked);
   }
+  const attachments = await turns.attachmentsFor(active, brain, cleanups);
   if (active.forced) throw new Error(active.forced.reason);
   // What the agent gets: what the user's tab shows, then the message with its context (for an empty one: look at the page again).
   const message = { text: withContext(job.text, job.context), ...(job.screen ? { screenHelp: true } : {}) };
@@ -96,7 +97,7 @@ export async function runNextTurn(
   if (sameSession && isContinuable(brain)) {
     turns.emit(active, { type: "status", text: SAME_SESSION[brain.kind] ?? "Continuing the same agent session" });
     try {
-      const run = turns.continue(active, brain, { text, config: runConfig(settings, false), settings });
+      const run = turns.continue(active, brain, { text, attachments, config: runConfig(settings, false), settings });
       return await turns.drive(active, run, settings, cleanups, true);
     } catch (err) {
       if (!(err instanceof SessionEndedError)) throw err;
@@ -113,6 +114,7 @@ export async function runNextTurn(
   const fresh = sameSession ? await turns.memoryFor(active, memoryRun) : await turns.timed(active, "memory.wait", () => memoryReady);
   const task: AgentTask = { id: job.task?.id ?? sessionId, instructions, account: job.first.account, ...(userTab ? { userTab } : {}), ...(fresh ? { memory: fresh } : {}) };
   // After a stop, the agent first checks whether the work was already done.
-  const run = turns.start(active, brain, { task, mediaPaths, config: runConfig(settings, from.outcome !== "done"), settings });
+  const seen = await turns.forFreshSession(brain, attachments);
+  const run = turns.start(active, brain, { task, mediaPaths, attachments: seen, config: runConfig(settings, from.outcome !== "done"), settings });
   return turns.drive(active, run, settings, cleanups);
 }

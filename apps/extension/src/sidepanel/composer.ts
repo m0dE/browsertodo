@@ -10,14 +10,21 @@
  * needed" (SCREEN_HELP_TEXT, see emptySend); under TODO an empty box does
  * nothing. After a turn, Chat offers the agent's follow-up suggestion faded
  * in the box (see suggestion.ts): Tab takes it, it is never sent by itself.
+ *
+ * Files go with a message too (attachments/): pasted into the box, dropped
+ * anywhere on the panel, or picked with the paperclip; they show as chips
+ * above the text and go with the next message that starts a turn (a new chat
+ * or the next turn; a running turn refuses them, so they wait).
  */
-import { errorMessage, traceStart, type SessionInfo } from "@browsertodo/shared";
+import { errorMessage, FILES_WHILE_RUNNING, traceStart, type SessionInfo } from "@browsertodo/shared";
 import type { PanelTrace } from "../trace/panel-trace.js";
-import { uiRequest, type UiRequest, type UiState } from "../ui-protocol.js";
+import { uiRequest, type UiAttachmentUpload, type UiRequest, type UiState } from "../ui-protocol.js";
 import { $, busy } from "../ui/dom.js";
 import { errorHelp } from "./error-help.js";
 import { renderErrorHelp } from "./error-view.js";
-import { filePicker, filesToUploads } from "./files.js";
+import { prepareAttachment } from "./attachments/prepare.js";
+import { AttachmentTray, type AttachmentBatch } from "./attachments/tray.js";
+import { renderTrayChips } from "./attachments/view.js";
 import { initModelPicker } from "./model-menu.js";
 import { initNotices, type Notices } from "./notices.js";
 import { FollowUpSuggestion, suggestionDescription, type SuggestionOffer } from "./suggestion.js";
@@ -98,10 +105,21 @@ export interface ComposerView {
   readonly notices: Notices;
   /** Memory for the chat shown (the menu's switch); a new chat started elsewhere (voice) carries its choice too. */
   readonly memory: ChatMemory;
+  /** The files waiting in the box: hands-free voice sends them with its next request that starts a turn. */
+  readonly attachments: ComposerAttachments;
+}
+
+/** The box's files, for a request sent from elsewhere (hands-free voice). */
+export interface ComposerAttachments {
+  readonly count: number;
+  /** The files, once each is prepared; sent() once they went out. */
+  batch(): Promise<AttachmentBatch>;
 }
 
 /** The composer's own notices (progress, hints, failures of what it sent) go under this key: each replaces the last. */
 const NOTICE_KEY = "composer";
+/** Files that could not be added say so under this key. */
+const FILES_NOTICE = "files";
 
 const NEW_PLACEHOLDER = "Do this now, e.g. “Post ‘good morning’ on X”";
 const CHAT_PLACEHOLDER = "Message BrowserTODO…";
@@ -149,7 +167,59 @@ export function initComposer(opts: {
   let placeholder = text.placeholder;
   /** Hands-free voice is on for this tab (setDictating). */
   let dictating: DictationLook = "off";
-  const files = filePicker(fileInput, filesList, () => queueMicrotask(() => render()));
+  const tray = new AttachmentTray({
+    prepare: (file, held) => prepareAttachment(file, held),
+    onChange: () => {
+      renderTrayChips(filesList, tray.items(), (id) => tray.remove(id), () => text.focus());
+      queueMicrotask(() => render());
+    },
+    onProblem: (message) => notices.show({ key: FILES_NOTICE, level: "error", text: message }),
+  });
+  const addFiles = (list: FileList | readonly File[] | null | undefined) => {
+    const picked = Array.from(list ?? []);
+    if (!picked.length) return;
+    notices.clear(FILES_NOTICE);
+    tray.add(picked);
+  };
+  fileInput.addEventListener("change", () => {
+    addFiles(fileInput.files);
+    fileInput.value = "";
+  });
+  // Pasted files (a screenshot, files copied in the file manager). A paste that carries plain text is text (Word
+  // puts a picture of the copied text on the clipboard too).
+  text.addEventListener("paste", (e) => {
+    const data = e.clipboardData;
+    if (!data?.files.length || data.types.includes("text/plain")) return;
+    e.preventDefault();
+    addFiles(data.files);
+  });
+  // Files dropped anywhere on the panel.
+  const carriesFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes("Files");
+  let dragDepth = 0;
+  const dropping = (on: boolean) => document.body.classList.toggle("dropping-files", on);
+  document.addEventListener("dragenter", (e) => {
+    if (!carriesFiles(e)) return;
+    dragDepth++;
+    dropping(true);
+  });
+  document.addEventListener("dragover", (e) => {
+    if (!carriesFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer!.dropEffect = "copy";
+  });
+  document.addEventListener("dragleave", (e) => {
+    if (!carriesFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) dropping(false);
+  });
+  document.addEventListener("drop", (e) => {
+    if (!carriesFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    dropping(false);
+    addFiles(e.dataTransfer!.files);
+    text.focus();
+  });
   const memoryOff = $<HTMLButtonElement>("now-memory-off");
   const memory = new ChatMemory({
     tabId: () => opts.tabId?.() ?? null,
@@ -264,12 +334,25 @@ export function initComposer(opts: {
     };
   };
 
+  /**
+   * The box's files for a message now (after "Preparing files…" while some are not ready): `fields` for the
+   * request, and sent() once it went out.
+   */
+  const withFiles = async (): Promise<{ fields: { attachments?: UiAttachmentUpload[] }; sent(): void }> => {
+    if (!tray.count) return { fields: {}, sent: () => {} };
+    if (tray.busy) progress("Preparing files…");
+    const batch = await tray.batch();
+    return { fields: batch.uploads.length ? { attachments: batch.uploads } : {}, sent: batch.sent };
+  };
+
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     const value = text.value.trim();
     if (!value) return sendEmpty();
     const m = mode();
     const t = target();
+    // The running turn's agent cannot be given files: they wait in the box (the text stays too).
+    if (m === "running" && tray.count) return hint(FILES_WHILE_RUNNING);
     dismissSuggestion();
     const sending = traced(value.length);
     void busy(
@@ -279,10 +362,12 @@ export function initComposer(opts: {
           clearInput();
           if (m === "conversation") progress("Sending…");
           try {
-            const r = await uiRequest({ type: "run.message", sessionId: t.sessionId, text: value, ...tab(), ...sending.cid });
+            const files = await withFiles();
+            const r = await uiRequest({ type: "run.message", sessionId: t.sessionId, text: value, ...tab(), ...sending.cid, ...files.fields });
+            files.sent();
             sending.sent(r.sessionId, r.mode);
           } catch (err) {
-            // Not sent: the text goes back into the box.
+            // Not sent: the text goes back into the box (the files are still there).
             text.value = value;
             fit();
             throw err;
@@ -291,13 +376,13 @@ export function initComposer(opts: {
           if (m === "conversation") opts.onStarted(t.sessionId);
           return;
         }
+        const files = await withFiles();
         progress("Starting…");
-        const media = await filesToUploads(files.files());
         // No account field here: the agent picks up accounts named in the text ("post this from @beta").
-        const { sessionId } = await uiRequest({ type: "run.adhoc", instructions: value, ...(media.length ? { media } : {}), ...tab(), ...sending.cid, ...memory.forNewChat() });
+        const { sessionId } = await uiRequest({ type: "run.adhoc", instructions: value, ...files.fields, ...tab(), ...sending.cid, ...memory.forNewChat() });
+        files.sent();
         sending.sent(sessionId, "new");
         clearInput();
-        files.clear();
         settled();
         opts.onStarted(sessionId);
       },
@@ -308,7 +393,7 @@ export function initComposer(opts: {
   /** Empty box: in Chat, look at the page (see emptySend). */
   function sendEmpty(): void {
     const t = target();
-    const next = emptySend({ panelTab, mode: mode(), sessionId: t?.sessionId ?? null, hasFiles: files.files().length > 0, tabId: opts.tabId?.() ?? null });
+    const next = emptySend({ panelTab, mode: mode(), sessionId: t?.sessionId ?? null, hasFiles: tray.count > 0, tabId: opts.tabId?.() ?? null });
     if ("hint" in next) return hint(next.hint);
     dismissSuggestion();
     void busy(
@@ -337,14 +422,12 @@ export function initComposer(opts: {
     suggestion.setOffer(inChat && m === "conversation" ? offerOf(target()) : null);
     fit();
     // In Chat an empty box can be sent: it looks at the page.
-    const screenOk = inChat && m !== "running" && files.files().length === 0;
+    const screenOk = inChat && m !== "running" && tray.count === 0;
     form.classList.toggle("screen-ok", screenOk);
     submit.title = screenOk ? SCREEN_SEND_TITLE : "Send";
     text.setAttribute("aria-label", m === "new" ? "Task to do now" : m === "running" ? "Message to the agent" : "Next message in this conversation");
     stop.hidden = m !== "running";
-    // Files go with a new task; a conversation keeps the files it started with.
-    attach.hidden = m !== "new";
-    filesList.hidden = m !== "new";
+    filesList.hidden = tray.count === 0;
     form.classList.toggle("running", m === "running");
     model.setRunning(m === "running");
   }
@@ -386,9 +469,11 @@ export function initComposer(opts: {
     async continueNow(sessionId) {
       const note = text.value.trim();
       dismissSuggestion();
-      progress("Continuing…");
       try {
-        await uiRequest({ type: "run.continue", sessionId, ...(note ? { text: note } : {}), ...tab() });
+        const files = await withFiles();
+        progress("Continuing…");
+        await uiRequest({ type: "run.continue", sessionId, ...(note ? { text: note } : {}), ...tab(), ...files.fields });
+        files.sent();
         if (note) clearInput();
         settled();
         opts.onStarted(sessionId);
@@ -410,6 +495,12 @@ export function initComposer(opts: {
     },
     notices,
     memory,
+    attachments: {
+      get count() {
+        return tray.count;
+      },
+      batch: () => tray.batch(),
+    },
   };
 
   render();

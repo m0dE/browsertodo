@@ -4,7 +4,8 @@
  * (checks, recording, cleanup) and give back what it held. A new session runs
  * its first turn (runFirst); an ended conversation its next turn (runTurn).
  */
-import { errorMessage, fallbackChatTitle, isXTask, MAX_INSTRUCTIONS_CHARS, type ExtensionSettings, type SessionInfo, type TaskOutcome, type TaskRunResult } from "@browsertodo/shared";
+import { errorMessage, fallbackChatTitle, isXTask, MAX_INSTRUCTIONS_CHARS, type AttachmentRef, type ExtensionSettings, type SessionInfo, type TaskOutcome, type TaskRunResult } from "@browsertodo/shared";
+import type { AttachmentStore, IncomingAttachment } from "../attachment-store.js";
 import { lastTurnEvents } from "../../continue.js";
 import type { BrainStatus } from "../../ui-protocol.js";
 import type { Brain } from "../brains.js";
@@ -55,6 +56,8 @@ export interface LifecycleDeps {
   episodes?: Pick<EpisodeWriter, "ended">;
   /** Chat titles: each turn's end has the model name the chat (absent: it keeps its cleaned request). */
   titles?: Pick<ChatTitler, "ended">;
+  /** Where the files sent in chats are kept (absent: a message with files is refused). */
+  attachments?: Pick<AttachmentStore, "add">;
 }
 
 /** A TODO run's title: its task's instructions on one line, at most this many characters (a turn after it reads them there). */
@@ -112,7 +115,10 @@ export class Lifecycle {
           // The agent gets the instructions with their context; the title and first message are the user's words.
           if (job.input.context) opened = { ...opened, task: { ...task, instructions: withContext(task.instructions, job.input.context) } };
         }
+        const attachments = job.source === "adhoc" ? await this.store(sessionId, job.input.attachments) : [];
+        if (attachments.length) info.attachments = attachments;
         const active = activate(info, isXTask(task), job.source === "local" ? job.task.id : null);
+        if (attachments.length) active.attachments = attachments;
         await this.deps.sessions.create(info);
         // A one-off run belongs to the tab it was started from, from the start (the side panel shows it there).
         if (job.source === "adhoc" && job.input.tabId !== undefined) await this.deps.turns.bindChat(job.input.tabId, sessionId);
@@ -147,18 +153,33 @@ export class Lifecycle {
         if (model) patch.model = model;
         const info = (await this.deps.sessions.reopen(sessionId, patch)) ?? { ...from, ...patch };
         const x = isXTask(job.first) || isXTask({ instructions: text });
+        const attachments = await this.store(sessionId, job.attachments);
         const active = activate(info, x, job.task?.id ?? null);
+        if (attachments.length) active.attachments = attachments;
         // The last turn stopped midway: what it typed may still be in the page, and may be what gets posted.
         if (from.outcome !== "done") for (const e of lastTurnEvents(events)) active.typed.push(...typedTextsOf(e));
         if (job.task) await this.deps.localStore.markStarted(job.task.id);
         // Sent from a tab: the conversation goes on there (bound before the turn looks up its tab).
         if (job.tabId !== undefined) await this.deps.turns.bindChat(job.tabId, sessionId);
         // The user's message opens the turn in the thread.
-        this.deps.turns.emit(active, { type: "user_message", text, ...(job.voice ? { voice: true as const } : {}), ...(job.heard ? { heard: job.heard } : {}) });
+        this.deps.turns.emit(active, {
+          type: "user_message",
+          text,
+          ...(job.voice ? { voice: true as const } : {}),
+          ...(job.heard ? { heard: job.heard } : {}),
+          ...(attachments.length ? { attachments } : {}),
+        });
         return active;
       },
       drive: (active, cleanups) => runNextTurn(this.deps.turns, this.deps.localStore, active, job, brain, events, settings, cleanups),
     });
+  }
+
+  /** Keeps a message's files in its conversation; returns their references (none: none sent). */
+  private async store(sessionId: string, files: readonly IncomingAttachment[] | undefined): Promise<AttachmentRef[]> {
+    if (!files?.length) return [];
+    if (!this.deps.attachments) throw new Error("Files cannot be sent here");
+    return this.deps.attachments.add(sessionId, files);
   }
 
   /** open, then (once the session exists) the X turn, the brain's run and finish(). */

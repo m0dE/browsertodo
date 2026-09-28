@@ -20,6 +20,7 @@ import type {
   ToolResult,
   TraceDraft,
 } from "@browsertodo/shared";
+import type { ApiAttachment } from "./attachments.js";
 import type { Interjections } from "./interjections.js";
 import type { SecretRedactor } from "./redact.js";
 
@@ -115,6 +116,8 @@ export interface ToolExecutor {
   call(name: ToolName, args: unknown): Promise<ToolResult>;
   /** Element picks (act clicks and typing) by Jev and by Claude since the last take; resets the counts. */
   takePicks(): ElementPicks;
+  /** Lets upload attach these files too (a later turn's attachments). */
+  allowMedia(paths: readonly string[]): void;
 }
 
 /** A running agent. */
@@ -131,7 +134,7 @@ export interface AgentSession {
    * new turn (same sessionId). config: that turn's limits (default: the
    * first turn's). Throws "busy" while a turn runs.
    */
-  continueWith?(text: string, opts?: { config?: RunConfig }): AgentSession;
+  continueWith?(text: string, opts?: { config?: RunConfig; attachments?: ApiAttachment[] }): AgentSession;
 }
 
 export interface ApiAgentOptions {
@@ -141,6 +144,8 @@ export interface ApiAgentOptions {
   model: string;
   task: AgentTask;
   mediaPaths: string[];
+  /** Files the user attached (see core attachments.ts): fresh images and PDFs go as blocks before the task. */
+  attachments?: ApiAttachment[];
   config: RunConfig;
   browser: BrowserCaller;
   /** null = Jev off: act steps then need an element index. */

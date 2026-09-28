@@ -7,7 +7,7 @@
  * with secrets redacted and page content cut short. Pure.
  */
 import { mapStrings, REDACTED } from "@browsertodo/core";
-import { APPROVAL_OUTCOME_TEXT, describeSchedule, localTimeZone, redactSecrets, SECRET_SETTING_KEYS, type AgentEvent, type ApprovalEndedBy, type SessionInfo, type StampedAgentEvent, type TraceEvent, type TraceValue } from "@browsertodo/shared";
+import { APPROVAL_OUTCOME_TEXT, describeSchedule, localTimeZone, redactSecrets, SECRET_SETTING_KEYS, type AgentEvent, type ApprovalEndedBy, type AttachmentRef, formatBytes, type SessionInfo, type StampedAgentEvent, type TraceEvent, type TraceValue } from "@browsertodo/shared";
 import { TRACE_CAPS, type TokenTotals, type TraceBook, type TurnTotals } from "./trace-book.js";
 
 /**
@@ -281,7 +281,9 @@ function eventRow(e: StampedAgentEvent, t: number, span: TraceEvent | undefined,
         ...base,
         label: e.voice ? "You (voice)" : "You",
         text: clip(e.text, TEXT_LIMITS.message),
-        ...(e.heard?.length ? { detail: clip(`word for word: ${e.heard.join(" · ")}`, 200) } : {}),
+        ...(e.heard?.length || e.attachments?.length
+          ? { detail: clip(join(e.heard?.length && `word for word: ${e.heard.join(" · ")}`, e.attachments?.length && attachmentsText(e.attachments)), 300) }
+          : {}),
       };
     case "assistant_text":
       return { ...base, label: "Claude", text: clip(e.text, TEXT_LIMITS.answer) };
@@ -441,6 +443,9 @@ function traceRow(ev: TraceEvent): Omit<TraceRow, "rel"> {
       break;
     case "engine.media":
       row.label = `Files written (${s(d.files)})`;
+      break;
+    case "engine.attachments":
+      row.label = `Attachments written for upload (${s(d.files)})`;
       break;
     case "engine.x_wait":
       row.label = "Waited for another X task";
@@ -913,6 +918,8 @@ export function exportJson(report: TraceReport, session: SessionInfo, env: Repor
       endedAt: session.endedAt ?? null,
       outcome: session.outcome ?? null,
       voice: session.voice === true,
+      // What the first message was sent with: metadata only (never the files or their thumbnails).
+      ...(session.attachments?.length ? { attachments: session.attachments.map(attachmentMeta) } : {}),
     },
     summary: report.summary,
     turns: report.turns.map((t) => ({
@@ -956,4 +963,14 @@ export function redactDeep<T>(value: T): T {
     return mapStrings(v, redactSecrets);
   };
   return walk(value) as T;
+}
+
+/** An attachment as the trace keeps it: what it was, not what it holds. */
+function attachmentMeta(r: AttachmentRef): Record<string, string | number> {
+  return { name: r.name, kind: r.kind, type: r.type, size: r.size, ...(r.width && r.height ? { width: r.width, height: r.height } : {}) };
+}
+
+/** "files: cat.png (image, 1.2 MB) · notes.docx (docx, 12 KB)". */
+function attachmentsText(refs: readonly AttachmentRef[]): string {
+  return `files: ${refs.map((r) => `${r.name} (${r.kind}, ${formatBytes(r.size)})`).join(" · ")}`;
 }

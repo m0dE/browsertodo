@@ -17,11 +17,26 @@ export function installChromeStub(data) {
   data.state = withRunning(data.state);
   data.vault ??= { exists: true, locked: false, sites: ["example.com", "news.ycombinator.com"] };
   const pushListeners = [];
+  /** A message's files as the background keeps them (attachment-store.ts): references with the panel's thumbnails. */
+  let attachmentIds = 0;
+  const attachmentRefs = (uploads = []) =>
+    uploads.map((u) => ({
+      id: `a${++attachmentIds}`,
+      name: u.name,
+      type: u.type,
+      size: Math.floor((u.dataBase64.length * 3) / 4),
+      kind: u.type.startsWith("image/") ? "image" : u.type === "application/pdf" ? "pdf" : /\.docx$/i.test(u.name) ? "docx" : u.type.startsWith("text/") ? "text" : "file",
+      ...(u.width ? { width: u.width, height: u.height } : {}),
+      ...(u.thumb ? { thumb: u.thumb } : {}),
+      ...(u.note ? { note: u.note } : {}),
+    }));
+  window.__attachmentRefs = attachmentRefs;
   /** A new one-off chat "s-new" (the runner keeps the full message; the title is it on one line, clipped), bound to its tab. */
   const newChat = (instructions, req) => {
     const line = instructions.replace(/\s+/g, " ").trim();
     const title = line.length > 80 ? `${line.slice(0, 79)}…` : line;
-    const s = { sessionId: "s-new", source: "adhoc", title, instructions, brain: "claude-api", jev: true, model: "claude-sonnet-5", startedAt: new Date().toISOString(), ...(req.voice ? { voice: true } : {}), ...(req.heard?.length ? { heard: req.heard } : {}) };
+    const files = attachmentRefs(req.attachments);
+    const s = { sessionId: "s-new", source: "adhoc", title, instructions, brain: "claude-api", jev: true, model: "claude-sonnet-5", startedAt: new Date().toISOString(), ...(req.voice ? { voice: true } : {}), ...(req.heard?.length ? { heard: req.heard } : {}), ...(files.length ? { attachments: files } : {}) };
     data.sessions = [s, ...data.sessions.filter((x) => x.sessionId !== "s-new")];
     data.eventsBySession = { ...(data.eventsBySession ?? {}), "s-new": [] };
     if (req.tabId !== undefined) data.state = { ...data.state, tabChats: { ...data.state.tabChats, [req.tabId]: "s-new" } };

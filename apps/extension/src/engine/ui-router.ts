@@ -12,7 +12,7 @@ import { transcribeForPanel, type VoiceAccount } from "../voice/transcribe.js";
 import type { LocalStore } from "./local-store.js";
 import { TaskScheduler, type TodoAccess, type TodoApprovalAsk } from "./schedule-task.js";
 import { todoAllowed } from "../account/types.js";
-import { uploadToBlob } from "./local-store.js";
+import { incomingAttachments } from "./attachment-store.js";
 import type { AdhocInput } from "./run/jobs.js";
 import type { Runner } from "./runner.js";
 import { MAX_SESSIONS, type SessionStore } from "./sessions.js";
@@ -220,8 +220,9 @@ export class UiRouter {
         const input: AdhocInput = {
           instructions: typeof msg.instructions === "string" ? msg.instructions : "",
           account: msg.account ?? null,
-          media: (msg.media ?? []).map((m) => ({ name: m.name, blob: uploadToBlob(m) })),
         };
+        const attachments = incomingAttachments(msg.attachments);
+        if (attachments.length) input.attachments = attachments;
         const tab = optTab(msg.tabId);
         if (tab !== undefined) input.tabId = tab;
         if (msg.screen === true) input.screen = true;
@@ -232,8 +233,12 @@ export class UiRouter {
         if (typeof msg.sessionId !== "string" || !msg.sessionId) throw new Error("sessionId is required");
         const note = typeof msg.text === "string" ? msg.text.trim() : "";
         const tab = optTab(msg.tabId);
+        const attachments = incomingAttachments(msg.attachments);
         // Continued from a tab: the conversation goes on there (the runner binds it once the turn is taken).
-        return d.runner.continueSession(msg.sessionId, note || undefined, tab === undefined ? {} : { tabId: tab }) satisfies Promise<UiResults["run.continue"]>;
+        return d.runner.continueSession(msg.sessionId, note || undefined, {
+          ...(tab === undefined ? {} : { tabId: tab }),
+          ...(attachments.length ? { attachments } : {}),
+        }) satisfies Promise<UiResults["run.continue"]>;
       }
       case "run.message": {
         const text = typeof msg.text === "string" ? msg.text : "";
@@ -244,6 +249,7 @@ export class UiRouter {
         const heard = voice ? heardWords(msg.heard) : [];
         const cid = optCid(msg.cid);
         const context = typeof msg.context === "string" ? msg.context.trim() : "";
+        const attachments = incomingAttachments(msg.attachments);
         // Sent from a tab: the runner binds the conversation to it once the message is taken.
         return d.runner.message(sessionId, text, {
           ...(tab === undefined ? {} : { tabId: tab }),
@@ -253,6 +259,7 @@ export class UiRouter {
           ...(cid ? { cid } : {}),
           ...(msg.memoryOff === true ? { memoryOff: true } : {}),
           ...(context ? { context } : {}),
+          ...(attachments.length ? { attachments } : {}),
         }) satisfies Promise<UiResults["run.message"]>;
       }
       case "run.newChat": {

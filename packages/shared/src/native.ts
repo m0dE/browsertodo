@@ -1,3 +1,4 @@
+import type { AgentAttachment } from "./attachments.js";
 import type { AgentEvent } from "./events.js";
 import type { TaskOutcome } from "./task.js";
 import type { ReasoningLevel } from "./reasoning.js";
@@ -140,10 +141,12 @@ export type HelperMethods = {
    * stays open so the session can take follow-up turns). Resolves when the
    * turn ends (up to maxTaskMinutes plus shutdown). Progress arrives as
    * helper.event notifications. mediaPaths are absolute local files the
-   * extension prepared.
+   * extension prepared. attachments: files the user attached to the
+   * conversation, sent ahead with helper.putAttachment (their `path` is left
+   * out: the helper puts them in the session's attachments folder).
    */
   "helper.runTask": {
-    params: { sessionId: string; task: AgentTask; mediaPaths: string[]; config: RunConfig };
+    params: { sessionId: string; task: AgentTask; mediaPaths: string[]; config: RunConfig; attachments?: AgentAttachment[] };
     result: TaskRunResult;
   };
   /**
@@ -155,7 +158,13 @@ export type HelperMethods = {
    * open): start a fresh runTask instead. Rejects with HelperErrorCode.busy
    * while another turn runs.
    */
-  "helper.continueSession": { params: { sessionId: string; text: string; config: RunConfig }; result: TaskRunResult };
+  "helper.continueSession": { params: { sessionId: string; text: string; config: RunConfig; attachments?: AgentAttachment[] }; result: TaskRunResult };
+  /**
+   * One piece of a file the user attached, for a session's next runTask or continueSession (which name it in
+   * `attachments`). Pieces come in order: offset is the bytes already sent (0 starts the file over); each is at
+   * most ATTACHMENT_CHUNK_BYTES. size: the bytes the helper holds of it now.
+   */
+  "helper.putAttachment": { params: { sessionId: string; id: string; offset: number; dataBase64: string }; result: { size: number } };
   /**
    * Start the next new session's agent ahead (the side panel opened), with
    * this config's model, Reasoning and Jev: the next runTask then skips

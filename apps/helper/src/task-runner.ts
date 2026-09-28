@@ -21,6 +21,7 @@ import {
   RpcError,
   TOOL_NAMES,
   toolsFor,
+  type AgentAttachment,
   type AgentEvent,
   type AgentTask,
   type MemoryToolName,
@@ -32,12 +33,13 @@ import {
   type ToolName,
   traceStart,
 } from "@browsertodo/shared";
-import { buildSystemPrompt, buildTaskPrompt, FOLLOW_UP_PREFIX, reasoningOf, SecretRedactor, type BrowserCaller, type JevLike } from "@browsertodo/core";
+import { buildSystemPrompt, buildTaskPrompt, FOLLOW_UP_PREFIX, reasoningOf, SecretRedactor, withAttachmentLines, type BrowserCaller, type JevLike } from "@browsertodo/core";
 import { RunLog, type LiveLog } from "./logger.js";
 import type { Brain } from "./brains/brain.js";
 import type { WarmClaude } from "./brains/claude-code.js";
 import { INTERACTIVE_TASK_ID } from "./mcp-tools.js";
 import type { ToolSession } from "./tool-router.js";
+import { ATTACHMENTS_DIR, type AttachmentInbox } from "./session/attachments.js";
 import { buildMcpConfig, runDirFor } from "./session/session-setup.js";
 import { TaskSession } from "./session/task-session.js";
 import type { Turn } from "./session/turn.js";
@@ -47,12 +49,16 @@ export interface RunTaskParams {
   task: AgentTask;
   mediaPaths: string[];
   config: RunConfig;
+  /** Files the user attached to the conversation, waiting in the inbox (or placed by an earlier turn). */
+  attachments?: AgentAttachment[];
 }
 
 export interface ContinueSessionParams {
   sessionId: string;
   text: string;
   config: RunConfig;
+  /** This message's attachments (fresh), and earlier ones to list again. */
+  attachments?: AgentAttachment[];
 }
 
 /** Session timings and limits when TaskRunnerDeps leaves them out. */
@@ -84,6 +90,8 @@ interface Spare {
 
 export interface TaskRunnerDeps {
   runsDir: string;
+  /** Where attachments wait for their session's next turn (helper.putAttachment). */
+  inbox: AttachmentInbox;
   mcpServerPath: string;
   pipePath: string;
   browser: BrowserCaller;
@@ -242,8 +250,16 @@ export class TaskRunner {
     return config.jevEnabled && key ? key : null;
   }
 
-  /** Writes the session's MCP config into its run folder; returns it with the session's tools and system prompt. */
-  private sessionFiles(runDir: string, toolTaskId: string, jev: boolean, followUps: boolean): { mcpConfigPath: string; allowedTools: string[]; systemPrompt: string } {
+  /**
+   * Writes the session's MCP config into its run folder and makes its attachments folder (Claude Code runs there,
+   * with Read on the files the user attached); returns them with the session's tools and system prompt.
+   */
+  private sessionFiles(
+    runDir: string,
+    toolTaskId: string,
+    jev: boolean,
+    followUps: boolean,
+  ): { mcpConfigPath: string; readDir: string; allowedTools: string[]; systemPrompt: string } {
     // act replaces click and type (steps can still name an exact element index).
     const allowed = new Set<ToolName>(toolsFor());
     const toolNames = TOOL_NAMES.filter((n) => allowed.has(n));
@@ -257,7 +273,9 @@ export class TaskRunner {
       jev,
     });
     writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
-    return { mcpConfigPath, allowedTools: toolNames.map(mcpToolName), systemPrompt: buildSystemPrompt({ tools: toolNames, jev, followUps }) };
+    const readDir = join(runDir, ATTACHMENTS_DIR);
+    mkdirSync(readDir, { recursive: true });
+    return { mcpConfigPath, readDir, allowedTools: toolNames.map(mcpToolName), systemPrompt: buildSystemPrompt({ tools: toolNames, jev, followUps, readAttachments: true }) };
   }
 
   async run(params: RunTaskParams): Promise<TaskRunResult> {
@@ -307,12 +325,16 @@ export class TaskRunner {
     this.sessionsChanged();
     this.active.add(s);
     const turn = s.startTurn(config);
+    const attachments = this.place(s, params.attachments);
+    // The scripted brain uploads every file the task has.
+    const uploadable = [...mediaPaths, ...attachments.flatMap((a) => (a.path ? [a.path] : []))];
 
     log.event({
       type: "task_start",
       taskId: task.id,
       account: task.account,
       media: mediaPaths,
+      ...(attachments.length ? { attachments: attachments.map((a) => ({ id: a.ref.id, kind: a.ref.kind, size: a.ref.size, placed: a.path !== undefined })) } : {}),
       jev: jev !== null,
       persistent: s.persistent,
       isRetry: config.isRetry,
@@ -321,14 +343,15 @@ export class TaskRunner {
     });
 
     try {
-      const { mcpConfigPath, allowedTools, systemPrompt } = this.sessionFiles(runDir, toolTaskId, jev !== null, s.persistent);
+      const { mcpConfigPath, readDir, allowedTools, systemPrompt } = this.sessionFiles(runDir, toolTaskId, jev !== null, s.persistent);
       // The run folder, the MCP config and the prompts, before the agent starts.
       s.emit({ type: "trace", trace: { t: setup.t, ms: setup.elapsed(), cat: "brain", name: "helper.setup", src: "helper", data: { jev: jev !== null, media: mediaPaths.length, prewarmed: spare !== null } } });
       s.brainDone = brain
         .run({
           taskId: toolTaskId,
-          prompt: buildTaskPrompt(task, mediaPaths, { isRetry: config.isRetry }),
+          prompt: buildTaskPrompt(task, mediaPaths, { isRetry: config.isRetry, attachments, view: "read" }),
           systemPrompt,
+          readDir,
           ...(config.model?.trim() ? { model: config.model.trim() } : {}),
           mcpConfigPath,
           allowedTools,
@@ -342,7 +365,7 @@ export class TaskRunner {
           onModelChange: (fn) => s.onModelChange(fn),
           idle: () => s.onIdle(),
           turnOver: () => s.turnOver(),
-          task: { instructions: task.instructions, account: task.account, mediaPaths },
+          task: { instructions: task.instructions, account: task.account, mediaPaths: uploadable },
         })
         .catch((e: unknown) => {
           s.brainError = errorMessage(e);
@@ -374,8 +397,19 @@ export class TaskRunner {
     const turn = s.startTurn(params.config);
     s.log.event({ type: "turn_start", chars: params.text.length, maxToolCalls: params.config.maxToolCalls, maxTaskMinutes: params.config.maxTaskMinutes });
     s.emit({ type: "user_message", text: params.text });
-    s.input.push(`${FOLLOW_UP_PREFIX}${params.text}`);
+    const attachments = this.place(s, params.attachments);
+    s.input.push(withAttachmentLines(`${FOLLOW_UP_PREFIX}${params.text}`, attachments, "read"));
     return this.finishTurn(s, turn);
+  }
+
+  /** Moves the turn's attachments into the session's attachments folder; upload may attach them from now on. */
+  private place(s: TaskSession, attachments: readonly AgentAttachment[] = []): AgentAttachment[] {
+    if (!attachments.length) return [];
+    const placed = this.deps.inbox.place(s.sessionId, s.runDir, attachments, s.attachments);
+    s.tools.executor.allowMedia(placed.flatMap((a) => (a.path ? [a.path] : [])));
+    const missing = placed.filter((a) => !a.path).map((a) => a.ref.id);
+    if (missing.length) s.log.event({ type: "attachments_missing", ids: missing });
+    return placed;
   }
 
   /** Waits for the turn to end, then reports it. The session stays open when its agent is still alive. */
@@ -393,6 +427,7 @@ export class TaskRunner {
 
   private onBrainExit(s: TaskSession): void {
     if (!s.markEnded()) return;
+    this.deps.inbox.drop(s.sessionId);
     this.closing.delete(s);
     if (this.sessions.get(s.sessionId) === s) this.sessions.delete(s.sessionId);
     if (s.tools.taskId !== s.sessionId) this.toolTaskIds.delete(s.tools.taskId);

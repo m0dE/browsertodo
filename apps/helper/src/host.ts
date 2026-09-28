@@ -29,6 +29,7 @@ import { encodeNativeMessage, FrameTooLargeError, MAX_NATIVE_OUT, NativeDecoder 
 import { pipePathFor, startPipeServer, type PipeServer } from "./pipe-server.js";
 import { BROWSER_RPC_TIMEOUT_MS, rpcBrowser, ToolRouter, type InteractiveTools } from "./tool-router.js";
 import { INTERACTIVE_TASK_ID } from "./mcp-tools.js";
+import { AttachmentInbox } from "./session/attachments.js";
 import { TaskRunner } from "./task-runner.js";
 import { ClaudeCodeBrain } from "./brains/claude-code.js";
 import { apiBillingVarsIn, CLAUDE_NOT_FOUND, resolveClaudePath } from "./claude-process.js";
@@ -80,8 +81,12 @@ async function main(): Promise<void> {
     // Headless stream-json with stdin kept open: structured events, and follow-up turns in the same session.
     return new ClaudeCodeBrain({ claudePath, model: config.model, ...(config.thinking === null ? {} : { thinking: config.thinking }), persistent: true });
   };
+  // Attachments wait here for their session's turn; nothing waits across a restart (sessions do not survive it).
+  const inbox = new AttachmentInbox(join(config.baseDir, "incoming"));
+  inbox.clear();
   const runner = new TaskRunner({
     runsDir: config.runsDir,
+    inbox,
     mcpServerPath: config.mcpServerPath,
     pipePath,
     browser,
@@ -157,11 +162,12 @@ async function main(): Promise<void> {
   });
   peer.handle("helper.runTask", async (params) => {
     if (!pipe) throw new Error("Helper pipe server is not running");
-    logLine(`runTask ${params.sessionId} task=${params.task.id} media=${params.mediaPaths.length}`);
+    logLine(`runTask ${params.sessionId} task=${params.task.id} media=${params.mediaPaths.length} attachments=${params.attachments?.length ?? 0}`);
     const result = await runner.run(params);
     logLine(`runTask ${params.sessionId} -> ${result.outcome}${result.reason ? `: ${result.reason}` : ""}`);
     return result;
   });
+  peer.handle("helper.putAttachment", (params) => inbox.put(params));
   peer.handle("helper.continueSession", async (params) => {
     logLine(`continueSession ${params.sessionId} chars=${params.text.length}`);
     const result = await runner.continueSession(params);

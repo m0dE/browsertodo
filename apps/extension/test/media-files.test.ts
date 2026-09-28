@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installChromeFake, type ChromeFake } from "./chrome-fake.js";
-import { MediaFiles, safeFileName, uniqueNames } from "../src/engine/media-files.js";
+import { safeFileName, uniqueNames } from "@browsertodo/shared";
+import { MediaFiles } from "../src/engine/media-files.js";
 
 let chrome: ChromeFake;
 beforeEach(() => {

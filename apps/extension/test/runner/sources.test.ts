@@ -151,7 +151,7 @@ describe("Runner: cloud tasks", () => {
 });
 
 describe("Runner: adhoc sessions", () => {
-  it("runs a one-off task as a session only, with media and user messages", async () => {
+  it("runs a one-off task as a session only, with attachments and user messages", async () => {
     const h = harness();
     let events: AgentEvent[] = [];
     h.brain.script = (_opts, ctl) => {
@@ -161,7 +161,11 @@ describe("Runner: adhoc sessions", () => {
       })();
       return "hang";
     };
-    const { sessionId } = await h.runner.runAdhoc({ instructions: "  Like the top post  ", account: "@me", media: [{ name: "x.png", blob: new Blob(["x"]) }] });
+    const { sessionId } = await h.runner.runAdhoc({
+      instructions: "  Like the top post  ",
+      account: "@me",
+      attachments: [{ ref: { name: "x.png", type: "image/png", kind: "image", width: 1, height: 1, thumb: "data:image/jpeg;base64,AA" }, blob: new Blob(["x"], { type: "image/png" }) }],
+    });
     expect(await h.sessions.get(sessionId)).toMatchObject({ source: "adhoc", title: "Like the top post", brain: "claude-api" });
     expect(h.runner.running?.sessionId).toBe(sessionId);
     await vi.waitFor(() => expect(h.brain.starts).toHaveLength(1));
@@ -174,7 +178,12 @@ describe("Runner: adhoc sessions", () => {
     expect(events.at(-1)).toMatchObject({ type: "task_end", outcome: "done", summary: "did it" });
     // The agent is told the user's time in the browser's zone (schedule_task).
     expect(h.brain.starts[0]!.task).toEqual({ id: sessionId, instructions: "Like the top post", account: "@me", timeZone: localTimeZone(), approvals: automationPromptLine("full") });
-    expect(h.brain.starts[0]!.mediaPaths).toEqual(["C:\\dl\\x.png"]);
+    // The file is kept in the conversation, shown on the first message, written to Downloads for upload, and its
+    // bytes go to the model (the chat's thumbnail does not).
+    expect(h.brain.starts[0]!.mediaPaths).toEqual([]);
+    const ref = { id: "a1", name: "x.png", type: "image/png", size: 1, kind: "image", width: 1, height: 1 };
+    expect((await h.sessions.get(sessionId))!.attachments).toEqual([{ ...ref, thumb: "data:image/jpeg;base64,AA" }]);
+    expect(h.brain.starts[0]!.attachments).toEqual([{ ref, fresh: true, blob: expect.any(Blob), path: "C:\\dl\\x.png", base64: btoa("x") }]);
     // One-off runs act on the tab the user is looking at.
     expect(h.prepared).toEqual([{ mode: "current-tab" }]);
     expect(await h.store.list()).toEqual([]);

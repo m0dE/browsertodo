@@ -1,7 +1,8 @@
 /** Headless Claude Code in the helper, behind the Brain interface. */
-import { errorMessage, HelperErrorCode, rpcErrorCode, type AgentEvent, type HelperInfo, type HelperMethods, type HelperNotifications, type RunConfig, type TaskRunResult, type TraceEvent } from "@browsertodo/shared";
+import { ATTACHMENT_CHUNK_BYTES, errorMessage, HelperErrorCode, rpcErrorCode, type AgentAttachment, type AgentEvent, type HelperInfo, type HelperMethods, type HelperNotifications, type RunConfig, type TaskRunResult, type TraceEvent } from "@browsertodo/shared";
 import { HELPER_CALL_TIMEOUT_MS } from "../helper-link.js";
-import { endedRun, SessionEndedError, type Brain, type BrainContinueOptions, type BrainRun, type BrainStartOptions } from "./brains.js";
+import { bytesToBase64 } from "../base64.js";
+import { endedRun, SessionEndedError, type Brain, type BrainContinueOptions, type BrainRun, type BrainStartOptions, type TurnAttachment } from "./brains.js";
 
 export interface HelperLike {
   call<M extends keyof HelperMethods & string>(
@@ -19,6 +20,8 @@ export interface HelperLike {
 /** Headless Claude Code in the helper (helper.runTask / helper.continueSession + helper.event). */
 export class ClaudeCodeBrain implements Brain {
   readonly kind = "claude-code" as const;
+  /** Attachments go to the helper, into the session's folder: Claude Code Reads and uploads them there. */
+  readonly keepsAttachments = true as const;
   /** Task sessions alive in the helper, as it last reported them. */
   private open = new Set<string>();
   /** Sessions whose turn is running: a run listens to their events. */
@@ -46,20 +49,58 @@ export class ClaudeCodeBrain implements Brain {
 
   start(opts: BrainStartOptions): BrainRun {
     const { sessionId } = opts;
+    // A new agent session has none of the conversation's files yet: all of them go.
+    const attachments = opts.attachments ?? [];
     return this.run(sessionId, opts.onEvent, () =>
-      this.helper.call("helper.runTask", { sessionId, task: opts.task, mediaPaths: opts.mediaPaths, config: opts.config }),
+      this.after(this.send(sessionId, attachments), () =>
+        this.helper.call("helper.runTask", {
+          sessionId,
+          task: opts.task,
+          mediaPaths: opts.mediaPaths,
+          config: opts.config,
+          ...(attachments.length ? { attachments: attachments.map(agentAttachment) } : {}),
+        }),
+      ),
     );
   }
 
   continue(opts: BrainContinueOptions): BrainRun {
     const { sessionId } = opts;
     if (!this.open.has(sessionId)) return endedRun();
+    // The session has the earlier files already: this message's go.
+    const attachments = opts.attachments ?? [];
     return this.run(sessionId, opts.onEvent, () =>
-      this.helper.call("helper.continueSession", { sessionId, text: opts.text, config: opts.config }).catch((err: unknown) => {
-        if (rpcErrorCode(err) === HelperErrorCode.sessionEnded) throw new SessionEndedError();
-        throw err;
-      }),
+      this.after(this.send(sessionId, attachments.filter((a) => a.fresh)), () =>
+        this.helper
+          .call("helper.continueSession", { sessionId, text: opts.text, config: opts.config, ...(attachments.length ? { attachments: attachments.map(agentAttachment) } : {}) })
+          .catch((err: unknown) => {
+            if (rpcErrorCode(err) === HelperErrorCode.sessionEnded) throw new SessionEndedError();
+            throw err;
+          }),
+      ),
     );
+  }
+
+  /** `call` once `sending` is done; at once when nothing was sent (the turn starts without waiting a tick). */
+  private after<T>(sending: Promise<void> | null, call: () => Promise<T>): Promise<T> {
+    return sending ? sending.then(call) : call();
+  }
+
+  /** Sends files to the helper in pieces of ATTACHMENT_CHUNK_BYTES (native messaging keeps messages small); null: none. */
+  private send(sessionId: string, attachments: readonly TurnAttachment[]): Promise<void> | null {
+    return attachments.length ? this.sendAll(sessionId, attachments) : null;
+  }
+
+  private async sendAll(sessionId: string, attachments: readonly TurnAttachment[]): Promise<void> {
+    for (const a of attachments) {
+      const bytes = new Uint8Array(await a.blob.arrayBuffer());
+      let offset = 0;
+      do {
+        const piece = bytes.subarray(offset, offset + ATTACHMENT_CHUNK_BYTES);
+        await this.helper.call("helper.putAttachment", { sessionId, id: a.ref.id, offset, dataBase64: bytesToBase64(piece) }, { timeoutMs: HELPER_CALL_TIMEOUT_MS });
+        offset += piece.length;
+      } while (offset < bytes.length);
+    }
   }
 
   prewarm(config: RunConfig): void {
@@ -134,4 +175,9 @@ export class ClaudeCodeBrain implements Brain {
       /* UI push errors are not the brain's problem */
     }
   }
+}
+
+/** What the helper is told of an attachment: the bytes went ahead, and it gives the path. */
+function agentAttachment({ blob: _bytes, base64: _data, path: _path, ...a }: TurnAttachment): AgentAttachment {
+  return a;
 }

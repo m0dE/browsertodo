@@ -77,6 +77,11 @@ export interface BrainContext {
   mcpConfigPath: string;
   /** Fully qualified MCP tool names, e.g. mcp__browsertodo__click. */
   allowedTools: string[];
+  /**
+   * The session's attachments folder: Claude Code runs in it, and its own Read tool may read files there and
+   * nowhere else. Absent: no Read (Claude Code runs in the MCP config's folder).
+   */
+  readDir?: string;
   /** Aborted when the session must stop now (abort, pause, limits, shutdown): kill the agent. */
   signal: AbortSignal;
   /** Run log (JSONL file). */

@@ -7,8 +7,9 @@
  * abort) its message history stays in memory, and continueWith(text) runs
  * the next turn on top of it, like a chat.
  */
-import { ANTHROPIC_MESSAGES_URL, delay, DeltaBatcher, errorMessage, OUT_OF_CREDIT, stopwatch, toolsFor, traceText, type AgentEvent, type RunConfig, type Sleep, type TaskRunResult, type ToolName, type TraceDraft } from "@browsertodo/shared";
+import { ANTHROPIC_MESSAGES_URL, ATTACHMENT_LIMITS, delay, DeltaBatcher, errorMessage, OUT_OF_CREDIT, stopwatch, toolsFor, traceText, type AgentEvent, type RunConfig, type Sleep, type TaskRunResult, type ToolName, type TraceDraft } from "@browsertodo/shared";
 import type { AgentSession, ApiAgentOptions } from "./types.js";
+import { attachmentBlocks, withAttachmentLines, type ApiAttachment } from "./attachments.js";
 import { createToolExecutor } from "./executor.js";
 import { agentError, CLAUDE_DECLINED, ENDED_WITHOUT_RESULT } from "./failures.js";
 import { Interjections } from "./interjections.js";
@@ -43,6 +44,13 @@ export function retryWaitMs(attempt: number, delays: number[], retryAfterMs: num
 }
 /** Screenshots kept in the conversation; older ones are replaced by a note to save tokens. */
 export const MAX_IMAGES_IN_HISTORY = 3;
+/**
+ * Bytes of attached images and PDFs kept in the conversation (one message's worth): every request resends the
+ * history, and the hosted AI takes at most 20 MB. Older attachments are replaced by a note.
+ */
+export const MAX_ATTACHMENT_BYTES_IN_HISTORY = ATTACHMENT_LIMITS.maxMessageBytes;
+/** What an attached image or PDF dropped from the history (MAX_ATTACHMENT_BYTES_IN_HISTORY) is replaced with. */
+export const ATTACHMENT_DROPPED = "[an earlier attachment was removed from the conversation to keep requests small; ask the user to attach it again if you need to see it]";
 export const KEY_REJECTED = "Claude API key rejected";
 /** Result text for tool calls a stopped turn never ran, so the history stays valid for the next turn. */
 export const NOT_RUN = "Not run: the turn was stopped before this tool ran.";
@@ -190,7 +198,7 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
     onEvent: emit,
     onTaskEnd: (r) => onTaskEnd(r),
     turnEndsAt: () => turnEndsAt,
-    mediaPaths: opts.mediaPaths,
+    mediaPaths: [...opts.mediaPaths, ...uploadPaths(opts.attachments)],
     sleep,
     ...(opts.onTrace ? { onTrace: trace } : {}),
     ...(opts.todo ? { todo: opts.todo } : {}),
@@ -222,21 +230,39 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
   };
 
   /**
-   * Adds the next user text. The history must alternate and answer every
-   * tool_use: after a turn that ended on a tool call, its results (or NOT_RUN
-   * for the ones a stop skipped) go first in the same user message.
+   * Keep the newest attachments (top-level image and document blocks, not screenshots in tool results) up to
+   * MAX_ATTACHMENT_BYTES_IN_HISTORY; older ones become a note.
    */
-  const addUserText = (text: string) => {
+  const pruneAttachments = () => {
+    let kept = 0;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]!;
+      if (m.role !== "user") continue;
+      m.content = m.content.map((block) => {
+        const data = attachedData(block);
+        if (data === null) return block;
+        kept += Math.floor((data.length * 3) / 4);
+        return kept > MAX_ATTACHMENT_BYTES_IN_HISTORY ? { type: "text" as const, text: ATTACHMENT_DROPPED } : block;
+      });
+    }
+  };
+
+  /**
+   * Adds the next user text (after `before`: a message's attachment blocks). The history must alternate and
+   * answer every tool_use: after a turn that ended on a tool call, its results (or NOT_RUN for the ones a stop
+   * skipped) go first in the same user message.
+   */
+  const addUserText = (text: string, before: ContentBlock[] = []) => {
     const last = messages.at(-1);
     if (last?.role === "assistant") {
       const uses = last.content.filter((b): b is ToolUseBlock => b.type === "tool_use");
       const answered = new Map(unsent.map((b) => [(b as ToolResultBlock).tool_use_id, b]));
       const results = uses.map((u) => answered.get(u.id) ?? toolResultBlock(u.id, { text: NOT_RUN, isError: true }));
-      messages.push({ role: "user", content: [...results, { type: "text", text }] });
+      messages.push({ role: "user", content: [...results, ...before, { type: "text", text }] });
     } else if (last?.role === "user") {
-      last.content.push({ type: "text", text });
+      last.content.push(...before, { type: "text", text });
     } else {
-      messages.push({ role: "user", content: [{ type: "text", text }] });
+      messages.push({ role: "user", content: [...before, { type: "text", text }] });
     }
     unsent = [];
   };
@@ -358,6 +384,7 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
           raiseNotePending = null;
         }
         pruneImages();
+        pruneAttachments();
         const msg = await request();
         if (msg === "interrupted") {
           route = "interrupt";
@@ -456,15 +483,31 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
   };
 
   /** The next user message once the current turn has ended: a new turn with the whole history. */
-  function continueWith(text: string, next: { config?: RunConfig } = {}): AgentSession {
+  function continueWith(text: string, next: { config?: RunConfig; attachments?: ApiAttachment[] } = {}): AgentSession {
     if (turnRunning) throw new Error("busy");
     if (!text.trim()) throw new Error("empty message");
     emit({ type: "user_message", text });
-    addUserText(`${FOLLOW_UP_PREFIX}${text}`);
+    const attachments = next.attachments ?? [];
+    executor.allowMedia(uploadPaths(attachments));
+    addUserText(withAttachmentLines(`${FOLLOW_UP_PREFIX}${text}`, attachments, "blocks"), attachmentBlocks(attachments));
     return runTurn(next.config ?? opts.config);
   }
 
-  messages.push({ role: "user", content: [{ type: "text", text: buildTaskPrompt(opts.task, opts.mediaPaths, { isRetry: opts.config.isRetry }) }] });
+  const attachments = opts.attachments ?? [];
+  const taskPrompt = buildTaskPrompt(opts.task, opts.mediaPaths, { isRetry: opts.config.isRetry, attachments, view: "blocks" });
+  messages.push({ role: "user", content: [...attachmentBlocks(attachments), { type: "text", text: taskPrompt }] });
   emit({ type: "status", text: `${label} (${opts.model})${jevOn ? " with Jev" : ""}` });
   return runTurn(opts.config);
+}
+
+/** The paths upload may attach among these attachments. */
+function uploadPaths(attachments: readonly ApiAttachment[] | undefined): string[] {
+  return (attachments ?? []).flatMap((a) => (a.path ? [a.path] : []));
+}
+
+/** The base64 data of an attached image or PDF block at the top of a user message (null: any other block). */
+function attachedData(block: ContentBlock): string | null {
+  if (block.type !== "image" && block.type !== "document") return null;
+  const source = (block as { source?: { type?: unknown; data?: unknown } }).source;
+  return source?.type === "base64" && typeof source.data === "string" ? source.data : null;
 }

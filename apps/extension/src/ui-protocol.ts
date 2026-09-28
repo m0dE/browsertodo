@@ -37,6 +37,23 @@ export interface UiMediaUpload {
 }
 
 /**
+ * A file attached to a chat message, prepared in the side panel (attachments/prepare.ts): an image already brought
+ * to the model's size (width, height, thumb), a document's text read out (text: what the model reads; note: e.g.
+ * that secrets in it were replaced).
+ */
+export interface UiAttachmentUpload {
+  name: string;
+  type: string;
+  dataBase64: string;
+  width?: number;
+  height?: number;
+  /** A small JPEG data URL of an image, for the chat's bubble. */
+  thumb?: string;
+  text?: string;
+  note?: string;
+}
+
+/**
  * An edit of a task that is not running: only the fields given change (null
  * clears). A new repeat rule goes with its first time (notBefore; none: its
  * next time); notBefore alone moves only the time.
@@ -149,7 +166,8 @@ export type UiRequest =
       type: "run.adhoc";
       instructions: string;
       account?: string;
-      media?: UiMediaUpload[];
+      /** Files attached to the message (the agent sees or reads them, and can upload them to pages). */
+      attachments?: UiAttachmentUpload[];
       tabId?: number;
       /** An empty message in Chat: look at the tab's page and do what is needed (instructions may be empty). */
       screen?: boolean;
@@ -166,7 +184,7 @@ export type UiRequest =
    * Continue a run that ended paused, failed or retry (e.g. stopped by the
    * user): the next turn of that conversation. text: an optional note.
    */
-  | { type: "run.continue"; sessionId: string; text?: string; tabId?: number }
+  | { type: "run.continue"; sessionId: string; text?: string; tabId?: number; attachments?: UiAttachmentUpload[] }
   /**
    * The user's message in a conversation: typed into its turn while one
    * runs, else its next turn (same session when still open, else a fresh one
@@ -190,6 +208,8 @@ export type UiRequest =
       cid?: string;
       memoryOff?: true;
       context?: string;
+      /** Files attached to the message; refused while the conversation's turn runs (they go with a new turn). */
+      attachments?: UiAttachmentUpload[];
     }
   /**
    * The conversation is over: close its kept-open agent session (a running

@@ -10,6 +10,7 @@ import { Listeners } from "../listeners.js";
 import type { KvDb, KvStore } from "./kv.js";
 import type { TraceBook } from "../trace/trace-book.js";
 import type { TraceStore } from "./trace-store.js";
+import type { AttachmentStore } from "./attachment-store.js";
 
 export const MAX_SESSIONS = 200;
 export const MAX_EVENTS_PER_SESSION = 2000;
@@ -70,12 +71,15 @@ export class SessionStore {
   private chain: Promise<unknown> = Promise.resolve();
 
   private readonly trace: TraceStore | null;
+  /** The files sent in conversations: deleted with their conversation. */
+  private readonly attachments: Pick<AttachmentStore, "deleteSession"> | null;
 
-  constructor(db: KvDb, opts: { now?: () => Date; trace?: TraceStore } = {}) {
+  constructor(db: KvDb, opts: { now?: () => Date; trace?: TraceStore; attachments?: Pick<AttachmentStore, "deleteSession"> } = {}) {
     this.sessions = db.store<SessionInfo>("sessions");
     this.events = db.store<StampedAgentEvent>("events");
     this.now = opts.now ?? (() => new Date());
     this.trace = opts.trace ?? null;
+    this.attachments = opts.attachments ?? null;
   }
 
   subscribe(l: SessionListener): () => void {
@@ -256,6 +260,7 @@ export class SessionStore {
       await this.sessions.delete(s.sessionId);
       await this.events.deletePrefix(`${s.sessionId}:`);
       await this.trace?.delete(s.sessionId);
+      await this.attachments?.deleteSession(s.sessionId);
     }
   }
 

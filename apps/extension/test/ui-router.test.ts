@@ -132,10 +132,13 @@ describe("UiRouter", () => {
 
   it("run.* requests go to the runner", async () => {
     const t = setup();
-    expect(await t.req({ type: "run.adhoc", instructions: "do", account: "@a", media: [{ name: "f.txt", type: "text/plain", dataBase64: btoa("hi") }] })).toEqual({ sessionId: "adhoc-1" });
+    expect(await t.req({ type: "run.adhoc", instructions: "do", account: "@a", attachments: [{ name: "f.txt", type: "text/plain", dataBase64: btoa("hi"), text: "hi" }] })).toEqual({ sessionId: "adhoc-1" });
     const input = t.runner.runAdhoc.mock.calls[0]![0];
-    expect(input).toMatchObject({ instructions: "do", account: "@a" });
-    expect(await input.media![0]!.blob.text()).toBe("hi");
+    expect(input).toMatchObject({ instructions: "do", account: "@a", attachments: [{ ref: { name: "f.txt", type: "text/plain", kind: "text" }, text: "hi" }] });
+    expect(await input.attachments![0]!.blob.text()).toBe("hi");
+    // The limits hold here too (the panel says so before sending, so here it is an error).
+    const eleven = Array.from({ length: 11 }, (_, i) => ({ name: `f${i}.txt`, type: "text/plain", dataBase64: btoa("x") }));
+    await expect(t.req({ type: "run.adhoc", instructions: "do", attachments: eleven })).rejects.toThrow(/At most 10 files per message/);
     expect(await t.req({ type: "run.due" })).toEqual({ started: true });
     expect(t.runner.runDue).toHaveBeenCalledWith("manual");
     expect(await t.req({ type: "run.stop" })).toEqual({ ok: true });

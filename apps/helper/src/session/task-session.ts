@@ -65,9 +65,14 @@ export class TaskSession {
   ended = false;
   idleTimer?: ReturnType<typeof setTimeout>;
   lastTurnAt = Date.now();
+  /** The run folder. */
+  readonly runDir: string;
+  /** The attachments placed in the run folder so far: id to path (AttachmentInbox.place). */
+  readonly attachments = new Map<string, string>();
 
   constructor(private readonly opts: TaskSessionOptions) {
     this.sessionId = opts.sessionId;
+    this.runDir = opts.runDir;
     this.log = opts.log;
     this.persistent = opts.persistent;
     // Each turn sets its own level (startTurn); until then, the defaults.

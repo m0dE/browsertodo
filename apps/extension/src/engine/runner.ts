@@ -16,7 +16,7 @@
  * run and its checks), conversation.ts (next turns), record.ts (results),
  * state.ts (persisted state, keep-alive), deadline.ts (how long a run may take).
  */
-import { effectiveLevel, errorMessage, pauseReasonForUrl, SCREEN_HELP_TEXT, traceStart, type ExtensionSettings, type SessionInfo, type Sleep, type TraceValue } from "@browsertodo/shared";
+import { effectiveLevel, errorMessage, FILES_WHILE_RUNNING, pauseReasonForUrl, SCREEN_HELP_TEXT, traceStart, type ExtensionSettings, type SessionInfo, type Sleep, type TraceValue } from "@browsertodo/shared";
 import type { SlotPool } from "../agent-slots.js";
 import { callSafely } from "../listeners.js";
 import type { TabChatsLike } from "../tab-chats.js";
@@ -26,6 +26,7 @@ import type { Brain, CoreApi } from "./brains.js";
 import type { StorageLike } from "./kv.js";
 import type { LocalStore } from "./local-store.js";
 import type { MaterializedMedia, MediaSource } from "./media-files.js";
+import type { AttachmentStore, IncomingAttachment } from "./attachment-store.js";
 import type { SessionStore } from "./sessions.js";
 import { ActiveSessions, approvalStop, pauseUrlStop, stopOf } from "./run/active.js";
 import { CONTINUE_TEXT, continueRefusal } from "./run/conversation.js";
@@ -69,6 +70,8 @@ export interface RunnerDeps {
   /** Chat titles: the model names a chat after its turns (chat-titles.ts). */
   titles?: Pick<ChatTitler, "ended">;
   media: { materialize(sessionId: string, sources: MediaSource[]): Promise<MaterializedMedia> };
+  /** Where the files sent in chats are kept (absent: messages with files are refused). */
+  attachments?: Pick<AttachmentStore, "add" | "list">;
   /** Resolves the brain for these settings; may (re)connect the helper. */
   resolveBrain(settings: ExtensionSettings): Promise<ResolvedBrain>;
   core: Pick<CoreApi, "verifyXPost" | "classifyFailure">;
@@ -124,6 +127,7 @@ export class Runner {
       ...(deps.tabChats ? { tabChats: deps.tabChats } : {}),
       ...(deps.pageOf ? { pageOf: deps.pageOf } : {}),
       ...(deps.memory ? { memory: deps.memory } : {}),
+      ...(deps.attachments ? { attachments: deps.attachments } : {}),
     });
     const recorder = new ResultRecorder({
       ...(deps.memory ? { memory: deps.memory } : {}),
@@ -144,6 +148,7 @@ export class Runner {
       changed,
       ...(deps.episodes ? { episodes: deps.episodes } : {}),
       ...(deps.titles ? { titles: deps.titles } : {}),
+      ...(deps.attachments ? { attachments: deps.attachments } : {}),
       nextTurn: (sessionId, messages) => {
         const text = messages.map((m) => m.text).join("\n\n");
         // The latest context holds (where the user looks now).
@@ -296,11 +301,13 @@ export class Runner {
    * already looking: it takes typed messages only.
    * cid: the side panel's correlation id for the message (its timings join the turn it went to).
    * context: told to the agent with the message, never shown as the user's words (see withContext).
+   * attachments: files sent with it, for a new conversation or the next turn; a running turn refuses them (its
+   * agent cannot be given files mid-turn), so they wait in the box until it ends.
    */
   async message(
     sessionId: string | null | undefined,
     text: string,
-    opts: { tabId?: number; screen?: boolean; voice?: boolean; heard?: string[]; cid?: string; memoryOff?: boolean; context?: string } = {},
+    opts: { tabId?: number; screen?: boolean; voice?: boolean; heard?: string[]; cid?: string; memoryOff?: boolean; context?: string; attachments?: IncomingAttachment[] } = {},
   ): Promise<{ sessionId: string; mode: MessageMode }> {
     const screen = !!opts.screen && !text.trim();
     const t = screen ? SCREEN_HELP_TEXT : text.trim();
@@ -310,6 +317,7 @@ export class Runner {
     // A spoken message's words, word for word (shown folded under it).
     const heard = voice && opts.heard?.length ? { heard: opts.heard } : {};
     const context = screen ? undefined : opts.context?.trim() || undefined;
+    const attachments = !screen && opts.attachments?.length ? { attachments: opts.attachments } : {};
     if (!sessionId) {
       const input: AdhocInput = {
         instructions: t,
@@ -319,11 +327,13 @@ export class Runner {
         ...heard,
         ...(context ? { context } : {}),
         ...(opts.memoryOff ? { memoryOff: true } : {}),
+        ...attachments,
       };
       return { ...(await this.runAdhoc(input, opts.cid)), mode: "new" };
     }
     if (this.live.has(sessionId)) {
       if (screen) throw new Error("The agent is working on this page already; type a message, or Stop it first");
+      if (attachments.attachments) throw new Error(FILES_WHILE_RUNNING);
       if (opts.cid) this.deps.sessions.linkTrace(sessionId, opts.cid);
       const mode = await this.deliver(t, sessionId, { voice, ...heard, ...(context ? { context } : {}) });
       if (!mode) throw new Error("The agent did not take the message");
@@ -336,7 +346,7 @@ export class Runner {
       await starting.catch(() => undefined);
       return this.message(sessionId, text, opts);
     }
-    const started = this.startOne(sessionId, () => turnJob(this.deps, sessionId, t, { screen, voice, ...heard, ...(context ? { context } : {}), ...tab }), opts.cid);
+    const started = this.startOne(sessionId, () => turnJob(this.deps, sessionId, t, { screen, voice, ...heard, ...(context ? { context } : {}), ...tab, ...attachments }), opts.cid);
     this.startingTurns.set(sessionId, started);
     try {
       await started;
@@ -352,7 +362,7 @@ export class Runner {
    * user's message (or CONTINUE_TEXT). Cloud runs continue from the server's
    * queue instead. tabId: continued from that browser tab (see message()).
    */
-  async continueSession(sessionId: string, note?: string, opts: { tabId?: number } = {}): Promise<{ sessionId: string }> {
+  async continueSession(sessionId: string, note?: string, opts: { tabId?: number; attachments?: IncomingAttachment[] } = {}): Promise<{ sessionId: string }> {
     const from = await this.deps.sessions.get(sessionId);
     const refusal = continueRefusal(from, sessionId, this.live.has(sessionId));
     if (refusal) throw new Error(refusal);

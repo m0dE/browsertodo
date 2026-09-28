@@ -6,8 +6,8 @@
  * panel-tabs.ts; the page opened as a tab follows its window's active tab
  * instead), see tab-chat.ts.
  */
-import { errorMessage, type SessionInfo, type VoiceEngineId, type VoiceEnginesResponse } from "@browsertodo/shared";
-import { isStale, uiRequest, type UiPush, type UiState } from "../ui-protocol.js";
+import { errorMessage, FILES_WHILE_RUNNING, type SessionInfo, type VoiceEngineId, type VoiceEnginesResponse } from "@browsertodo/shared";
+import { isStale, uiRequest, type UiAttachmentUpload, type UiPush, type UiState } from "../ui-protocol.js";
 import { initChat } from "./chat.js";
 import { initComposer } from "./composer.js";
 import { showDetails } from "./details-sheet.js";
@@ -210,7 +210,28 @@ async function sendSpoken(text: string, target: { tabId: number | null; sessionI
   const { tabId: tab, sessionId } = target;
   // A new chat carries the choice of memory made for its tab (the composer's menu).
   const where = sessionId ? { sessionId } : { ...(tab === null ? {} : { tabId: tab }), ...composer.memory.forNewChat(tab) };
-  const r = await uiRequest({ type: "run.message", ...where, text, voice: true, ...(heard?.length ? { heard: [...heard] } : {}), ...(cid ? { cid } : {}), ...(context ? { context } : {}) });
+  // Files in the box go with a request that starts a turn; a running turn's agent cannot take them (they wait).
+  const running = !!sessionId && !!state?.runningSessions.some((s) => s.sessionId === sessionId);
+  const batch = composer.attachments.count && !running ? await composer.attachments.batch() : null;
+  const attachments = batch?.uploads ?? [];
+  const request = (files: UiAttachmentUpload[]) =>
+    uiRequest({
+      type: "run.message",
+      ...where,
+      text,
+      voice: true,
+      ...(heard?.length ? { heard: [...heard] } : {}),
+      ...(cid ? { cid } : {}),
+      ...(context ? { context } : {}),
+      ...(files.length ? { attachments: files } : {}),
+    });
+  // The turn may have started since the panel last heard: then the words go now and the files keep waiting.
+  const r = await request(attachments).catch((err: unknown) => {
+    if (!attachments.length || errorMessage(err) !== FILES_WHILE_RUNNING) throw err;
+    attachments.length = 0;
+    return request([]);
+  });
+  if (attachments.length) batch?.sent();
   if (sessionId) return r.sessionId;
   if (tab === null || tab === activeTab) startedHere(r.sessionId);
   else {

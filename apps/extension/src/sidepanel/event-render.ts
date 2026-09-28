@@ -7,6 +7,7 @@ import { undoneText, type MemoryNoteView } from "./memory-note.js";
 import { renderApproval, type ApprovalCardActions } from "./approval-card.js";
 import { sessionHeadline } from "./format.js";
 import { MarkdownView } from "./markdown.js";
+import { renderSentFiles } from "./attachments/view.js";
 
 /** What a scheduled card's buttons do (the chat binds them; without them the card shows no buttons). */
 export interface ScheduledCardActions {
@@ -66,8 +67,9 @@ export function renderEvent(v: EventView, onContinue?: () => void, scheduled?: S
       );
     case "user": {
       if (v.screen) return renderScreenHelp(v.text);
-      if (!v.voice) return h("div.ev-user", null, v.text);
-      const bubble = h("div.ev-user.voice", { title: "Sent by voice" }, voiceMark(), h("span.ev-user-text", null, v.text));
+      const files = renderSentFiles(v.attachments);
+      if (!v.voice) return files ? h("div.ev-user", null, files, h("span.ev-user-text", null, v.text)) : h("div.ev-user", null, v.text);
+      const bubble = h("div.ev-user.voice", { title: "Sent by voice" }, files, voiceMark(), h("span.ev-user-text", null, v.text));
       return v.heard ? h("div.ev-said", null, bubble, renderWordForWord(v.heard)) : bubble;
     }
     case "spoken":
@@ -322,6 +324,7 @@ export function renderOpening(v: OpeningView, onDetails: (trigger: HTMLElement) 
         "div.ev-user",
         { class: v.voice ? "voice" : null },
         v.origin ? h("span.ev-origin", null, v.origin) : null,
+        renderSentFiles(v.attachments),
         v.voice ? voiceMark() : null,
         h("span.ev-user-text", null, v.text),
         v.files ? h("span.ev-files", { title: "Files sent with this message" }, svgIcon(12, CLIP_ICON), plural(v.files, "file")) : null,

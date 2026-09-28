@@ -73,6 +73,15 @@ describe("ClaudeCodeBrain helpers", () => {
       "--model",
       "sonnet",
     ]);
+    // A task session: its own Read, allowed in its working directory (the attachments folder) and refused elsewhere.
+    const read = buildClaudeArgs({ systemPrompt: "rules", mcpConfigPath: "C:\\run\\mcp-config.json", allowedTools: ["mcp__browsertodo__act"], read: true, model: "sonnet" });
+    expect(read.slice(read.indexOf("--allowedTools"), read.indexOf("--allowedTools") + 4)).toEqual([
+      "--allowedTools",
+      "mcp__browsertodo__act,Read(./**)",
+      "--permission-mode",
+      "dontAsk",
+    ]);
+    expect(read.slice(read.indexOf("--tools"), read.indexOf("--tools") + 2)).toEqual(["--tools", "Read"]);
     expect(userMessageLine('say "hi"\nnow')).toBe('{"type":"user","message":{"role":"user","content":"say \\"hi\\"\\nnow"}}\n');
   });
 

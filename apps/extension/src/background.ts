@@ -25,6 +25,7 @@ import type { Brain } from "./engine/brains.js";
 import { ClaudeCodeBrain } from "./engine/claude-code-brain.js";
 import { runConfig } from "./engine/run/turn.js";
 import { IdbKvDb } from "./engine/kv.js";
+import { AttachmentStore } from "./engine/attachment-store.js";
 import { LocalStore } from "./engine/local-store.js";
 import { MediaFiles } from "./engine/media-files.js";
 import { Runner, type ResolvedBrain } from "./engine/runner.js";
@@ -103,7 +104,8 @@ const { tab: agentTab, driver, browser } = slots.get(0);
 const db = new IdbKvDb();
 const localStore = new LocalStore({ db });
 // Each conversation's timing trace (Raw view) lives beside its events.
-const sessions = new SessionStore(db, { trace: new TraceStore(db, { log: logger("trace") }) });
+const attachments = new AttachmentStore(db);
+const sessions = new SessionStore(db, { trace: new TraceStore(db, { log: logger("trace") }), attachments });
 // The TODO tools (every brain): schedule, list, change and cancel tasks in the TODO list of that conversation's user (engine/schedule-task.ts).
 const todoTool = (sessionId: string, tool: TodoToolName, args: unknown): Promise<TodoToolResult> => router.scheduler.tool(sessionId, tool, args);
 // The agent's long-term memory (memory/): given at each turn's start, kept with remember / forget and run notes.
@@ -350,6 +352,7 @@ const runner = new Runner({
   episodes,
   titles,
   media: mediaFiles,
+  attachments,
   resolveBrain: resolveForRun,
   core,
   slots,

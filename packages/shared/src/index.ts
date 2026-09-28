@@ -30,3 +30,5 @@ export * from "./chat-title.js";
 export * from "./wait.js";
 export * from "./turn-time.js";
 export * from "./history-search.js";
+export * from "./attachments.js";
+export * from "./file-names.js";

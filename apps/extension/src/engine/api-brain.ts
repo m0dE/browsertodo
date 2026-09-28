@@ -4,10 +4,10 @@
  * the user's Anthropic API key (claude-api) and the hosted BrowserTODO AI
  * (browsertodo, see hosted-brain.ts).
  */
-import type { AgentSession, ApiAgentOptions, BrowserCaller, JevLike } from "@browsertodo/core";
+import type { AgentSession, ApiAgentOptions, ApiAttachment, BrowserCaller, JevLike } from "@browsertodo/core";
 import { errorMessage, type AgentEvent, type ExtensionSettings, type MemoryToolName, type TodoToolName, type TodoToolResult } from "@browsertodo/shared";
 import { callSafely } from "../listeners.js";
-import { endedRun, failedRun, type Brain, type BrainContinueOptions, type BrainRun, type BrainStartOptions, type CoreApi } from "./brains.js";
+import { endedRun, failedRun, type Brain, type BrainContinueOptions, type BrainRun, type BrainStartOptions, type CoreApi, type TurnAttachment } from "./brains.js";
 
 /** Where a conversation's current turn goes: the runner's event handler and the turn's tab. */
 interface TurnRoute {
@@ -91,6 +91,7 @@ export class ApiBrain implements Brain {
           sessionId: opts.sessionId,
           task: opts.task,
           mediaPaths: opts.mediaPaths,
+          ...(opts.attachments?.length ? { attachments: opts.attachments.map(apiAttachment) } : {}),
           config: opts.config,
           // Every turn acts in its own run's tab.
           browser: { call: (method, params) => route.browser.call(method, params) },
@@ -118,7 +119,7 @@ export class ApiBrain implements Brain {
     try {
       conv.route.sink = opts.onEvent;
       conv.route.browser = opts.browser ?? this.deps.browser;
-      agent = conv.agent.continueWith(opts.text, { config: opts.config });
+      agent = conv.agent.continueWith(opts.text, { config: opts.config, ...(opts.attachments?.length ? { attachments: opts.attachments.map(apiAttachment) } : {}) });
     } catch (err) {
       return failedRun(errorMessage(err));
     }
@@ -190,4 +191,9 @@ export class ApiBrain implements Brain {
   private changed(): void {
     callSafely(this.deps.onSessionsChanged);
   }
+}
+
+/** An attachment as the agent loop takes it (its bytes stay here; a fresh image's or PDF's go as base64). */
+function apiAttachment({ blob: _bytes, ...a }: TurnAttachment): ApiAttachment {
+  return a;
 }

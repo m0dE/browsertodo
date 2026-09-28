@@ -22,6 +22,8 @@ import {
   parseSettings,
   pauseReasonForUrl,
   pickDelayMs,
+  registrableDomain,
+  sameSite,
   siteHost,
   toolsFor,
   type RpcMessage,
@@ -186,6 +188,12 @@ describe("multi-tab tools", () => {
     expect(toolsFor()).not.toContain("click");
     expect(toolsFor({ interactive: true })).not.toContain("task_complete");
   });
+
+  it("the user's own Claude Code (--attach) gets no saved logins: get_credential is a task's tool only", () => {
+    expect(toolsFor()).toContain("get_credential");
+    expect(INTERACTIVE_TOOL_NAMES).not.toContain("get_credential");
+    expect(toolsFor({ interactive: true })).not.toContain("get_credential");
+  });
 });
 
 describe("follow-up suggestion (task_* suggestion)", () => {
@@ -281,6 +289,35 @@ describe("url helpers", () => {
     expect(isXStatusUrl("https://x.com/home?ref=/status/123")).toBe(false);
     expect(isXStatusUrl("https://x.com/i/web/status/123")).toBe(true);
     expect(isXStatusUrl("https://example.com/alpha/status/123")).toBe(false);
+  });
+
+  it("registrableDomain: the site a host belongs to (its eTLD+1)", () => {
+    expect(registrableDomain("mail.google.com")).toBe("google.com");
+    expect(registrableDomain("https://WWW.Example.com/login")).toBe("example.com");
+    expect(registrableDomain("bank.test")).toBe("bank.test");
+    expect(registrableDomain("x.com")).toBe("x.com");
+    // Two-label public suffixes under a country code.
+    expect(registrableDomain("www.bbc.co.uk")).toBe("bbc.co.uk");
+    expect(registrableDomain("shop.amazon.com.au")).toBe("amazon.com.au");
+    expect(registrableDomain("x.co")).toBe("x.co");
+    // Hosting suffixes where every customer is a site of its own.
+    expect(registrableDomain("attacker.github.io")).toBe("attacker.github.io");
+    expect(registrableDomain("a.b.vercel.app")).toBe("b.vercel.app");
+    // Hosts without a site above them are their own.
+    expect(registrableDomain("localhost:8080")).toBe("localhost");
+    expect(registrableDomain("127.0.0.1")).toBe("127.0.0.1");
+    expect(registrableDomain("co.uk")).toBe("co.uk");
+    expect(registrableDomain("")).toBe("");
+  });
+
+  it("sameSite: hosts or URLs of one registrable domain", () => {
+    expect(sameSite("login.bank.test", "https://bank.test/account")).toBe(true);
+    expect(sameSite("bank.test", "https://evil.test/login")).toBe(false);
+    expect(sameSite("bank.test", "https://bank.test.evil.test/")).toBe(false);
+    expect(sameSite("victim.github.io", "https://attacker.github.io/")).toBe(false);
+    expect(sameSite("bbc.co.uk", "https://evil.co.uk/")).toBe(false);
+    expect(sameSite("", "https://bank.test/")).toBe(false);
+    expect(sameSite("bank.test", "not a url")).toBe(false);
   });
 });
 

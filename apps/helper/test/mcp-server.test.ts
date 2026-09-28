@@ -9,15 +9,17 @@ import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotoc
 import type { PipeMethods } from "@browsertodo/shared";
 import { pipePathFor, startPipeServer, connectPipe, type PipeServer } from "../src/pipe-server.js";
 import { toMcpResult, toolsFromEnv } from "../src/mcp-tools.js";
+import { buildMcpConfig } from "../src/session/session-setup.js";
 
 const MCP_JS = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "mcp-server.js");
 
-const received: PipeMethods["tool.call"]["params"][] = [];
+const received: Omit<PipeMethods["tool.call"]["params"], "token">[] = [];
 let pipe: PipeServer;
 const pipePath = pipePathFor(900_000 + Math.floor(Math.random() * 99_999));
+const TOKEN = "t0ken-of-this-helper";
 
 beforeAll(async () => {
-  pipe = await startPipeServer(pipePath, {
+  pipe = await startPipeServer(pipePath, TOKEN, {
     toolCall: async (p) => {
       received.push(p);
       if (p.name === "screenshot") return { image: { base64: "aGVsbG8=", mimeType: "image/jpeg" } };
@@ -35,7 +37,7 @@ async function connect(tools: string) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [MCP_JS],
-    env: { ...getDefaultEnvironment(), BROWSERTODO_PIPE: pipePath, BROWSERTODO_TASK: "T9", BROWSERTODO_TOOLS: tools },
+    env: { ...getDefaultEnvironment(), BROWSERTODO_PIPE: pipePath, BROWSERTODO_PIPE_TOKEN: TOKEN, BROWSERTODO_TASK: "T9", BROWSERTODO_TOOLS: tools },
     stderr: "pipe",
   });
   const client = new Client({ name: "test", version: "1.0.0" });
@@ -46,9 +48,24 @@ async function connect(tools: string) {
 describe("pipe", () => {
   it("relays tool.call and tool.list between peers", async () => {
     const c = await connectPipe(pipePath);
-    expect(await c.peer.call("tool.list", { taskId: "T" })).toEqual({ names: ["read_page"] });
-    const r = await c.peer.call("tool.call", { taskId: "T", name: "read_page", args: {} });
+    expect(await c.peer.call("tool.list", { token: TOKEN, taskId: "T" })).toEqual({ names: ["read_page"] });
+    received.length = 0;
+    const r = await c.peer.call("tool.call", { token: TOKEN, taskId: "T", name: "read_page", args: {} });
     expect(r.text).toContain("relayed read_page for T");
+    // The token is checked, not passed on.
+    expect(received).toEqual([{ taskId: "T", name: "read_page", args: {} }]);
+    c.close();
+    await c.closed;
+  });
+
+  it("answers no call without the helper's token (any other process of the user that finds the pipe)", async () => {
+    const c = await connectPipe(pipePath);
+    received.length = 0;
+    for (const token of ["guess", "", undefined]) {
+      await expect(c.peer.call("tool.call", { token, taskId: "interactive", name: "get_credential", args: { site: "bank.test" } } as never)).rejects.toThrow(/not authorized/);
+      await expect(c.peer.call("tool.list", { token, taskId: "interactive" } as never)).rejects.toThrow(/not authorized/);
+    }
+    expect(received).toEqual([]);
     c.close();
     await c.closed;
   });
@@ -89,7 +106,7 @@ describe("mcp-server.js over stdio", () => {
 
   it("exits when Claude Code goes away (stdin closes), though the helper's pipe is still open", async () => {
     const child = spawn(process.execPath, [MCP_JS], {
-      env: { ...getDefaultEnvironment(), BROWSERTODO_PIPE: pipePath, BROWSERTODO_TASK: "T9", BROWSERTODO_TOOLS: "read_page" },
+      env: { ...getDefaultEnvironment(), BROWSERTODO_PIPE: pipePath, BROWSERTODO_PIPE_TOKEN: TOKEN, BROWSERTODO_TASK: "T9", BROWSERTODO_TOOLS: "read_page" },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -147,7 +164,7 @@ describe("mcp-server.js --attach", () => {
   it("finds the helper through helper.json and serves the interactive tools", async () => {
     const home = mkdtempSync(join(tmpdir(), "bt-attach-"));
     try {
-      writeFileSync(join(home, "helper.json"), JSON.stringify({ pipe: pipePath, pid: process.pid, startedAt: new Date().toISOString() }));
+      writeFileSync(join(home, "helper.json"), JSON.stringify({ pipe: pipePath, token: TOKEN, pid: process.pid, startedAt: new Date().toISOString() }));
       const transport = new StdioClientTransport({
         command: process.execPath,
         args: [MCP_JS, "--attach"],
@@ -187,6 +204,11 @@ describe("mcp-server.js --attach", () => {
 });
 
 describe("mcp helpers", () => {
+  it("a task session's MCP server is given the pipe's token with the pipe", () => {
+    const cfg = buildMcpConfig({ nodePath: "node", mcpServerPath: "mcp.js", pipePath, pipeToken: TOKEN, taskId: "T1", toolNames: ["read_page"] });
+    expect(cfg.mcpServers.browsertodo.env).toMatchObject({ BROWSERTODO_PIPE: pipePath, BROWSERTODO_PIPE_TOKEN: TOKEN, BROWSERTODO_TASK: "T1" });
+  });
+
   it("parses the tool list env", () => {
     expect(toolsFromEnv("read_page, act,bogus")).toEqual(["read_page", "act"]);
     expect(toolsFromEnv(undefined)).toContain("task_pause");

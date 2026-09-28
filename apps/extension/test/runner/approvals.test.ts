@@ -49,6 +49,6 @@ describe("Runner: approvals", () => {
 
   it("no running session: the chat level, no deadline", async () => {
     const h = harness({ automationLevel: "ask_all" });
-    expect(await h.runner.gateContext("nope")).toEqual({ level: "ask_all", instructions: "" });
+    expect(await h.runner.gateContext("nope")).toEqual({ level: "ask_all", instructions: "", account: null });
   });
 });

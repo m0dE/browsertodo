@@ -14,6 +14,8 @@ export const ENV = {
   typesafeApiKey: "TYPESAFE_API_KEY",
   /** For the MCP server a task session's Claude Code starts: the helper's pipe. */
   pipe: "BROWSERTODO_PIPE",
+  /** For the MCP server: the token every call on the pipe carries (random per helper start; see PipeMethods). */
+  pipeToken: "BROWSERTODO_PIPE_TOKEN",
   /** For the MCP server: its task session id (empty: the attached session's tools). */
   task: "BROWSERTODO_TASK",
   /** For the MCP server: comma list of the tools to register (default: all). */

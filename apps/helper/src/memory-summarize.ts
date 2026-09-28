@@ -1,10 +1,13 @@
 /**
  * memory.summarize: the extension's background memory writer (packages/shared/src/memory-writer.ts) on Claude
- * Code. One headless `claude -p` call on the cheapest model, with the writer's system prompt and the conversation's
- * prompt on stdin, no tools, no settings and nothing saved (isolatedClaudeArgs), on the user's own Claude Code
- * login (claudeEnv). Its JSON result gives the model's answer and what the call cost.
+ * Code. One headless `claude -p` call on the cheapest model, with the writer's system prompt in a file of its own (its
+ * size is the caller's; the command line has a limit) and the conversation's prompt on stdin, no tools, no settings
+ * and nothing saved (isolatedClaudeArgs), on the user's own Claude Code login (claudeEnv). Its JSON result gives the model's answer and what the call cost.
  */
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { errorMessage, MEMORY_SUMMARIZE_TIMEOUT_MS, MEMORY_WRITER_CLAUDE_CODE_MODEL, type HelperMethods } from "@browsertodo/shared";
 import { claudeEnv, isolatedClaudeArgs, killTree } from "./claude-process.js";
 
@@ -13,8 +16,8 @@ export type SummarizeResult = HelperMethods["memory.summarize"]["result"];
 /** How much of Claude Code's output an error message quotes. */
 const ERROR_DETAIL_CHARS = 300;
 
-export function memorySummarizeArgs(system: string, model = MEMORY_WRITER_CLAUDE_CODE_MODEL): string[] {
-  return ["-p", "--output-format", "json", "--system-prompt", system, ...isolatedClaudeArgs(model)];
+export function memorySummarizeArgs(systemFile: string, model = MEMORY_WRITER_CLAUDE_CODE_MODEL): string[] {
+  return ["-p", "--output-format", "json", "--system-prompt-file", systemFile, ...isolatedClaudeArgs(model)];
 }
 
 /** Reads `claude -p --output-format json` output: the answer and its cost, or throws with why it failed. */
@@ -50,6 +53,18 @@ export function runMemorySummarize(opts: {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    const promptDir = mkdtempSync(join(tmpdir(), "browsertodo-memory-"));
+    const systemFile = join(promptDir, "system-prompt.txt");
+    writeFileSync(systemFile, opts.system, "utf8");
+    // Once no process holds it open: on "close" (which follows a failed start too; on a timeout, finish comes
+    // before the killed process is gone). A file left in the temp folder harms nothing; a throw here would end the helper.
+    const removePromptDir = () => {
+      try {
+        rmSync(promptDir, { recursive: true, force: true, maxRetries: 3 });
+      } catch {
+        /* see above */
+      }
+    };
     const finish = (fn: () => SummarizeResult) => {
       if (settled) return;
       settled = true;
@@ -63,7 +78,7 @@ export function runMemorySummarize(opts: {
     const timeoutMs = opts.timeoutMs ?? MEMORY_SUMMARIZE_TIMEOUT_MS;
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(opts.claudePath, [...(opts.prefixArgs ?? []), ...memorySummarizeArgs(opts.system, opts.model)], {
+      child = spawn(opts.claudePath, [...(opts.prefixArgs ?? []), ...memorySummarizeArgs(systemFile, opts.model)], {
         windowsHide: true,
         shell: false,
         stdio: ["pipe", "pipe", "pipe"],
@@ -71,6 +86,7 @@ export function runMemorySummarize(opts: {
         ...(opts.cwd ? { cwd: opts.cwd } : {}),
       });
     } catch (e) {
+      removePromptDir();
       reject(new Error(`Could not start Claude Code: ${errorMessage(e)}`));
       return;
     }
@@ -89,7 +105,10 @@ export function runMemorySummarize(opts: {
         throw new Error(`Could not start Claude Code: ${e.message}`);
       }),
     );
-    child.on("close", (code) => finish(() => parseSummarizeOutput(stdout, stderr, code)));
+    child.on("close", (code) => {
+      finish(() => parseSummarizeOutput(stdout, stderr, code));
+      removePromptDir();
+    });
     child.stdin!.end(opts.prompt, "utf8");
   });
 }

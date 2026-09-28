@@ -33,7 +33,7 @@ function accountRepeat(repeat: RepeatSchedule | LegacyRepeatRule | null | undefi
  */
 export async function accountTaskInput(
   api: Pick<AccountApi, "uploadMedia">,
-  t: { instructions: string; account?: string | null; notBefore?: string | null; repeat?: RepeatSchedule | LegacyRepeatRule | null },
+  t: { instructions: string; account?: string | null; notBefore?: string | null; repeat?: RepeatSchedule | LegacyRepeatRule | null; agentAuthored?: boolean },
   files: { name: string; blob: Blob }[],
   timeZone: string,
 ): Promise<CreateTaskInput> {
@@ -46,6 +46,7 @@ export async function accountTaskInput(
     ...(account ? { account } : {}),
     ...(mediaIds.length ? { mediaIds } : {}),
     ...(t.notBefore || repeat ? { schedule: { ...(t.notBefore ? { at: t.notBefore } : {}), ...(repeat ? { repeat } : {}) } } : {}),
+    ...(t.agentAuthored ? { agentAuthored: true } : {}),
   };
 }
 
@@ -102,6 +103,7 @@ export class AccountTodo implements TodoSource {
     // A new repeat rule replaces the whole schedule (with the first time given beside it); a time alone moves just the time.
     if (patch.repeat !== undefined) body.schedule = { at: patch.notBefore ?? null, repeat: accountRepeat(patch.repeat, this.timeZone) };
     else if (patch.notBefore !== undefined) body.notBefore = patch.notBefore ?? null;
+    if (patch.agentAuthored !== undefined) body.agentAuthored = patch.agentAuthored;
     const task = await this.api.updateTask(id, body);
     this.onChange();
     return asLocal(task);

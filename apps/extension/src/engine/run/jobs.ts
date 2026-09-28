@@ -90,13 +90,14 @@ export async function dueLocal(
 
 /**
  * The task a new session runs, and its series (what its memory is kept under; absent: a chat, or a cloud task from a
- * server without series). Local tasks get their crash marker first, persisted before anything can act.
+ * server without series), and whether the agent wrote it (Task.agentAuthored). Local tasks get their crash marker
+ * first, persisted before anything can act.
  */
 export async function openTask(
   job: FirstJob,
   sessionId: string,
   localStore: LocalStore,
-): Promise<{ task: AgentTask; taskId?: string; seriesId?: string; isRetry: boolean }> {
+): Promise<{ task: AgentTask; taskId?: string; seriesId?: string; isRetry: boolean; agentAuthored?: true }> {
   if (job.source === "local") {
     const marked = await localStore.markStarted(job.task.id);
     return {
@@ -104,11 +105,18 @@ export async function openTask(
       taskId: marked.id,
       seriesId: marked.seriesId ?? marked.id,
       isRetry: marked.attempts > 1 || !!job.task.crashed,
+      ...(marked.agentAuthored ? { agentAuthored: true as const } : {}),
     };
   }
   if (job.source === "cloud") {
     const t = job.claim.task;
-    return { task: { id: t.id, instructions: t.instructions, account: t.account }, taskId: t.id, ...(t.seriesId ? { seriesId: t.seriesId } : {}), isRetry: t.attempts > 1 };
+    return {
+      task: { id: t.id, instructions: t.instructions, account: t.account },
+      taskId: t.id,
+      ...(t.seriesId ? { seriesId: t.seriesId } : {}),
+      isRetry: t.attempts > 1,
+      ...(t.agentAuthored ? { agentAuthored: true as const } : {}),
+    };
   }
   const account = job.input.account?.trim() || null;
   if (job.input.screen) return { task: { id: sessionId, instructions: SCREEN_HELP_TEXT, account, screenHelp: true }, isRetry: false };

@@ -7,7 +7,7 @@
  */
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { ExtensionSettings, VoiceEngineId, VoiceEnginesResponse } from "@browsertodo/shared";
-import { initHandsFree, type HandsFreeDeps } from "../../src/sidepanel/hands-free.js";
+import { initHandsFree, RECONNECT_DELAYS_MS, type HandsFreeDeps } from "../../src/sidepanel/hands-free.js";
 import type { HandsFreeLook } from "../../src/sidepanel/voice-input.js";
 import type { EngineEvents, HandsFreeEngine } from "../../src/voice/engine.js";
 import { HANDS_FREE } from "../../src/voice/hands-free.js";
@@ -26,10 +26,13 @@ class FakeEngine implements HandsFreeEngine {
     readonly id: VoiceEngineId,
     readonly events: EngineEvents,
     readonly takeover = false,
+    private readonly begin: () => Promise<void> = async () => {},
   ) {
     this.halfDuplex = id === "standard";
   }
-  async start(): Promise<void> {}
+  start(): Promise<void> {
+    return this.begin();
+  }
   stop(): void {
     this.stopped = true;
   }
@@ -74,7 +77,7 @@ function find(el: MiniElement, cls: string): MiniElement | null {
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 /** The side panel of tab `homeTab` (it shows that tab). */
-function panel(homeTab: number, opts: { engine?: VoiceEngineId } = {}) {
+function panel(homeTab: number, opts: { engine?: VoiceEngineId; begin?: (n: number) => Promise<void> } = {}) {
   const engines: FakeEngine[] = [];
   const looks: (HandsFreeLook | null)[] = [];
   const reports: [boolean, number | null, VoiceEngineId | null][] = [];
@@ -102,7 +105,8 @@ function panel(homeTab: number, opts: { engine?: VoiceEngineId } = {}) {
     saveSettings: async () => {},
     openVoiceSettings: () => {},
     createEngine: (id, events, o) => {
-      const e = new FakeEngine(id, events, o?.takeover ?? false);
+      const n = engines.length;
+      const e = new FakeEngine(id, events, o?.takeover ?? false, opts.begin && (() => opts.begin!(n)));
       engines.push(e);
       return e;
     },
@@ -453,6 +457,83 @@ describe("Standard: the speaker's own line heard back is not the user (echo)", (
       std.events.heard("Post gm on X", true);
       await vi.advanceTimersByTimeAsync(HANDS_FREE.sendDelayMs * 2);
       expect((t.deps.send as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])).toEqual(["Post gm on X"]);
+      t.hf.toggle("button");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("hands-free voice stopped and started again while it still starts (a double press): one engine, the one on", () => {
+  beforeAll(installMiniDom);
+
+  /** A promise and its resolve. */
+  const held = () => {
+    let release!: () => void;
+    const promise = new Promise<void>((r) => (release = r));
+    return { promise, release };
+  };
+
+  it("during the microphone check: the older start opens no engine", async () => {
+    const t = panel(1);
+    const mics: ((ok: boolean) => void)[] = [];
+    t.deps.voice.ensureMic = () => new Promise((r) => mics.push(r));
+    t.hf.toggle("button");
+    t.hf.toggle("button");
+    t.hf.toggle("button");
+    // Both checks answer together (one permission prompt).
+    mics[0]!(true);
+    mics[1]!(true);
+    await settle();
+    expect(t.engines).toHaveLength(1);
+    expect(t.engines[0]!.stopped).toBe(false);
+    expect(t.hf.active).toBe(true);
+    t.hf.toggle("button");
+    expect(t.engines[0]!.stopped).toBe(true);
+    expect(t.hf.active).toBe(false);
+  });
+
+  it("while the engine connects: the older engine is stopped, and the newer start still counts as on", async () => {
+    const starts = [held(), held()];
+    const t = panel(1, { begin: (n) => starts[n]!.promise });
+    t.hf.toggle("button");
+    await settle();
+    t.hf.toggle("button");
+    t.hf.toggle("button");
+    await settle();
+    expect(t.engines).toHaveLength(2);
+    starts[0]!.release();
+    await settle();
+    expect(t.engines[0]!.stopped).toBe(true);
+    // Still starting: the next press stops it (not a third start).
+    expect(t.hf.active).toBe(true);
+    starts[1]!.release();
+    await settle();
+    expect(t.engines[1]!.stopped).toBe(false);
+    expect(t.hf.phase).toBe("listening");
+    t.hf.toggle("button");
+    expect(t.engines.map((e) => e.stopped)).toEqual([true, true]);
+  });
+
+  it("while Realtime waits to reconnect: the older session opens no engine after its wait", async () => {
+    vi.useFakeTimers();
+    try {
+      const drop = { kind: "upstream", transient: true, message: "Voice disconnected." };
+      const t = panel(1, { begin: (n) => (n === 1 ? Promise.reject(drop) : Promise.resolve()) });
+      t.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(0);
+      t.engines[0]!.events.failed(drop);
+      await vi.advanceTimersByTimeAsync(0);
+      // The reconnect failed once and waits to try again; the user stops and starts voice meanwhile.
+      expect(t.engines).toHaveLength(2);
+      t.hf.toggle("button");
+      t.hf.toggle("button");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.engines).toHaveLength(3);
+      await vi.advanceTimersByTimeAsync(RECONNECT_DELAYS_MS[0]);
+      expect(t.engines).toHaveLength(3);
+      expect(t.engines[2]!.stopped).toBe(false);
+      expect(t.hf.phase).toBe("listening");
       t.hf.toggle("button");
     } finally {
       vi.useRealTimers();

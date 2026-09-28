@@ -67,7 +67,7 @@ export interface MigrationResult {
 }
 
 export interface AccountLocalTasks {
-  list(): Promise<Pick<StoredLocalTask, "id" | "status" | "instructions" | "account" | "notBefore" | "mediaIds" | "repeat">[]>;
+  list(): Promise<Pick<StoredLocalTask, "id" | "status" | "instructions" | "account" | "notBefore" | "mediaIds" | "repeat" | "agentAuthored">[]>;
   getMedia(ids: string[]): Promise<{ id: string; name: string; blob: Blob }[]>;
   delete(id: string): Promise<boolean>;
 }

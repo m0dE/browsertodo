@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AgentEvent } from "@browsertodo/shared";
-import { interjectionText, Interjections, raiseNote, THINKING_BUDGET_TOKENS, type ReasoningChange } from "@browsertodo/core";
-import { ClaudeCodeBrain, buildClaudeArgs } from "../src/brains/claude-code.js";
+import { TOOL_NAMES, toolsFor, type AgentEvent } from "@browsertodo/shared";
+import { buildSystemPrompt, interjectionText, Interjections, raiseNote, THINKING_BUDGET_TOKENS, type ReasoningChange } from "@browsertodo/core";
+import { ClaudeCodeBrain, buildClaudeArgs, systemPromptFile } from "../src/brains/claude-code.js";
 import { apiBillingVarsIn, CLAUDE_RUN_ENV, claudeEnv, resolveClaudePath } from "../src/claude-process.js";
 import { UserInput, type BrainContext } from "../src/brains/brain.js";
 import { SelfTestCache, parseSelfTestOutput, runSelfTest, selfTestArgs } from "../src/self-test.js";
@@ -74,6 +74,25 @@ describe("ClaudeCodeBrain process handling (fake claude)", () => {
     ]);
     expect(c.input.closed).toBe(true);
     expect(log.at(-1)).toMatchObject({ type: "claude_exit", code: 0 });
+  });
+
+  it("passes the system prompt in a file in the run folder: the command line stays far below Windows' 32,767 characters", async () => {
+    const log: Record<string, any>[] = [];
+    // A task session's real prompt, with every tool, Jev and follow-ups (the longest there is).
+    const tools = TOOL_NAMES.filter((n) => toolsFor().includes(n));
+    const systemPrompt = buildSystemPrompt({ tools, jev: true, followUps: true, readAttachments: true });
+    expect(systemPrompt.length).toBeGreaterThan(20_000);
+    const c = { ...ctx(new AbortController().signal, log, []), systemPrompt };
+    await brain().run(c);
+    const args: string[] = log.find((e) => e.type === "claude" && e.event.type === "system")!.event.args;
+    expect(args).not.toContain(systemPrompt);
+    const file = args[args.indexOf("--append-system-prompt-file") + 1]!;
+    expect(dirname(file)).toBe(dir);
+    expect(readFileSync(file, "utf8")).toBe(systemPrompt);
+    expect([process.execPath, ...args].join(" ").length).toBeLessThan(2_000);
+    // The same prompt is the same file (a process started ahead is taken by its args); another is another.
+    expect(systemPromptFile(c.mcpConfigPath, systemPrompt)).toBe(file);
+    expect(systemPromptFile(c.mcpConfigPath, `${systemPrompt} `)).not.toBe(file);
   });
 
   it("streams text deltas in batches, then the final text with the same id; the run log keeps only the final text", async () => {

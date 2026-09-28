@@ -90,6 +90,8 @@ export interface TodoTaskFields {
   instructions: string;
   account: string | null;
   schedule: ScheduleInput;
+  /** The agent had written the instructions (Task.agentAuthored); absent: the user had. */
+  agentAuthored?: true;
 }
 
 /** What update_scheduled_task / cancel_scheduled_task did to a task (its chat card). */

@@ -188,6 +188,19 @@ export const WITHIN_CASES: readonly WithinCase[] = [
   { name: "like asked for", instructions: "Like every post from @acme today", action: like, within: true },
   { name: "sign-up not asked for", instructions: "Find the price of the Pro plan on acme.com", action: signup, within: false },
   { name: "upload not asked for", instructions: "Post 'Good morning' on X", action: upload, within: false },
+  // Added with the whole-word and site rules: the owner's paused task, and the false yeses of word-start matching,
+  // generic nouns and a site the task never names (written for these rules, so not an unbiased estimate).
+  { name: "owner's task: one post on X as an account", instructions: "Make one post on X as @bboym0dE about today's build", action: post, within: true },
+  { name: "'keep posting' asks for posting", instructions: "Keep posting the daily build notes on X", action: post, within: true },
+  { name: "'likely' is not 'like'", instructions: "Post what is likely to trend today on X", action: like, within: false },
+  { name: "'bookmark' is not 'book'", instructions: "Bookmark the Le Petit hotel page on booking.com", action: click(el("button", "Book now"), BOOKING), within: false },
+  { name: "'signal' is not 'sign'", instructions: "Summarize the signal report attached on DocuSign", action: click(el("button", "Sign now"), DOCUSIGN), within: false },
+  { name: "'tips' is not 'tip'", instructions: "Collect the best tips from the Stripe docs on stripe.com", action: click(el("button", "Pay $20.00"), STRIPE), within: false },
+  { name: "'payload' is not 'pay'", instructions: "Log the webhook payload from stripe.com", action: click(el("button", "Pay $20.00"), STRIPE), within: false },
+  { name: "account nouns ask for no change", instructions: "Check my account settings and profile on GitHub for anything unusual", action: changePassword, within: false },
+  { name: "a site's name in a domain is not a verb", instructions: "Check my reservation on booking.com", action: click(el("button", "Book now"), BOOKING), within: false },
+  { name: "pay asked for, on another site", instructions: "Pay my electricity bill on pge.com", action: pay, within: false },
+  { name: "pay asked for, on the site named", instructions: "Pay the Namecheap invoice that is due", action: pay, within: true },
 ];
 
 /**

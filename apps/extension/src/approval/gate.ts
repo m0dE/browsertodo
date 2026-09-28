@@ -57,6 +57,8 @@ export interface GateContext {
   level: EffectiveLevel;
   /** Scheduled runs: the task's instructions (full_within_task holds actions they do not ask for). */
   instructions?: string;
+  /** Scheduled runs: the account the task acts as (an X handle names X as its site). */
+  account?: string | null;
   /** When the turn's time limit ends it (epoch ms): an approval waits at most until shortly before. */
   endsAt?: number;
   /**
@@ -224,10 +226,10 @@ export class ApprovalGate {
     const judged: Record<string, TraceValue> = { action: describeAction(action), level: ctx.level, kind: j.kind ?? null, by: j.by, reason: j.reason };
     let wait: { why: string; kind?: ConsequenceKind } | null = { why: what, ...(j.kind ? { kind: j.kind } : {}) };
     if (ctx.level === "full_within_task") {
-      const w = await judgeWithinTask(j.kind, action, ctx.instructions ?? "", { jev, pageText });
-      // Both verdicts: a Jev veto over the task's own words is plain in the Raw view.
+      const w = await judgeWithinTask(j.kind, action, { instructions: ctx.instructions ?? "", account: ctx.account ?? null }, { jev, pageText });
+      // Both verdicts: what the rules said and, when they were unsure, Jev's answer are plain in the Raw view.
       Object.assign(judged, { withinRules: w.rules, withinJev: w.jev ?? null, within: w.within });
-      wait = w.within ? null : { why: `${what}; the task does not ask for this`, ...(j.kind ? { kind: j.kind } : {}) };
+      wait = w.within ? null : { why: `${what}; ${w.reason}`, ...(j.kind ? { kind: j.kind } : {}) };
     }
     judged.waits = wait !== null;
     this.deps.trace?.(sessionId, { t: started, ms: (this.deps.now?.() ?? Date.now()) - started, cat: "approval", name: "approval.judge", src: "engine", data: judged });

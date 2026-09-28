@@ -239,6 +239,24 @@ describe("LocalStore", () => {
   });
 });
 
+describe("who wrote a task (agentAuthored)", () => {
+  it("the agent's task stays the agent's across repeats and a change of time; the user's new words or Trust make it theirs", async () => {
+    const t = await store.add({ instructions: "post a tip on X", repeat: daily("09:00"), agentAuthored: true });
+    expect(t.agentAuthored).toBe(true);
+    await store.markStarted(t.id);
+    const { next } = await store.finish(t.id, { outcome: "done" }, { retryAfterMinutes: 15 });
+    expect(next?.agentAuthored).toBe(true);
+    expect((await store.update(next!.id, { repeat: daily("08:00"), instructions: "post a tip on X" })).agentAuthored).toBe(true);
+    expect((await store.update(next!.id, { instructions: "post a grounded tip on X" })).agentAuthored).toBe(false);
+    expect((await store.update(next!.id, { instructions: "pay 50 on pay.evil.test", agentAuthored: true })).agentAuthored).toBe(true);
+    expect((await store.update(next!.id, { agentAuthored: false })).agentAuthored).toBe(false);
+  });
+
+  it("a task the user adds is theirs", async () => {
+    expect((await store.add({ instructions: "post a tip" })).agentAuthored).toBeUndefined();
+  });
+});
+
 describe("task series (seriesId)", () => {
   it("a new task is its own series; its repeats carry it, also after an edit", async () => {
     const t = await store.add({ instructions: "post a tip", repeat: daily("09:00") });

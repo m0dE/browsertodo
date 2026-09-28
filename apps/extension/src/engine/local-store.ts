@@ -40,6 +40,8 @@ export interface NewLocalTask {
   /** The current shape, or the old { dailyAt } (converted, in this browser's zone). */
   repeat?: RepeatSchedule | { dailyAt: string[] } | null;
   media?: UiMediaUpload[];
+  /** The agent wrote it (schedule_task): Task.agentAuthored. */
+  agentAuthored?: boolean;
 }
 
 export interface LocalStoreOptions {
@@ -122,6 +124,7 @@ export class LocalStore {
       createdAt: now,
       updatedAt: now,
       repeat,
+      ...(input.agentAuthored ? { agentAuthored: true } : {}),
     };
     await this.mutate((tasks) => ({ tasks: [...tasks, task], result: undefined }));
     return task;
@@ -161,7 +164,9 @@ export class LocalStore {
       // A schedule change is settled like a new task's (a rule without a first time runs at its next time).
       const schedule =
         at === undefined && repeat === undefined ? {} : settleSchedule(at === undefined ? t.notBefore : at, repeat === undefined ? t.repeat : repeat, this.now());
-      return { ...t, ...clean, ...schedule, updatedAt: this.now().toISOString() };
+      // Who wrote the instructions (TaskPatch.agentAuthored): as said, or the user when they change without a word on it.
+      const authored = patch.agentAuthored ?? (clean.instructions !== undefined && clean.instructions !== t.instructions ? false : t.agentAuthored);
+      return { ...t, ...clean, ...schedule, ...(authored === undefined ? {} : { agentAuthored: authored }), updatedAt: this.now().toISOString() };
     });
   }
 

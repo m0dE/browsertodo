@@ -94,6 +94,8 @@ export interface TaskRunnerDeps {
   inbox: AttachmentInbox;
   mcpServerPath: string;
   pipePath: string;
+  /** What the MCP servers' pipe calls carry (PipeMethods). */
+  pipeToken: string;
   browser: BrowserCaller;
   /** Jev key from the helper environment (TYPESAFE_API_KEY), used when the run config has none. */
   envJevKey: string | null;
@@ -268,6 +270,7 @@ export class TaskRunner {
       nodePath: this.deps.nodePath ?? process.execPath,
       mcpServerPath: this.deps.mcpServerPath,
       pipePath: this.deps.pipePath,
+      pipeToken: this.deps.pipeToken,
       taskId: toolTaskId,
       toolNames,
       jev,

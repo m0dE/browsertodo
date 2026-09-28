@@ -44,6 +44,7 @@ function setup(x: FakeX, over: Partial<TaskRunnerDeps> & { brain?: (router: Tool
     runsDir: join(dir, "runs"),
     mcpServerPath: "C:\\helper\\dist\\mcp-server.js",
     pipePath: "\\\\.\\pipe\\browsertodo-test",
+    pipeToken: "test-token",
     browser: x.caller(),
     envJevKey: "env-key",
     makeJev: () => fakeJev,
@@ -119,7 +120,7 @@ describe("TaskRunner with ScriptedBrain", () => {
         browsertodo: {
           command: process.execPath,
           args: ["C:\\helper\\dist\\mcp-server.js"],
-          env: { BROWSERTODO_PIPE: "\\\\.\\pipe\\browsertodo-test", BROWSERTODO_TASK: "S1", BROWSERTODO_TOOLS: expect.any(String), BROWSERTODO_JEV: "0" },
+          env: { BROWSERTODO_PIPE: "\\\\.\\pipe\\browsertodo-test", BROWSERTODO_PIPE_TOKEN: "test-token", BROWSERTODO_TASK: "S1", BROWSERTODO_TOOLS: expect.any(String), BROWSERTODO_JEV: "0" },
         },
       },
     });

@@ -387,7 +387,7 @@ describe("UiRouter: account", () => {
     const at = new Date(Date.now() + 3 * 3_600_000).toISOString();
     const r = await t.router.scheduler.schedule("S1", { task: "Check the order status", schedule: { at } });
     expect(r).toMatchObject({ taskId: "A1", instructions: "Check the order status", nextRunAt: at });
-    expect(t.accountTodo.add).toHaveBeenCalledWith({ instructions: "Check the order status", notBefore: at, repeat: null });
+    expect(t.accountTodo.add).toHaveBeenCalledWith({ instructions: "Check the order status", notBefore: at, repeat: null, agentAuthored: true });
     expect(await t.req({ type: "chat.undoScheduled", sessionId: "S1", taskId: "A1" })).toEqual({ ok: true });
     expect(t.accountTodo.delete).toHaveBeenCalledWith("A1");
     expect((await t.sessions.eventsOf("S1")).map((e) => e.type)).toEqual(["task_scheduled", "task_unscheduled"]);

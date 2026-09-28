@@ -214,8 +214,9 @@ export class Runner {
     const settings = await this.deps.loadSettings();
     const a = this.live.get(sessionId);
     const base: GateContext = {
-      level: effectiveLevel(settings, a?.scheduled ?? false),
+      level: effectiveLevel(settings, a ?? { scheduled: false }),
       instructions: a?.instructions ?? a?.session.instructions ?? a?.session.title ?? "",
+      account: a?.account ?? a?.session.account ?? null,
       ...(a?.turnEndsAt ? { endsAt: a.turnEndsAt } : {}),
     };
     if (!a) return base;

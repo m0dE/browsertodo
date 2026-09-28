@@ -38,7 +38,7 @@ import { runsOfTask } from "./details-sheet.js";
 import { filePicker, filesToUploads } from "./files.js";
 import { accountLabel, firstLine, runDueButton, todoGate, type TodoGate } from "./format.js";
 import { shortUrl } from "../text.js";
-import { runControl, taskActions, type TaskAction } from "./task-actions.js";
+import { runControl, taskActions, TRUST, type TaskAction } from "./task-actions.js";
 
 /** The Finished list shows this many, newest first. */
 const FINISHED_SHOWN = 50;
@@ -274,6 +274,16 @@ export function initTasks(opts: {
     }
   }
 
+  /** Trust on a task the agent wrote: its instructions become the user's word (Task.agentAuthored). */
+  async function trust(t: Row): Promise<void> {
+    try {
+      await uiRequest({ type: "tasks.update", id: t.id, patch: { agentAuthored: false } });
+      await refresh();
+    } catch (err) {
+      showError(tasksMsg, err);
+    }
+  }
+
   /** Run on a row: that task now; its run shows in Chat. */
   function runTask(t: Row, button: HTMLButtonElement): void {
     void busy(
@@ -308,6 +318,7 @@ export function initTasks(opts: {
       if (a.run === "continue") void continueTask(t);
       else if (a.run === "edit") setAddOpen(true, t);
       else if (a.run === "details") opts.onDetails?.(t, source, titleOf(t.id) ?? tab);
+      else if (a.run === "trust") void trust(t);
       else void act({ type: a.run, id: t.id });
     };
     return h(a.danger ? "button.bad" : "button", { type: "button", title: a.title ?? null, onclick: run }, a.label);
@@ -349,6 +360,9 @@ export function initTasks(opts: {
     }
     const ruleTitle = t.repeat ? `Repeats ${repeatLabel(t.repeat).replace(/^./, (c) => c.toLowerCase())} (${t.repeat.tz})` : "Runs once";
     meta.push(h(when.due ? "span.when.due" : "span.when", { title: ruleTitle }, when.text));
+    if (t.agentAuthored && (t.status === "pending" || t.status === "paused")) {
+      meta.push(h("span.chip", { "data-tone": "warn", title: `${TRUST.title}. Until then, posting, sending, paying or deleting waits for your OK.` }, "By the agent"));
+    }
     const account = accountLabel(t.account);
     if (account) meta.push(h("span", { title: "The account the agent uses for this task" }, account));
     if (t.media.length) meta.push(h("span", { title: t.media.map((m) => m.name).join(", ") }, plural(t.media.length, "file")));

@@ -107,18 +107,24 @@ describe.skipIf(!client)("classifier with real Jev (JEV_EVAL=1)", () => {
       const rules = classifyByRules(c.action);
       const kind = rules.verdict === "benign" ? "submit" : (rules.kind ?? "submit");
       const j = await judgeWithJev(client!, c.action, "", c.instructions).catch(() => null);
-      return { c, byRules: withinInstructions(kind, c.action, c.instructions), byJev: j?.within ? j.within.yes && j.within.confidence >= JUDGE_MIN_CONFIDENCE : false, j };
+      const rulesSay = withinInstructions(kind, c.action, { instructions: c.instructions });
+      return { c, rulesSay, byRules: rulesSay === "yes", byJev: j?.within ? j.within.yes && j.within.confidence >= JUDGE_MIN_CONFIDENCE : false, j };
     });
     const right = (f: (r: (typeof rows)[number]) => boolean) => rows.filter((r) => f(r) === r.c.within).length;
     const combined = await pool(WITHIN_CASES, 6, async (c) => {
       const rules = classifyByRules(c.action);
-      return (await judgeWithinTask(rules.verdict === "benign" ? undefined : rules.kind, c.action, c.instructions, { jev: client })).within === c.within;
+      return { c, within: (await judgeWithinTask(rules.verdict === "benign" ? undefined : rules.kind, c.action, { instructions: c.instructions }, { jev: client })).within };
     });
-    console.log(`within-task as the gate judges it (rules, Jev may veto): ${combined.filter(Boolean).length}/${combined.length} right`);
+    const gateRight = combined.filter((r) => r.within === r.c.within);
+    const letThrough = combined.filter((r) => r.within && !r.c.within).map((r) => r.c.name);
+    console.log(`within-task as the gate judges it (rules; Jev only where they are unsure): ${gateRight.length}/${combined.length} right; let through what the task does not ask for: ${letThrough.length ? letThrough.join(", ") : "none"}`);
+    for (const r of combined) if (r.within !== r.c.within) console.log(`  gate WRONG: ${r.c.name} (expected ${r.c.within ? "within" : "beyond"})`);
+    // Whatever Jev answers, nothing the task does not ask for runs on its own.
+    expect(letThrough).toEqual([]);
     console.log(
       [
         `within-task: rules ${right((r) => r.byRules)}/${rows.length} right, Jev ${right((r) => r.byJev)}/${rows.length} right`,
-        ...rows.map((r) => `  ${r.c.within ? "within" : "beyond"} ${r.c.name}: rules ${r.byRules ? "within" : "beyond"}, Jev ${r.j?.within ? `${r.j.within.yes ? "yes" : "no"} ${pct(r.j.within.confidence)}` : "error"}`),
+        ...rows.map((r) => `  ${r.c.within ? "within" : "beyond"} ${r.c.name}: rules ${r.rulesSay}, Jev ${r.j?.within ? `${r.j.within.yes ? "yes" : "no"} ${pct(r.j.within.confidence)}` : "error"}`),
       ].join("\n"),
     );
   });

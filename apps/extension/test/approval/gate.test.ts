@@ -283,8 +283,16 @@ describe("ApprovalGate for scheduled runs (full_within_task)", () => {
 
   it("effectiveLevel: chat runs follow the chat level, scheduled ones the scheduled setting", () => {
     const s = { automationLevel: "ask_all" as const, scheduledAutomation: "full_within_task" as const };
-    expect(effectiveLevel(s, false)).toBe("ask_all");
-    expect(effectiveLevel(s, true)).toBe("full_within_task");
+    expect(effectiveLevel(s, { scheduled: false })).toBe("ask_all");
+    expect(effectiveLevel(s, { scheduled: true })).toBe("full_within_task");
+  });
+
+  it("effectiveLevel: a scheduled task the agent wrote is held like ask_consequential until the user trusts it", () => {
+    const s = { automationLevel: "full" as const, scheduledAutomation: "full_within_task" as const };
+    expect(effectiveLevel(s, { scheduled: true, agentAuthored: true })).toBe("ask_consequential");
+    expect(effectiveLevel(s, { scheduled: true, agentAuthored: false })).toBe("full_within_task");
+    // A chat is the user's own request: the chat level.
+    expect(effectiveLevel(s, { scheduled: false, agentAuthored: true })).toBe("full");
   });
 });
 

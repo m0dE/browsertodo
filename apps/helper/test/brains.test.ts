@@ -63,8 +63,9 @@ describe("ClaudeCodeBrain helpers", () => {
       "C:\\run\\mcp-config.json",
       "--allowedTools",
       "mcp__browsertodo__click,mcp__browsertodo__task_complete",
-      "--append-system-prompt",
-      "rules",
+      "--append-system-prompt-file",
+      // In the run folder, named by the prompt's content (see systemPromptFile).
+      "C:\\run\\system-prompt-6c621d1a05138a78.txt",
       "--tools",
       "",
       "--setting-sources",

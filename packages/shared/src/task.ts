@@ -35,6 +35,8 @@ const TaskFields = z.object({
   repeat: LegacyRepeatRule.nullable().optional(),
   /** Legacy, still accepted: the IANA time zone of `repeat` (default "UTC"). */
   tz: TimeZone.nullable().optional(),
+  /** See Task.agentAuthored. Omitted on a create: false; on an update that changes the instructions: false. */
+  agentAuthored: z.boolean().optional(),
 });
 
 const LEGACY_SCHEDULE_FIELDS = ["notBefore", "repeat", "tz"] as const;
@@ -125,6 +127,13 @@ export const Task = z.object({
    * own id. Optional so older producers still validate (memory then keys the task by its instructions).
    */
   seriesId: z.string().min(1).max(64).nullable().optional(),
+  /**
+   * The agent wrote the instructions (a chat's schedule_task or update_scheduled_task) and the user has not trusted
+   * them since: a scheduled run holds them as the agent's words, not the user's, so what they ask for still waits for
+   * the user's OK (a page could have made the agent write them). The user's own edit of the instructions, or Trust on
+   * the task, clears it; every repeat carries it. Optional so older producers still validate (absent: the user's).
+   */
+  agentAuthored: z.boolean().optional(),
 });
 export type Task = z.infer<typeof Task>;
 

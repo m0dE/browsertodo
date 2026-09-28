@@ -4,6 +4,7 @@
  *
  * Spawned by a task session's Claude Code (see the session's mcp-config.json), with env:
  *   BROWSERTODO_PIPE   pipe path of the helper
+ *   BROWSERTODO_PIPE_TOKEN  the token every pipe call carries
  *   BROWSERTODO_TASK   session id of the task (empty: the attached session's tools)
  *   BROWSERTODO_TOOLS  comma list of tool names to register (default: all)
  *   BROWSERTODO_JEV    "1": Jev picks act's elements (read_page and act are described for that mode)
@@ -47,6 +48,7 @@ async function main(): Promise<void> {
 
   const attach = process.argv.includes("--attach");
   let pipePath: string;
+  let token: string;
   let taskId: string;
   let tools: ToolName[];
   let jev = false;
@@ -55,12 +57,14 @@ async function main(): Promise<void> {
     const info = readHelperFile(cfg.helperFilePath);
     if (!info || !isPidAlive(info.pid)) fail(NOT_RUNNING);
     pipePath = info.pipe;
+    token = info.token;
     taskId = INTERACTIVE_TASK_ID;
     tools = [...INTERACTIVE_TOOL_NAMES];
   } else {
     const p = process.env[ENV.pipe];
     if (!p) fail(`${ENV.pipe} is not set (use --attach to connect to the running helper)`, 2);
     pipePath = p;
+    token = process.env[ENV.pipeToken] ?? "";
     taskId = process.env[ENV.task] || INTERACTIVE_TASK_ID;
     tools = toolsFromEnv(process.env[ENV.tools]);
     jev = process.env[ENV.jev] === "1";
@@ -75,7 +79,7 @@ async function main(): Promise<void> {
   if (attach) {
     // Ask the helper which tools this session allows; a helper that does not answer cannot run them either.
     try {
-      const list = await pipe.peer.call("tool.list", { taskId }, { timeoutMs: TOOL_LIST_TIMEOUT_MS });
+      const list = await pipe.peer.call("tool.list", { token, taskId }, { timeoutMs: TOOL_LIST_TIMEOUT_MS });
       if (list.names.length) tools = tools.filter((n) => list.names.includes(n));
       jev = list.jev === true;
     } catch (e) {
@@ -87,7 +91,7 @@ async function main(): Promise<void> {
   for (const name of tools) {
     server.registerTool(name, { description: toolDescription(name, jev), inputSchema: toolArgsSchema(name, jev) }, async (args: unknown): Promise<CallToolResult> => {
       try {
-        const r = await pipe.peer.call("tool.call", { taskId, name, args: args ?? {} }, { timeoutMs: TOOL_CALL_TIMEOUT_MS });
+        const r = await pipe.peer.call("tool.call", { token, taskId, name, args: args ?? {} }, { timeoutMs: TOOL_CALL_TIMEOUT_MS });
         return toMcpResult(r);
       } catch (e) {
         return toMcpResult({ text: `${name} failed: ${rpcErrorCode(e) === RPC_CLOSED ? NOT_RUNNING : errorMessage(e)}`, isError: true });

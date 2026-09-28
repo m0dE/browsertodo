@@ -11,7 +11,9 @@
  * access.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { dirname } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { DEFAULT_REASONING, DeltaBatcher, MAX_ASSISTANT_TEXT, clipEventText, type AgentEvent } from "@browsertodo/shared";
 import { plainErrorText, raiseNote, THINKING_BUDGET_TOKENS } from "@browsertodo/core";
 import { claudeEnv, isolatedClaudeArgs, killTree } from "../claude-process.js";
@@ -28,6 +30,17 @@ export const NO_THINKING_SETTINGS = JSON.stringify({ alwaysThinkingEnabled: fals
  * see WarmSpec.readDir); dontAsk refuses every call that would need a permission prompt, so any other path is refused.
  */
 export const READ_ATTACHMENTS_ARGS = { tool: "Read", allow: "Read(./**)", permissionMode: "dontAsk" } as const;
+
+/**
+ * The file a session's system prompt is passed in (Claude Code's --append-system-prompt-file), in its run folder
+ * (where its MCP config is): tens of KB on the command line would near Windows' 32,767-character limit. Named by its
+ * content, so the same prompt is the same path and args (WarmClaude.take compares them) and a written file never
+ * changes under a process reading it.
+ */
+export function systemPromptFile(mcpConfigPath: string, systemPrompt: string): string {
+  const hash = createHash("sha256").update(systemPrompt).digest("hex").slice(0, 16);
+  return join(dirname(mcpConfigPath), `system-prompt-${hash}.txt`);
+}
 
 export function buildClaudeArgs(opts: { systemPrompt: string; mcpConfigPath: string; allowedTools: string[]; read?: boolean; model: string; thinking?: boolean }): string[] {
   const read = opts.read === true;
@@ -48,8 +61,8 @@ export function buildClaudeArgs(opts: { systemPrompt: string; mcpConfigPath: str
     "--allowedTools",
     [...opts.allowedTools, ...(read ? [READ_ATTACHMENTS_ARGS.allow] : [])].join(","),
     ...(read ? ["--permission-mode", READ_ATTACHMENTS_ARGS.permissionMode] : []),
-    "--append-system-prompt",
-    opts.systemPrompt,
+    "--append-system-prompt-file",
+    systemPromptFile(opts.mcpConfigPath, opts.systemPrompt),
     ...(opts.thinking === false ? ["--settings", NO_THINKING_SETTINGS] : []),
     ...isolatedClaudeArgs(opts.model, read ? [READ_ATTACHMENTS_ARGS.tool] : []),
   ];
@@ -294,11 +307,13 @@ export class ClaudeCodeBrain implements Brain {
     return this.opts.persistent === true;
   }
 
-  /** The model and thinking a session starts with, and Claude Code's args for them. */
+  /** The model and thinking a session starts with, and Claude Code's args for them (its system prompt file written). */
   private plan(spec: WarmSpec): { args: string[]; model: string; thinking: boolean } {
     // The extension's model setting wins over BROWSERTODO_MODEL / DEFAULT_CLAUDE_MODEL.
     const model = spec.model?.trim() || this.opts.model;
     const thinking = this.opts.thinking ?? spec.thinking ?? DEFAULT_REASONING === "thorough";
+    const promptFile = systemPromptFile(spec.mcpConfigPath, spec.systemPrompt);
+    if (!existsSync(promptFile)) writeFileSync(promptFile, spec.systemPrompt, "utf8");
     const args = buildClaudeArgs({
       systemPrompt: spec.systemPrompt,
       mcpConfigPath: spec.mcpConfigPath,

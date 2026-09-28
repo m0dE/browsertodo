@@ -63,7 +63,8 @@ export const SCHEDULED_AUTOMATION_CHOICES: readonly AutomationChoice<ScheduledAu
   {
     id: "full_within_task",
     label: "Do what the task says without asking",
-    detail: "You wrote the task, so what it asks for runs on its own. Posting, sending, paying or deleting that the task does not ask for still waits for your OK.",
+    detail:
+      "You wrote the task, so what it asks for runs on its own. Posting, sending, paying or deleting that the task does not ask for still waits for your OK. In a task the agent scheduled, all of them wait until you press Trust on it.",
   },
   { id: "ask_consequential", label: "Ask before posting, sending or paying", detail: "Same as the chat's middle level: consequential actions wait for your OK." },
 ];
@@ -183,8 +184,16 @@ export function isApprovalRefusal(text: string): boolean {
 /** The level a run is held to: chat runs by automationLevel, scheduled ones by scheduledAutomation. */
 export type EffectiveLevel = AutomationLevel | "full_within_task";
 
-export function effectiveLevel(s: { automationLevel: AutomationLevel; scheduledAutomation: ScheduledAutomation }, scheduled: boolean): EffectiveLevel {
-  return scheduled ? s.scheduledAutomation : s.automationLevel;
+/**
+ * A scheduled run of a task the agent wrote (Task.agentAuthored) is held like ask_consequential: its instructions
+ * are not the user's words, so they do not stand for the user's OK.
+ */
+export function effectiveLevel(
+  s: { automationLevel: AutomationLevel; scheduledAutomation: ScheduledAutomation },
+  run: { scheduled: boolean; agentAuthored?: boolean },
+): EffectiveLevel {
+  if (!run.scheduled) return s.automationLevel;
+  return run.agentAuthored ? "ask_consequential" : s.scheduledAutomation;
 }
 
 /** Said with every level that asks: the card is the question, so the agent does not ask first in words. */

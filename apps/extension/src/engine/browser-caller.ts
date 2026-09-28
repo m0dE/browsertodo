@@ -1,4 +1,4 @@
-import { errorMessage, traceStart, traceText, type BrowserCallContext, type BrowserMethod, type BrowserMethods, type TraceValue } from "@browsertodo/shared";
+import { errorMessage, registrableDomain, sameSite, siteHost, traceStart, traceText, type BrowserCallContext, type BrowserMethod, type BrowserMethods, type TraceValue } from "@browsertodo/shared";
 import type { BrowserCaller } from "@browsertodo/core";
 import type { HelperPeer } from "../helper-link.js";
 
@@ -36,8 +36,21 @@ const METHODS: { [M in BrowserMethod]: (t: Targets, params: BrowserMethods[M]["p
   "browser.listTabs": ({ driver }, p) => driver.listTabs(p),
   "browser.closeTabs": ({ driver }, p) => driver.closeTabs(p),
   "browser.waitFor": ({ driver }, p) => driver.waitFor(p),
-  "vault.getCredential": ({ vault }, p) => vault.getCredential(p.site),
+  "vault.getCredential": ({ driver, vault }, p) => credentialForCurrentTab(driver, vault, p.site),
 };
+
+/**
+ * A saved login, only for the site of the tab the agent is on: whatever site the model names, a page cannot get
+ * another site's password read out to it (a prompt injection on evil.test asking for bank.test's gets nothing).
+ */
+async function credentialForCurrentTab(driver: DriverLike, vault: VaultLike, site: string): Promise<BrowserMethods["vault.getCredential"]["result"]> {
+  const { url } = await driver.currentUrl({});
+  if (!sameSite(site, url)) {
+    const host = siteHost(site);
+    throw new Error(`Saved logins are given only for the site of the current tab (${registrableDomain(url) || "no site"}), and ${host} is not it. Open ${host}'s sign-in page in this tab first.`);
+  }
+  return vault.getCredential(site);
+}
 
 const BROWSER_METHODS = Object.keys(METHODS) as BrowserMethod[];
 

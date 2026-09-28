@@ -55,7 +55,8 @@ describe("dist/host.js over native messaging", () => {
     const again = await ext.call("helper.hello", { selfTest: true }, { timeoutMs: 10_000 });
     expect(again.selfTest?.ok).toBe(true);
     const file = JSON.parse(readFileSync(join(home, "helper.json"), "utf8"));
-    expect(file).toEqual({ pipe: expect.stringContaining("browsertodo-"), pid: child.pid, startedAt: expect.any(String) });
+    // The pipe's token: random per helper start (hex of 32 bytes).
+    expect(file).toEqual({ pipe: expect.stringContaining("browsertodo-"), token: expect.stringMatching(/^[0-9a-f]{64}$/), pid: child.pid, startedAt: expect.any(String) });
   });
 
   it("runs a task with media; events arrive as notifications; a user message reaches the brain", async () => {

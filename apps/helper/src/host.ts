@@ -5,6 +5,7 @@
  * stdout is the native messaging channel (4-byte LE length + UTF-8 JSON).
  * Nothing else may ever be written to it.
  */
+import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -72,6 +73,8 @@ async function main(): Promise<void> {
   const makeJev = (key: string): JevLike => createJev(key);
   const envJev = config.typesafeApiKey ? makeJev(config.typesafeApiKey) : null;
   const pipePath = pipePathFor(process.pid);
+  // The pipe's name is predictable: only calls carrying this token are answered (the MCP servers this helper starts get it, --attach reads helper.json).
+  const pipeToken = randomBytes(32).toString("hex");
   // resolveClaudePath honours BROWSERTODO_CLAUDE_PATH (from .env or the environment).
   const claudePath = scripted ? null : resolveClaudePath(config.env);
 
@@ -89,6 +92,7 @@ async function main(): Promise<void> {
     inbox,
     mcpServerPath: config.mcpServerPath,
     pipePath,
+    pipeToken,
     browser,
     envJevKey: config.typesafeApiKey,
     makeJev,
@@ -127,6 +131,7 @@ async function main(): Promise<void> {
   try {
     pipe = await startPipeServer(
       pipePath,
+      pipeToken,
       {
         toolCall: (p) => router.call(p.taskId || INTERACTIVE_TASK_ID, p.name, p.args),
         toolList: (p) => ({ names: router.allowedTools(p.taskId || INTERACTIVE_TASK_ID), jev: router.jev(p.taskId || INTERACTIVE_TASK_ID) }),
@@ -135,7 +140,7 @@ async function main(): Promise<void> {
     );
     logLine(`pipe listening at ${pipePath}`);
     try {
-      writeHelperFile(config.helperFilePath, { pipe: pipePath, pid: process.pid, startedAt: new Date().toISOString() });
+      writeHelperFile(config.helperFilePath, { pipe: pipePath, token: pipeToken, pid: process.pid, startedAt: new Date().toISOString() });
     } catch (e) {
       logLine(`could not write ${config.helperFilePath}: ${errorMessage(e)}`);
     }

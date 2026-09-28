@@ -49,6 +49,10 @@ export interface ActiveSession {
   localTaskId: string | null;
   /** The instructions the agent got this turn (scheduled runs: approvals hold what they do not ask for). */
   instructions?: string;
+  /** The account the task acts as (scheduled runs: an X handle names X as the task's site). */
+  account?: string | null;
+  /** A due task whose instructions the agent wrote (Task.agentAuthored): its run is held like ask_consequential. */
+  agentAuthored?: boolean;
   /** Files sent with this turn's message (stored in the conversation's attachments). */
   attachments?: AttachmentRef[];
   /** When the turn's wall-time ceiling ends it (epoch ms, TURN_WALL_MINUTES): an approval waits at most until shortly before. */
@@ -70,8 +74,8 @@ export interface QueuedMessage {
 }
 
 /** The automation level's line for the agent's prompt this turn (automation.ts). */
-export function approvalsLine(settings: ExtensionSettings, scheduled: boolean): string {
-  return automationPromptLine(effectiveLevel(settings, scheduled));
+export function approvalsLine(settings: ExtensionSettings, run: Pick<ActiveSession, "scheduled" | "agentAuthored">): string {
+  return automationPromptLine(effectiveLevel(settings, run));
 }
 
 export type Cleanup = () => void | Promise<void>;
@@ -327,7 +331,8 @@ export class TurnRunner {
   ): BrainRun {
     this.mark(active, "brain.start", { brain: brain.kind, fresh: true, chars: opts.task.instructions.length });
     active.instructions = opts.task.instructions;
-    const approvals = opts.task.approvals ?? approvalsLine(opts.settings, active.scheduled);
+    active.account = opts.task.account;
+    const approvals = opts.task.approvals ?? approvalsLine(opts.settings, active);
     return brain.start({
       sessionId: active.session.sessionId,
       ...opts,

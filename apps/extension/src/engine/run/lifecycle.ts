@@ -118,6 +118,7 @@ export class Lifecycle {
         const attachments = job.source === "adhoc" ? await this.store(sessionId, job.input.attachments) : [];
         if (attachments.length) info.attachments = attachments;
         const active = activate(info, isXTask(task), job.source === "local" ? job.task.id : null);
+        if (opened.agentAuthored) active.agentAuthored = true;
         if (attachments.length) active.attachments = attachments;
         await this.deps.sessions.create(info);
         // A one-off run belongs to the tab it was started from, from the start (the side panel shows it there).

@@ -276,6 +276,12 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   const passing = new Set<string>();
   /** Starting (engine choice, microphone, connection). */
   let starting = false;
+  /**
+   * Which session is the current one: start() and finish() move it on. What a start or a reconnect does after an
+   * await is only done while the session it began in is still the current one (a stop, or a stop and a new start,
+   * may have come meanwhile).
+   */
+  let session = 0;
   /** The Realtime connection dropped and is being made again (the session goes on). */
   let reconnecting = false;
   /** When the session started (the bar's time on). */
@@ -607,6 +613,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
 
   /** The Realtime connection dropped: a new one is made (the chat, the phase and the mute go on), or the session ends. */
   async function reconnect(err: unknown): Promise<void> {
+    const gen = session;
     const dropped = engine;
     engine = null;
     dropped?.stop();
@@ -617,7 +624,9 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     render();
     trace?.record({ t: Date.now(), cat: "voice", name: "voice.reconnect", data: { reason: asRealtimeFailure(err)?.kind ?? "unknown", attempt: 0 } });
     // This browser held the one session: the server's end of it may still be closing, so this one takes its place.
-    const r = await connect("realtime", true);
+    const r = await connect("realtime", true, gen);
+    // Ended meanwhile (finish() reset the rest).
+    if (gen !== session) return;
     reconnecting = false;
     if (r === "stopped") return;
     if (r !== "open") {
@@ -649,7 +658,10 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     return { text: help.known ? help.message : message, level: "error", ...(actions.length ? { actions } : {}) };
   }
 
-  /** Opens `id` (takeover: see HandsFreeDeps.createEngine); on success the session runs on it. */
+  /**
+   * Opens `id` (takeover: see HandsFreeDeps.createEngine); on success the session runs on it. An engine that is no
+   * longer the session's once it started (a stop, or a newer start, came meanwhile) is stopped: nothing else would.
+   */
   async function openEngine(id: VoiceEngineId, takeover: boolean): Promise<Opened> {
     const e = deps.createEngine(id, events(), takeover ? { takeover } : undefined);
     engine = e;
@@ -658,13 +670,16 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     try {
       await e.start();
     } catch (err) {
+      e.stop();
       if (engine !== e) return "stopped";
       traceFailure(id, err);
-      e.stop();
       engine = null;
       return { failed: err };
     }
-    if (engine !== e) return "stopped";
+    if (engine !== e) {
+      e.stop();
+      return "stopped";
+    }
     report();
     // The narrator starts out knowing whether the user looks at another tab.
     lookingAway = false;
@@ -678,7 +693,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   }
 
   /** Opens `id`, trying Realtime again after RECONNECT_DELAYS_MS while its failure may pass; the trace says why. */
-  async function connect(id: VoiceEngineId, takeover: boolean): Promise<Opened> {
+  async function connect(id: VoiceEngineId, takeover: boolean, gen: number): Promise<Opened> {
     for (let attempt = 1; ; attempt++) {
       const r = await openEngine(id, takeover);
       if (r === "open" || r === "stopped") return r;
@@ -687,7 +702,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       if (id !== "realtime" || !f?.transient || delayMs === undefined) return r;
       trace?.record({ t: Date.now(), cat: "voice", name: "voice.reconnect", data: { reason: f.kind, attempt, delayMs } });
       await new Promise((resolve) => setTimeout(resolve, delayMs));
-      if (!on()) return "stopped";
+      if (gen !== session) return "stopped";
     }
   }
 
@@ -715,6 +730,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
    */
   async function start(picked: VoiceEngineId | null = null, mute = false, takeover = false): Promise<void> {
     if (on()) return;
+    const gen = ++session;
     starting = true;
     startMuted = mute;
     sent = false;
@@ -727,9 +743,11 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     const id = picked ?? settings?.voiceEngine ?? "realtime";
     trace?.record({ t: Date.now(), cat: "voice", name: "voice.start", data: { engine: id, why: picked ? (takeover ? "taken over" : "chosen") : "settings", ...(takeover ? { takeover } : {}) } });
     try {
-      if (!(await deps.voice.ensureMic())) return void finish(null);
+      const micAllowed = await deps.voice.ensureMic();
+      if (gen !== session) return;
+      if (!micAllowed) return void finish(null);
       const engines = id === "standard" ? null : await deps.engines().catch(() => null);
-      if (!starting) return; // stopped meanwhile
+      if (gen !== session) return;
       const check = checkEngine({ picked: id, engines, creditCents: deps.account()?.credit?.totalCents });
       if (check.blocked) {
         finish(null);
@@ -738,7 +756,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       }
       if (check.note) deps.notify({ key: ENGINE_NOTICE, text: check.note, level: "info", actions: [{ label: "Top up", run: deps.openBilling }] });
       else if (id === "realtime" && settings && !settings.realtimeCostNoticed) costNotice(engines?.engines ?? null);
-      const r = await connect(id, takeover);
+      const r = await connect(id, takeover, gen);
       if (r === "stopped") return;
       if (r !== "open") {
         finish(null, "error");
@@ -755,8 +773,10 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
         engine?.tick(t);
       }, HANDS_FREE.tickMs);
     } finally {
-      starting = false;
-      render();
+      if (gen === session) {
+        starting = false;
+        render();
+      }
     }
   }
 
@@ -777,7 +797,9 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     const e = engine;
     engine = null;
     e?.stop();
+    session++;
     starting = false;
+    reconnecting = false;
     endLine();
     passing.clear();
     setCaption("");

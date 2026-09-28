@@ -21,6 +21,11 @@ import { harness, runAll, setupRunnerTests } from "../runner/harness.js";
 import { el } from "./cases.js";
 
 const INSTRUCTIONS = "Post one new original post on X as @rooftopchat";
+/**
+ * The trace's task asks for a post on X, so its Post click now runs (the task's words win over Jev). The tests of what
+ * happens while a click waits use this one instead: it asks for a post but names no site, so Jev decides, and says no.
+ */
+const SITE_UNNAMED = "Post one new original post";
 const POST_TEXT = "Sunday 1pm on the rooftop: bring a friend.";
 const editor = el("textbox", "Post text", { tag: "div", testId: "tweetTextarea_0", index: 42 });
 const postBtn = el("button", "Post", { testId: "tweetButtonInline", index: 43 });
@@ -67,7 +72,7 @@ describe("a scheduled run's Post click that needs approval (unattended)", () => 
     const notified: string[] = [];
     const broker = new ApprovalBroker({ note: (_s, e) => void events.push(e), newId: () => "ap1", onRequest: (_s, r) => void notified.push(r.action) });
     const gate = new ApprovalGate(b.browser, () => "sched-1", {
-      context: async () => ({ level: "full_within_task", instructions: INSTRUCTIONS }),
+      context: async () => ({ level: "full_within_task", instructions: SITE_UNNAMED }),
       request: (s, ask, opts) => broker.request(s, ask, opts),
       jev: () => jevVeto,
     });
@@ -235,7 +240,7 @@ describe("Runner: a scheduled run whose Post click needs approval", () => {
 
   it("nobody watching: pauses at once with what needs the OK; the card stays in the thread; the TODO row needs you; one notification says what", async () => {
     const { h, g } = scheduled();
-    const task = await h.store.add({ instructions: INSTRUCTIONS, account: null });
+    const task = await h.store.add({ instructions: SITE_UNNAMED, account: null });
     const started = Date.now();
     await runAll(h);
     const [session] = await h.sessions.list(5, task.id);
@@ -250,15 +255,15 @@ describe("Runner: a scheduled run whose Post click needs approval", () => {
     expect(h.notifications).toEqual([{ title: "Task paused", message: NEEDS_OK }]);
     // Not minutes: no timer had to run out.
     expect(Date.now() - started).toBeLessThan(5_000);
-    // The trace: the gate's verdicts (the task's words ask for it, Jev vetoed) and what ended the approval.
+    // The trace: the gate's verdicts (the task asks for a post but says not where, and Jev said no) and what ended the approval.
     const judge = g.traces.find((t) => t.name === "approval.judge");
-    expect(judge?.data).toMatchObject({ action: 'Click "Post"', level: "full_within_task", withinRules: true, withinJev: "no 0.90", within: false, waits: true });
+    expect(judge?.data).toMatchObject({ action: 'Click "Post"', level: "full_within_task", withinRules: "unsure", withinJev: "no 0.90", within: false, waits: true });
     expect(g.traces.find((t) => t.name === "approval.wait")?.data).toMatchObject({ outcome: "paused", by: "unattended" });
   });
 
   it("its conversation open in a side panel: the card waits for the user, and Allow posts", async () => {
     const { h, g, click } = scheduled({ watching: true });
-    await h.store.add({ instructions: INSTRUCTIONS, account: null });
+    await h.store.add({ instructions: SITE_UNNAMED, account: null });
     const done = runAll(h);
     await vi.waitFor(() => expect(g.broker.waiting()).toHaveLength(1));
     const [card] = g.broker.waiting();
@@ -269,6 +274,45 @@ describe("Runner: a scheduled run whose Post click needs approval", () => {
     await done;
     expect(g.b.clicked()).toBe(true);
     expect(g.traces.find((t) => t.name === "approval.wait")?.data).toMatchObject({ outcome: "allow_once", by: "keyboard" });
+  });
+});
+
+describe("Runner: the trace's own task (a post on X as an account)", () => {
+  it("posts on its own: the task asks for that post on that site, so Jev's no does not pause it", async () => {
+    const h = harness({ scheduledAutomation: "full_within_task" });
+    const g = gatedSlot(h, jevVeto);
+    h.deps.slots = g.pool;
+    h.runner = new Runner(h.deps);
+    const click = postingRun(h, g);
+    const task = await h.store.add({ instructions: INSTRUCTIONS, account: null });
+    await runAll(h);
+    await click.promise;
+    expect(g.b.clicked()).toBe(true);
+    expect(g.events.filter((e) => e.type === "approval_request")).toEqual([]);
+    expect((await h.store.get(task.id))?.status).not.toBe("paused");
+    expect(g.traces.find((t) => t.name === "approval.judge")?.data).toMatchObject({ withinRules: "yes", withinJev: null, within: true, waits: false });
+  });
+
+  it("the same words written by the agent (a page may have put them there) pause for the user's OK; after Trust they post", async () => {
+    const h = harness({ scheduledAutomation: "full_within_task" });
+    const g = gatedSlot(h, jevVeto);
+    h.deps.slots = g.pool;
+    h.runner = new Runner(h.deps);
+    postingRun(h, g);
+    h.brain.onAbort = (reason, outcome) => ({ outcome: outcome as "paused", reason });
+    const task = await h.store.add({ instructions: INSTRUCTIONS, account: null, agentAuthored: true });
+    await runAll(h);
+    expect(g.b.clicked()).toBe(false);
+    expect(await h.store.get(task.id)).toMatchObject({ status: "paused", pauseReason: NEEDS_OK });
+    expect(g.traces.find((t) => t.name === "approval.judge")?.data).toMatchObject({ level: "ask_consequential", waits: true });
+
+    // Trust on the TODO row (tasks.update with agentAuthored: false), then Continue.
+    await h.store.update(task.id, { agentAuthored: false });
+    await h.store.retry(task.id);
+    const click = postingRun(h, g);
+    await runAll(h);
+    await click.promise;
+    expect(g.b.clicked()).toBe(true);
   });
 });
 

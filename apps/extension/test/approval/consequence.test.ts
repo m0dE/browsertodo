@@ -43,33 +43,59 @@ describe("consequence rules on the labelled set", () => {
   });
 });
 
-/** Within-task cases the word rules get wrong (they read "renewal" in "what my renewal would cost" as asking to renew). */
-const KNOWN_WITHIN_MISSES = ["payment not asked for"];
+/**
+ * Within-task cases the rules alone (no Jev: unsure waits) get wrong. All of them wait needlessly: the task asks for
+ * the action but names no site (Gmail), or names one the action is not on (the bench's sign-up form is on localhost).
+ * With Jev, an unsure case runs on Jev's sure yes (consequence-jev.eval.test.ts).
+ */
+const KNOWN_WITHIN_MISSES = ["reply asked for", "delete asked for", "sign-up asked for"];
 
 describe("within the task's instructions (scheduled runs)", () => {
-  it("tells what the task asks for from what it does not", () => {
-    const rows = WITHIN_CASES.map((c) => {
-      const v = classifyByRules(c.action);
-      const kind = v.verdict === "benign" ? undefined : v.kind;
-      return { name: c.name, within: c.within, predicted: kind !== undefined && withinInstructions(kind, c.action, c.instructions) };
-    });
+  const rows = WITHIN_CASES.map((c) => {
+    const v = classifyByRules(c.action);
+    const rules = v.verdict === "benign" ? "no" : withinInstructions(v.kind!, c.action, { instructions: c.instructions });
+    return { name: c.name, within: c.within, rules, predicted: rules === "yes" };
+  });
+
+  it("tells what the task asks for from what it does not, and never lets through what it does not ask for", () => {
     const wrong = rows.filter((r) => r.within !== r.predicted);
     // "beyond" is the class that must be caught: it is what asks.
     const beyond = measure(rows.map((r) => ({ ask: !r.within, predicted: !r.predicted })));
     console.log(
       [
-        `within-task rules: ${rows.length} cases, ${rows.length - wrong.length} right; "beyond the task" precision ${beyond.precision.toFixed(2)}, recall ${beyond.recall.toFixed(2)}`,
-        ...wrong.map((r) => `  WRONG: ${r.name} (expected ${r.within ? "within" : "beyond"})`),
+        `within-task rules: ${rows.length} cases, ${rows.length - wrong.length} right, ${rows.filter((r) => r.rules === "unsure").length} unsure (Jev decides); "beyond the task" precision ${beyond.precision.toFixed(2)}, recall ${beyond.recall.toFixed(2)}`,
+        ...wrong.map((r) => `  WRONG: ${r.name} (expected ${r.within ? "within" : "beyond"}, rules ${r.rules})`),
       ].join("\n"),
     );
-    // A known limit of word rules: a noun ("renewal") reads as the verb ("renew").
+    expect(beyond.recall).toBe(1);
     expect(wrong.map((r) => r.name)).toEqual(KNOWN_WITHIN_MISSES);
+  });
+
+  it("the words the task uses, not the words they start: 'renewal' asks for no renewal, 'likely' for no like", () => {
+    const at = (name: string) => rows.find((r) => r.name === name)!.rules;
+    expect(at("payment not asked for")).toBe("no");
+    expect(at("renewal payment asked for")).toBe("yes");
+    for (const name of ["'likely' is not 'like'", "'bookmark' is not 'book'", "'signal' is not 'sign'", "'tips' is not 'tip'", "'payload' is not 'pay'", "account nouns ask for no change"]) {
+      expect(at(name), name).toBe("no");
+    }
   });
 
   it("a forbidden verb is never within, even when the family is named elsewhere", () => {
     const post = CASES.find((c) => c.name === "X: Post button in the home composer")!.action;
-    expect(withinInstructions("publish", post, "Write the post, do not publish it")).toBe(false);
-    expect(withinInstructions("publish", post, "Post the launch note")).toBe(true);
+    expect(withinInstructions("publish", post, { instructions: "Write the post on X, do not publish it" })).toBe("no");
+    expect(withinInstructions("publish", post, { instructions: "Post the launch note on X" })).toBe("yes");
+  });
+
+  it("the site: named by domain or name, by the task's X account, or not at all (unsure)", () => {
+    const post = CASES.find((c) => c.name === "X: Post button in the home composer")!.action;
+    expect(withinInstructions("publish", post, { instructions: "Post the launch note", account: "@acme" })).toBe("yes");
+    expect(withinInstructions("publish", post, { instructions: "Post the launch note on x.com" })).toBe("yes");
+    expect(withinInstructions("publish", post, { instructions: "Post the launch note" })).toBe("unsure");
+    expect(withinInstructions("publish", post, { instructions: "Post the launch note on linkedin.com" })).toBe("no");
+    // A page that is not the site the task names gets nothing from the task's words (a prompt injection's page).
+    const payHere = { ...post, page: { url: "https://pay.evil.test/checkout", title: "Checkout" } };
+    expect(withinInstructions("pay", payHere, { instructions: "Pay my bill on bank.test" })).toBe("no");
+    expect(withinInstructions("pay", payHere, { instructions: "Pay my bill on X", account: "@me" })).toBe("no");
   });
 });
 

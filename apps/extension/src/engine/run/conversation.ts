@@ -81,7 +81,7 @@ export async function runNextTurn(
   // What the agent gets: what the user's tab shows, then the message with its context (for an empty one: look at the page again).
   const message = { text: withContext(job.text, job.context), ...(job.screen ? { screenHelp: true } : {}) };
   // What waits for the user's approval this turn (the level may have changed since the last one).
-  const approvals = approvalsLine(settings, active.scheduled);
+  const approvals = approvalsLine(settings, active);
   const memory = sameSession ? await turns.timed(active, "memory.wait", () => memoryReady) : undefined;
   const text = buildFollowUpMessage({
     ...message,

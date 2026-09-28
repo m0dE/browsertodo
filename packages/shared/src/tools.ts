@@ -263,11 +263,14 @@ export interface ToolResult {
   isError?: boolean;
 }
 
-/** RPC method the MCP server calls on the helper over the named pipe. */
+/**
+ * RPC method the MCP server calls on the helper over the named pipe. Every call carries the helper's pipe token
+ * (random per helper start, kept where only the user can read it): the pipe answers no other process.
+ */
 export type PipeMethods = {
-  "tool.call": { params: { taskId: string; name: ToolName; args: unknown }; result: ToolResult };
+  "tool.call": { params: { token: string; taskId: string; name: ToolName; args: unknown }; result: ToolResult };
   /** jev: the session's act steps are picked by Jev (tool descriptions differ, see toolDescription). */
-  "tool.list": { params: { taskId: string }; result: { names: ToolName[]; jev?: boolean } };
+  "tool.list": { params: { token: string; taskId: string }; result: { names: ToolName[]; jev?: boolean } };
 }
 
 /** Tools that end a task. Not offered to the user's own Claude Code (mcp-server --attach). */
@@ -284,8 +287,12 @@ export const CONVERSATION_TOOLS: readonly ToolName[] = [...TODO_TOOLS, "remember
 export const MEMORY_TOOLS = ["remember", "recall", "forget", "search_history", "check_similar"] as const satisfies readonly ToolName[];
 export type MemoryToolName = (typeof MEMORY_TOOLS)[number];
 
-/** Tools offered to the user's own Claude Code through mcp-server --attach (no task to end, no conversation). */
-export const INTERACTIVE_TOOL_NAMES: ToolName[] = TOOL_NAMES.filter((n) => !TASK_END_TOOLS.includes(n) && !CONVERSATION_TOOLS.includes(n));
+/**
+ * Tools offered to the user's own Claude Code through mcp-server --attach (no task to end, no conversation), and
+ * never get_credential: saved passwords go only to BrowserTODO's own task sessions, not to whatever an attached
+ * session was told to do.
+ */
+export const INTERACTIVE_TOOL_NAMES: ToolName[] = TOOL_NAMES.filter((n) => !TASK_END_TOOLS.includes(n) && !CONVERSATION_TOOLS.includes(n) && n !== "get_credential");
 
 /**
  * Tools offered to the model. act (batched steps) always replaces click and

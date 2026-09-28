@@ -63,6 +63,11 @@ export interface TaskPatch {
   account?: string | null;
   notBefore?: string | null;
   repeat?: RepeatSchedule | null;
+  /**
+   * Who wrote the instructions (Task.agentAuthored): true from the agent's TODO tools, false from Trust on the row.
+   * Absent: kept, unless the instructions change (then they are the user's).
+   */
+  agentAuthored?: boolean;
 }
 
 export interface LocalMediaInfo {

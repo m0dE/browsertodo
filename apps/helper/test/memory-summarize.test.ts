@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { memorySummarizeArgs, parseSummarizeOutput, runMemorySummarize } from "../src/memory-summarize.js";
 
 let dir: string;
@@ -18,13 +18,13 @@ function script(body: string): string {
 }
 
 describe("memory.summarize (fake claude)", () => {
-  it("runs one headless call on haiku with the system prompt and no tools or settings", () => {
-    expect(memorySummarizeArgs("SYS")).toEqual([
+  it("runs one headless call on haiku with the system prompt file and no tools or settings", () => {
+    expect(memorySummarizeArgs("C:\\t\\system-prompt.txt")).toEqual([
       "-p",
       "--output-format",
       "json",
-      "--system-prompt",
-      "SYS",
+      "--system-prompt-file",
+      "C:\\t\\system-prompt.txt",
       "--tools",
       "",
       "--setting-sources",
@@ -45,17 +45,22 @@ describe("memory.summarize (fake claude)", () => {
     expect(() => parseSummarizeOutput("", "boom", 3)).toThrow("Claude Code exited with code 3: boom");
   });
 
-  it("sends the prompt on stdin and the system prompt as an argument", async () => {
+  it("sends the prompt on stdin and the system prompt in a file (the command line has a limit), removed afterwards", async () => {
     const echo = script(`
+      import { readFileSync } from "node:fs";
       let input = "";
       process.stdin.on("data", (c) => (input += c));
       process.stdin.on("end", () => {
         const args = process.argv.slice(2);
-        const system = args[args.indexOf("--system-prompt") + 1];
-        process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: system + "|" + input, total_cost_usd: 0.001 }) + "\\n");
+        const file = args[args.indexOf("--system-prompt-file") + 1];
+        const result = JSON.stringify([file, readFileSync(file, "utf8"), input]);
+        process.stdout.write(JSON.stringify({ type: "result", is_error: false, result, total_cost_usd: 0.001 }) + "\\n");
       });`);
-    const r = await runMemorySummarize({ claudePath: process.execPath, prefixArgs: [echo], system: 'rules "quoted"\nline two', prompt: "Ünïcode prompt\nwith lines" });
-    expect(r).toEqual({ text: 'rules "quoted"\nline two|Ünïcode prompt\nwith lines', costUsd: 0.001 });
+    const system = `rules "quoted"\nline two ${"x".repeat(40_000)}`;
+    const r = await runMemorySummarize({ claudePath: process.execPath, prefixArgs: [echo], system, prompt: "Ünïcode prompt\nwith lines" });
+    const [file, seenSystem, input] = JSON.parse(r.text) as string[];
+    expect([seenSystem, input, r.costUsd]).toEqual([system, "Ünïcode prompt\nwith lines", 0.001]);
+    expect(existsSync(dirname(file!))).toBe(false);
   });
 
   it("rejects on a Claude Code error and on a timeout (the process is killed)", async () => {

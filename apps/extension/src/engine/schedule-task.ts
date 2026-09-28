@@ -122,7 +122,7 @@ function scheduleOf(t: Pick<LocalTask, "notBefore" | "repeat">): ScheduleInput {
 }
 
 function fieldsOf(t: LocalTask): TodoTaskFields {
-  return { instructions: t.instructions, account: t.account, schedule: scheduleOf(t) };
+  return { instructions: t.instructions, account: t.account, schedule: scheduleOf(t), ...(t.agentAuthored ? { agentAuthored: true as const } : {}) };
 }
 
 const titleOf = (instructions: string) => instructions.split("\n")[0]!.trim();
@@ -170,6 +170,8 @@ export class TaskScheduler {
         ...(args.account ? { account: args.account } : {}),
         notBefore: settled.notBefore,
         repeat: settled.repeat,
+        // The agent wrote it (Task.agentAuthored): its runs wait for the user's OK on what it asks until they trust it.
+        agentAuthored: true,
       }),
     );
     await this.deps.sessions.note(sessionId, { type: "task_scheduled", taskId: task.id, instructions: task.instructions, schedule: args.schedule });
@@ -194,6 +196,8 @@ export class TaskScheduler {
     if (args.schedule?.repeat !== undefined) patch.repeat = args.schedule.repeat;
     const { before, after } = await this.withTodo(sessionId, "changed", async (todo) => {
       const before = await this.changeable(todo, args.task_id);
+      // New words from the agent are the agent's, whoever wrote the task (Task.agentAuthored).
+      if (patch.instructions !== undefined && patch.instructions !== before.instructions) patch.agentAuthored = true;
       await this.approveChange(sessionId, before, "updated", this.previewOf(before, patch, now));
       return { before, after: await todo.update(before.id, patch) };
     });
@@ -239,7 +243,7 @@ export class TaskScheduler {
     if (ev.change === "cancelled") await todo.retry(ev.taskId);
     else if (ev.before) {
       const b = ev.before;
-      await todo.update(ev.taskId, { instructions: b.instructions, account: b.account, notBefore: b.schedule.at ?? null, repeat: b.schedule.repeat ?? null });
+      await todo.update(ev.taskId, { instructions: b.instructions, account: b.account, notBefore: b.schedule.at ?? null, repeat: b.schedule.repeat ?? null, agentAuthored: !!b.agentAuthored });
     }
     await this.deps.sessions.note(sessionId, { type: "task_change_undone", changeId });
   }

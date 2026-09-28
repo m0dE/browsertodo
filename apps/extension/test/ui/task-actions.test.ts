@@ -23,6 +23,15 @@ describe("task menu actions", () => {
     expect(labels("running", "local")).toEqual(["Details", "Delete"]);
     expect(taskActions({ status: "failed", attempts: 2 }, "local")[0]!.run).toBe("continue");
   });
+
+  it("a waiting task the agent wrote offers Trust first; one the user wrote, or one that is over, does not", () => {
+    for (const source of ["account", "local"] as const) {
+      expect(taskActions({ status: "pending", attempts: 0, agentAuthored: true }, source)[0]).toMatchObject({ label: "Trust", run: "trust" });
+      expect(taskActions({ status: "paused", attempts: 1, agentAuthored: true }, source)[0]!.label).toBe("Trust");
+      expect(taskActions({ status: "pending", attempts: 0 }, source).map((a) => a.label)).not.toContain("Trust");
+      expect(taskActions({ status: "done", attempts: 1, agentAuthored: true }, source).map((a) => a.label)).not.toContain("Trust");
+    }
+  });
 });
 
 describe("a task row's Run button", () => {

@@ -237,7 +237,15 @@ export class AccountService {
     return new ApiClient({ ...this.apiOpts(s.apiBase), runnerKey: s.token, onUnauthorized: () => void this.expire(s.token) });
   }
 
-  async signIn(): Promise<void> {
+  /** A sign-in in progress: a second click waits for it instead of opening another Google window (Chrome allows one). */
+  private signingIn: Promise<void> | null = null;
+
+  signIn(): Promise<void> {
+    this.signingIn ??= this.runSignIn().finally(() => (this.signingIn = null));
+    return this.signingIn;
+  }
+
+  private async runSignIn(): Promise<void> {
     const settings = await this.deps.loadSettings();
     if (!this.deps.clientId && !settings.accountApiBase) throw new SignInError(SIGN_IN_NOT_SET_UP);
     if (!settings.accountApiBase) throw new SignInError("Set the account server URL first (Settings > Advanced)");

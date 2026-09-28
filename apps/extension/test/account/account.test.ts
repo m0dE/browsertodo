@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ACCOUNT_API_BASE, DEFAULT_SETTINGS, parseSettings, PREVIOUS_ACCOUNT_API_BASES, type ExtensionSettings } from "@browsertodo/shared";
 import { ACCOUNT_KEY, AccountService, type AccountLocalTasks } from "../../src/account/account.js";
-import { SIGN_IN_NOT_SET_UP } from "../../src/account/google-auth.js";
+import { SIGN_IN_NOT_SET_UP, SIGN_IN_WINDOW_OPEN } from "../../src/account/google-auth.js";
 import { memoryStorageArea } from "../chrome-fake.js";
 import { taskFixture as task } from "../fixtures.js";
 import { FREE_PLAN, PLUS_PLAN, USER, credit, fakeApi, jwt } from "./fake-api.js";
@@ -107,6 +107,18 @@ describe("AccountService sign-in", () => {
     await expect(t.account.signIn()).rejects.toThrow(/nonce/);
     expect(t.api.calls).toHaveLength(0);
     expect(t.storage.data[ACCOUNT_KEY]).toBeUndefined();
+  });
+
+  it("a second click while signing in waits for the same sign-in (one Google window)", async () => {
+    const t = setup();
+    const [a, b] = [t.account.signIn(), t.account.signIn()];
+    await Promise.all([a, b]);
+    expect(t.identity.launch).toHaveBeenCalledTimes(1);
+  });
+
+  it("says what to do when Chrome already has a sign-in window open", async () => {
+    const identity = { redirectUri: () => "https://x.chromiumapp.org/", launch: vi.fn(async () => Promise.reject(new Error("Only one web auth flow is allowed at a time."))) };
+    await expect(setup({ identity: identity as unknown as ReturnType<typeof google> }).account.signIn()).rejects.toThrow(SIGN_IN_WINDOW_OPEN);
   });
 
   it("refuses a mismatched state and a token for another client", async () => {

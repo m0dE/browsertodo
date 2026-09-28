@@ -9,6 +9,8 @@
 export const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 /** Shown when there is no Google client ID at all: none built in and no account server to ask. */
 export const SIGN_IN_NOT_SET_UP = "Google sign-in isn't available in this version of BrowserTODO";
+/** Chrome refused a second sign-in window ("Only one web auth flow is allowed at a time"). */
+export const SIGN_IN_WINDOW_OPEN = "A Google sign-in window is already open (it may be behind this window). Finish or close it, then sign in again.";
 
 export class SignInError extends Error {
   constructor(message: string) {
@@ -94,7 +96,10 @@ export async function googleIdToken(deps: GoogleSignInDeps): Promise<string> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // Closing the Google window rejects with "The user did not approve access."
-    throw new SignInError(/did not approve|cancel/i.test(msg) ? "Sign-in was cancelled" : `Google sign-in failed: ${msg}`);
+    if (/did not approve|cancel/i.test(msg)) throw new SignInError("Sign-in was cancelled");
+    // Chrome allows one sign-in window at a time (e.g. one left open behind the browser).
+    if (/only one web auth flow/i.test(msg)) throw new SignInError(SIGN_IN_WINDOW_OPEN);
+    throw new SignInError(`Google sign-in failed: ${msg}`);
   }
   if (!redirect) throw new SignInError("Sign-in was cancelled");
   const parsed = parseAuthRedirect(redirect);

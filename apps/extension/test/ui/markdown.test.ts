@@ -85,6 +85,19 @@ describe("Markdown: inline", () => {
     );
     expect(md("(https://example.com/x)")).toBe('<p>(<a href="https://example.com/x" target="_blank" rel="noopener noreferrer">https://example.com/x</a>)</p>');
   });
+
+  // Regression: a bare scheme with nothing linkable after it ("https://" at the end of a streamed
+  // chunk, or followed by a space, backtick or angle bracket) threw
+  // "TypeError: Cannot read properties of null (reading '0')" from the autolink branch.
+  it("a bare http(s):// with no host is plain text, not a crash", () => {
+    for (const s of ["https://", "Open http://", "see https:// now", "https://`x`", "http://<b>", "HTTPS://\nnext"]) {
+      expect(() => md(s)).not.toThrow();
+      expect(() => md(s, true)).not.toThrow();
+    }
+    expect(md("Open https://")).toBe("<p>Open https://</p>");
+    expect(md("see https:// now")).toBe("<p>see https:// now</p>");
+    expect(md("Visit https://", true)).toBe("<p>Visit https://</p>");
+  });
 });
 
 describe("Markdown: untrusted text stays text", () => {

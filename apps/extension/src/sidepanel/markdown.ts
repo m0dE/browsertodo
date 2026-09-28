@@ -332,8 +332,11 @@ export function renderInline(text: string): Node[] {
       }
     }
 
-    if ((c === "h" || c === "H") && /^https?:\/\//i.test(rest) && !/[\w/]$/.test(buf)) {
-      const url = trimUrlEnd(/^https?:\/\/[^\s<>`]+/i.exec(rest)![0]);
+    // A bare scheme with no host after it ("https://" at the end of a streamed chunk, or before a
+    // space) matches nothing here and stays plain text.
+    const bare = (c === "h" || c === "H") && !/[\w/]$/.test(buf) ? /^https?:\/\/[^\s<>`]+/i.exec(rest) : null;
+    if (bare) {
+      const url = trimUrlEnd(bare[0]);
       const href = safeUrl(url);
       if (href) {
         flush();

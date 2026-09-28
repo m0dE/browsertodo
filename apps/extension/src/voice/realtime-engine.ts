@@ -16,7 +16,7 @@ import type { VoiceTracer } from "../trace/panel-trace.js";
 import type { AudioSource } from "./dictation.js";
 import type { EngineEvents, HandsFreeEngine } from "./engine.js";
 import { PcmPlayer } from "./pcm-player.js";
-import { RealtimeClient, realtimeFailure, REALTIME_SAMPLE_RATE, takeoverUrl, type NarratorTool, type OpenSocket, type RealtimeFailure } from "./realtime-client.js";
+import { RealtimeClient, realtimeFailure, REALTIME_SAMPLE_RATE, SENT_OUTPUT, takeoverUrl, type NarratorTool, type OpenSocket, type RealtimeFailure } from "./realtime-client.js";
 import type { RealtimeTicket } from "./realtime-access.js";
 import { NarratorFeed } from "./realtime-feed.js";
 import { requestKind } from "./narrator-policy.js";
@@ -237,7 +237,7 @@ export class RealtimeEngine implements HandsFreeEngine {
         // NARRATOR_MILESTONE_GAP_MS.
         if (requestKind(args) === "question" && this.agentWorking) this.feed.question();
         else this.feed.request(Date.now());
-        return "Sent to the agent. Its updates will follow.";
+        return SENT_OUTPUT;
       }
       // The request already went out: taking it back stops its task.
       case "cancel_request":

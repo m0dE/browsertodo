@@ -78,13 +78,13 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
 
   it("is told to call send_to_agent before saying anything, and to acknowledge at most once after", () => {
     expect(NARRATOR_INSTRUCTIONS).toContain("When the user asks for something, call send_to_agent immediately, before saying anything, with kind 'question'");
-    expect(NARRATOR_INSTRUCTIONS).toContain("Never say yourself what the agent will do or when.");
+    expect(NARRATOR_INSTRUCTIONS).toContain("Never say yourself what you will do or when.");
     const { socket } = client();
     expect(socket.sent[0]!.session.audio.input.transcription).toEqual({ model: "gpt-transcribe", prompt: TRANSCRIPTION_PROMPT });
   });
 
   it("a reply that only called send_to_agent is followed by exactly one short acknowledgement", async () => {
-    const { socket } = client({ onTool: () => "Sent to the agent. Its updates will follow." });
+    const { socket } = client({ onTool: () => "Started. Your updates on it will follow." });
     userTurn(socket, "in1", "r1");
     transcribed(socket, "in1", "open gmail");
     callSend(socket, "Open Gmail");
@@ -101,7 +101,7 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
   });
 
   it("the acknowledgement is out of the conversation: cut off, nothing of it is truncated (there is no such item)", async () => {
-    const { c, socket } = client({ onTool: () => "Sent to the agent. Its updates will follow." });
+    const { c, socket } = client({ onTool: () => "Started. Your updates on it will follow." });
     userTurn(socket, "in1", "r1");
     transcribed(socket, "in1", "open gmail");
     callSend(socket, "Open Gmail");
@@ -121,13 +121,13 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
     callSend(socket, "Open Gmail");
     replyDone(socket, "r1");
     await flush();
-    answer("Sent to the agent.");
+    answer("Started.");
     await flush();
     expect(socket.replies()).toEqual([{ type: "response.create", response: ackResponse("Open Gmail") }]);
   });
 
   it("a reply that already spoke gets no acknowledgement", async () => {
-    const { socket } = client({ onTool: () => "Sent to the agent." });
+    const { socket } = client({ onTool: () => "Started." });
     userTurn(socket, "in1", "r1");
     socket.event({ type: "response.output_audio.delta", item_id: "a1", delta: "AAAA" });
     // Words that let its speech be heard (small talk), then it passes something on too.
@@ -139,18 +139,18 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
   });
 
   it("an agent update asking for a reply meanwhile makes the one reply (no acknowledgement on top)", async () => {
-    const { c, socket } = client({ onTool: () => "Sent to the agent." });
+    const { c, socket } = client({ onTool: () => "Started." });
     userTurn(socket, "in1", "r1");
     transcribed(socket, "in1", "open gmail");
     callSend(socket, "Open Gmail");
     await flush();
-    c.note("Agent update (problem): the page did not load.", "error");
+    c.note("Your update (problem): the page did not load.", "error");
     replyDone(socket, "r1");
     expect(socket.replies()).toEqual([{ type: "response.create" }]);
   });
 
   it("the user talking again drops the acknowledgement (their turn gets its own reply)", async () => {
-    const { socket } = client({ onTool: () => "Sent to the agent." });
+    const { socket } = client({ onTool: () => "Started." });
     userTurn(socket, "in1", "r1");
     transcribed(socket, "in1", "open gmail");
     callSend(socket, "Open Gmail");
@@ -161,7 +161,7 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
   });
 
   it("the server never cuts a reply off for the user's voice: the client does, and never while it calls send_to_agent", async () => {
-    const onTool = vi.fn(() => "Sent to the agent.");
+    const onTool = vi.fn(() => "Started.");
     const { socket } = client({ onTool });
     // OpenAI's own barge-in cancels the reply mid-call (measured: the arguments end cut off, as invalid JSON).
     expect(socket.sent[0]!.session.audio.input.turn_detection).toMatchObject({ type: "server_vad", create_response: true, interrupt_response: false });
@@ -287,7 +287,7 @@ describe("RealtimeEngine: a turn, and stopping while it starts", () => {
     callSend(socket, "Open Gmail and read the newest email from Sarah");
     await flush();
     expect(t.log).toEqual(["speech", "forward:Open Gmail and read the newest email from Sarah [could you check what Sarah wrote me]"]);
-    expect(socket.sent.find((x) => x.item?.type === "function_call_output")!.item.output).toBe("Sent to the agent. Its updates will follow.");
+    expect(socket.sent.find((x) => x.item?.type === "function_call_output")!.item.output).toBe("Started. Your updates on it will follow.");
     // A turn with no request, answered aloud: its words once its reply is done.
     userTurn(socket, "in2", "r2");
     transcribed(socket, "in2", "thanks");

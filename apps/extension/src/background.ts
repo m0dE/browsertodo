@@ -29,7 +29,7 @@ import { AttachmentStore } from "./engine/attachment-store.js";
 import { LocalStore } from "./engine/local-store.js";
 import { MediaFiles } from "./engine/media-files.js";
 import { Runner, type ResolvedBrain } from "./engine/runner.js";
-import { SessionStore } from "./engine/sessions.js";
+import { MAX_SESSIONS, SessionStore } from "./engine/sessions.js";
 import { TraceStore } from "./engine/trace-store.js";
 import { MEMORY_SEARCH_LIMIT, MemoryService, type MemoryTool } from "./memory/service.js";
 import { MemoryStore } from "./memory/store.js";
@@ -51,6 +51,7 @@ import type { UiPush, UiRequest } from "./ui-protocol.js";
 import { VOICE_BADGES, VoiceSessions } from "./voice-session.js";
 import { TabBadges, type BadgeLook } from "./tab-badges.js";
 import { TabChats } from "./tab-chats.js";
+import { JobDismissals } from "./job-dismissals.js";
 import { Vault } from "./vault.js";
 
 // MV3 forbids eval; stop zod from probing for it.
@@ -68,6 +69,7 @@ const cdp = new Cdp();
 const vault = new Vault();
 // Each browser tab has its own chat (tab -> conversation); the tab's own side panel shows it.
 const tabChats = new TabChats();
+const jobDismissals = new JobDismissals(chrome.storage.local);
 // Each running session acts in its own agent tab (slot); slot 0 is the first agent tab.
 // Scheduled runs never take over a tab that has a chat.
 // Every browser call of a session is timed in its conversation's trace (the Raw view).
@@ -336,6 +338,7 @@ const titles = new ChatTitler({
   summarizer: (brain) => memorySummarizer(brain, { settings: loadSettings, hosted: () => account.session(), helper }),
   // Past chats are titled in the background, never while a run is going on.
   busy: (): boolean => runner.runningSessions.length > 0,
+  seriesTitled: async (seriesId) => (await sessions.list(MAX_SESSIONS)).some((s) => s.seriesId === seriesId && (s.titleBy === "model" || s.titleBy === "user")),
   log: logger("titles"),
 });
 
@@ -419,6 +422,7 @@ const router = new UiRouter({
   todo: todoSource,
   onTodoEdited: (before, after) => memory.taskEdited(before, after),
   tabChats,
+  dismissals: jobDismissals,
   focusTab: async (tabId) => {
     try {
       const tab = await chrome.tabs.update(tabId, { active: true });
@@ -483,6 +487,7 @@ localStore.onChange(() => {
 });
 helper.onInfo(() => hub.pushState());
 tabChats.onChange(() => hub.pushState());
+jobDismissals.onChange(() => hub.pushState());
 
 let lastAutoConnect = 0;
 function maybeConnectHelper(then?: () => void): void {

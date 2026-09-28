@@ -63,6 +63,16 @@ export function isBound(sessionId: string, s: TabChatState): boolean {
   return Object.values(s.tabChats ?? {}).includes(sessionId);
 }
 
+/**
+ * The tab to watch a conversation's agent in, unless the user already looks at it (`viewing`): while it runs, the tab
+ * it acts on now; else the tab it belongs to. Null: none, or that is the tab the user sees.
+ */
+export function agentTabToView(sessionId: string | null, viewing: number | null, s: TabChatState): number | null {
+  if (!sessionId) return null;
+  const tab = s.runningTabs?.[sessionId]?.[0] ?? tabOfSession(sessionId, s);
+  return tab === viewing ? null : tab;
+}
+
 /** The tab a conversation lives in: the tab it belongs to, else the tab it runs in. */
 export function tabOfSession(sessionId: string, s: TabChatState): number | null {
   for (const [tab, id] of Object.entries(s.tabChats ?? {})) if (id === sessionId) return Number(tab);

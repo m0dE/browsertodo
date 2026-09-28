@@ -17,6 +17,7 @@ import type { AdhocInput } from "./run/jobs.js";
 import type { Runner } from "./runner.js";
 import type { SessionStore } from "./sessions.js";
 import type { ChatTitler } from "./chat-titles.js";
+import type { JobDismissals } from "../job-dismissals.js";
 import type { TestResult } from "./settings-tests.js";
 import { WrongPassphraseError, type Vault } from "../vault.js";
 import { isMemoryRequest, type MemoryService } from "../memory/service.js";
@@ -71,6 +72,8 @@ export interface UiRouterDeps {
     bind(tabId: number, sessionId: string): Promise<void>;
     unbind(tabId: number, sessionId?: string): Promise<string | null>;
   };
+  /** What the user cleared from the jobs list (job-dismissals.ts). Absent: jobs cannot be dismissed. */
+  dismissals?: Pick<JobDismissals, "all" | "set">;
   /** The tabs each running session acts in (session id -> tab ids). */
   runningTabs?(): Promise<Record<string, number[]>>;
   /** Activates a browser tab and focuses its window. */
@@ -151,6 +154,8 @@ export class UiRouter {
     if (d.runningTabs) state.runningTabs = await d.runningTabs().catch(() => ({}));
     const awaiting = d.approvals?.waitingSessions() ?? [];
     if (awaiting.length) state.awaitingApproval = awaiting;
+    const dismissals = d.dismissals ? await d.dismissals.all().catch(() => ({})) : {};
+    if (Object.keys(dismissals).length) state.dismissals = dismissals;
     const memoryQuestion = d.memoryQuestion ? await d.memoryQuestion().catch(() => null) : null;
     if (memoryQuestion) state.memoryQuestion = memoryQuestion;
     const memoryBackfill = d.memoryBackfill ? await d.memoryBackfill().catch(() => null) : null;
@@ -284,6 +289,14 @@ export class UiRouter {
         await d.tabChats.bind(tab, sessionId);
         return this.getState() satisfies Promise<UiResults["chat.bind"]>;
       }
+      case "jobs.dismiss": {
+        if (!d.dismissals) throw new Error("Jobs cannot be dismissed here");
+        const entries = Object.entries(msg.dismissals ?? {}).filter(([key, v]) => /^(chat|task):./.test(key) && typeof v?.at === "string");
+        await d.dismissals.set(
+          Object.fromEntries(entries.map(([key, v]) => [key, { at: v.at, ...(typeof v.needs === "string" ? { needs: v.needs } : {}), ...(typeof v.archivedAt === "string" ? { archivedAt: v.archivedAt } : {}) }])),
+        );
+        return this.getState() satisfies Promise<UiResults["jobs.dismiss"]>;
+      }
       case "chat.undoScheduled": {
         const sessionId = optId(msg.sessionId);
         const taskId = optId(msg.taskId);
@@ -383,8 +396,9 @@ export class UiRouter {
       case "session.rename": {
         const session = await d.sessions.get(msg.sessionId);
         if (!session) throw new Error(`No session ${msg.sessionId}`);
-        // A TODO run's title is its task's instructions (a later turn reads them there).
-        if (session.source !== "adhoc") throw new Error("Only chats can be renamed: a TODO run is named by its task");
+        // An older TODO run's title is its task's instructions (a later turn reads them there); a run that keeps its
+        // instructions names its series (sidepanel/jobs.ts), and may be renamed.
+        if (session.source !== "adhoc" && !session.instructions) throw new Error("Only chats can be renamed: a TODO run is named by its task");
         const title = cleanUserTitle(String(msg.title ?? ""));
         if (!title) throw new Error("Give the chat a name");
         if (secretProblem(title)) throw new Error("A chat's name can't hold a password, code or key");

@@ -218,9 +218,12 @@ export class AgentSlots implements SlotPool {
     return this.get(index).tab.show();
   }
 
-  /** The tabs a running session acts in (its main tab first), or none. */
+  /** The tabs a running session acts in (the one it acts on now first, where the user can watch it), or none. */
   async tabsOf(sessionId: string): Promise<number[]> {
-    return (await this.slotUsedBy(sessionId)?.tab.tabIds()) ?? [];
+    const tab = this.slotUsedBy(sessionId)?.tab;
+    if (!tab) return [];
+    const [ids, now] = await Promise.all([tab.tabIds(), tab.tabId()]);
+    return now !== null && ids.includes(now) ? [now, ...ids.filter((id) => id !== now)] : ids;
   }
 
   /**

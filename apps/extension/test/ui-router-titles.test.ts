@@ -58,7 +58,10 @@ describe("session.rename", () => {
   it("refuses an empty name, a secret, a TODO run and an unknown chat", async () => {
     await expect(req({ type: "session.rename", sessionId: "chat-new", title: "  " })).rejects.toThrow(/Give the chat a name/);
     await expect(req({ type: "session.rename", sessionId: "chat-new", title: "password is hunter22" })).rejects.toThrow(/can't hold a password/);
+    // An older TODO run (its title is its instructions); a run that keeps them may be renamed (its series' name).
     await expect(req({ type: "session.rename", sessionId: "todo-run", title: "Mine" })).rejects.toThrow(/named by its task/);
+    await sessions.create(session("todo-run-2", 11, { source: "local", taskId: "t1", title: "Post the daily tip", instructions: "Post the daily tip" }));
+    expect((await req<{ session: SessionInfo }>({ type: "session.rename", sessionId: "todo-run-2", title: "Daily tip" })).session).toMatchObject({ title: "Daily tip", titleBy: "user" });
     await expect(req({ type: "session.rename", sessionId: "nope", title: "Mine" })).rejects.toThrow(/No session/);
     expect((await sessions.get("chat-new"))!.title).toBe("Title chat-new");
   });

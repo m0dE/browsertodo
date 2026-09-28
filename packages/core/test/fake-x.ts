@@ -23,6 +23,8 @@ export interface FakeXOptions {
   url?: string;
   account?: string;
   accounts?: string[];
+  /** Accounts the menu keeps in its collapsed "Personal accounts" section (listed once it is opened). */
+  folded?: string[];
   hasSwitcher?: boolean;
   credentials?: Record<string, { username: string; password: string }>;
   vaultLocked?: boolean;
@@ -37,6 +39,8 @@ export class FakeX {
   accounts: string[];
   hasSwitcher: boolean;
   menuOpen = false;
+  folded: string[];
+  personalOpen = false;
   composeText = "";
   files: string[] = [];
   posts: FakePost[];
@@ -49,6 +53,7 @@ export class FakeX {
     this.url = opts.url ?? "https://x.com/compose/post";
     this.account = opts.account ?? "alice";
     this.accounts = opts.accounts ?? ["alice", "bob", "carol"];
+    this.folded = opts.folded ?? [];
     this.hasSwitcher = opts.hasSwitcher ?? true;
     this.credentials = opts.credentials ?? {};
     this.vaultLocked = opts.vaultLocked ?? false;
@@ -103,13 +108,16 @@ export class FakeX {
         );
       }
       if (this.menuOpen) {
-        for (const acc of this.accounts) {
+        const listed = this.accounts.filter((a) => !this.folded.includes(a) || this.personalOpen);
+        if (this.folded.length) add({ tag: "div", role: "button", name: "Personal accounts" }, { onClick: () => (this.personalOpen = !this.personalOpen) });
+        for (const acc of listed) {
           add(
             { tag: "div", role: "button", name: `${acc[0]!.toUpperCase()}${acc.slice(1)} @${acc}`, testId: "UserCell" },
             {
               onClick: () => {
                 this.account = acc;
                 this.menuOpen = false;
+                this.personalOpen = false;
                 this.url = "https://x.com/home";
               },
             },

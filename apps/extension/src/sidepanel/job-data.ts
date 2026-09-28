@@ -8,7 +8,7 @@
  */
 import { localTimeZone, readStoredRepeat, type SessionInfo } from "@browsertodo/shared";
 import { MAX_SESSIONS } from "../engine/sessions.js";
-import type { UiRequest, UiResults, UiState } from "../ui-protocol.js";
+import type { JobDismissal, UiRequest, UiResults, UiState } from "../ui-protocol.js";
 import { buildJobs, jobKeyOf, seriesOf, type Job, type JobTask } from "./jobs.js";
 
 type Request = <R extends Extract<UiRequest, { type: "sessions.list" | "tasks.list" }>>(req: R) => Promise<UiResults[R["type"]]>;
@@ -18,6 +18,9 @@ export class JobData {
   private tasks: JobTask[] = [];
   private running: readonly SessionInfo[] = [];
   private awaiting: readonly string[] = [];
+  private dismissals: Readonly<Record<string, JobDismissal>> = {};
+  /** Dismissals Undo can still take back (job-dismiss.ts): shown as done already. */
+  private pendingDismissals: Readonly<Record<string, JobDismissal>> = {};
   private cache: Job[] | null = null;
   private readonly listeners = new Set<() => void>();
   private sessionTicket = 0;
@@ -43,7 +46,16 @@ export class JobData {
 
   /** Every job (see groupJobs for the list's order). */
   jobs(now = Date.now()): Job[] {
-    this.cache ??= buildJobs({ sessions: [...this.sessions.values()], running: this.running, tasks: this.tasks, awaitingApproval: this.awaiting }, now);
+    this.cache ??= buildJobs(
+      {
+        sessions: [...this.sessions.values()],
+        running: this.running,
+        tasks: this.tasks,
+        awaitingApproval: this.awaiting,
+        dismissals: { ...this.dismissals, ...this.pendingDismissals },
+      },
+      now,
+    );
     return this.cache;
   }
 
@@ -105,13 +117,21 @@ export class JobData {
     if (this.sessions.delete(sessionId)) this.changed();
   }
 
-  setState(state: Pick<UiState, "runningSessions" | "awaitingApproval">): void {
-    const before = this.running.map((r) => `${r.sessionId}:${r.title}`).join() + `|${this.awaiting.join()}`;
+  setState(state: Pick<UiState, "runningSessions" | "awaitingApproval" | "dismissals">): void {
+    const sig = () => this.running.map((r) => `${r.sessionId}:${r.title}`).join() + `|${this.awaiting.join()}|${JSON.stringify(this.dismissals)}`;
+    const before = sig();
     this.running = state.runningSessions;
     this.awaiting = state.awaitingApproval ?? [];
+    this.dismissals = state.dismissals ?? {};
     // A run that just started may be one the list has not loaded yet.
     if (this.sessionsLoaded && this.running.some((r) => !this.sessions.has(r.sessionId))) void this.loadSessions();
-    if (before !== this.running.map((r) => `${r.sessionId}:${r.title}`).join() + `|${this.awaiting.join()}`) this.changed();
+    if (before !== sig()) this.changed();
+  }
+
+  /** Dismissals not committed yet (Undo can take them back): the list shows them done already. */
+  setPendingDismissals(pending: Readonly<Record<string, JobDismissal>>): void {
+    this.pendingDismissals = pending;
+    this.changed();
   }
 
   /** The clock moved on: a waiting task's time may have come. */

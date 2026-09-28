@@ -25,6 +25,8 @@ export interface TaskSessionOptions {
   jev: JevLike | null;
   jevThreshold: number;
   mediaPaths: string[];
+  /** The task's account (an X handle): nothing is published on X as another account (ToolExecutorOptions.account). */
+  account?: string | null;
   /** Passwords the agent is given (shared with the run log, which redacts them too). */
   secrets: SecretRedactor;
   /** helper.event notifications. */
@@ -103,6 +105,7 @@ export class TaskSession {
       onTaskEnd: (r) => this.recordFinish(r),
       turnEndsAt: () => this.turn?.endsAt,
       mediaPaths: opts.mediaPaths,
+      account: opts.account ?? null,
       secrets: opts.secrets,
       ...(opts.sleep ? { sleep: opts.sleep } : {}),
       ...(opts.todo ? { todo: (tool: TodoToolName, args: unknown) => opts.todo!(opts.sessionId, tool, args) } : {}),

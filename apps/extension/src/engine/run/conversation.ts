@@ -107,7 +107,7 @@ export async function runNextTurn(
   // Nothing echoes the message in a fresh session.
   active.said = [];
   // The tab goes with the task (buildTaskPrompt), not inside the summary's quoted message.
-  const instructions = buildFollowUpInstructions({ instructions: job.first.instructions, session: from, events, text: buildFollowUpMessage(message) });
+  const instructions = buildFollowUpInstructions({ instructions: job.first.instructions, account: job.first.account, session: from, events, text: buildFollowUpMessage(message) });
   const sources = job.task ? await mediaSources({ source: "local", task: job.task }, localStore) : [];
   const mediaPaths = await turns.materialize(active, sources, cleanups);
   // A fresh session is given what applies anew (when the open session turned out gone, picked again as a fresh one).

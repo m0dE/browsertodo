@@ -26,7 +26,7 @@ describe("NarratorFeed: the chat's events as short notes for the realtime narrat
     expect(feed.push(call("navigate", { url: "https://accounts.google.com/" }), GAP - 1)).toEqual([]);
     expect(feed.push(call("navigate", { url: "https://calendar.google.com/" }), GAP)).toEqual([
       {
-        text: 'Agent update (progress): Opening calendar.google.com. (The agent last said: "This is the personal inbox; switching to the admin account.") Say it in a few words, only if it is news to the user.',
+        text: 'Your update (progress): Opening calendar.google.com. (You last wrote: "This is the personal inbox; switching to the admin account.") Say it in a few words, in the first person, only if it is news to the user.',
         speak: "milestone",
       },
     ]);
@@ -51,28 +51,28 @@ describe("NarratorFeed: the chat's events as short notes for the realtime narrat
     feed.request(0);
     feed.push(call("navigate", { url: "https://x.com/home" }), 100);
     expect(feed.push({ type: "task_end", outcome: "done", summary: "Posted the thread", spoken: "Posted your thread on X." }, 500)).toEqual([
-      { text: 'Agent update (finished): The task is done. Tell the user in one to three short sentences: "Posted your thread on X."', speak: "result" },
+      { text: 'Your update (finished): The task is done. Tell the user in one to three short sentences, in the first person: "Posted your thread on X."', speak: "result" },
     ]);
   });
 
   it("a paused task is a question to ask; a failure and an error say what went wrong; the same line is never said twice", () => {
     const feed = new NarratorFeed();
     expect(feed.push({ type: "task_end", outcome: "paused", reason: "Which account should I post from?" }, 0)).toEqual([
-      { text: 'Agent update (needs the user): The agent asks: "Which account should I post from?" Ask the user, and pass their answer on with send_to_agent.', speak: "question" },
+      { text: 'Your update (you need the user): Your question: "Which account should I post from?" Ask the user, and give their answer to send_to_agent.', speak: "question" },
     ]);
     expect(feed.push({ type: "error", text: "Claude API rate limit (HTTP 429)" }, 0)).toEqual([
-      { text: 'Agent update (problem): "Too many requests right now." Tell the user briefly.', speak: "error" },
+      { text: 'Your update (problem): "Too many requests right now." Tell the user briefly, in the first person.', speak: "error" },
     ]);
     expect(feed.push({ type: "error", text: "Claude API rate limit (HTTP 429)" }, 5)).toEqual([]);
     expect(feed.push({ type: "task_end", outcome: "failed", reason: "The site kept timing out" }, 0)[0]!.text).toBe(
-      'Agent update (finished): The task did not work. Tell the user in one to three short sentences: "That didn\'t work: The site kept timing out"',
+      'Your update (finished): The task did not work. Tell the user in one to three short sentences, in the first person: "That didn\'t work: The site kept timing out"',
     );
   });
 
   it("a message typed in the panel is noted as context only", () => {
     const feed = new NarratorFeed();
     expect(feed.push({ type: "user_message", text: "use the second draft" }, 0)).toEqual([
-      { text: 'Agent update: the user typed a message to the agent: "use the second draft". Do not reply to it.', speak: null },
+      { text: 'Your update: the user typed you a message: "use the second draft". Do not reply to it.', speak: null },
     ]);
   });
 

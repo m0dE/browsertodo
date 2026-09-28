@@ -68,6 +68,11 @@ export function installChromeStub(data) {
       }
       return { ok: true };
     },
+    // Jobs cleared from the list: kept in the state (every panel sees them), as the background does.
+    "jobs.dismiss": (req) => {
+      data.state = { ...data.state, dismissals: { ...(data.state.dismissals ?? {}), ...req.dismissals } };
+      return data.state;
+    },
     "chat.bind": (req) => {
       const rest = Object.fromEntries(Object.entries(data.state.tabChats ?? {}).filter(([, id]) => id !== req.sessionId));
       data.state = { ...data.state, tabChats: { ...rest, [req.tabId]: req.sessionId } };
@@ -305,6 +310,8 @@ export function installChromeStub(data) {
   window.__closeTab = (tabId) => closeListeners.forEach((l) => l(tabId, { windowId: 1, isWindowClosing: false }));
   /** Tab titles (data.tabTitles overrides). */
   const tabTitle = (id) => data.tabTitles?.[id] ?? { 1: "Inbox (1) - ada.lovelace@example.com - Gmail", 2: "Hacker News" }[id] ?? `Tab ${id}`;
+  /** Tab addresses: none unless a case gives them (data.tabUrls). */
+  const tabUrl = (id) => data.tabUrls?.[id];
   const noEvent = { addListener: () => {} };
   window.chrome = {
     runtime: {
@@ -338,7 +345,7 @@ export function installChromeStub(data) {
       },
       // A query for a URL finds no tab (so pages such as the microphone page open in a new one).
       query: async (q) => (q?.url ? [] : [{ id: activeTabId, windowId: 1, active: true, title: tabTitle(activeTabId) }]),
-      get: async (id) => ({ id, windowId: 1, active: id === activeTabId, title: tabTitle(id) }),
+      get: async (id) => ({ id, windowId: 1, active: id === activeTabId, title: tabTitle(id), url: tabUrl(id) }),
       update: async () => ({}),
       getCurrent: async () => ({ id: 99, windowId: 1 }),
       remove: async () => {},
@@ -346,6 +353,7 @@ export function installChromeStub(data) {
       onRemoved: { addListener: (l) => closeListeners.push(l) },
       onAttached: noEvent,
       onDetached: noEvent,
+      onUpdated: noEvent,
     },
     windows: { getCurrent: async () => ({ id: 1 }), update: async () => ({}), onFocusChanged: noEvent },
     // A tab's own panel (sidepanel.html?tab=N) opens another tab's panel on Go to tab (panel-tabs.ts openTabPanel).

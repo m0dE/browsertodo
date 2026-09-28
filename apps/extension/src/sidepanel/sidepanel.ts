@@ -19,6 +19,7 @@ import { setErrorFixes, type ErrorFixes } from "./error-view.js";
 import { todoGate } from "./format.js";
 import { initHeader } from "./header.js";
 import { JobData } from "./job-data.js";
+import { Dismisser, dismissalOf, undoText } from "./job-dismiss.js";
 import { initJobList } from "./job-list.js";
 import { forgetOldTabs, JobNav, viewAnnouncement } from "./job-nav.js";
 import { initJobPage } from "./job-page.js";
@@ -29,7 +30,7 @@ import { openSettings } from "./open-settings.js";
 import { initAutonomyWarning } from "./autonomy-warning.js";
 import { connectBackground } from "./port.js";
 import type { PanelMessage } from "../panel-command.js";
-import { chatInTab, followChat, isBound, ownChatOfTab, tabOfSession } from "./tab-chat.js";
+import { agentTabToView, chatInTab, followChat, isBound, ownChatOfTab, tabOfSession } from "./tab-chat.js";
 import { openTabPanel, panelTabOf } from "../panel-tabs.js";
 import { openScheduleSheet } from "./schedule-sheet.js";
 import { OPEN_CHAT_COMMAND, openShortcutSettings, readShortcut, VOICE_COMMAND } from "../shortcut.js";
@@ -358,13 +359,55 @@ const chat = initChat({
   },
 });
 
-const list = initJobList(listView, { data, onOpen: openJob, onShortcuts: () => void openShortcutSettings() });
+/** Dismissing jobs from the list, with Undo above the box for a few seconds (job-dismiss.ts). */
+const DISMISS_NOTICE = "dismiss";
+const dismisser = new Dismisser({
+  commit: async (batch) => {
+    try {
+      applyState(await uiRequest({ type: "jobs.dismiss", dismissals: Object.fromEntries(batch.map((d) => [d.key, d.entry])) }));
+    } catch (err) {
+      composer.showError(err);
+    }
+    let cancelled = false;
+    for (const { action } of batch) {
+      try {
+        if (action?.type === "stop") await uiRequest({ type: "run.stop", sessionId: action.sessionId });
+        if (action?.type === "cancel") {
+          await uiRequest({ type: "tasks.cancel", id: action.taskId });
+          cancelled = true;
+        }
+      } catch (err) {
+        composer.showError(err);
+      }
+    }
+    if (cancelled) await data.loadTasks();
+  },
+  onPending: (pending) => data.setPendingDismissals(pending),
+  offerUndo: (batch) =>
+    batch
+      ? composer.notices.show({ key: DISMISS_NOTICE, level: "info", text: undoText(batch), actions: [{ label: "Undo", run: () => dismisser.undo() }] })
+      : composer.notices.clear(DISMISS_NOTICE),
+});
+// A panel going away does what was dismissed in it (Undo is gone with it).
+document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && void dismisser.flush());
+window.addEventListener("pagehide", () => void dismisser.flush());
+
+const list = initJobList(listView, {
+  data,
+  onOpen: openJob,
+  canDismiss: (job) => dismissalOf(job, data.source) !== null,
+  onDismiss: (jobs) => dismisser.dismiss(jobs.map((j) => dismissalOf(j, data.source)).filter((d) => d !== null)),
+  onShortcuts: () => void openShortcutSettings(),
+});
 const page = initJobPage({
   data,
   chat,
-  activeTab: () => activeTab,
-  tabOf: (sessionId) => (state ? tabOfSession(sessionId, state) : null),
-  tabTitle: async (tabId) => (await chrome.tabs.get(tabId).catch(() => null))?.title ?? null,
+  // A tab's own panel shows only with its tab: that is the tab the user sees, wherever the panel's chat went on.
+  agentTab: (sessionId) => (state ? agentTabToView(sessionId, ownTab ?? activeTab, state) : null),
+  tabInfo: async (tabId) => {
+    const t = await chrome.tabs.get(tabId).catch(() => null);
+    return t ? { title: t.title ?? "", url: t.url || t.pendingUrl || "", ...(t.favIconUrl ? { favIconUrl: t.favIconUrl } : {}) } : null;
+  },
   goToTab: (tabId) => void goToTab(tabId).catch((err: unknown) => composer.showError(err)),
   continueNow: (sessionId) => void composer.continueNow(sessionId),
   openSchedule: (job, trigger) =>
@@ -483,6 +526,10 @@ async function trackOwnTab(tab: number): Promise<void> {
 
 /** The panel page opened as a tab: follows the active tab of its window. */
 async function trackTabs(): Promise<void> {
+  // The job page's row of the agent's tab follows the page the agent is on.
+  chrome.tabs.onUpdated.addListener((tabId, change) => {
+    if (change.title !== undefined || change.url !== undefined || change.favIconUrl !== undefined) page.tabUpdated(tabId);
+  });
   if (ownTab !== null) return trackOwnTab(ownTab);
   let first = true;
   const refresh = async () => {

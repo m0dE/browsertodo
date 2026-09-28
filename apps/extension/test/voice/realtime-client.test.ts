@@ -139,7 +139,7 @@ describe("RealtimeClient: connecting", () => {
   it("sends nothing before the socket is open", () => {
     const { client, socket } = setup();
     client.appendAudio(new Int16Array([1]));
-    client.note("Agent update: x", "result");
+    client.note("Your update: x", "result");
     expect(socket().sent).toEqual([]);
   });
 });
@@ -154,14 +154,14 @@ describe("RealtimeClient: the feed, the narrator's replies and its tools", () =>
 
   it("a note is a system message item; a line to say asks for a reply, and news waits for the reply being made", () => {
     const { client, socket } = ready();
-    client.note("Agent update (progress): Opening x.com.", "milestone");
+    client.note("Your update (progress): Opening x.com.", "milestone");
     expect(socket().sent).toEqual([
-      { type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: "Agent update (progress): Opening x.com." }] } },
+      { type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: "Your update (progress): Opening x.com." }] } },
       { type: "response.create" },
     ]);
     socket().event({ type: "response.created", response: { id: "r1" } });
-    client.note("Agent update (finished): Posted.", "result");
-    client.note("Agent update (problem): more", "error");
+    client.note("Your update (finished): Posted.", "result");
+    client.note("Your update (problem): more", "error");
     expect(socket().types()).toEqual(["conversation.item.create", "response.create", "conversation.item.create", "conversation.item.create"]);
     // One reply for both, once the current one is done.
     socket().event({ type: "response.done", response: { id: "r1", status: "completed", output: [] } });
@@ -173,7 +173,7 @@ describe("RealtimeClient: the feed, the narrator's replies and its tools", () =>
     const onUserSpeech = vi.fn();
     const { client, socket } = ready({ onUserSpeech });
     socket().event({ type: "response.created", response: { id: "r1" } });
-    client.note("Agent update: x", "result");
+    client.note("Your update: x", "result");
     socket().event({ type: "input_audio_buffer.speech_started", audio_start_ms: 100, item_id: "u1" });
     expect(onUserSpeech).toHaveBeenCalledTimes(1);
     socket().event({ type: "response.done", response: { id: "r1", status: "cancelled", output: [] } });
@@ -192,7 +192,7 @@ describe("RealtimeClient: the feed, the narrator's replies and its tools", () =>
   });
 
   it("send_to_agent runs through onTool (with the user's input item it answers), its output goes back, then one short acknowledgement", async () => {
-    const onTool = vi.fn(async () => "Sent to the agent.");
+    const onTool = vi.fn(async () => "Started.");
     const { socket } = ready({ onTool });
     socket().event({ type: "input_audio_buffer.committed", item_id: "in1", previous_item_id: null });
     socket().event({ type: "response.created", response: { id: "r1" } });
@@ -200,7 +200,7 @@ describe("RealtimeClient: the feed, the narrator's replies and its tools", () =>
     socket().event({ type: "response.function_call_arguments.done", call_id: "c1", name: "send_to_agent", arguments: '{"text":"Post gm on X"}', item_id: "f1" });
     await flush();
     expect(onTool).toHaveBeenCalledWith("send_to_agent", { text: "Post gm on X" }, "in1", ["post gm on x"]);
-    expect(socket().sent.at(-1)).toEqual({ type: "conversation.item.create", item: { type: "function_call_output", call_id: "c1", output: "Sent to the agent." } });
+    expect(socket().sent.at(-1)).toEqual({ type: "conversation.item.create", item: { type: "function_call_output", call_id: "c1", output: "Started." } });
     socket().event({ type: "response.done", response: { id: "r1", status: "completed", output: [] } });
     expect(socket().sent.at(-1)).toEqual({ type: "response.create", response: ackResponse("Post gm on X") });
   });

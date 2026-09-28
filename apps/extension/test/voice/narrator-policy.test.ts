@@ -242,7 +242,7 @@ describe("one reply per spoken request (the owner's report)", () => {
       t.serve();
       expect(t.creates()).toHaveLength(2);
       expect(t.s.sent.filter((e) => e.item?.role === "system").map((e) => e.item.content[0].text)).toEqual([
-        'Agent update (finished): The task is done. Tell the user in one to three short sentences: "You have 3 new emails; one is from your accountant."',
+        'Your update (finished): The task is done. Tell the user in one to three short sentences, in the first person: "You have 3 new emails; one is from your accountant."',
       ]);
     });
   }
@@ -650,7 +650,7 @@ describe("the owner's report of 2026-09-27: 'can you speak Korean?' while the ag
       t.engine.agentEvent({ type: "user_message", text: question, voice: true }, T0);
       t.engine.agentEvent({ type: "assistant_text", text: answer }, T0 + 1_000);
       expect(t.creates()).toEqual([{ type: "response.create" }]);
-      expect(notes(t.s)).toEqual([`Agent update (answer): The agent answered the user's question: "${answer}" Tell the user its answer in one or two short sentences.`]);
+      expect(notes(t.s)).toEqual([`Your update (answer): Your answer to the user's question: "${answer}" Tell the user in one or two short sentences, in the first person.`]);
       t.serve();
       // Its next words go on with the task: not said.
       t.engine.agentEvent({ type: "assistant_text", text: "Clicking Send on the refund email." }, T0 + 2_000);

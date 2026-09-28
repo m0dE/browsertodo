@@ -101,7 +101,7 @@ describe("what the agent and the narrator are told while the user looks at anoth
 
   it("tells the narrator (and Standard, aloud) what use this tab did", () => {
     expect(useThisTabAnswer({ moved: recipes })).toBe("Moved: you now work in Recipes B (127.0.0.1:5173); what the user says goes to that tab's chat.");
-    expect(useThisTabAnswer({ moved: { title: "New Tab", url: "chrome://newtab/" } })).toMatch(/Chrome doesn't let the agent see that page/);
+    expect(useThisTabAnswer({ moved: { title: "New Tab", url: "chrome://newtab/" } })).toMatch(/Chrome doesn't let you see that page/);
     expect(useThisTabAnswer("here")).toBe("The user is already looking at the tab you work in.");
     expect(useThisTabAnswer("unknown")).toMatch(/Use voice here/);
     expect(useThisTabAnswer("gone")).toBe("That tab is gone: nothing moved.");

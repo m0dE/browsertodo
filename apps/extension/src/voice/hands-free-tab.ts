@@ -134,7 +134,7 @@ export function useThisTabAnswer(outcome: UseTabOutcome): string {
   if (outcome === "unknown") return "It is not known which tab the user is looking at: ask them to press Use voice here in that tab's side panel.";
   if (outcome === "here") return "The user is already looking at the tab you work in.";
   if (outcome === "gone") return "That tab is gone: nothing moved.";
-  const restricted = isRestrictedUrl(outcome.moved.url) ? " Chrome doesn't let the agent see that page, so it works in other tabs from there." : "";
+  const restricted = isRestrictedUrl(outcome.moved.url) ? " Chrome doesn't let you see that page, so you work in other tabs from there." : "";
   return `Moved: you now work in ${pageName(outcome.moved, "the tab the user is looking at")}; what the user says goes to that tab's chat.${restricted}`;
 }
 

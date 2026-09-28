@@ -102,7 +102,7 @@ export function initMemorySection(opts: { onState(state: UiState): void }): Memo
         "div.srow.mem-kind-head",
         null,
         h("label.srow-label", { for: id }, h("b", null, k.label, h("span.mem-count", null, k.count.toLocaleString("en-US"))), h("small", { id: `${id}-hint` }, k.on ? k.hint : k.offHint)),
-        h("div.srow-control.end", null, h("span.switch", null, toggle)),
+        h("div.srow-control", null, h("span.switch", null, toggle)),
       ),
       ...body,
     );

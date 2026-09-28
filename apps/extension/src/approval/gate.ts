@@ -26,11 +26,13 @@
  * user's OK.
  */
 import {
+  activeXAccount,
   APPROVAL_TIMEOUT_MS,
   approvalPauseReason,
   approvalRefusalText,
   CONSEQUENCE_TEXT,
   isApprovalGated,
+  isXUrl,
   PERMISSION_TITLE,
   type ApprovalGatedMethod,
   type ApprovalOutcome,
@@ -244,6 +246,8 @@ export class ApprovalGate {
     const action: GateAction = { method, page: { url: this.page?.url ?? "", title: this.page?.title ?? "" }, typed: [...this.typed] };
     const element = this.elementAt(p.index);
     if (element) action.element = element;
+    const account = this.page && isXUrl(this.page.url) ? activeXAccount(this.page) : null;
+    if (account) action.account = account;
     if (typeof p.checked === "boolean") action.checked = p.checked;
     if (typeof p.text === "string") action.text = p.text;
     if (typeof p.key === "string") action.key = p.key;
@@ -382,7 +386,8 @@ export function approvalAsk(a: GateAction, why: string, kind?: ConsequenceKind):
   const where = a.method === "navigate" || a.method === "openTabs" ? (a.urls?.[0] ?? "") : a.page.url;
   const text = actionText(a);
   return {
-    action: describeAction(a),
+    // What publishes on X names the account it publishes as: `Click "Post" as @name`.
+    action: kind === "publish" && a.account ? `${describeAction(a)} as ${a.account}` : describeAction(a),
     site: hostOf(where),
     why,
     ...(kind ? { kind } : {}),

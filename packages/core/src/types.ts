@@ -66,6 +66,11 @@ export interface ToolExecutorOptions {
   /** Absolute local paths the task may upload. upload rejects other paths. */
   mediaPaths: string[];
   /**
+   * The task's account (e.g. an X handle "@name"), when it has one: nothing is published on X while X's account
+   * switcher shows another account (a Post click is refused, however the agent came to make it).
+   */
+  account?: string | null;
+  /**
    * Where passwords get_credential hands out are remembered, so events never
    * show them. Pass one to redact the same secrets elsewhere (the helper's run
    * log). Default: the executor's own.

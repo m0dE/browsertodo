@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { applySettingsPatch } from "../../src/settings-store.js";
 import { DEFAULT_SETTINGS, parseSettings } from "@browsertodo/shared";
 import { automationView, FULL_AUTONOMY_WARNING, needsConfirmation } from "../../src/options/automation-view.js";
-import { TABS } from "../../src/options/settings-view.js";
+import { SECTIONS } from "../../src/options/settings-view.js";
 import { AUTONOMY_WARNING_TEXT } from "../../src/sidepanel/autonomy-warning.js";
 
 describe("Settings > Permission", () => {
@@ -28,9 +28,9 @@ describe("Settings > Permission", () => {
     expect(v.warning).toBe(FULL_AUTONOMY_WARNING);
   });
 
-  it("the side panel's banner is short and names the tab and the level as Settings shows them", () => {
+  it("the side panel's banner is short and names the section and the level as Settings shows them", () => {
     expect(AUTONOMY_WARNING_TEXT).toBe("Permission: Full autonomy");
-    expect(AUTONOMY_WARNING_TEXT.startsWith(`${TABS.find((t) => t.id === "permission")!.label}: `)).toBe(true);
+    expect(AUTONOMY_WARNING_TEXT.startsWith(`${SECTIONS.find((t) => t.id === "permission")!.label}: `)).toBe(true);
     expect(automationView({ automationLevel: "full", scheduledAutomation: "full_within_task" }).levels.find((l) => l.id === "full")!.label).toBe("Full autonomy (dangerous)");
   });
 

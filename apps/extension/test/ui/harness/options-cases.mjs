@@ -6,7 +6,7 @@ import { eventually, shown } from "./checks.mjs";
 import { scenario } from "./scenarios.mjs";
 import { installVoiceFakes } from "./chrome-stub.mjs";
 
-// Options page: tabs, the brain choices and what each reveals, Jev, tasks, logins, advanced.
+// Options page: the sidebar, the brain choices and what each reveals, Jev, tasks, logins, advanced.
 // It opens in a browser tab, so a wide and a narrow viewport.
 export const OPT_SIZES = [
   { w: 1280, h: 1000 },
@@ -23,7 +23,7 @@ const onPlus = (data) => {
   };
 };
 
-/** The visible billing buttons' labels (the Account tab has one at most). */
+/** The visible billing buttons' labels (the Account section has one at most). */
 const billingButtons = (p) => p.locator("#panel-account button.billing-open:visible").allTextContents();
 
 const onFree = (data) => {
@@ -52,22 +52,42 @@ const choosingPassphrase = async (p) =>
   (await p.getAttribute("#vault-pass", "placeholder")) === "Choose a passphrase" && (await p.textContent("#vault-unlock")) === "Set passphrase" && (await shown(p, "#vault-create-note"));
 
 /**
- * The header is one row: the tabs (scrolling sideways on a narrow page), then the save notice and the account avatar
- * pinned right. No "Settings" title and no status line. `open`: the account menu is opened for the screenshot.
+ * The header: the product icon, "BrowserTODO extension settings" and a one-line subtitle, the account avatar at the
+ * right. Below it the sidebar: every section with its icon tile, the open one filled with the accent; wide, a column
+ * left of the content; narrow (720 px or less), a sideways-scrolling row that stays at the top.
  */
 const headerChecks = (p, signedIn) => [
-  ["no title, no status line", async () => (await p.locator(".head h1, #now-using").count()) === 0],
-  ["tabs and avatar on one row", () =>
-    p.evaluate(() => {
-      const tabs = document.getElementById("tabs").getBoundingClientRect();
-      const acct = document.querySelector(".head .acct summary").getBoundingClientRect();
-      return Math.abs(tabs.top + tabs.height / 2 - (acct.top + acct.height / 2)) < 4;
-    })],
-  ["avatar pinned right, inside the page", () =>
+  ["title and subtitle", async () =>
+    (await p.textContent(".head h1")) === "BrowserTODO extension settings" && /Changes save as you make them/.test(await p.textContent(".head-sub"))],
+  ["product icon shown", () => p.evaluate(() => { const i = document.querySelector(".head .brand"); return i.complete && i.naturalWidth > 0; })],
+  ["avatar at the right of the header", () =>
     p.evaluate(() => {
       const head = document.querySelector(".head").getBoundingClientRect();
       const acct = document.querySelector(".head .acct summary").getBoundingClientRect();
-      return acct.right <= head.right - 8 && acct.right >= head.right - 40;
+      return acct.right <= head.right + 0.5 && acct.right >= head.right - 8;
+    })],
+  ["every section in the sidebar, each with an icon tile", async () =>
+    (await p.locator("#sections [role=tab]").allTextContents()).join(" | ") === "Account | API keys | AI | Permission | Tasks | Site logins | Memory | Advanced" &&
+    (await p.locator("#sections [role=tab] .side-icon svg").count()) === 8],
+  ["the open section filled with the accent, its title over the content", () =>
+    p.evaluate(() => {
+      const on = document.querySelector("#sections [aria-selected=true]");
+      const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+      const probe = document.createElement("i");
+      probe.style.color = accent;
+      document.body.append(probe);
+      const want = getComputedStyle(probe).color;
+      probe.remove();
+      const panel = document.getElementById(on.getAttribute("aria-controls"));
+      return getComputedStyle(on).backgroundColor === want && panel.querySelector(".panel-title").textContent === on.textContent;
+    })],
+  ["sidebar: a column at the left when wide, a row on top when narrow", () =>
+    p.evaluate(() => {
+      const side = document.querySelector(".side").getBoundingClientRect();
+      const content = document.querySelector(".content").getBoundingClientRect();
+      const items = [...document.querySelectorAll("#sections [role=tab]")].map((b) => b.getBoundingClientRect());
+      if (innerWidth > 720) return side.right <= content.left && items.every((r, i) => !i || r.top >= items[i - 1].bottom - 0.5);
+      return side.bottom <= content.top + 0.5 && items.every((r) => Math.abs(r.top - items[0].top) < 1) && getComputedStyle(document.querySelector(".side")).position === "sticky";
     })],
   ["no Speed tab", async () => (await p.locator("#tab-speed").count()) === 0],
   ["menu opens with the account", async () => {
@@ -171,34 +191,36 @@ export const OPTION_CASES = [
     ["missing key hint", () => shown(p, "#api-key-missing")],
     ["Save disabled until typed", async () => !(await p.isEnabled("[data-secret=anthropicApiKey] button.primary"))],
   ]],
-  // Jev (it had its own Speed tab): #jev and #speed open the AI tab scrolled to it.
+  // Jev (it had its own Speed tab): #jev and #speed open the AI section scrolled to it.
   ["options-speed-on", "ok", "#jev", () => {}, (p) => [
-    ["on the AI tab", async () => (await p.getAttribute("#tab-ai", "aria-selected")) === "true"],
+    ["on the AI section", async () => (await p.getAttribute("#tab-ai", "aria-selected")) === "true"],
     ["no Speed tab", async () => (await p.locator("#tab-speed").count()) === 0],
     ["hash normalised", async () => (await p.evaluate(() => location.hash)) === "#ai"],
-    // Under the sticky tab row, or as far as a short page scrolls.
+    // Near the top of the window (below the sticky section row when narrow, never behind it), or as far as a short page scrolls.
     ["scrolled to Jev", () =>
       eventually(() =>
         p.evaluate(() => {
           const top = document.getElementById("jev-group").getBoundingClientRect().top;
+          const below = document.querySelector(".side").getBoundingClientRect();
+          const clear = innerWidth > 720 ? 0 : below.bottom;
           const atEnd = Math.ceil(window.scrollY + window.innerHeight) >= document.documentElement.scrollHeight;
-          return window.scrollY > 0 && top >= 0 && (Math.abs(top - 56) < 40 || atEnd);
+          return window.scrollY > 0 && top >= clear && (top - clear < 48 || atEnd);
         }),
       )],
     ["order: Brain, Model, Jev, Voice (automation is on Permission)", async () =>
-      (await p.evaluate(() => [...document.querySelectorAll("#panel-ai > .group > h2")].map((e) => e.textContent).join(" | "))) === "Brain | Model | Speed (Jev) | Voice"],
+      (await p.evaluate(() => [...document.querySelectorAll("#panel-ai > .group > h3")].map((e) => e.textContent).join(" | "))) === "Brain | Model | Speed (Jev) | Voice"],
     ["Jev key shown", () => shown(p, "[data-secret=jevApiKey]")],
     ["threshold shown", () => shown(p, "#f-jevThreshold")],
   ]],
   ["options-speed-off", "ok", "#speed", (d) => (d.state.settings.jevEnabled = false), (p) => [
-    ["on the AI tab", async () => (await p.getAttribute("#tab-ai", "aria-selected")) === "true"],
+    ["on the AI section", async () => (await p.getAttribute("#tab-ai", "aria-selected")) === "true"],
     ["Jev key hidden", async () => !(await shown(p, "[data-secret=jevApiKey]"))],
     ["test hidden", async () => !(await shown(p, "#test-jev"))],
   ]],
   // Voice: the two engines with the server's cost a minute; with Realtime selected, OpenAI's voices, its speed range
   // and what a test costs.
   ["options-voice", "opt-paid", "#voice", () => {}, (p) => [
-    ["on the AI tab", async () => (await p.getAttribute("#tab-ai", "aria-selected")) === "true"],
+    ["on the AI section", async () => (await p.getAttribute("#tab-ai", "aria-selected")) === "true"],
     ["Realtime checked by default", () => p.isChecked("input[name=voiceEngine][value=realtime]")],
     ["names", async () => (await p.locator(".opt[data-voice] .voice-name").allTextContents()).join(" | ") === "Realtime (OpenAI) | Standard"],
     ["costs from the server", () =>
@@ -227,11 +249,11 @@ export const OPTION_CASES = [
   // when they run. The old #automation link (it was on AI) lands here; full autonomy on shows its warning and the level
   // in the warning colour.
   ["options-permission", "ok", "#automation", () => {}, (p) => [
-    ["on the Permission tab", async () => (await p.getAttribute("#tab-permission", "aria-selected")) === "true" && (await p.textContent("#tab-permission")) === "Permission"],
+    ["on the Permission section", async () => (await p.getAttribute("#tab-permission", "aria-selected")) === "true" && (await p.textContent("#tab-permission")) === "Permission"],
     ["hash normalised", async () => (await p.evaluate(() => location.hash)) === "#permission"],
-    ["tab order: AI, Permission, Tasks", async () => (await p.locator("#tabs [role=tab]").allTextContents()).slice(2, 5).join(" | ") === "AI | Permission | Tasks"],
-    ["sections: Chat, then Scheduled jobs", async () =>
-      (await p.evaluate(() => [...document.querySelectorAll("#panel-permission > .group > h2")].map((e) => e.textContent).join(" | "))) === "Chat | Scheduled jobs"],
+    ["sidebar order: AI, Permission, Tasks", async () => (await p.locator("#sections [role=tab]").allTextContents()).slice(2, 5).join(" | ") === "AI | Permission | Tasks"],
+    ["groups: Chat, then Scheduled jobs", async () =>
+      (await p.evaluate(() => [...document.querySelectorAll("#panel-permission > .group > h3")].map((e) => e.textContent).join(" | "))) === "Chat | Scheduled jobs"],
     ["three levels, the middle one checked", async () =>
       (await p.locator("#automation-levels .opt b").allTextContents()).join(" | ") === "Ask before every action | Ask before posting, sending or paying | Full autonomy (dangerous)" &&
       (await p.isChecked("input[name=automationLevel][value=ask_consequential]"))],
@@ -329,7 +351,7 @@ export const OPTION_CASES = [
     ["one billing button: Choose a plan", async () => (await billingButtons(p)).join() === "Choose a plan"],
     ["says where plans are", async () => /Plans, top-ups and invoices are on your BrowserTODO dashboard\./.test(await p.textContent("#acct-billing"))],
     ["no subscribe, top-up or portal buttons", async () => (await p.locator("#panel-account button").allTextContents()).every((t) => !/Subscribe|Top up \$|\$\d|Manage billing|Change plan/.test(t))],
-    ["API keys are not on the Account tab", async () => (await p.locator("#panel-account #keys-card").count()) === 0],
+    ["API keys are not on the Account section", async () => (await p.locator("#panel-account #keys-card").count()) === 0],
   ]],
   ["options-account-paid", "opt-paid", "#account", () => {}, (p) => [
     ["one billing button: Manage plan & billing", async () => (await billingButtons(p)).join() === "Manage plan & billing"],
@@ -355,9 +377,9 @@ export const OPTION_CASES = [
     ["log in", () => shown(p, "#acct-signin")],
     ["no account", async () => !(await shown(p, "#acct-in"))],
   ]],
-  // API keys: their own tab.
+  // API keys: their own section.
   ["options-keys-free", "opt-free", "#keys", () => {}, (p) => [
-    ["on the API keys tab", async () => (await p.getAttribute("#tab-keys", "aria-selected")) === "true"],
+    ["on the API keys section", async () => (await p.getAttribute("#tab-keys", "aria-selected")) === "true"],
     ["what keys come with, from the catalog", async () => (await p.textContent("#keys-locked-text")) === "API access to add TODO tasks comes with a paid plan."],
     ["Choose a plan", async () => (await p.textContent("#keys-billing-open")) === "Choose a plan" && (await shown(p, "#keys-billing-open"))],
     ["no key form", async () => !(await shown(p, "#keys-body"))],
@@ -485,7 +507,7 @@ export const OPTION_FLOWS = [
       await p.ctx.close();
     },
   },
-  // Interactions (wide, light): tabs by keyboard and hash, reveals, auto-save, keys, model, validation, Jev, sign-in.
+  // Interactions (wide, light): the sidebar by keyboard and hash, reveals, auto-save, keys, model, validation, Jev, sign-in.
   {
     name: "options-validation",
     size: { w: 1280 },
@@ -512,26 +534,38 @@ export const OPTION_FLOWS = [
         await p.waitForFunction(() => document.getElementById("save-msg").textContent.startsWith("Not saved"));
       };
 
-      check("first tab by default", await selected("account"));
+      // The sidebar by keyboard: Tab reaches the open section only (roving tabindex); the arrows move through the column.
+      check("first section by default", await selected("account"));
       await p.focus("#tab-account");
-      await p.keyboard.press("ArrowRight");
-      check("ArrowRight -> API keys, focused", (await selected("keys")) && (await p.evaluate(() => document.activeElement.id)) === "tab-keys");
+      await p.keyboard.press("ArrowDown");
+      check("ArrowDown -> API keys, focused", (await selected("keys")) && (await p.evaluate(() => document.activeElement.id)) === "tab-keys");
       check("hash #keys", (await p.evaluate(() => location.hash)) === "#keys");
-      await p.keyboard.press("ArrowRight");
-      check("ArrowRight -> AI, focused", (await selected("ai")) && (await p.evaluate(() => document.activeElement.id)) === "tab-ai");
+      check("keyboard focus is visible", await p.evaluate(() => document.activeElement.matches(":focus-visible") && getComputedStyle(document.activeElement).outlineStyle !== "none"));
+      check("one tab stop in the sidebar", (await p.locator("#sections [tabindex='0']").count()) === 1);
+      await p.keyboard.press("ArrowDown");
+      check("ArrowDown -> AI, focused", (await selected("ai")) && (await p.evaluate(() => document.activeElement.id)) === "tab-ai");
       check("hash #ai", (await p.evaluate(() => location.hash)) === "#ai");
       check("only the AI panel shows", (await shown(p, "#panel-ai")) && !(await shown(p, "#panel-account")));
+      await p.keyboard.press("ArrowUp");
+      check("ArrowUp -> API keys", await selected("keys"));
+      await p.keyboard.press("ArrowRight");
+      check("ArrowRight works too (the narrow row)", await selected("ai"));
       await p.keyboard.press("End");
       check("End -> Advanced", await selected("advanced"));
-      await p.keyboard.press("ArrowRight");
-      check("ArrowRight wraps to Account", await selected("account"));
+      await p.keyboard.press("ArrowDown");
+      check("ArrowDown wraps to Account", await selected("account"));
+      // A section opens at its top, wherever the last one was scrolled to.
+      await p.click("#tab-ai");
+      await p.evaluate(() => scrollTo({ top: document.documentElement.scrollHeight }));
+      await p.click("#tab-tasks");
+      check("a new section starts at the top", (await p.evaluate(() => scrollY)) === 0);
       // Our hashchange listener runs after the page's.
       await p.evaluate(() => new Promise((r) => (addEventListener("hashchange", () => r(), { once: true }), (location.hash = "#vault"))));
       check("hash #vault -> Site logins", await selected("logins"));
       await p.click("#tab-ai");
       await p.goto(`${base}/options.html`);
       await p.waitForSelector("#helper-headline:not(:empty)", { state: "attached" });
-      check("no hash: the last tab", await selected("ai"));
+      check("no hash: the last section", await selected("ai"));
 
       // Signed out: browsertodo AI is disabled; Log in runs sign-in and enables it.
       check("hosted disabled", !(await p.isEnabled(radio("browsertodo"))));

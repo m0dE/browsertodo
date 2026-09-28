@@ -1,6 +1,6 @@
 /**
  * Chat titles through the runner: a chat starts titled with its request cleaned, and each turn's end has the title
- * model name it (chat-titles.ts); a TODO run keeps its task's instructions as its title.
+ * model name it (chat-titles.ts); a TODO run keeps its task's instructions, and its series is named once.
  */
 import { describe, expect, it } from "vitest";
 import { ChatTitler } from "../../src/engine/chat-titles.js";
@@ -31,14 +31,14 @@ describe("Runner: chat titles", () => {
     expect(prompts[0]).toContain("check my chrome web store emails");
   });
 
-  it("a TODO run keeps its task's instructions as its title", async () => {
-    const { h, titles, prompts } = withTitles();
+  it("a TODO run keeps its task's instructions (a later turn reads them there); the title model names its series", async () => {
+    const { h, titles, prompts } = withTitles("Post the daily X tip");
     const task = await h.store.add({ instructions: "so can you post the daily tip on X", account: null });
     await h.runner.runTask(task.id);
     await h.runner.idle();
     await titles.run();
     const [s] = await h.sessions.list(5);
-    expect(s!.title).toBe("so can you post the daily tip on X");
-    expect(prompts).toHaveLength(0);
+    expect(s).toMatchObject({ instructions: "so can you post the daily tip on X", title: "Post the daily X tip", titleBy: "model" });
+    expect(prompts).toHaveLength(1);
   });
 });

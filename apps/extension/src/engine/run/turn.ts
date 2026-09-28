@@ -390,7 +390,8 @@ export class TurnRunner {
       try {
         // Compare against what the agent actually entered, not the whole instructions.
         const expected = active.typed.reduce((a, b) => (b.trim().length > a.trim().length ? b : a), "");
-        const v = await this.deps.core.verifyXPost(active.slot.browser, result.url, expected);
+        // The post must be the task's account's own (a follow-up turn in the same session knows it from the session).
+        const v = await this.deps.core.verifyXPost(active.slot.browser, result.url, expected, active.account ?? active.session.account);
         ok = v.ok;
         detail = v.detail;
       } catch (err) {

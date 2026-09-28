@@ -254,6 +254,9 @@ describe("prompts", () => {
       expect(p).toContain("give `spoken`");
       expect(p).toMatch(/natural speech/);
       expect(p).toContain(`at most ${MAX_SPOKEN_CHARS} characters`);
+      // Spoken lines and short answers to mid-task questions: BrowserTODO speaking, never "the agent".
+      expect(p).toMatch(/give `spoken`[^\n]*in the first person as BrowserTODO \("I posted it"\), never "the agent"/);
+      expect(p).toMatch(/answered at once in a short reply[^\n]*in the first person as BrowserTODO[^\n]*never "the agent"/);
     }
   });
 

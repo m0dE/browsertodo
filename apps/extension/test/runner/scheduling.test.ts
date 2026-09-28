@@ -245,7 +245,7 @@ describe("Runner: several tasks at once", () => {
     h.brain.script = () => ({ outcome: "done", url: "https://x.com/me/status/9" });
     await h.runner.runAdhoc({ instructions: "three" });
     await h.runner.idle();
-    expect(h.verify).toHaveBeenLastCalledWith(pool.slots.get(0)!.browser, "https://x.com/me/status/9", "");
+    expect(h.verify).toHaveBeenLastCalledWith(pool.slots.get(0)!.browser, "https://x.com/me/status/9", "", undefined);
   });
 
   it("a conversation's next turn uses the tab it used, unless another run has it", async () => {

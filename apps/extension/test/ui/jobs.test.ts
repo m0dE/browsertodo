@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { chipHint, taskChip, USER_STOP_REASON, type SessionInfo } from "@browsertodo/shared";
-import { APPROVAL_REASON, buildJobs, groupJobs, jobKeyOf, jobRow, jobSubtitle, type JobInputs, type JobTask } from "../../src/sidepanel/jobs.js";
+import { APPROVAL_REASON, STALE_NEEDS_MS, buildJobs, distinctTitle, groupJobs, jobKeyOf, jobRow, jobSubtitle, type JobInputs, type JobTask } from "../../src/sidepanel/jobs.js";
 
 const NOW = Date.parse("2026-09-27T12:00:00Z");
 const at = (min: number) => new Date(NOW + min * 60_000).toISOString();
@@ -153,11 +153,11 @@ describe("jobs: groups and order", () => {
     running: [session("live", -2, { endedAt: undefined, outcome: undefined })],
   };
 
-  it("Needs you, Running, Scheduled (soonest first, due first), Recent (newest first)", () => {
+  it("Needs you, Running, Upcoming (soonest first, due first), Recent (newest first)", () => {
     expect(layout(input)).toEqual([
       ["Needs you", ["task:paused", "chat:asking"]],
       ["Running", ["chat:live"]],
-      ["Scheduled", ["task:now", "task:soon", "task:tomorrow"]],
+      ["Upcoming", ["task:now", "task:soon", "task:tomorrow"]],
       ["Recent", ["chat:new", "chat:mid", "chat:old"]],
     ]);
   });
@@ -169,7 +169,7 @@ describe("jobs: groups and order", () => {
 
   it("search: every word, in any order, in the title, instructions or site, any case", () => {
     const find = { tasks: [task("t", { instructions: "Post the weekly recap on X" })], sessions: [session("c", -5, { title: "Flights to Lisbon", instructions: "Find the cheapest flight to Lisbon in May", url: "https://www.google.com/travel" }), session("d", -9, { title: "Inbox" })] };
-    expect(layout(find, "RECAP weekly")).toEqual([["Scheduled", ["task:t"]]]);
+    expect(layout(find, "RECAP weekly")).toEqual([["Upcoming", ["task:t"]]]);
     expect(layout(find, "cheapest may")).toEqual([["Recent", ["chat:c"]]]);
     expect(layout(find, "google.com")).toEqual([["Recent", ["chat:c"]]]);
     expect(layout(find, "lisbon recap")).toEqual([]);
@@ -227,6 +227,88 @@ describe("jobs: rows and subtitles in words", () => {
     expect(jobSubtitle(j.get("chat:d")!, NOW)).toBe("Done · 2 h ago");
     expect(jobRow(j.get("chat:r")!, NOW).when).toBe("now");
     expect(jobSubtitle(j.get("chat:r")!, NOW)).toBe("Running");
+  });
+});
+
+describe("jobs: titles that tell similar jobs apart", () => {
+  it("a request leads with the account it acts as, from its words or its task's account", () => {
+    expect(distinctTitle("Post one new original post on X as @mecharoyalecom")).toBe("@mecharoyalecom · Post one new original post on X");
+    expect(distinctTitle("Post the launch thread on X from @browsertodo today")).toBe("@browsertodo · Post the launch thread on X today");
+    expect(distinctTitle("Like posts by @ada_l and reply", null)).toBe("@ada_l · Like posts and reply");
+    expect(distinctTitle("Post a tip on X", "@browsertodo")).toBe("@browsertodo · Post a tip on X");
+    // Nothing to lead with: an email is not a handle, an account already named stays where it is.
+    expect(distinctTitle("Reply to ada@example.com")).toBe("Reply to ada@example.com");
+    expect(distinctTitle("@browsertodo post a tip", "@browsertodo")).toBe("@browsertodo post a tip");
+    expect(distinctTitle("Check the order status", "shop account")).toBe("Check the order status");
+  });
+
+  it("a task is named by its series' name (the user's newest, else the title model's first), else its request", () => {
+    const tasks = [task("t1", { status: "done", instructions: "Post one new original post on X as @mecharoyalecom", seriesId: "t1" })];
+    const run = (id: string, min: number, extra: Partial<SessionInfo>) => session(id, min, { source: "local", taskId: "t1", seriesId: "t1", ...extra });
+    expect(byKey({ tasks }).get("task:t1")?.title).toBe("@mecharoyalecom · Post one new original post on X");
+    const named = [run("r1", -300, { title: "@mecharoyalecom: daily X post", titleBy: "model" }), run("r2", -100, { title: "@mecharoyalecom: X post again", titleBy: "model" })];
+    expect(byKey({ tasks, sessions: named }).get("task:t1")?.title).toBe("@mecharoyalecom: daily X post");
+    expect(byKey({ tasks, sessions: [...named, run("r3", -50, { title: "Mecha daily", titleBy: "user" })] }).get("task:t1")?.title).toBe("Mecha daily");
+  });
+});
+
+describe("jobs: what the user cleared, and needs nobody answered", () => {
+  const DAY = STALE_NEEDS_MS / 60_000;
+  const needing = {
+    tasks: [task("paused", { status: "paused", pauseReason: "Log in to X" })],
+    sessions: [session("asks", -5, { endedAt: undefined, outcome: undefined }), session("dates", -40, { outcome: "paused", reason: "Pick dates" })],
+    running: [session("asks", -5, { endedAt: undefined, outcome: undefined })],
+    awaitingApproval: ["asks"],
+  };
+
+  it("each need has its own mark: the paused task row, or the run (live while an approval waits)", () => {
+    const j = byKey(needing);
+    expect(j.get("task:paused")?.needs).toBe(`task:paused:${at(-600)}`);
+    expect(j.get("chat:asks")?.needs).toBe("run:asks:live");
+    expect(j.get("chat:dates")?.needs).toBe(`run:dates:${at(-38)}`);
+    expect(byKey({ sessions: [session("ok", -5)] }).get("chat:ok")?.needs).toBeNull();
+  });
+
+  it("a need dismissed moves to Recent (still saying what it was); a new need of the same job shows again", () => {
+    const dismissals = { "chat:dates": { at: at(-1), needs: `run:dates:${at(-38)}` } };
+    const j = byKey({ ...needing, dismissals });
+    expect(j.get("chat:dates")).toMatchObject({ state: "dismissed", group: "recent", reason: "Pick dates", needs: null });
+    expect(jobRow(j.get("chat:dates")!, NOW)).toMatchObject({ meta: "Pick dates", label: "Chat dates, Dismissed, 38 min ago, Pick dates" });
+    expect(jobSubtitle(j.get("chat:dates")!, NOW)).toBe("Dismissed · Pick dates · 38 min ago");
+    // The chat went on and stopped for the user again: a new need.
+    const again = byKey({ sessions: [session("dates", -10, { outcome: "paused", reason: "Pick a seat" })], dismissals });
+    expect(again.get("chat:dates")).toMatchObject({ state: "needs", reason: "Pick a seat" });
+  });
+
+  it("a need nobody answered for a day goes to Recent by itself, unless a live approval or a paused repeating task", () => {
+    const old = -DAY - 30;
+    const j = byKey({
+      tasks: [
+        task("once", { status: "paused", pauseReason: "Log in to X", updatedAt: at(old) }),
+        task("daily", { status: "paused", pauseReason: "Log in to X", repeat: DAILY, updatedAt: at(old) }),
+      ],
+      sessions: [session("tab", old, { outcome: "paused", reason: "The tab was closed" }), session("asks", old, { endedAt: undefined, outcome: undefined })],
+      running: [session("asks", old, { endedAt: undefined, outcome: undefined })],
+      awaitingApproval: ["asks"],
+    });
+    expect(j.get("task:once")).toMatchObject({ state: "lapsed", group: "recent" });
+    expect(j.get("chat:tab")).toMatchObject({ state: "lapsed", group: "recent" });
+    expect(jobRow(j.get("chat:tab")!, NOW).meta).toBe("Waited for you · The tab was closed");
+    expect(jobSubtitle(j.get("chat:tab")!, NOW)).toMatch(/^Waited for you · The tab was closed · /);
+    // A repeating task paused would never run again unnoticed; a live approval ends by itself when it expires.
+    expect(j.get("task:daily")).toMatchObject({ state: "needs", group: "needs" });
+    expect(j.get("chat:asks")).toMatchObject({ state: "needs", group: "needs" });
+    // Just under a day: still waiting.
+    expect(byKey({ sessions: [session("tab", -DAY + 60, { outcome: "paused", reason: "x" })] }).get("chat:tab")?.state).toBe("needs");
+  });
+
+  it("a job put away leaves the list until it does something again; a search still finds it", () => {
+    const sessions = [session("a", -30, { title: "Alpha report" }), session("b", -20)];
+    const dismissals = { "chat:a": { at: at(-1), archivedAt: at(-28) } };
+    expect(layout({ sessions, dismissals })).toEqual([["Recent", ["chat:b"]]]);
+    expect(layout({ sessions, dismissals }, "alpha")).toEqual([["Recent", ["chat:a"]]]);
+    // It ran again since.
+    expect(layout({ sessions: [session("a", -5), session("b", -20)], dismissals })).toEqual([["Recent", ["chat:a", "chat:b"]]]);
   });
 });
 

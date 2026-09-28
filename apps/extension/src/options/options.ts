@@ -1,6 +1,6 @@
 /**
- * Options page: tabs for the account, API keys, the AI (brain, key, model,
- * helper, Jev, hands-free voice), task scheduling, site logins and self-hosting. Settings save by
+ * Options page: a sidebar of sections for the account, API keys, the AI (brain, key, model,
+ * helper, Jev, hands-free voice), permission and scheduling, tasks, site logins, memory and self-hosting. Settings save by
  * themselves as they change; keys save with their own Save button.
  * What shows when comes from settingsView() (settings-view.ts).
  */
@@ -33,7 +33,7 @@ import {
   type FormValues,
   type Tone,
 } from "./settings-view.js";
-import { initTabs } from "./tabs.js";
+import { initSidebar } from "./sidebar.js";
 
 const LABELS: Partial<Record<keyof ExtensionSettings, string>> = {
   jevThreshold: "Jev threshold",
@@ -57,7 +57,7 @@ const saveMsg = $("save-msg");
 const modelSelect = $<HTMLSelectElement>("model-select");
 const reasoningSelect = $<HTMLSelectElement>("f-reasoning");
 const input = (key: string) => $<HTMLInputElement>(`f-${key}`);
-initTabs();
+initSidebar();
 
 let state: UiState | null = null;
 let saved: ExtensionSettings | null = null;

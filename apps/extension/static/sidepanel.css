@@ -57,6 +57,24 @@ input.job-rename { flex: 1; font-weight: 600; font-size: var(--text-lg); padding
 }
 .group-head .count { font-size: var(--text-xs); }
 .job-rows { list-style: none; margin: 0; padding: 0; }
+/* Needs you's Dismiss all, at the right of its heading. */
+.group-bar { display: flex; align-items: baseline; padding-right: 8px; }
+.group-bar .group-head { flex: 1; }
+.group-action { font-size: var(--text-xs); }
+/* A row's ✕ (job-dismiss.ts): over its time, on hover or focus; always shown where there is no hover (touch). */
+.job-rows li.dismissible { position: relative; }
+button.job-dismiss {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 28px; height: 28px; padding: 0;
+  border: 0; border-radius: var(--radius-sm); color: var(--muted); background: var(--hover); opacity: 0;
+}
+li.dismissible:hover button.job-dismiss, li.dismissible:focus-within button.job-dismiss { opacity: 1; }
+li.dismissible:hover .job-when, li.dismissible:focus-within .job-when { visibility: hidden; }
+button.job-dismiss:hover { color: var(--text); background: var(--border); }
+@media (hover: none) {
+  li.dismissible .job-row { padding-right: 36px; }
+  button.job-dismiss { opacity: 1; background: none; }
+  li.dismissible:focus-within .job-when { visibility: visible; }
+}
 .job-row {
   width: 100%; min-height: 40px; padding: 4px 8px; border: 0; border-radius: var(--radius-sm); background: none;
   display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; column-gap: 10px;
@@ -78,6 +96,7 @@ input.job-rename { flex: 1; font-weight: 600; font-size: var(--text-lg); padding
 .job-icon[data-state="retry"] { color: var(--warn); }
 .job-icon[data-state="failed"] { color: var(--bad); }
 .job-icon[data-state="done"] { color: var(--muted); }
+.job-icon[data-state="dismissed"], .job-icon[data-state="lapsed"] { color: var(--faint); }
 @keyframes job-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .job-icon[data-state="running"] svg { animation: none; } }
 .show-more { margin: 2px 0 0 34px; font-size: var(--text-sm); }
@@ -93,11 +112,19 @@ input.job-rename { flex: 1; font-weight: 600; font-size: var(--text-lg); padding
 
 /* A job's page: its conversation, and above it the job's earlier runs (or, never run, its request). */
 .job-view { display: flex; flex-direction: column; }
-.job-elsewhere {
-  flex: none; margin: 0; padding: 6px 14px; font-size: var(--text-sm); color: var(--muted);
-  border-bottom: 1px solid var(--border); background: var(--accent-soft);
+/* The agent's tab while the user is not on it: icon, title, site (shrinks first), View. One line at any width. */
+.job-agent-tab {
+  flex: none; display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 4px 8px 4px 14px;
+  font-size: var(--text-sm); color: var(--muted); border-bottom: 1px solid var(--border); background: var(--accent-soft);
 }
-.job-elsewhere b { font-weight: 500; color: var(--text); }
+.job-agent-tab[hidden] { display: none; }
+.job-tab-icon { flex: none; width: 16px; height: 16px; color: var(--faint); }
+.job-tab-icon svg { display: block; }
+.job-tab-icon img { display: block; width: 16px; height: 16px; }
+.job-tab-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-tab-name { font-weight: 500; color: var(--text); }
+.job-tab-host:not(:empty)::before { content: " · "; }
+button.job-tab-view { flex: none; padding: 3px 12px; font-size: var(--text-sm); font-weight: 500; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: var(--surface); }
 .log .job-runs { display: flex; flex-direction: column; gap: 2px; }
 .job-runs-head { font-size: var(--text-sm); font-weight: 600; color: var(--muted); padding: 0 2px 2px; }
 .job-runs-head.latest { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
@@ -618,6 +645,12 @@ body.dropping-files .now::before {
 .mm-credit { color: var(--muted); font-size: var(--text-sm); padding: 4px 8px 2px; }
 .mm-credit[data-tone="warn"] { color: var(--warn); font-weight: 500; }
 .now-bar .now-model[data-tone="warn"] { color: var(--warn); }
+/* A narrow row with the task's Stop and voice's controls: the model chip (it cannot change while a task runs) gives
+   its room to them rather than shrinking to a letter. */
+.now-bar { container: now-bar / inline-size; }
+@container now-bar (max-width: 400px) {
+  .now.running .model-pick:has(~ .now-actions .voice-mute:not([hidden])) { display: none; }
+}
 
 /* Task details and Schedule: a sheet over the panel (a modal <dialog>). */
 dialog.sheet {
@@ -668,14 +701,19 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / 0.35); }
 .sheet-gate-title { margin: 0; font-weight: 600; font-size: var(--text-md); }
 .schedule-sheet .sched-request { max-height: 7.5em; margin-bottom: 8px; }
 
-/* Voice input (voice-input.ts): the mic left of Send, its tip, and the listening orb in the panel's middle
-   (the live look while hands-free is on, and the voice bar, are in voice.css).
+/* Voice input (voice-input.ts): the Voice button left of Send (a small mic and the word), its tip, and the listening
+   orb in the panel's middle (the live look while hands-free is on, Mute, and the voice bar, are in voice.css).
    --level (0..1) is the live microphone level. */
-.now-bar .voice-mic { position: relative; padding: 0; border: 0; background: none; }
+.now-bar .voice-mic {
+  position: relative; flex: none; display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 9px 0 7px;
+  font-size: var(--text-sm); font-weight: 500; color: var(--muted); background: none; white-space: nowrap;
+}
+.now-bar .voice-mic:hover { color: var(--text); background: var(--hover); }
+.voice-mic svg.mic { flex: none; }
 .voice-mic .lock { display: none; }
 .voice-mic[data-state="locked"] { color: var(--faint); }
 .voice-mic[data-state="locked"] .lock {
-  display: block; position: absolute; right: 2px; bottom: 3px;
+  display: block; position: absolute; left: 14px; top: 14px;
   color: var(--muted); background: var(--surface); border-radius: 3px; padding: 0.5px;
 }
 .voice-mic[data-state="handsfree"] {

@@ -70,6 +70,9 @@ export interface ActContext {
   userSpeaks?: () => ReturnType<Interjections["spoken"]>;
 }
 
+/** An action refused before it ran (e.g. a Post on X while another account is signed in): final, like the user's No. */
+export class RefusedActionError extends Error {}
+
 /** act's answer when a message from the user came while its first read waited for the page: nothing was done. */
 export const ACT_STOPPED_LOADING = (steps: number) =>
   `Stopped before step 1: the page was still loading when the user sent you a message (it follows). Steps 1-${steps} were not run.`;
@@ -275,8 +278,8 @@ export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult
       const hasText = step.text !== undefined && step.text !== "";
       const couldNotUse = async (index: number, e: unknown, d?: JevDecision): Promise<ToolResult> => {
         const message = errorMessage(e);
-        // The user did not approve the step: that is final. No candidates to pick again, nothing after it runs.
-        if (isApprovalRefusal(message)) {
+        // The user did not approve the step, or it was refused: that is final. No candidates to pick again, nothing after it runs.
+        if (isApprovalRefusal(message) || e instanceof RefusedActionError) {
           const rest = steps.length > n ? ` Steps ${n + 1}-${steps.length} were not run.` : "";
           return { text: `${[...lines, `step ${n}: "${step.goal}": ${message}`].join("\n")}${rest}`, isError: true };
         }

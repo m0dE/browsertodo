@@ -214,7 +214,7 @@ describe("the acknowledgement cannot start more work, and a request passed on tw
     expect(t.deps.send).toHaveBeenCalledTimes(1);
     expect(t.socket.creates()).toHaveLength(1);
     const [first, second] = t.socket.outputs();
-    expect(first).toBe("Sent to the agent. Its updates will follow.");
+    expect(first).toBe("Started. Your updates on it will follow.");
     expect(second).toMatch(/already/i);
   });
 

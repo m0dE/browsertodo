@@ -38,6 +38,8 @@ export interface GateAction {
   tabs?: string[];
   /** The page it happens on (the last page read); "" when not known. */
   page: { url: string; title: string };
+  /** The X account that page is signed in as (its account switcher), when it shows one. */
+  account?: string;
   /** Fields typed into on this page since it was read after a navigation, oldest first (the last one has the focus). */
   typed: TypedField[];
 }

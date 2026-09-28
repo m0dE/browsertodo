@@ -4,6 +4,10 @@
 // account switcher, the inline composer with a hidden file input, the Post
 // button, and a lock page. The data-testid values mirror X's HTML as of
 // 2026 and must be re-checked against the live site.
+// Like the real X: the account menu keeps the other accounts in a collapsed
+// "Personal accounts" section, a profile of another account has a
+// "Follow back @handle" button (it follows), and a post URL naming the wrong
+// handle redirects to its author's.
 //
 // Usage: node test/fixtures/fake-x/server.mjs [--port 443]
 // API:   GET /api/feed  -> { "@alpha": [...], ... }   POST /api/reset
@@ -41,7 +45,7 @@ body{font-family:system-ui;margin:0;display:flex}
 nav{width:240px;padding:16px;border-right:1px solid #ddd;min-height:100vh;box-sizing:border-box;position:relative}
 main{flex:1;padding:16px;max-width:600px}
 #menu{position:absolute;bottom:80px;left:16px;background:#fff;border:1px solid #ccc;padding:8px;display:none}
-#menu a{display:block;padding:6px}
+#menu a,#menu button,#menu [role=button]{display:block;padding:6px}
 [contenteditable]{border:1px solid #ccc;min-height:60px;padding:8px}
 .acct-btn{position:absolute;bottom:16px;left:16px}
 .post{border-bottom:1px solid #eee;padding:8px 0}
@@ -50,12 +54,20 @@ main{flex:1;padding:16px;max-width:600px}
 
 function nav(acct) {
   const items = ACCOUNTS.filter((a) => a.handle !== acct.handle)
-    .map((a) => `<a role="menuitem" href="/i/switch?to=${encodeURIComponent(a.handle)}">Switch to ${esc(a.name)} ${esc(a.handle)}</a>`)
+    .map(
+      (a) =>
+        `<button data-testid="UserCell" aria-label="Switch to ${esc(a.handle)}" onclick="location.href='/i/switch?to=${encodeURIComponent(a.handle)}'">${esc(a.name)} ${esc(a.handle)}</button>`,
+    )
     .join("");
   return `<nav>
   <a href="/home" data-testid="AppTabBar_Home_Link">Home</a><br>
   <a href="/compose/post" data-testid="SideNav_NewTweet_Button" role="link">Post</a>
-  <div id="menu" role="menu">${items}<a role="menuitem" href="/i/flow/login">Add an existing account</a></div>
+  <div id="menu" role="group"><div>${esc(acct.name)} ${esc(acct.handle)}</div>
+    <div role="button" tabindex="0" aria-expanded="false" id="personal"
+      onclick="var p=document.getElementById('personal-list');var o=p.style.display!=='block';p.style.display=o?'block':'none';this.setAttribute('aria-expanded',String(o))">Personal accounts</div>
+    <div id="personal-list" style="display:none">${items}</div>
+    <a role="menuitem" href="/i/flow/login" data-testid="AccountSwitcher_AddAccount_Button">Add an existing account</a>
+    <a role="menuitem" href="/logout" data-testid="AccountSwitcher_Logout_Button">Log out ${esc(acct.handle)}</a></div>
   <button class="acct-btn" data-testid="SideNav_AccountSwitcher_Button" aria-label="Account menu"
     onclick="var m=document.getElementById('menu');m.style.display=m.style.display==='block'?'none':'block'">
     ${esc(acct.name)} ${esc(acct.handle)}</button>
@@ -129,6 +141,10 @@ export function createFakeX() {
   let feed = {};
   let nextId = 1000;
   let notes = [];
+  /** Follow clicks: { by, handle } (the agent must never follow an account). */
+  const follows = [];
+  /** Accounts a switch to silently does not reach (X stays on the account it was on), as real switches sometimes do. */
+  const stuck = new Set();
   /** Images made on /grok/imagine (a tab the composer's "Generate with Grok" opens, like X's). */
   const images = [];
 
@@ -146,6 +162,7 @@ export function createFakeX() {
     }
     if (req.method === "GET" && url.pathname === "/i/switch") {
       const to = url.searchParams.get("to") ?? "@alpha";
+      if (stuck.has(to)) return send(302, "", "text/plain", { location: "/home" });
       const cookie = `acct=${encodeURIComponent(to)}; Path=/; SameSite=Lax; Secure`;
       const location = to === "@locked" ? "/account/access" : "/home";
       return send(302, "", "text/plain", { location, "set-cookie": cookie });
@@ -234,12 +251,16 @@ document.getElementById("grok").addEventListener("click", () => { menu.hidden = 
         .join("");
       const who = ACCOUNTS.find((a) => a.handle === handle);
       const bio = who.bio ? `<p data-testid="UserDescription">${esc(who.bio)}</p>${who.site ? `<a data-testid="UserUrl" href="${esc(who.site)}">${esc(who.site.replace(/^https?:\/\//, ""))}</a>` : ""}` : "";
-      return send(200, page(`${handle} / X`, `${nav(acct)}<main><h1>${esc(handle)}</h1>${who.bio ? `<p>${esc(who.name)}</p>` : ""}${bio}${posts || "<p>No posts yet</p>"}</main>`));
+      // Another account's profile has a Follow back button that names the handle (clicking it follows).
+      const follow = handle === acct.handle ? "" : `<button data-testid="1-follow" aria-label="Follow back ${esc(handle)}" onclick="fetch('/api/follow',{method:'POST',body:${esc(JSON.stringify(handle))}}).then(()=>this.textContent='Following')">Follow back</button> <a href="/${profile[1]}">${esc(handle)}</a>`;
+      return send(200, page(`${handle} / X`, `${nav(acct)}<main><h1>${esc(handle)}</h1>${follow}${who.bio ? `<p>${esc(who.name)}</p>` : ""}${bio}${posts || "<p>No posts yet</p>"}</main>`));
     }
     const status = /^\/([A-Za-z0-9_]+)\/status\/(\d+)$/.exec(url.pathname);
     if (req.method === "GET" && status) {
       const post = Object.values(feed).flat().find((p) => String(p.id) === status[2]);
       if (!post) return send(404, page("Not found / X", "<main>Not found</main>"));
+      // X shows a post under its author's handle, whatever handle the URL named.
+      if (`@${status[1]}` !== post.account) return send(302, "", "text/plain", { location: `/${post.account.slice(1)}/status/${post.id}` });
       return send(200, page(`${post.account} on X`, `${nav(acct)}<main><article data-testid="tweet"><b>${esc(post.account)}</b><p>${esc(post.text)}</p><p>${post.media.map((m) => esc(m.name)).join(", ")}</p></article></main>`));
     }
     if (req.method === "POST" && url.pathname === "/api/post") {
@@ -251,6 +272,15 @@ document.getElementById("grok").addEventListener("click", () => { menu.hidden = 
         const post = { id, account: acct.handle, text, media: media ?? [], at: new Date().toISOString() };
         (feed[acct.handle] ??= []).push(post);
         json(200, { id, url: `/${acct.handle.slice(1)}/status/${id}` });
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/follow") {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        follows.push({ by: acct.handle, handle: body });
+        json(200, { ok: true });
       });
       return;
     }
@@ -273,6 +303,9 @@ document.getElementById("grok").addEventListener("click", () => { menu.hidden = 
       for (const text of texts) (feed[handle] ??= []).push({ id: nextId++, account: handle, text, media: [], at: new Date().toISOString() });
     },
     notes: () => notes,
+    follows: () => follows,
+    /** Switches to these handles fail from now on (X stays on its account). */
+    failSwitches: (handles) => handles.forEach((h) => stuck.add(h)),
     images: () => images,
   };
 }

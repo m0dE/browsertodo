@@ -23,9 +23,9 @@ describe("a chat's menu", () => {
   it("ended: schedule its request, Raw, Rename, Delete", () => {
     expect(labels({ sessions: [session("c")] })).toEqual(["Schedule", "Raw", "Rename", "Delete"]);
   });
-  it("running: Pause and Show tab; no Delete", () => {
+  it("running: Pause; no Delete (its tab is the page's own row, not a menu item)", () => {
     const s = live(session("c"));
-    expect(labels({ sessions: [s], running: [s] })).toEqual(["Pause", "Schedule", "Show tab", "Raw", "Rename"]);
+    expect(labels({ sessions: [s], running: [s] })).toEqual(["Pause", "Schedule", "Raw", "Rename"]);
   });
   it("stopped for the user: Resume", () => {
     expect(labels({ sessions: [session("c", { outcome: "paused", reason: "Log in to X" })] })).toEqual(["Resume", "Schedule", "Raw", "Rename", "Delete"]);
@@ -46,18 +46,22 @@ describe("a task's menu", () => {
   });
   it("paused with a run here: Resume goes on from it; Raw shows it", () => {
     const run = session("r", { source: "local", taskId: "t", outcome: "paused", reason: "Log in" });
-    expect(labels({ tasks: [task("paused")], sessions: [run] })).toEqual(["Run now", "Resume", "Edit schedule", "Raw", "Delete"]);
+    expect(labels({ tasks: [task("paused")], sessions: [run] })).toEqual(["Run now", "Resume", "Edit schedule", "Raw", "Rename", "Delete"]);
     // The account's queue runs it again by itself.
     expect(labels({ tasks: [task("paused")] }, "account")).toEqual(["Run now", "Resume", "Edit schedule", "Cancel", "Delete"]);
   });
-  it("running here: Pause, Show tab, Raw; running elsewhere in the account's queue: nothing to do but wait", () => {
+  it("running here: Pause, Raw; running elsewhere in the account's queue: nothing to do but wait", () => {
     const run = live(session("r", { source: "local", taskId: "t" }));
-    expect(labels({ tasks: [task("running")], sessions: [run], running: [run] })).toEqual(["Pause", "Show tab", "Raw"]);
+    expect(labels({ tasks: [task("running")], sessions: [run], running: [run] })).toEqual(["Pause", "Raw", "Rename"]);
     expect(labels({ tasks: [task("running")] }, "account")).toEqual([]);
   });
-  it("over: Raw and Delete; failed: Run now too", () => {
+  it("over: Raw, Rename and Delete; failed: Run now too", () => {
     const run = session("r", { source: "local", taskId: "t" });
-    expect(labels({ tasks: [task("done")], sessions: [run] })).toEqual(["Raw", "Delete"]);
-    expect(labels({ tasks: [task("failed")], sessions: [run] })).toEqual(["Run now", "Raw", "Delete"]);
+    expect(labels({ tasks: [task("done")], sessions: [run] })).toEqual(["Raw", "Rename", "Delete"]);
+    expect(labels({ tasks: [task("failed")], sessions: [run] })).toEqual(["Run now", "Raw", "Rename", "Delete"]);
+  });
+  it("Rename: a task whose run keeps its instructions (the series' name); an older run is named by its task", () => {
+    const old = session("r", { source: "local", taskId: "t", instructions: undefined });
+    expect(labels({ tasks: [task("done")], sessions: [old] })).toEqual(["Raw", "Delete"]);
   });
 });

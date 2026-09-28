@@ -105,10 +105,12 @@ export class Lifecycle {
         if (taskId) info.taskId = taskId;
         // Its memory is kept under its series: a later turn of this conversation finds it there.
         if (opened.seriesId) info.seriesId = opened.seriesId;
+        // Kept so the conversation can go on in a fresh session with its full instructions (its title may become the
+        // title model's name for the job, chat-titles.ts).
+        info.instructions = task.instructions.slice(0, MAX_INSTRUCTIONS_CHARS);
+        // Kept so a later turn in a fresh session acts as the same account (a chat, a local or a cloud task alike).
+        if (task.account) info.account = task.account;
         if (job.source === "adhoc") {
-          // Kept so the conversation can go on in a fresh session with its full instructions.
-          info.instructions = task.instructions.slice(0, MAX_INSTRUCTIONS_CHARS);
-          if (task.account) info.account = task.account;
           if (job.input.voice) info.voice = true;
           if (job.input.voice && job.input.heard?.length) info.heard = job.input.heard;
           if (job.input.memoryOff) info.memoryOff = true;
@@ -260,16 +262,18 @@ export class Lifecycle {
     if (!active.x) return;
     const { xTurn } = this.deps.live;
     const id = active.session.sessionId;
-    if (xTurn.heldByOther(id)) {
-      this.deps.turns.emit(active, { type: "status", text: X_WAIT_STATUS });
-      await this.deps.turns.timed(active, "engine.x_wait", () => xTurn.waitFor(id, () => active.forced !== null));
-      if (active.forced) throw new Error(active.forced.reason);
-      // Its turn starts now.
-      const startedAt = this.deps.now().toISOString();
-      active.session = { ...active.session, startedAt };
-      await this.deps.sessions.update(id, { startedAt });
+    if (!xTurn.heldByOther(id)) {
+      xTurn.tryTake(id);
+      return;
     }
-    xTurn.take(id);
+    this.deps.turns.emit(active, { type: "status", text: X_WAIT_STATUS });
+    // Held from here on: the turn is handed to one waiter at a time.
+    await this.deps.turns.timed(active, "engine.x_wait", () => xTurn.acquire(id, () => active.forced !== null));
+    if (active.forced) throw new Error(active.forced.reason);
+    // Its turn starts now.
+    const startedAt = this.deps.now().toISOString();
+    active.session = { ...active.session, startedAt };
+    await this.deps.sessions.update(id, { startedAt });
   }
 }
 

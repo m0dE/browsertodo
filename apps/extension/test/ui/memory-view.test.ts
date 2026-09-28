@@ -4,7 +4,7 @@ import { backfillText, dayTimeText, EPISODES_PAGE, forgetAllText, forgetTaskText
 import { memoryNoteView, undoneText } from "../../src/sidepanel/memory-note.js";
 import { chatMemoryView } from "../../src/sidepanel/chat-memory.js";
 import { describeEvent } from "../../src/sidepanel/event-format.js";
-import { tabFromHash, TABS } from "../../src/options/settings-view.js";
+import { SECTIONS, sectionFromHash } from "../../src/options/settings-view.js";
 
 const NOW = new Date("2026-09-26T12:00:00Z");
 const entry = (e: Partial<MemoryEntry> & Pick<MemoryEntry, "id" | "kind" | "subject" | "text">): MemoryEntry => ({
@@ -158,10 +158,10 @@ describe("memoryPanel (Settings > Memory)", () => {
     expect(forgetAllText(1, true).button).toBe("Yes, forget 1 memory");
   });
 
-  it("the tab exists and links reach it", () => {
-    expect(TABS.map((t) => t.id)).toContain("memory");
-    expect(tabFromHash("#memory")).toBe("memory");
-    expect(tabFromHash("#memories")).toBe("memory");
+  it("the section exists and links reach it", () => {
+    expect(SECTIONS.map((t) => t.id)).toContain("memory");
+    expect(sectionFromHash("#memory")).toBe("memory");
+    expect(sectionFromHash("#memories")).toBe("memory");
   });
 });
 

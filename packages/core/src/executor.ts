@@ -3,6 +3,9 @@
  * calls; switch_x_account, get_credential, upload checks and task_* are
  * implemented here, act in act.ts. Every call emits tool_call and
  * tool_result events (and one jev event per act decision). Never throws.
+ *
+ * A task with an X account never publishes on X as another one: a click or
+ * key that would post is refused while X's switcher shows another account.
  */
 import {
   clipEventText,
@@ -19,6 +22,7 @@ import {
   type BrowserMethod,
   type BrowserMethods,
   type ElementPicks,
+  type PageSnapshot,
   type TaskRunResult,
   type ToolArgsOf,
   type ToolName,
@@ -29,11 +33,11 @@ import {
   type TraceValue,
 } from "@browsertodo/shared";
 import type { BrowserCaller, ToolExecutor, ToolExecutorOptions } from "./types.js";
-import { createActGate, runAct } from "./act.js";
+import { createActGate, RefusedActionError, runAct } from "./act.js";
 import { unreadInterjection, untilUserSpeaks } from "./interjections.js";
 import { formatScroll, formatSnapshot, formatTabs, formatTabSnapshots } from "./page-format.js";
 import { mapStrings, SecretRedactor } from "./redact.js";
-import { switchXAccount } from "./x-account.js";
+import { mayPublishKey, switchXAccount, wrongXAccountRefusal } from "./x-account.js";
 import { runWaitFor } from "./wait.js";
 
 /** Answer of task_* tools when the executor has no task to end (mcp-server --attach). */
@@ -135,8 +139,27 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
     : undefined;
   /** Notes the browser attaches to results (e.g. "Using fallback mode…"), shown once with the next tool result. */
   const notes: string[] = [];
+  /**
+   * The current tab's last page read: what the agent's element indices point at. Null when not known (another
+   * page or tab since): then the X account check reads it.
+   */
+  let page: PageSnapshot | null = null;
+  const follow = (method: BrowserMethod, params: unknown, result: unknown) => {
+    if (method === "browser.readPage") page = (params as { tab?: string }).tab ? null : (result as PageSnapshot);
+    else if (method === "browser.navigate" || method === "browser.switchTab" || method === "browser.openTabs" || method === "browser.closeTabs") page = null;
+  };
+  /** Throws the refusal of a click or key that would publish on X while it is signed in as another account than the task's. */
+  const checkXAccount = async (account: string, action: Parameters<typeof wrongXAccountRefusal>[1]) => {
+    if (action.method === "browser.pressKey" && !mayPublishKey(action.key)) return;
+    page ??= await opts.browser.call("browser.readPage", {});
+    const refusal = wrongXAccountRefusal(page, action, account);
+    if (refusal) throw new RefusedActionError(refusal);
+  };
   const browser = async <M extends BrowserMethod>(method: M, params: BrowserMethods[M]["params"]) => {
+    if (opts.account && method === "browser.click") await checkXAccount(opts.account, { method, index: (params as BrowserMethods["browser.click"]["params"]).index });
+    if (opts.account && method === "browser.pressKey") await checkXAccount(opts.account, { method, key: (params as BrowserMethods["browser.pressKey"]["params"]).key });
     const r = await opts.browser.call(method, params);
+    follow(method, params, r);
     const note = r && typeof r === "object" ? (r as { note?: unknown }).note : undefined;
     if (typeof note === "string" && note && !notes.includes(note)) notes.push(note);
     return r;

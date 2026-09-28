@@ -316,6 +316,7 @@ export class TaskRunner {
       jev,
       jevThreshold: config.jevThreshold,
       mediaPaths,
+      account: task.account,
       secrets,
       notify: this.deps.notify,
       ...(this.deps.todo ? { todo: this.deps.todo } : {}),

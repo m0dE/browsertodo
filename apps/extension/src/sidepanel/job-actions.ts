@@ -4,7 +4,7 @@
  */
 import type { Job } from "./jobs.js";
 
-export type JobActionId = "run" | "pause" | "resume" | "schedule" | "trust" | "show" | "raw" | "rename" | "cancel" | "delete";
+export type JobActionId = "run" | "pause" | "resume" | "schedule" | "trust" | "raw" | "rename" | "cancel" | "delete";
 
 export interface JobAction {
   id: JobActionId;
@@ -43,9 +43,9 @@ export function jobActions(job: Job, source: "local" | "account"): JobAction[] {
     out.push({ id: "schedule", label: "Schedule", title: "Run this request again later, or on a repeat" });
   }
   if (t?.agentAuthored && waits(job)) out.push({ id: "trust", label: "Trust", title: TRUST_TITLE });
-  if (job.running) out.push({ id: "show", label: "Show tab", title: "Switch to the tab the agent is using" });
   if (s) out.push({ id: "raw", label: "Raw", title: RAW_TITLE });
-  if (job.kind === "chat" && s?.source === "adhoc") out.push({ id: "rename", label: "Rename", title: "Give this job your own name" });
+  // A task's name is its series' (a run that keeps its instructions carries it; older runs are named by the task).
+  if (s && (job.kind === "chat" ? s.source === "adhoc" : !!s.instructions)) out.push({ id: "rename", label: "Rename", title: "Give this job your own name" });
   if (t && source === "account" && waits(job)) out.push({ id: "cancel", label: "Cancel", title: "It will not run" });
   if (!job.running && !(t?.status === "running" && source === "account")) {
     out.push({ id: "delete", label: "Delete", title: job.kind === "task" ? "Delete the task and its runs" : "Delete this chat", danger: true });

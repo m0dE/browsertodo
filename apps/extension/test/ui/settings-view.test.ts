@@ -5,12 +5,12 @@ import { buildSettingsPatch } from "../../src/options/settings-patch.js";
 import {
   CUSTOM_MODEL,
   formValues,
-  nextTab,
+  anchorFromHash,
+  nextSection,
   parseForm,
+  SECTIONS,
   sectionFromHash,
   settingsView,
-  TABS,
-  tabFromHash,
   validateForm,
   type Draft,
   type ViewInput,
@@ -47,52 +47,54 @@ function view(opts: {
 }
 const option = (v: ReturnType<typeof settingsView>, value: string) => v.options.find((o) => o.value === value)!;
 
-describe("tabs", () => {
-  it("maps hashes and aliases to tabs", () => {
-    expect(tabFromHash("#ai")).toBe("ai");
-    expect(tabFromHash("AI")).toBe("ai");
-    // Speed (Jev) is part of the AI tab; its old links and a remembered "speed" land there.
-    expect(tabFromHash("#jev")).toBe("ai");
-    expect(tabFromHash("#speed")).toBe("ai");
-    expect(tabFromHash("speed")).toBe("ai");
-    expect(tabFromHash("#voice")).toBe("ai");
-    expect(tabFromHash("#vault")).toBe("logins");
-    expect(tabFromHash("#brain")).toBe("ai");
-    // API keys have their own tab (deep link #keys); billing still lands on Account.
-    expect(tabFromHash("#keys")).toBe("keys");
-    expect(tabFromHash("#api-keys")).toBe("keys");
-    expect(tabFromHash("#billing")).toBe("account");
+describe("sidebar sections", () => {
+  it("maps hashes and aliases to sections", () => {
+    expect(sectionFromHash("#ai")).toBe("ai");
+    expect(sectionFromHash("AI")).toBe("ai");
+    // Speed (Jev) is part of the AI section; its old links and a remembered "speed" land there.
+    expect(sectionFromHash("#jev")).toBe("ai");
+    expect(sectionFromHash("#speed")).toBe("ai");
+    expect(sectionFromHash("speed")).toBe("ai");
+    expect(sectionFromHash("#voice")).toBe("ai");
+    expect(sectionFromHash("#vault")).toBe("logins");
+    expect(sectionFromHash("#brain")).toBe("ai");
+    // API keys have their own section (deep link #keys); billing still lands on Account.
+    expect(sectionFromHash("#keys")).toBe("keys");
+    expect(sectionFromHash("#api-keys")).toBe("keys");
+    expect(sectionFromHash("#billing")).toBe("account");
     // Automation (approvals) moved from AI, and the schedule from Tasks, to Permission; old links land there.
-    expect(tabFromHash("#permission")).toBe("permission");
-    expect(tabFromHash("#automation")).toBe("permission");
-    expect(tabFromHash("#approvals")).toBe("permission");
-    expect(tabFromHash("#schedule")).toBe("permission");
-    expect(tabFromHash("#nope")).toBeNull();
-    expect(tabFromHash("")).toBeNull();
-    expect(tabFromHash(null)).toBeNull();
-  });
-  it("arrow keys move and wrap; Home and End go to the ends; other keys do nothing", () => {
-    expect(TABS.map((t) => t.label)).toEqual(["Account", "API keys", "AI", "Permission", "Tasks", "Site logins", "Memory", "Advanced"]);
-    expect(nextTab("account", "ArrowRight")).toBe("keys");
-    expect(nextTab("keys", "ArrowRight")).toBe("ai");
-    expect(nextTab("ai", "ArrowLeft")).toBe("keys");
-    expect(nextTab("ai", "ArrowRight")).toBe("permission");
-    expect(nextTab("permission", "ArrowRight")).toBe("tasks");
-    expect(nextTab("account", "ArrowLeft")).toBe(TABS[TABS.length - 1]!.id);
-    expect(nextTab("advanced", "ArrowRight")).toBe("account");
-    expect(nextTab("tasks", "Home")).toBe("account");
-    expect(nextTab("tasks", "End")).toBe("advanced");
-    expect(nextTab("tasks", "a")).toBeNull();
-  });
-  it("sectionFromHash: the section a link names inside its tab (Jev, Voice), else none", () => {
-    expect(sectionFromHash("#jev")).toBe("jev-group");
-    expect(sectionFromHash("#speed")).toBe("jev-group");
-    expect(sectionFromHash("#voice")).toBe("voice-group");
-    expect(sectionFromHash("#ai")).toBeNull();
-    // Automation is the Permission tab's first section: its old link opens the tab at the top; #schedule scrolls.
-    expect(sectionFromHash("#automation")).toBeNull();
-    expect(sectionFromHash("#schedule")).toBe("schedule-group");
+    expect(sectionFromHash("#permission")).toBe("permission");
+    expect(sectionFromHash("#automation")).toBe("permission");
+    expect(sectionFromHash("#approvals")).toBe("permission");
+    expect(sectionFromHash("#schedule")).toBe("permission");
+    expect(sectionFromHash("#nope")).toBeNull();
     expect(sectionFromHash("")).toBeNull();
+    expect(sectionFromHash(null)).toBeNull();
+  });
+  it("arrow keys (up/down in the column, left/right in the narrow row) move and wrap; Home and End go to the ends; other keys do nothing", () => {
+    expect(SECTIONS.map((t) => t.label)).toEqual(["Account", "API keys", "AI", "Permission", "Tasks", "Site logins", "Memory", "Advanced"]);
+    expect(nextSection("account", "ArrowRight")).toBe("keys");
+    expect(nextSection("keys", "ArrowRight")).toBe("ai");
+    expect(nextSection("ai", "ArrowLeft")).toBe("keys");
+    expect(nextSection("ai", "ArrowUp")).toBe("keys");
+    expect(nextSection("ai", "ArrowDown")).toBe("permission");
+    expect(nextSection("ai", "ArrowRight")).toBe("permission");
+    expect(nextSection("permission", "ArrowRight")).toBe("tasks");
+    expect(nextSection("account", "ArrowLeft")).toBe(SECTIONS[SECTIONS.length - 1]!.id);
+    expect(nextSection("advanced", "ArrowRight")).toBe("account");
+    expect(nextSection("tasks", "Home")).toBe("account");
+    expect(nextSection("tasks", "End")).toBe("advanced");
+    expect(nextSection("tasks", "a")).toBeNull();
+  });
+  it("anchorFromHash: the group a link names inside its section (Jev, Voice), else none", () => {
+    expect(anchorFromHash("#jev")).toBe("jev-group");
+    expect(anchorFromHash("#speed")).toBe("jev-group");
+    expect(anchorFromHash("#voice")).toBe("voice-group");
+    expect(anchorFromHash("#ai")).toBeNull();
+    // Automation is the Permission section's first group: its old link opens the section at the top; #schedule scrolls.
+    expect(anchorFromHash("#automation")).toBeNull();
+    expect(anchorFromHash("#schedule")).toBe("schedule-group");
+    expect(anchorFromHash("")).toBeNull();
   });
 });
 

@@ -69,7 +69,7 @@ describe("Runner: one turn", () => {
       return { outcome: "done", url: "https://x.com/me/status/123" };
     };
     await runAll(h);
-    expect(h.verify).toHaveBeenCalledWith(h.browser, "https://x.com/me/status/123", "hello world, this is the post body");
+    expect(h.verify).toHaveBeenCalledWith(h.browser, "https://x.com/me/status/123", "hello world, this is the post body", undefined);
     expect(await h.store.get(a.id)).toMatchObject({ status: "done" });
 
     h.brain.script = () => ({ outcome: "done", url: "https://x.com/me/status/123" });

@@ -51,26 +51,26 @@ export class NarratorFeed {
     switch (ev.type) {
       case "assistant_text":
         if (ev.text.trim()) this.said = clip(ev.text, MAX_AGENT_TEXT);
-        return spoken ? [{ text: `Agent update (answer): The agent answered the user's question: "${spoken.line}" Tell the user its answer in one or two short sentences.`, speak: "result" }] : [];
+        return spoken ? [{ text: `Your update (answer): Your answer to the user's question: "${spoken.line}" Tell the user in one or two short sentences, in the first person.`, speak: "result" }] : [];
       case "user_message":
         // Said to the narrator (send_to_agent): it knows. Typed in the panel: a new request it should know of.
         if (ev.voice) return [];
         this.request(this.memory.lastSpokenAt);
-        return [{ text: `Agent update: the user typed a message to the agent: "${clip(ev.text, MAX_USER_TEXT)}". Do not reply to it.`, speak: null }];
+        return [{ text: `Your update: the user typed you a message: "${clip(ev.text, MAX_USER_TEXT)}". Do not reply to it.`, speak: null }];
       case "tool_call": {
         if (!spoken) return [];
-        const context = this.said ? ` (The agent last said: "${this.said}")` : "";
-        return [{ text: `Agent update (progress): ${spoken.line}.${context} Say it in a few words, only if it is news to the user.`, speak: "milestone" }];
+        const context = this.said ? ` (You last wrote: "${this.said}")` : "";
+        return [{ text: `Your update (progress): ${spoken.line}.${context} Say it in a few words, in the first person, only if it is news to the user.`, speak: "milestone" }];
       }
       case "error":
-        return spoken ? [{ text: `Agent update (problem): "${spoken.line}" Tell the user briefly.`, speak: "error" }] : [];
+        return spoken ? [{ text: `Your update (problem): "${spoken.line}" Tell the user briefly, in the first person.`, speak: "error" }] : [];
       case "approval_request":
-        return [{ text: `Agent update (needs the user's OK): "${approvalLine(ev.request)}" Ask the user in a few words, then call answer_approval with their answer.`, speak: "question" }];
+        return [{ text: `Your update (you need the user's OK): "${approvalLine(ev.request)}" Ask the user in a few words, then call answer_approval with their answer.`, speak: "question" }];
       case "task_end": {
         this.said = null;
         if (!spoken) return [];
         if (spoken.kind === "question") {
-          return [{ text: `Agent update (needs the user): The agent asks: "${spoken.line}" Ask the user, and pass their answer on with send_to_agent.`, speak: "question" }];
+          return [{ text: `Your update (you need the user): Your question: "${spoken.line}" Ask the user, and give their answer to send_to_agent.`, speak: "question" }];
         }
         const what =
           ev.outcome === "done"
@@ -80,7 +80,7 @@ export class NarratorFeed {
               : ev.outcome === "paused"
                 ? "The task is waiting for the user."
                 : "The task did not work.";
-        return [{ text: `Agent update (finished): ${what} Tell the user in one to three short sentences: "${spoken.line}"`, speak: "result" }];
+        return [{ text: `Your update (finished): ${what} Tell the user in one to three short sentences, in the first person: "${spoken.line}"`, speak: "result" }];
       }
       default:
         return [];

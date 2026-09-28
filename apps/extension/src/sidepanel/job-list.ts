@@ -1,8 +1,10 @@
 /**
  * The jobs list, the panel's first screen: a search field, then the groups that have jobs (Needs you, Running,
- * Scheduled, Recent; jobs.ts), one row each: its state as an icon, its title (and, quietly under it, why it needs
+ * Upcoming, Recent; jobs.ts), one row each: its state as an icon, its title (and, quietly under it, why it needs
  * you, its repeat rule or its site), and on the right when it ran or runs next. Recent shows a page at a time
  * (Show more). Up and Down move between rows (from the search field too), Home and End to the ends, Enter opens.
+ * A row of Needs you or Recent can be dismissed (job-dismiss.ts): its ✕ (on hover or focus; always on touch screens),
+ * or Delete (Backspace) on the focused row, which then moves to the next one; Needs you has Dismiss all.
  */
 import { h } from "../ui/dom.js";
 import type { JobData } from "./job-data.js";
@@ -22,6 +24,10 @@ export interface JobListDeps {
   data: JobData;
   /** A row was picked. */
   onOpen(job: Job): void;
+  /** The job can be dismissed (see job-dismiss.ts). */
+  canDismiss(job: Job): boolean;
+  /** ✕, Delete on a row, or Dismiss all. */
+  onDismiss(jobs: Job[]): void;
   /** "Set a keyboard shortcut" (chrome://extensions/shortcuts), when none is set. */
   onShortcuts(): void;
 }
@@ -50,6 +56,8 @@ const ICONS: Record<JobState | "repeat", string> = {
   failed: '<circle cx="8" cy="8" r="5.5"/><path d="M6 6l4 4M10 6l-4 4"/>',
   stopped: '<rect x="4.5" y="4.5" width="7" height="7" rx="1.5"/>',
   cancelled: '<circle cx="8" cy="8" r="5.5"/><path d="M4.2 11.8l7.6-7.6"/>',
+  dismissed: '<circle cx="8" cy="8" r="5.5"/><path d="M5.5 8h5"/>',
+  lapsed: '<path d="M4.5 2.5h7M4.5 13.5h7M5.5 2.5v1.8L8 8l2.5-3.7V2.5M5.5 13.5v-1.8L8 8l2.5 3.7v1.8"/>',
 };
 
 /** The job's state as a glyph (a waiting repeating job: the repeat arrows). */
@@ -68,19 +76,22 @@ export function stateIcon(state: JobState, repeating = false): SVGSVGElement {
   return svg;
 }
 
-function rowOf(job: Job, now: number): HTMLLIElement {
+const DISMISS_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>';
+
+function rowOf(job: Job, now: number, dismissible: boolean): HTMLLIElement {
   const r = jobRow(job, now);
-  return h(
-    "li",
-    null,
-    h(
-      "button.job-row",
-      { type: "button", "data-key": job.key, "data-state": job.state, "aria-label": r.label, title: job.title },
-      h("span.job-icon", { "data-state": job.state, title: STATE_LABELS[job.state] }, stateIcon(job.state, !!job.repeat)),
-      h("span.job-main", null, h("span.job-title", null, r.title), r.meta ? h("span.job-meta", null, r.meta) : null),
-      h("span.job-when", null, r.when),
-    ),
+  const row = h(
+    "button.job-row",
+    { type: "button", "data-key": job.key, "data-state": job.state, "aria-label": r.label, title: job.title, ...(dismissible ? { "aria-keyshortcuts": "Delete" } : {}) },
+    h("span.job-icon", { "data-state": job.state, title: STATE_LABELS[job.state] }, stateIcon(job.state, !!job.repeat)),
+    h("span.job-main", null, h("span.job-title", null, r.title), r.meta ? h("span.job-meta", null, r.meta) : null),
+    h("span.job-when", null, r.when),
   );
+  if (!dismissible) return h("li", null, row);
+  // Reached by the pointer (and screen readers); the keyboard has Delete on the row.
+  const x = h("button.job-dismiss", { type: "button", tabindex: "-1", "data-key": job.key, title: "Dismiss (Delete)", "aria-label": `Dismiss ${job.title}` });
+  x.innerHTML = DISMISS_ICON;
+  return h("li.dismissible", null, row, x);
 }
 
 export function initJobList(root: HTMLElement, deps: JobListDeps): JobList {
@@ -134,11 +145,15 @@ export function initJobList(root: HTMLElement, deps: JobListDeps): JobList {
         const id = `group-${g.id}`;
         const list = g.id === "recent" ? g.jobs.slice(0, recentShown) : g.jobs;
         const more = g.jobs.length - list.length;
+        const head = h("h2.group-head", { id }, g.label, h("span.count", null, String(g.jobs.length)));
+        const all = g.id === "needs" ? g.jobs.filter((j) => deps.canDismiss(j)) : [];
+        const dismissAll =
+          all.length > 1 ? h("button.link.group-action", { type: "button", "aria-describedby": id, onclick: () => deps.onDismiss(all) }, "Dismiss all") : null;
         return h(
           "section.job-group",
           { "aria-labelledby": id },
-          h("h2.group-head", { id }, g.label, h("span.count", null, String(g.jobs.length))),
-          h("ul.job-rows", null, ...list.map((j) => rowOf(j, now))),
+          dismissAll ? h("div.group-bar", null, head, dismissAll) : head,
+          h("ul.job-rows", null, ...list.map((j) => rowOf(j, now, deps.canDismiss(j)))),
           more > 0
             ? h(
                 "button.link.show-more",
@@ -179,7 +194,23 @@ export function initJobList(root: HTMLElement, deps: JobListDeps): JobList {
     all[Math.min(to, all.length - 1)]!.focus();
   }
 
+  /** Delete (or Backspace) on a row: dismissed, and the focus goes on to the next row (or the one before). */
+  function dismissFocused(e: KeyboardEvent): void {
+    if (e.key !== "Delete" && e.key !== "Backspace") return;
+    const row = (e.target as HTMLElement).closest<HTMLButtonElement>("button.job-row");
+    const job = row?.dataset.key ? deps.data.job(row.dataset.key) : null;
+    if (!row || !job || !deps.canDismiss(job)) return;
+    e.preventDefault();
+    const all = rows();
+    const i = all.indexOf(row);
+    const next = (all[i + 1] ?? all[i - 1])?.dataset.key ?? null;
+    deps.onDismiss([job]);
+    if (next) rowFor(next)?.focus();
+    else search.focus();
+  }
+
   root.addEventListener("keydown", moveFocus);
+  root.addEventListener("keydown", dismissFocused);
   search.addEventListener("input", () => {
     recentShown = RECENT_PAGE;
     render();
@@ -193,6 +224,9 @@ export function initJobList(root: HTMLElement, deps: JobListDeps): JobList {
     }
   });
   groupsEl.addEventListener("click", (e) => {
+    const x = (e.target as HTMLElement).closest<HTMLElement>("button.job-dismiss")?.dataset.key;
+    const dismissed = x ? deps.data.job(x) : null;
+    if (dismissed) return deps.onDismiss([dismissed]);
     const key = (e.target as HTMLElement).closest<HTMLElement>("button.job-row")?.dataset.key;
     const job = key ? deps.data.job(key) : null;
     if (job) deps.onOpen(job);

@@ -591,7 +591,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
         const id = approvals.of(chat);
         if (!chat || !id) return "Nothing is waiting for the user's OK.";
         const ok = await deps.answerApproval(chat, id, allow ? "allow_once" : "deny");
-        return ok ? (allow ? "Allowed: the agent goes on." : "Denied: the agent will not do it.") : "That request is no longer waiting.";
+        return ok ? (allow ? "Allowed: the task goes on." : "Denied: it will not be done.") : "That request is no longer waiting.";
       },
       endVoice: () => stop("narrator"),
       useThisTab: async () => useThisTabAnswer(await useViewedTab()),

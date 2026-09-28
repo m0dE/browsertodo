@@ -10,7 +10,7 @@ describe("a task the user stopped (the owner's trace: 'I need a quick response f
     expect(endLine(stopped)).toBe(STOPPED_LINE);
     expect(narrationOf(stopped, freshMemory(), 0)).toEqual({ kind: "result", line: "Stopped." });
     const feed = new NarratorFeed();
-    expect(feed.push(stopped, 0)).toEqual([{ text: 'Agent update (finished): The user stopped the task. Tell the user in one to three short sentences: "Stopped."', speak: "result" }]);
+    expect(feed.push(stopped, 0)).toEqual([{ text: 'Your update (finished): The user stopped the task. Tell the user in one to three short sentences, in the first person: "Stopped."', speak: "result" }]);
   });
 });
 

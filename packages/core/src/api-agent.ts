@@ -199,6 +199,7 @@ export function startApiAgentWith(opts: ApiAgentOptions, internals: ApiAgentInte
     onTaskEnd: (r) => onTaskEnd(r),
     turnEndsAt: () => turnEndsAt,
     mediaPaths: [...opts.mediaPaths, ...uploadPaths(opts.attachments)],
+    account: opts.task.account ?? null,
     sleep,
     ...(opts.onTrace ? { onTrace: trace } : {}),
     ...(opts.todo ? { todo: opts.todo } : {}),

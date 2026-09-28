@@ -65,6 +65,8 @@ try {
 
   let a;
   let b;
+  /** The chat whose tab was closed while it ran (it needs the user). */
+  let closed;
   await step("tab A: the jobs list, then a one-off started there is bound to it and its job shows", async () => {
     await activate(tabA);
     await waitFor(async () => (await panelView()).empty, "the jobs list for tab A");
@@ -209,7 +211,7 @@ try {
     const pageD = await context.newPage();
     await pageD.goto(`${base}/d`);
     const d = await sw.evaluate(async (u) => (await chrome.tabs.query({ url: u }))[0].id, `${base}/d`);
-    const s = await ui({ type: "run.adhoc", instructions: "task D", tabId: d });
+    const s = (closed = await ui({ type: "run.adhoc", instructions: "task D", tabId: d }));
     await fake.started("task D");
     await pageD.close();
     const ended = await sessionWhen(sw, s.sessionId, "task D to stop");
@@ -219,6 +221,29 @@ try {
     const { sessions } = await ui({ type: "sessions.list" });
     assert.ok(sessions.some((x) => x.sessionId === s.sessionId), "still in the jobs list");
     return `${ended.outcome}: ${ended.reason}`;
+  });
+
+  await step("the stopped chat under Needs you, dismissed with Delete: it moves to Recent as Dismissed and stays so", async () => {
+    await activate(panelTab);
+    await waitFor(async () => (await panelView()).empty, "the jobs list");
+    const key = `chat:${closed.sessionId}`;
+    const where = () =>
+      panel.evaluate((k) => {
+        const r = document.querySelector(`.job-row[data-key="${k}"]`);
+        return r ? { group: r.closest("section").getAttribute("aria-labelledby"), state: r.dataset.state } : null;
+      }, key);
+    await waitFor(async () => (await where())?.group === "group-needs", "task D under Needs you");
+    await panel.focus(`.job-row[data-key="${key}"]`);
+    await panel.keyboard.press("Delete");
+    await waitFor(async () => (await where())?.state === "dismissed", "task D dismissed");
+    assert.equal((await where()).group, "group-recent");
+    // Kept once Undo's time is over.
+    const kept = await waitFor(async () => (await sw.evaluate(() => chrome.storage.local.get("jobDismissals"))).jobDismissals?.[key] ?? null, "the dismissal kept", { timeout: 15_000 });
+    assert.ok(kept.needs.startsWith(`run:${closed.sessionId}:`), JSON.stringify(kept));
+    // A new panel shows it the same.
+    await panel.reload();
+    await waitFor(async () => (await where())?.state === "dismissed", "task D still dismissed after a reload");
+    return JSON.stringify(kept);
   });
 } finally {
   await ext.close();

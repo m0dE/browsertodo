@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatInTab, followChat, isBound, ownChatOfTab, tabOfSession } from "../../src/sidepanel/tab-chat.js";
+import { agentTabToView, chatInTab, followChat, isBound, ownChatOfTab, tabOfSession } from "../../src/sidepanel/tab-chat.js";
 
 const state = {
   tabChats: { "1": "A", "2": "B" },
@@ -62,5 +62,29 @@ describe("where a conversation lives", () => {
     expect(tabOfSession("X", state)).toBeNull();
     expect(isBound("A", state)).toBe(true);
     expect(isBound("S", state)).toBe(false);
+  });
+});
+
+describe("agentTabToView: the job page's row to watch the agent's tab", () => {
+  it("while it runs: the tab it acts on now, unless the user looks at it", () => {
+    // B belongs to tab 2 and acts on tab 5 now (a tab it opened): the user on tab 2 is offered tab 5.
+    const acting = { tabChats: { "2": "B" }, runningTabs: { B: [5, 2] } };
+    expect(agentTabToView("B", 2, acting)).toBe(5);
+    expect(agentTabToView("B", 5, acting)).toBeNull();
+    // A scheduled run (bound to no tab) in tab 9, seen from tab 1.
+    expect(agentTabToView("S", 1, state)).toBe(9);
+    expect(agentTabToView("S", 9, state)).toBeNull();
+    // Running in the user's own tab: nothing to show.
+    expect(agentTabToView("A", 1, state)).toBeNull();
+  });
+
+  it("not running: the tab it belongs to (it just ran there), else none", () => {
+    const ended = { tabChats: { "2": "B" }, runningTabs: {} };
+    expect(agentTabToView("B", 1, ended)).toBe(2);
+    expect(agentTabToView("B", 2, ended)).toBeNull();
+    expect(agentTabToView("X", 1, ended)).toBeNull();
+    expect(agentTabToView(null, 1, ended)).toBeNull();
+    // The panel page opened as a tab may not know the tab it is in: any agent tab is offered.
+    expect(agentTabToView("B", null, ended)).toBe(2);
   });
 });

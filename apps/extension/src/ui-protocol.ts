@@ -114,6 +114,18 @@ export interface AccountView {
   localTasks?: number;
 }
 
+/**
+ * A job the user cleared from the list (sidepanel/jobs.ts): `needs` is the need they dismissed (it moves to Recent;
+ * a new one shows again), `archivedAt` the job's last activity when they put it away (it leaves the list until it
+ * does something again).
+ */
+export interface JobDismissal {
+  /** When the user did it (ISO). */
+  at: string;
+  needs?: string;
+  archivedAt?: string;
+}
+
 export interface UiState {
   /**
    * When the background read this state (increasing, a clock in ms): a UI keeps the state with the highest rev,
@@ -147,10 +159,12 @@ export interface UiState {
    * the side panel shows the conversation of the tab active in its window.
    */
   tabChats?: Record<string, string>;
-  /** The tabs each running session acts in right now (session id -> tab ids, its main tab first). */
+  /** The tabs each running session acts in right now (session id -> tab ids, the one it acts on now first). */
   runningTabs?: Record<string, number[]>;
   /** Conversations with an action waiting for the user's OK (an approval card): listed under Needs you. Absent: none. */
   awaitingApproval?: string[];
+  /** What the user cleared from the jobs list (job key -> dismissal; job-dismissals.ts). Absent: nothing. */
+  dismissals?: Record<string, JobDismissal>;
   /**
    * Signed in to another account than this computer's memory was synced with: nothing is sent until the user
    * answers "Add this computer's memory to <account>?" (memory.syncChoice). Absent: nothing to ask.
@@ -225,6 +239,8 @@ export type UiRequest =
   | { type: "run.newChat"; sessionId?: string; tabId?: number }
   /** A job opened in the side panel: its conversation now belongs to this browser tab (it leaves any other tab). */
   | { type: "chat.bind"; sessionId: string; tabId: number }
+  /** Dismissals of jobs, by job key (added to those kept). */
+  | { type: "jobs.dismiss"; dismissals: Record<string, JobDismissal> }
   /** Undo on a scheduled card: the task the agent put in the TODO list (schedule_task) is deleted, and the card says so. */
   | { type: "chat.undoScheduled"; sessionId: string; taskId: string }
   /** Undo on a changed or cancelled card: the task the agent changed (update_scheduled_task, cancel_scheduled_task) goes back as it was. */
@@ -343,6 +359,7 @@ export interface UiResults {
   "run.message": { sessionId: string; mode: MessageMode };
   "run.newChat": { ok: boolean };
   "chat.bind": UiState;
+  "jobs.dismiss": UiState;
   "chat.undoScheduled": { ok: boolean };
   "chat.undoTaskChange": { ok: boolean };
   "memory.undo": { ok: boolean };

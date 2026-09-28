@@ -2,8 +2,8 @@
  * A job's page: its header ("‹" back to the list, the title, one line of where it is, and "⋯" with what can be
  * done with it now: job-actions.ts) over its conversation (chat.ts). A task that ran more than once has its earlier
  * runs above the latest, one collapsed section each (the date and how it ended) that opens to that run's
- * conversation; a task that never ran shows its request and when it will. A job running in another browser tab says
- * so, with Show tab.
+ * conversation; a task that never ran shows its request and when it will. Under the header, while the job's agent tab
+ * is not the one the user looks at: that tab, with View to watch the agent there.
  */
 import { chipHint, MAX_CHAT_TITLE_CHARS, type SessionInfo } from "@browsertodo/shared";
 import { uiRequest } from "../ui-protocol.js";
@@ -21,11 +21,10 @@ export const EARLIER_RUNS_SHOWN = 10;
 export interface JobPageDeps {
   data: JobData;
   chat: ChatView;
-  /** The browser tab the panel acts in (null: unknown). */
-  activeTab(): number | null;
-  /** The tab a conversation lives in (null: none). */
-  tabOf(sessionId: string): number | null;
-  tabTitle(tabId: number): Promise<string | null>;
+  /** The tab to watch a conversation's agent in, when the user is not looking at it (null: none; see agentTabToView). */
+  agentTab(sessionId: string): number | null;
+  /** What a tab shows (null: it is gone). */
+  tabInfo(tabId: number): Promise<TabInfo | null>;
   goToTab(tabId: number): void;
   /** Resume a stopped conversation (with the note typed in the box, if any). */
   continueNow(sessionId: string): void;
@@ -39,6 +38,12 @@ export interface JobPageDeps {
   showError(err: unknown): void;
 }
 
+export interface TabInfo {
+  title: string;
+  url: string;
+  favIconUrl?: string;
+}
+
 export interface JobPage {
   /** Shows job `key`: its header and its conversation. */
   show(key: string): void;
@@ -50,6 +55,27 @@ export interface JobPage {
   sessionId(): string | null;
   /** Its title as the header shows it. */
   title(): string;
+  /** A tab's title, address or icon changed (the agent's tab row follows). */
+  tabUpdated(tabId: number): void;
+}
+
+/** A tab without an icon the panel can show. */
+const GLOBE_ICON =
+  '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.3"/><path d="M1.7 8h12.6M8 1.7c-3.2 3.6-3.2 9 0 12.6M8 1.7c3.2 3.6 3.2 9 0 12.6"/></svg>';
+
+/** A page's site, as a person reads it ("mail.google.com"); "" for pages without one. */
+function hostOf(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.hostname.replace(/^www\./, "") : "";
+  } catch {
+    return "";
+  }
+}
+
+/** A tab's icon the panel may show: a web or inline image (chrome:// icons do not load in an extension page). */
+function safeIcon(url: string | undefined): string | null {
+  return url && /^(https?:|data:image\/)/.test(url) ? url : null;
 }
 
 export function initJobPage(deps: JobPageDeps): JobPage {
@@ -58,7 +84,8 @@ export function initJobPage(deps: JobPageDeps): JobPage {
   const sub = $("job-sub");
   const menu = $<HTMLDetailsElement>("job-menu");
   const pop = $("job-menu-pop");
-  const elsewhere = $("job-elsewhere");
+  const agentRow = $("job-agent-tab");
+  const said = $("job-agent-tab-said");
   let key: string | null = null;
   /** What the earlier runs block was built from (rebuilt only when that changes, so open sections stay open). */
   let beforeOf = "";
@@ -164,9 +191,6 @@ export function initJobPage(deps: JobPageDeps): JobPage {
           if (t) await uiRequest({ type: "tasks.update", id: t.id, patch: { agentAuthored: false } });
           await data.loadTasks();
           break;
-        case "show":
-          if (s) await uiRequest({ type: "agent.show", sessionId: s.sessionId });
-          break;
         case "raw":
           chat.setRaw(!chat.rawOpen);
           break;
@@ -235,26 +259,60 @@ export function initJobPage(deps: JobPageDeps): JobPage {
     box.select();
   }
 
-  /** "Running in <tab> · Show tab" while the job runs in a tab other than the panel's. */
-  function renderElsewhere(job: Job | null): void {
-    const s = job?.running ? job.session : null;
-    const tab = s ? deps.tabOf(s.sessionId) : null;
-    const here = deps.activeTab();
-    if (tab === null || tab === here) {
-      elsewhere.hidden = true;
-      delete elsewhere.dataset.tab;
+  /**
+   * The agent's tab, while the user is not looking at it: its icon, title and site, and View (that tab, in front, to
+   * watch the agent there). Screen readers hear it when it appears, not each page the agent opens there.
+   */
+  function renderAgentTab(job: Job | null): void {
+    const id = sessionId();
+    const tab = id ? deps.agentTab(id) : null;
+    if (tab === null) {
+      agentRow.hidden = true;
+      delete agentRow.dataset.tab;
       return;
     }
-    if (elsewhere.dataset.tab === String(tab) && !elsewhere.hidden) return;
-    elsewhere.dataset.tab = String(tab);
-    const name = h("b.job-tab-name", null, "another tab");
-    const show = h("button.link", { type: "button", title: "Switch to the tab it runs in" }, "Show tab");
-    show.addEventListener("click", () => deps.goToTab(tab));
-    elsewhere.replaceChildren("Running in ", name, " · ", show);
-    elsewhere.hidden = false;
-    void deps.tabTitle(tab).then((t) => {
-      if (t && elsewhere.dataset.tab === String(tab)) name.textContent = t;
-    });
+    const lead = job?.running ? "Working in" : "Ran in";
+    if (agentRow.dataset.tab !== String(tab)) {
+      agentRow.dataset.tab = String(tab);
+      agentRow.hidden = true;
+      const view = h("button.job-tab-view", { type: "button", title: "Switch to this tab to watch the agent", "aria-label": "View the agent's tab" }, "View");
+      view.addEventListener("click", () => deps.goToTab(tab));
+      agentRow.replaceChildren(h("span.job-tab-icon", { "aria-hidden": "true" }), h("span.job-tab-text", null, h("span.job-tab-lead"), " ", h("b.job-tab-name"), h("span.job-tab-host")), view);
+    }
+    agentRow.querySelector(".job-tab-lead")!.textContent = lead;
+    void fillTab(tab);
+  }
+
+  /** The row's tab as it is now; shown once known (hidden if the tab is gone). */
+  async function fillTab(tab: number): Promise<void> {
+    const info = await deps.tabInfo(tab);
+    if (agentRow.dataset.tab !== String(tab)) return;
+    if (!info) {
+      agentRow.hidden = true;
+      return;
+    }
+    const host = hostOf(info.url);
+    const title = info.title || host || "another tab";
+    const name = agentRow.querySelector<HTMLElement>(".job-tab-name")!;
+    name.textContent = title;
+    name.title = info.url ? `${title} (${info.url})` : title;
+    agentRow.querySelector(".job-tab-host")!.textContent = host && host !== title ? host : "";
+    agentRow.querySelector(".job-tab-view")!.setAttribute("aria-label", `View the agent's tab: ${title}`);
+    const icon = agentRow.querySelector<HTMLElement>(".job-tab-icon")!;
+    const src = safeIcon(info.favIconUrl) ?? "";
+    if (icon.dataset.src !== src || !icon.firstChild) {
+      icon.dataset.src = src;
+      if (!src) icon.innerHTML = GLOBE_ICON;
+      else {
+        const img = h("img", { src, alt: "", width: 16, height: 16 }) as HTMLImageElement;
+        img.addEventListener("error", () => (icon.innerHTML = GLOBE_ICON));
+        icon.replaceChildren(img);
+      }
+    }
+    if (agentRow.hidden) {
+      agentRow.hidden = false;
+      said.textContent = `${agentRow.querySelector(".job-tab-lead")!.textContent} ${title}. View shows it.`;
+    }
   }
 
   /** One earlier run: its date and how it ended; opened, its conversation (loaded then). */
@@ -341,7 +399,7 @@ export function initJobPage(deps: JobPageDeps): JobPage {
     titleEl.title = titleEl.textContent ?? "";
     sub.textContent = job ? jobSubtitle(job) : "";
     menu.hidden = !!job && jobActions(job, data.source).length === 0;
-    renderElsewhere(job);
+    renderAgentTab(job);
     renderBefore(job);
     chat.show(sessionId());
   }
@@ -361,5 +419,8 @@ export function initJobPage(deps: JobPageDeps): JobPage {
     job: current,
     sessionId,
     title: () => titleEl.textContent ?? "",
+    tabUpdated(tab) {
+      if (!agentRow.hidden && agentRow.dataset.tab === String(tab)) void fillTab(tab);
+    },
   };
 }

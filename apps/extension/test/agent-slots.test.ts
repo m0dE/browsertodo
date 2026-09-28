@@ -46,6 +46,17 @@ describe("AgentSlots", () => {
     expect(await slots.get(1).tab.tabId()).toBe(b);
   });
 
+  it("tabsOf: the tab the session acts on now first (where the user can watch it), then the rest", async () => {
+    await slots.take(0, "A").prepare({ mode: "own-tab" });
+    const main = (await slots.get(0).tab.tabId())!;
+    expect(await slots.tabsOf("A")).toEqual([main]);
+    const [opened] = await slots.get(0).tab.open(["https://docs.test/"], { current: true });
+    expect(await slots.tabsOf("A")).toEqual([opened!.tabId, main]);
+    await slots.get(0).tab.setCurrent("t1");
+    expect(await slots.tabsOf("A")).toEqual([main, opened!.tabId]);
+    expect(await slots.tabsOf("nobody")).toEqual([]);
+  });
+
   it("routes a session's browser calls to its slot, refuses sessions without one, and sends unnamed calls to slot 0", async () => {
     await slots.take(0, "A").prepare({ mode: "own-tab" });
     await slots.take(1, "B").prepare({ mode: "own-tab" });

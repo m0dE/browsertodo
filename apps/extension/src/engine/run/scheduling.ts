@@ -73,10 +73,13 @@ export class SlotTable {
   }
 }
 
-/** The one session that may act as an X account right now; the others wait for it. */
+/**
+ * The one session that may act as an X account right now; the others wait for it. A mutex: when the holder releases
+ * it, the turn passes straight to the session that has waited longest, so two waiters never both take it.
+ */
 export class XTurn {
   private holder: string | null = null;
-  private waiters: (() => void)[] = [];
+  private queue: { sessionId: string; cancelled: () => boolean; granted: (held: boolean) => void }[] = [];
 
   get free(): boolean {
     return this.holder === null;
@@ -86,20 +89,18 @@ export class XTurn {
     return this.holder !== null && this.holder !== sessionId;
   }
 
-  /** Takes the turn when nobody holds it. */
+  /** Takes the turn when nobody holds it (the due loop, for a run it starts). */
   tryTake(sessionId: string): void {
     if (this.holder === null) this.holder = sessionId;
   }
 
-  take(sessionId: string): void {
-    this.holder = sessionId;
-  }
-
-  /** Waits until no other session holds the turn, or until cancelled() (checked on every wake). */
-  async waitFor(sessionId: string, cancelled: () => boolean): Promise<void> {
-    while (this.heldByOther(sessionId) && !cancelled()) {
-      await new Promise<void>((r) => this.waiters.push(r));
+  /** Resolves true once this session holds the turn, false when cancelled() first (checked on wake()). */
+  acquire(sessionId: string, cancelled: () => boolean): Promise<boolean> {
+    if (!this.heldByOther(sessionId)) {
+      this.holder = sessionId;
+      return Promise.resolve(true);
     }
+    return new Promise((granted) => this.queue.push({ sessionId, cancelled, granted }));
   }
 
   release(sessionId: string): void {
@@ -108,9 +109,16 @@ export class XTurn {
     this.wake();
   }
 
-  /** Wakes every waiter to check again (the turn was freed, or a waiter was stopped). */
+  /** Stopped waiters stop waiting; a free turn goes to the next waiter. */
   wake(): void {
-    for (const w of this.waiters.splice(0)) w();
+    const stopped = this.queue.filter((w) => w.cancelled());
+    this.queue = this.queue.filter((w) => !stopped.includes(w));
+    for (const w of stopped) w.granted(false);
+    if (this.holder !== null) return;
+    const next = this.queue.shift();
+    if (!next) return;
+    this.holder = next.sessionId;
+    next.granted(true);
   }
 }
 

@@ -302,7 +302,7 @@ export const PANEL_CASES = [
       await p.close();
     },
   },
-  // The list with every group (Needs you, Running, Scheduled soonest first, Recent newest first), one line per job;
+  // The list with every group (Needs you, Running, Upcoming soonest first, Recent newest first), one line per job;
   // the keyboard moves through it (from the search field too); a job opens on its page (its conversation, its "⋯"
   // menu); back gives the list as it was left (the search, the scroll, the row); a finished job opened here is bound
   // to this tab.
@@ -314,7 +314,7 @@ export const PANEL_CASES = [
       const layout = [
         ["Needs you", ["task:t5", "chat:s-3"]],
         ["Running", ["task:t2"]],
-        ["Scheduled", ["task:t3", "task:t4", "task:t1"]],
+        ["Upcoming", ["task:t3", "task:t4", "task:t1"]],
         ["Recent", ["task:t6", "task:t7"]],
       ];
       if (JSON.stringify(g) !== JSON.stringify(layout)) fail(`list groups ${JSON.stringify(g)}`);
@@ -352,7 +352,7 @@ export const PANEL_CASES = [
       await page.setViewportSize({ width: size.w, height: 420 });
       await page.fill("#job-search", "post");
       const found = await groups(page);
-      if (JSON.stringify(found) !== JSON.stringify([["Running", ["task:t2"]], ["Scheduled", ["task:t3", "task:t4"]], ["Recent", ["task:t6", "task:t7"]]])) fail(`search "post" ${JSON.stringify(found)}`);
+      if (JSON.stringify(found) !== JSON.stringify([["Running", ["task:t2"]], ["Upcoming", ["task:t3", "task:t4"]], ["Recent", ["task:t6", "task:t7"]]])) fail(`search "post" ${JSON.stringify(found)}`);
       await checkLayout(page, `list search ${label}`);
       await shoot(page, "panel-list-search", size, scheme);
       await page.evaluate(() => (document.getElementById("view-list").scrollTop = 60));
@@ -371,7 +371,8 @@ export const PANEL_CASES = [
         list: document.getElementById("view-list").hidden && document.getElementById("list-head").hidden,
         composer: !document.getElementById("composer").hidden,
       }));
-      if (!opened.title.startsWith("Post the launch thread") || opened.sub !== "Running" || !opened.said.startsWith("Job: Post the launch") || opened.focus !== "now-text" || !opened.list || !opened.composer) fail(`opened job ${JSON.stringify(opened)}`);
+      // The task's title leads with the account it posts as (jobs.ts distinctTitle).
+      if (!opened.title.startsWith("@browsertodo · Post the launch thread") || opened.sub !== "Running" || !opened.said.startsWith("Job: @browsertodo · Post the launch") || opened.focus !== "now-text" || !opened.list || !opened.composer) fail(`opened job ${JSON.stringify(opened)}`);
       if (want("panel-model-running", size, scheme)) {
         // The running task keeps its model: the chip shows it but does not open.
         const chip = page.locator("#now-model");
@@ -391,14 +392,13 @@ export const PANEL_CASES = [
       await checkLayout(page, `chat ${label}`);
       await shoot(page, "panel-chat-running", size, scheme);
       // Its menu: what a running task can do here.
-      await expectMenu(page, ["Pause", "Show tab", "Raw"], "running job");
+      await expectMenu(page, ["Pause", "Raw"], "running job");
       await page.click("#job-menu summary");
       await checkLayout(page, `job menu ${label}`);
       await shoot(page, "panel-job-menu", size, scheme);
-      await pick(page, "Show tab");
-      await page.waitForFunction(() => window.__requests.some((r) => r.type === "agent.show"));
-      const shown = await page.evaluate(() => window.__requests.find((r) => r.type === "agent.show"));
-      if (shown?.sessionId !== "s-live") fail(`Show tab sent ${JSON.stringify(shown)}`);
+      await page.keyboard.press("Escape");
+      // It runs in the tab the user is on: no row to go to it.
+      if (await page.isVisible("#job-agent-tab")) fail("the agent's tab row shows while the user is on that tab");
 
       // Back ("‹", or Esc on the page): the list as it was left, the opened row focused.
       await page.setViewportSize({ width: size.w, height: 420 });
@@ -645,7 +645,7 @@ export const PANEL_CASES = [
       if (first.head !== "Claude Code · claude-sonnet-5 · Jev on" || view.heads !== 1 || first.startLines !== 0) fail(`brain shown more than once ${JSON.stringify({ first, heads: view.heads })}`);
       const wantPicks = ["Jev chose 2 of 2 element picks (clicks and typing)", "Jev chose 0 of 1 element pick (clicks and typing); Claude chose 1"];
       if (JSON.stringify(view.picks) !== JSON.stringify(wantPicks) || view.loosePicks !== 0) fail(`end card picks ${JSON.stringify(view)}`);
-      // An ended chat: schedule its request, Raw, Rename, Delete (the agent has no tab now: no Show tab).
+      // An ended chat: schedule its request, Raw, Rename, Delete (the agent has no tab now).
       await expectMenu(p, ["Schedule", "Raw", "Rename", "Delete"], "ended conversation");
       await expectComposer(CHAT, "not in conversation mode");
       await checkLayout(p, `conversation ${label}`);
@@ -1179,11 +1179,12 @@ export const PANEL_CASES = [
     },
   },
   // Two tasks at once, each in its own tab: both under Running; this tab's job opens here; the other's page says it
-  // runs in another tab (Show tab switches there) and is not bound here; Pause stops only it.
+  // runs in another tab (the row under the header: its title and site, View switches there) and is not bound here;
+  // Pause stops only it.
   {
     names: ["panel-parallel", "panel-parallel-elsewhere"],
     async run({ ctx, size, scheme, label, fail, groups, expectMenu, pick, firstMessage, openPanel, openJob, shoot, checkLayout, reportErrors }) {
-      const p = await openPanel(ctx, "parallel");
+      const p = await openPanel(ctx, "parallel", undefined, { edit: (d) => (d.tabUrls = { 2: "https://news.ycombinator.com/" }) });
       const running = (await groups(p)).find(([g]) => g === "Running")?.[1] ?? [];
       if (running.join() !== "task:t3,task:t2") fail(`Running ${JSON.stringify(running)}`);
       await checkLayout(p, `parallel ${label}`);
@@ -1192,26 +1193,38 @@ export const PANEL_CASES = [
       await openJob(p, "task:t2");
       await p.waitForSelector("#chat-log .ev-first");
       if (!(await p.locator("#chat-log .ev-first .ev-user-text").textContent()).startsWith("Post the launch")) fail("tab 1's job does not show its run");
-      if (await p.isVisible("#job-elsewhere")) fail("tab 1's own run says it runs elsewhere");
+      if (await p.isVisible("#job-agent-tab")) fail("tab 1's own run offers to view its tab");
       // The other tab's run: its page, where it runs, and nothing bound here.
       const binds = await p.evaluate(() => window.__requests.filter((r) => r.type === "chat.bind").length);
       await openJob(p, "task:t3");
       await p.waitForFunction(() => document.getElementById("chat-log").textContent.includes("Opening the doc"));
-      await p.waitForFunction(() => document.querySelector("#job-elsewhere:not([hidden]) b")?.textContent === "Hacker News");
+      await p.waitForFunction(() => document.querySelector("#job-agent-tab:not([hidden]) .job-tab-name")?.textContent === "Hacker News");
       const other = await firstMessage(p);
       if (other?.origin !== "Scheduled run" || other.startLines !== 0 || other.head !== "Claude API · claude-sonnet-5 · Jev on") fail(`tab 2's first message ${JSON.stringify(other)}`);
       if ((await p.evaluate(() => window.__requests.filter((r) => r.type === "chat.bind").length)) !== binds) fail("a job running in another tab was bound here");
-      const line = await p.textContent("#job-elsewhere");
-      if (line !== "Running in Hacker News · Show tab") fail(`elsewhere line "${line}"`);
+      const row = await p.evaluate(() => {
+        const r = document.getElementById("job-agent-tab");
+        const view = r.querySelector("button");
+        return {
+          lead: r.querySelector(".job-tab-lead").textContent,
+          host: r.querySelector(".job-tab-host").textContent,
+          view: view.textContent,
+          label: view.getAttribute("aria-label"),
+          said: document.getElementById("job-agent-tab-said").textContent,
+          under: r.previousElementSibling === null && document.getElementById("job-head").getBoundingClientRect().bottom <= r.getBoundingClientRect().top + 1,
+        };
+      });
+      if (row.lead !== "Working in" || row.host !== "news.ycombinator.com" || row.view !== "View" || row.label !== "View the agent's tab: Hacker News" || row.said !== "Working in Hacker News. View shows it." || !row.under) fail(`agent tab row ${JSON.stringify(row)}`);
       await checkLayout(p, `parallel-elsewhere ${label}`);
       await shoot(p, "panel-parallel-elsewhere", size, scheme);
-      // Show tab (the line): that tab.
-      await p.click("#job-elsewhere button");
+      // View, by keyboard: that tab.
+      await p.focus("#job-agent-tab button");
+      await p.keyboard.press("Enter");
       await p.waitForFunction(() => window.__requests.some((r) => r.type === "tab.focus"));
       const focus = await p.evaluate(() => window.__requests.find((r) => r.type === "tab.focus"));
-      if (focus?.tabId !== 2) fail(`Show tab sent ${JSON.stringify(focus)}`);
+      if (focus?.tabId !== 2) fail(`View sent ${JSON.stringify(focus)}`);
       // The menu and the composer act on this job's run; Pause (and Stop) stop only it.
-      await expectMenu(p, ["Pause", "Show tab", "Raw"], "the other tab's run");
+      await expectMenu(p, ["Pause", "Raw"], "the other tab's run");
       await pick(p, "Pause");
       await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.stop"));
       const pause = await p.evaluate(() => window.__requests.find((r) => r.type === "run.stop"));
@@ -1239,7 +1252,7 @@ export const PANEL_CASES = [
         }));
       const a = await view();
       if (!a.title?.startsWith("Summarize this pull request") || a.list || !a.stop) fail(`tab A ${JSON.stringify(a)}`);
-      await expectMenu(p, ["Pause", "Schedule", "Show tab", "Raw", "Rename"], "tab A");
+      await expectMenu(p, ["Pause", "Schedule", "Raw", "Rename"], "tab A");
       await checkLayout(p, `tabs-a ${label}`);
       await shoot(p, "panel-tabs-a", size, scheme);
       // The user switches to tab 2: it has no chat, so the list, with tab 1's job under Running.
@@ -1696,7 +1709,7 @@ export const PANEL_CASES = [
       if (want("panel-voice-idle", size, scheme)) {
         const p = await openPanel(ctx, "account");
         if ((await voiceState(p)) !== "idle") fail(`paid plan mic ${await voiceState(p)}`);
-        if ((await p.getAttribute(mic, "title")) !== `Voice · ${VOICE_SHORTCUT_LABEL}`) fail(`mic tooltip "${await p.getAttribute(mic, "title")}"`);
+        if ((await p.getAttribute(mic, "title")) !== `Voice mode · ${VOICE_SHORTCUT_LABEL}`) fail(`mic tooltip "${await p.getAttribute(mic, "title")}"`);
         await checkLayout(p, `voice-idle ${label}`);
         await shoot(p, "panel-voice-idle", size, scheme);
         reportErrors(p, `voice-idle ${label}`);
@@ -1710,7 +1723,7 @@ export const PANEL_CASES = [
         await p.click(mic);
         await waitPill(p, "listening");
         await waitVoice(p, "handsfree");
-        if ((await p.getAttribute(mic, "title")) !== `End voice · ${VOICE_SHORTCUT_LABEL}`) fail(`mic tooltip while on "${await p.getAttribute(mic, "title")}"`);
+        if ((await p.getAttribute(mic, "title")) !== `End voice mode · ${VOICE_SHORTCUT_LABEL}`) fail(`mic tooltip while on "${await p.getAttribute(mic, "title")}"`);
         if ((await listeningReported(p)) !== true) fail("the mic's hands-free not reported to the background");
         if (await p.evaluate(() => window.__requests.some((r) => r.type === "voice.realtime"))) fail("Standard asked for the realtime relay");
         const problems = await orbCheck(p);
@@ -1814,7 +1827,9 @@ export const PANEL_CASES = [
             micTitle: mic.title,
             micPressed: mic.getAttribute("aria-pressed"),
             micFill: getComputedStyle(mic).backgroundColor,
-            mute: mute && !mute.hidden ? [mute.getAttribute("aria-pressed"), mute.getAttribute("aria-label")] : null,
+            micText: mic.textContent,
+            mics: document.querySelectorAll(".now-bar svg.mic").length,
+            mute: mute && !mute.hidden ? [mute.getAttribute("aria-pressed"), mute.getAttribute("aria-label"), mute.textContent] : null,
             anims: [anim(bar.querySelector(".vb-dot")), anim(mic, "::before"), anim(document.querySelector(".now"))],
             reported: window.__portSent.filter((m) => m.type === "panel.listening").at(-1),
           };
@@ -1827,9 +1842,9 @@ export const PANEL_CASES = [
         want2(look.buttons === 0 && look.height <= 30, "a slim strip without buttons");
         want2(look.meter, "meter");
         want2(look.placeholder === "Listening… just talk" && look.glow, "listening box");
-        want2(look.micTitle === `End voice · ${VOICE_SHORTCUT_LABEL}` && look.micPressed === "true", "mic ends voice");
-        want2(look.micFill !== "rgba(0, 0, 0, 0)", "mic filled");
-        want2(JSON.stringify(look.mute) === JSON.stringify(["false", "Mute the microphone · Alt+M"]), "Mute in the composer");
+        want2(look.micTitle === `End voice mode · ${VOICE_SHORTCUT_LABEL}` && look.micPressed === "true", "mic ends voice");
+        want2(look.micFill !== "rgba(0, 0, 0, 0)" && look.micText === "Voice" && look.mics === 1, "Voice filled, still \"Voice\", one mic icon");
+        want2(JSON.stringify(look.mute) === JSON.stringify(["false", "Mute the microphone · Alt+M", "Mute"]), "Mute in the composer");
         want2(look.reported?.listening === true && look.reported?.tabId === 1, "listening reported with the tab (badge)");
         const still = look.anims.every((a) => a === "none");
         want2(reduced ? still : look.anims.join() === "vb-breathe,vb-mic-ring,vb-glow", reduced ? "something pulses with reduced motion" : "no pulse");
@@ -2106,7 +2121,7 @@ export const PANEL_CASES = [
         const sent = req.text;
         await p.waitForFunction(() => window.__rt.sent.some((e) => e.item?.type === "function_call_output"));
         const output = await p.evaluate(() => window.__rt.sent.find((e) => e.item?.type === "function_call_output")?.item.output);
-        if (output !== "Sent to the agent. Its updates will follow.") fail(`tool output "${output}"`);
+        if (output !== "Started. Your updates on it will follow.") fail(`tool output "${output}"`);
         // One short acknowledgement once that reply is done (it said nothing), and no other reply.
         const replies = () => p.evaluate(() => window.__rt.sent.filter((e) => e.type === "response.create"));
         if ((await replies()).length) fail("a reply was asked for while the narrator's reply was still being made");
@@ -2431,6 +2446,7 @@ export const PANEL_CASES = [
             meter: !bar.querySelector(".vb-meter").hidden,
             pressed: mute.getAttribute("aria-pressed"),
             label: mute.getAttribute("aria-label"),
+            text: mute.textContent,
             tooltip: mute.title,
             live: bar.querySelector("[aria-live=polite]").textContent,
             barBg: getComputedStyle(bar).backgroundColor,
@@ -2449,7 +2465,7 @@ export const PANEL_CASES = [
       want(muted.state === "muted" && muted.muted === "true" && muted.title === "Muted" && muted.live === "Voice on: Muted", "state", muted);
       want(muted.detail === "Realtime voice · Microphone off · Unmute to talk", "tooltip", muted);
       want(!muted.meter && muted.ring === "none", "meter or ring", muted);
-      want(muted.pressed === "true" && muted.label === "Unmute the microphone · Alt+M" && muted.tooltip === muted.label, "Mute button", muted);
+      want(muted.pressed === "true" && muted.label === "Unmute the microphone · Alt+M" && muted.text === "Unmute" && muted.tooltip === muted.label, "Mute button", muted);
       want(!/200, 35, 63|196, 42, 68/.test(muted.barBg), "the bar is still red", muted);
       want(/muted/i.test(muted.placeholder) && !muted.glow, "box", muted);
       want(muted.micMuted === "true" && muted.micRing === "none", "mic button", muted);

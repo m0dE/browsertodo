@@ -50,6 +50,16 @@ describe("titleDue", () => {
     expect(titleDue(chat("a", { source: "local", taskId: "t1" }))).toBe(false);
   });
 
+  it("a TODO run: once, when it keeps its instructions and series (a later turn reads them, not the title)", () => {
+    const run = (extra: Partial<SessionInfo> = {}) => chat("r", { source: "local", taskId: "t1", seriesId: "t1", instructions: "Post one new original post on X as @mecharoyalecom", ...extra });
+    expect(titleDue(run())).toBe(true);
+    expect(titleDue(run({ source: "cloud" }))).toBe(true);
+    expect(titleDue(run({ instructions: undefined }))).toBe(false);
+    expect(titleDue(run({ seriesId: undefined }))).toBe(false);
+    expect(titleDue(run({ titleBy: "model", titledTurn: 1, turns: RETITLE_AT_TURN }))).toBe(false);
+    expect(titleDue(run({ titleBy: "user" }))).toBe(false);
+  });
+
   it("the model's title once more after turn RETITLE_AT_TURN, never a user's", () => {
     expect(titleDue(chat("a", { titleBy: "model", titledTurn: 1, turns: 2 }))).toBe(false);
     expect(titleDue(chat("a", { titleBy: "model", titledTurn: 1, turns: RETITLE_AT_TURN }))).toBe(true);
@@ -60,6 +70,27 @@ describe("titleDue", () => {
 });
 
 describe("ChatTitler", () => {
+  it("names a TODO series once: a run of a series that already has a name is not titled", async () => {
+    const run = (id: string) => chat(id, { source: "local", taskId: `t-${id}`, seriesId: "daily", instructions: "Post one new original post on X as @mecharoyalecom" });
+    const named = new Set<string>();
+    titler = new ChatTitler({
+      sessions,
+      summarizer: () => async (req) => (calls.push(req), { text: "@mecharoyalecom daily X post" }),
+      seriesTitled: async (id) => named.has(id),
+      log: (m) => logs.push(m),
+    });
+    await seed(run("r1"));
+    titler.ended("r1");
+    await titler.run();
+    expect(await sessions.get("r1")).toMatchObject({ title: "@mecharoyalecom daily X post", titleBy: "model" });
+    named.add("daily");
+    await seed(run("r2"));
+    titler.ended("r2");
+    await titler.run();
+    expect((await sessions.get("r2"))?.titleBy).toBeUndefined();
+    expect(calls).toHaveLength(1);
+  });
+
   it("names a chat from its conversation after its turn, with the small model's short answer", async () => {
     await seed(chat("s1"));
     titler.ended("s1");

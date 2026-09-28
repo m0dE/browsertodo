@@ -87,7 +87,7 @@ const spokenArg = z
   .max(MAX_SPOKEN_CHARS)
   .optional()
   .describe(
-    `One or two short sentences, read aloud to a user who talks to BrowserTODO hands-free, at most ${MAX_SPOKEN_CHARS} characters: the result, or the question they must answer. Natural speech, as you would say it to them: no Markdown, lists, URLs or IDs (e.g. "Done. You have four unread emails, and Jordan needs your signature by Friday.").`,
+    `One or two short sentences, read aloud to a user who talks to BrowserTODO hands-free, at most ${MAX_SPOKEN_CHARS} characters: the result, or the question they must answer. Natural speech, as you would say it to them, in the first person as BrowserTODO ("I…"), never "the agent": no Markdown, lists, URLs or IDs (e.g. "Done. You have four unread emails, and Jordan needs your signature by Friday.").`,
   );
 
 export const ToolArgs = {

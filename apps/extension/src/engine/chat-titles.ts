@@ -9,6 +9,10 @@
  * whose title failed, are titled when a list shows them (the side panel's jobs list): at most
  * MAX_TITLE_BACKFILL per worker start, after the turns' titles and never while a run is going on, like the episode
  * backfill. Brains without a writer (the scripted test brain) keep the cleaned request.
+ *
+ * A TODO task's series is named once, the same way, from its first run that keeps its instructions (a later turn
+ * reads them there, not in the title): the jobs list shows that name for the whole series (sidepanel/jobs.ts). A run
+ * of a series that already has a name (the model's or the user's) is not titled.
  */
 import {
   buildChatTitlePrompt,
@@ -32,16 +36,19 @@ export interface ChatTitlerDeps {
   summarizer(brain: SessionInfo["brain"]): Summarize | null;
   /** A run is going on: past chats wait (absent: never). */
   busy?(): boolean;
+  /** A run of this TODO series already has its name (the model's or the user's). Absent: none has. */
+  seriesTitled?(seriesId: string): Promise<boolean>;
   log(message: string): void;
 }
 
 /**
- * Whether the title model should write this conversation's title now: a chat (not a TODO run: its task names it)
- * between turns, whose title is still its request, or the model's from before turn RETITLE_AT_TURN once that turn
- * is over. Never a title the user gave.
+ * Whether the title model should write this conversation's title now: a chat between turns, whose title is still its
+ * request, or the model's from before turn RETITLE_AT_TURN once that turn is over; a TODO run once, when it keeps its
+ * instructions and series (see above). Never a title the user gave.
  */
 export function titleDue(s: SessionInfo): boolean {
-  if (s.source !== "adhoc" || !s.endedAt || s.titleBy === "user") return false;
+  if (!s.endedAt || s.titleBy === "user") return false;
+  if (s.source !== "adhoc") return !s.titleBy && !!s.instructions && !!s.seriesId;
   if (s.titleBy !== "model") return true;
   return (s.turns ?? 1) >= RETITLE_AT_TURN && (s.titledTurn ?? 1) < RETITLE_AT_TURN;
 }
@@ -95,6 +102,7 @@ export class ChatTitler {
   private async write(sessionId: string): Promise<void> {
     const s = await this.deps.sessions.get(sessionId);
     if (!s || !titleDue(s)) return;
+    if (s.source !== "adhoc" && (await this.deps.seriesTitled?.(s.seriesId!))) return;
     const summarize = this.deps.summarizer(s.brain);
     if (!summarize) return;
     const lines = transcriptLines(s, await this.deps.sessions.eventsOf(sessionId));

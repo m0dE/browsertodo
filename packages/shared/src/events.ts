@@ -172,8 +172,9 @@ export interface SessionInfo {
    * box offers it faded (Tab takes it) until the next message is sent.
    */
   suggestion?: string;
-  /** Adhoc runs: the full instructions and account, so the run can be continued later. */
+  /** The full instructions, so the run can be continued later. */
   instructions?: string;
+  /** The account the run acts as (every source), so a later turn in a fresh session acts as it too. */
   account?: string;
   /** The first message was spoken (hands-free voice), not typed. */
   voice?: true;

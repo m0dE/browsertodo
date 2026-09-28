@@ -344,6 +344,18 @@ describe("approval card words", () => {
     expect(describeAction({ method: "openTabs", urls: ["https://a.com/x", "https://b.com"], page, typed: [] })).toBe("Open 2 tabs");
     expect(describeAction({ method: "closeTabs", tabs: ["t2"], page, typed: [] })).toBe("Close tab t2");
   });
+
+  it("a Post on X names the account X's switcher shows (the one it publishes as)", async () => {
+    const switcher = el("button", "Account menu", { testId: "SideNav_AccountSwitcher_Button", text: "Mecha Royale @mecharoyalecom", index: 11 });
+    const b = fakeBrowser({ ...X_PAGE, elements: [...X_PAGE.elements, switcher] });
+    const asked: Omit<ApprovalRequest, "id" | "expiresAt">[] = [];
+    const gate = new ApprovalGate(b.browser, () => "s1", {
+      context: async () => ({ level: "ask_consequential" }),
+      request: async (_s, ask) => (asked.push(ask), "allow_once"),
+    });
+    await postFlow(gate.browser.call);
+    expect(asked.map((a) => `${a.action} (${a.why})`)).toEqual(['Click "Post" as @mecharoyalecom (publishes)']);
+  });
 });
 
 describe("ApprovalBroker", () => {

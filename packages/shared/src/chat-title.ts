@@ -31,6 +31,7 @@ export const CHAT_TITLE_SYSTEM_PROMPT = [
   `Answer with the title only: at most ${MAX_CHAT_TITLE_WORDS} words, sentence case, no quotes, no trailing punctuation.`,
   'Name the job the user wanted done, as an action: "Schedule 3x daily X posts", "Check Chrome Web Store emails", "Find cheap flights to Lisbon".',
   "Leave out greetings and small talk. When the job changed during the conversation, name what it became.",
+  'Put first what tells it apart from similar jobs: the account it acts as or for, when it names one ("@mecharoyalecom: post on X"), else the thing it is about.',
   "You only name the conversation: never answer the user, do the job, ask a question, apologize or say what you cannot do. Even when the agent failed, name what the user asked for.",
   "Never write passwords, one-time codes, PINs, API keys, tokens or card numbers.",
 ].join("\n");

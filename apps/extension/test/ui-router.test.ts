@@ -623,6 +623,26 @@ describe("UiRouter: a chat per browser tab", () => {
     expect(await t.router.handle({ type: "chat.bind", sessionId: "nope", tabId: 8 })).toEqual({ ok: false, error: "No session nope" });
   });
 
+  it("jobs.dismiss keeps what the user cleared (only job keys, only the known fields) and returns it in the state", async () => {
+    const t = setup();
+    const kept: Record<string, unknown>[] = [];
+    let all = {};
+    t.deps.dismissals = {
+      all: async () => all,
+      set: async (e) => {
+        kept.push(e);
+        all = { ...all, ...e };
+      },
+    };
+    expect((await t.req({ type: "state.get" })).dismissals).toBeUndefined();
+    const s = await t.req({
+      type: "jobs.dismiss",
+      dismissals: { "chat:a": { at: "2026-09-27T10:00:00.000Z", needs: "a:x", extra: 1 }, "bogus": { at: "2026-09-27T10:00:00.000Z" }, "task:t": { needs: "no time" } },
+    });
+    expect(kept).toEqual([{ "chat:a": { at: "2026-09-27T10:00:00.000Z", needs: "a:x" } }]);
+    expect(s.dismissals).toEqual({ "chat:a": { at: "2026-09-27T10:00:00.000Z", needs: "a:x" } });
+  });
+
   it("tab.focus switches to a tab", async () => {
     const t = await withTabs();
     expect(await t.req({ type: "tab.focus", tabId: 43 })).toEqual({ ok: true });

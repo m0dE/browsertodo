@@ -52,7 +52,7 @@ async function started() {
     forward: noop,
     userWords: noop,
     stopTask: async () => "Stopped the task.",
-    answerApproval: async (allow: boolean) => (answers.push(allow), allow ? "Allowed: the agent goes on." : "Denied: the agent will not do it."),
+    answerApproval: async (allow: boolean) => (answers.push(allow), allow ? "Allowed: the task goes on." : "Denied: it will not be done."),
     endVoice: noop,
     useThisTab: async () => "",
     failed: noop,

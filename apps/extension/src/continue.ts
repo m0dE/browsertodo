@@ -4,7 +4,7 @@
  * own session is gone (what was done so far, how it ended, the new message).
  * Pure; shared by the background runner and the side panel.
  */
-import { bareToolName, type SessionInfo, type StampedAgentEvent, type TaskOutcome } from "@browsertodo/shared";
+import { bareToolName, normalizeHandle, type SessionInfo, type StampedAgentEvent, type TaskOutcome } from "@browsertodo/shared";
 import { clip, toolArgsSummary } from "./text.js";
 
 /** How many earlier steps the continuation instructions list. */
@@ -96,6 +96,20 @@ export interface FollowUpInput {
   events: readonly StampedAgentEvent[];
   /** The user's new message. */
   text: string;
+  /** The account the conversation acts as (the task's), when it has one. */
+  account?: string | null;
+}
+
+/** The X account the conversation acts as: its task's, else the one it last switched X to. */
+function xAccountOf(input: FollowUpInput): string | null {
+  if (input.account?.startsWith("@")) return input.account;
+  for (let i = input.events.length - 1; i >= 0; i--) {
+    const e = input.events[i]!;
+    if (e.type !== "tool_call" || bareToolName(e.name) !== "switch_x_account") continue;
+    const handle = (e.args as { handle?: unknown } | undefined)?.handle;
+    if (typeof handle === "string" && handle.trim()) return normalizeHandle(handle);
+  }
+  return null;
 }
 
 /**
@@ -133,6 +147,9 @@ export function buildFollowUpInstructions(input: FollowUpInput): string {
     );
   }
   if (last) lines.push(`The agent's last message: "${last}"`);
+  const account = xAccountOf(input);
+  // An earlier switch failure is not final: X may switch now, and nothing is done on X as another account.
+  if (account) lines.push(`The X account: ${account}. Whatever an earlier switch_x_account said, call switch_x_account with ${account} again first, before anything else on X.`);
   lines.push(
     "",
     "The user's new message, which is what to do now:",

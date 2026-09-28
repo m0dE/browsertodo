@@ -4,8 +4,14 @@
  * A job is either a chat (a conversation started in the panel, by voice or through the API: one session) or a task
  * (a TODO task with its repeats, Task.seriesId, and the runs this browser has of them). A repeating task is one job,
  * however many times it ran; a run whose task is gone stays with the others of its series. The list groups jobs by
- * what they need: Needs you (an approval or the user's answer waits, a task paused), Running, Scheduled (a task
- * waiting for its time), Recent (the rest, newest first).
+ * what they need: Needs you (an approval or the user's answer waits, a task paused), Running, Upcoming (a task
+ * waiting for its time; "scheduled" in the code), Recent (the rest, newest first).
+ *
+ * The user clears the list (UiState.dismissals): a need they dismissed goes to Recent ("Dismissed"), and a job they
+ * put away leaves the list until it does something again (search still finds it). A need nobody answered for
+ * STALE_NEEDS_MS goes to Recent by itself ("Waited for you"), except one that cannot move on without the user: an
+ * approval still open in a live run (it ends by itself when it expires), or a repeating task paused (it would never
+ * run again unnoticed).
  */
 import {
   formatRelative,
@@ -17,13 +23,16 @@ import {
   type RepeatSchedule,
   type SessionInfo,
 } from "@browsertodo/shared";
-import type { LocalMediaInfo } from "../ui-protocol.js";
+import type { JobDismissal, LocalMediaInfo } from "../ui-protocol.js";
 import { firstLine } from "./format.js";
 
 export type JobGroupId = "needs" | "running" | "scheduled" | "recent";
 
 /** Where a job is: what its row's icon and its page's subtitle say. */
-export type JobState = "needs" | "running" | "due" | "scheduled" | "retry" | "done" | "failed" | "stopped" | "cancelled";
+export type JobState = "needs" | "running" | "due" | "scheduled" | "retry" | "done" | "failed" | "stopped" | "cancelled" | "dismissed" | "lapsed";
+
+/** A need nobody answered for this long goes to Recent by itself (see the top of this file). */
+export const STALE_NEEDS_MS = 24 * 60 * 60 * 1000;
 
 /** A TODO task as the list has it (its repeat rule read in the current shape; cloud tasks may lack media). */
 export type JobTask = Omit<LocalTask, "repeat"> & { repeat?: RepeatSchedule | null; media?: LocalMediaInfo[] };
@@ -54,6 +63,10 @@ export interface Job {
   reason: string;
   /** The site its newest run ended on ("x.com"; "" when unknown). */
   site: string;
+  /** What it needs the user for, as one mark (the paused task row or the run): dismissing it names this. Null: nothing. */
+  needs: string | null;
+  /** The user put it away: not in the list (search finds it). */
+  archived: boolean;
 }
 
 export interface JobInputs {
@@ -64,12 +77,14 @@ export interface JobInputs {
   tasks: readonly JobTask[];
   /** UiState.awaitingApproval. */
   awaitingApproval?: readonly string[];
+  /** UiState.dismissals. */
+  dismissals?: Readonly<Record<string, JobDismissal>>;
 }
 
 export const GROUP_LABELS: Record<JobGroupId, string> = {
   needs: "Needs you",
   running: "Running",
-  scheduled: "Scheduled",
+  scheduled: "Upcoming",
   recent: "Recent",
 };
 const GROUP_ORDER: readonly JobGroupId[] = ["needs", "running", "scheduled", "recent"];
@@ -84,6 +99,8 @@ export const STATE_LABELS: Record<JobState, string> = {
   failed: "Failed",
   stopped: "Stopped",
   cancelled: "Cancelled",
+  dismissed: "Dismissed",
+  lapsed: "Waited for you",
 };
 
 const GROUP_OF: Record<JobState, JobGroupId> = {
@@ -96,6 +113,8 @@ const GROUP_OF: Record<JobState, JobGroupId> = {
   failed: "recent",
   stopped: "recent",
   cancelled: "recent",
+  dismissed: "recent",
+  lapsed: "recent",
 };
 
 /** An approval card waits in a running conversation. */
@@ -178,6 +197,32 @@ function taskState(t: JobTask, now: number): { state: JobState; reason: string }
   }
 }
 
+/** "@name" an X (or other) account goes by, after a space: "… on X as @mecharoyalecom" (never an email's "@example"). */
+const HANDLE = /(?:\s+(?:as|from|for|by|with|using)\s+|\s+)(@[A-Za-z0-9_]{2,30})(?![\w@])/;
+
+/**
+ * A request as a title, with what tells it apart from similar jobs first: the account it acts as ("@mecharoyalecom ·
+ * Post one new original post on X"), from its words or its task's account.
+ */
+export function distinctTitle(text: string, account?: string | null): string {
+  const m = HANDLE.exec(text);
+  if (m) return `${m[1]} · ${(text.slice(0, m.index) + text.slice(m.index + m[0].length)).trim()}`;
+  const acct = account?.trim();
+  if (acct?.startsWith("@") && !text.startsWith("@") && !text.toLowerCase().includes(acct.toLowerCase())) return `${acct} · ${text}`;
+  return text;
+}
+
+/**
+ * A task's title: the name its series was given (the user's newest, else the title model's first, chat-titles.ts),
+ * else its request with what tells it apart first.
+ */
+function taskTitle(runs: readonly SessionInfo[], task: JobTask | null): string {
+  const named = runs.filter((r) => r.titleBy === "user").at(-1) ?? runs.find((r) => r.titleBy === "model");
+  if (named?.title.trim()) return named.title.trim();
+  const request = firstLine(task?.instructions ?? "") || firstLine(runs.at(-1)?.instructions ?? "") || firstLine(runs.at(-1)?.title ?? "");
+  return request ? distinctTitle(request, task?.account) : UNTITLED;
+}
+
 /** Every job, in no particular order (see groupJobs). */
 export function buildJobs(input: JobInputs, now = Date.now()): Job[] {
   const live = new Map(input.running.map((s) => [s.sessionId, s]));
@@ -213,12 +258,22 @@ export function buildJobs(input: JobInputs, now = Date.now()): Job[] {
         ? sessionState(session!, !!liveRun, !!liveRun && awaiting.has(liveRun.sessionId))
         : taskState(task, now);
     const at = [task?.updatedAt, newest ? lastActive(newest) : undefined].filter((x): x is string => !!x).reduce(later, "");
+    // What it needs the user for: the paused task row, or the run (live: an approval).
+    const byTask = !liveRun && !!task;
+    const needs = where.state !== "needs" ? null : byTask ? `task:${task!.id}:${task!.updatedAt}` : `run:${session!.sessionId}:${session!.endedAt ?? "live"}`;
+    const dismissal = input.dismissals?.[key];
+    let state = where.state;
+    if (needs && dismissal?.needs === needs) state = "dismissed";
+    else if (needs && !liveRun && !(byTask && task!.repeat)) {
+      const since = byTask ? task!.updatedAt : lastActive(session!);
+      if (now - Date.parse(since) > STALE_NEEDS_MS) state = "lapsed";
+    }
     jobs.push({
       key,
       kind,
-      title: firstLine(task?.instructions ?? "") || firstLine(session?.title ?? "") || UNTITLED,
-      state: where.state,
-      group: GROUP_OF[where.state],
+      title: kind === "task" ? taskTitle(runs, task) : firstLine(session?.title ?? "") || UNTITLED,
+      state,
+      group: GROUP_OF[state],
       task,
       tasks: rows,
       session,
@@ -229,6 +284,8 @@ export function buildJobs(input: JobInputs, now = Date.now()): Job[] {
       repeat: task?.repeat ?? null,
       reason: where.reason,
       site: siteOf(session?.url),
+      needs: state === "needs" ? needs : null,
+      archived: GROUP_OF[state] === "recent" && !!dismissal?.archivedAt && at <= dismissal.archivedAt,
     });
   }
   return jobs;
@@ -257,10 +314,10 @@ const byLatest = (a: Job, b: Job) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
 /** Soonest first; a job whose time has come (no next time) before any that waits. */
 const bySoonest = (a: Job, b: Job) => (a.next ? Date.parse(a.next) : -Infinity) - (b.next ? Date.parse(b.next) : -Infinity) || a.title.localeCompare(b.title);
 
-/** The groups that have jobs (matching the search), in order: Needs you, Running, Scheduled, Recent. */
+/** The groups that have jobs (matching the search), in order: Needs you, Running, Upcoming, Recent. Jobs put away show only in a search. */
 export function groupJobs(jobs: readonly Job[], query = ""): JobGroup[] {
   const words = searchWords(query);
-  const shown = jobs.filter((j) => jobMatches(j, words));
+  const shown = jobs.filter((j) => (words.length || !j.archived) && jobMatches(j, words));
   return GROUP_ORDER.map((id) => ({
     id,
     label: GROUP_LABELS[id],
@@ -300,9 +357,11 @@ export function jobRow(job: Job, now = Date.now()): JobRow {
   // Standing alone on the right: today's time without "today".
   const when =
     job.group === "scheduled" ? line(nextWords(job, now).replace(/^(retries )?today /, "$1")) : job.state === "running" ? "now" : formatRelative(job.at, now);
-  const meta = job.group === "needs" ? job.reason : job.group === "scheduled" && rule ? rule : job.site;
+  // A need that was left (dismissed, or it waited too long) still says what it was.
+  const left = isLeftNeed(job);
+  const meta = job.group === "needs" ? job.reason : left ? line(job.state === "lapsed" && STATE_LABELS.lapsed, job.reason) || job.site : job.group === "scheduled" && rule ? rule : job.site;
   const next = job.group !== "scheduled" ? when : nextWords(job, now) === "due now" ? "due now" : job.state === "retry" ? nextWords(job, now) : `next ${nextWords(job, now)}`;
-  const label = [job.title, STATE_LABELS[job.state], job.group === "scheduled" ? [rule, next].filter(Boolean).join(", ") : when, job.group === "needs" ? job.reason : job.site]
+  const label = [job.title, STATE_LABELS[job.state], job.group === "scheduled" ? [rule, next].filter(Boolean).join(", ") : when, job.group === "needs" || left ? job.reason : job.site]
     .filter(Boolean)
     .join(", ");
   return { title: job.title, when, meta, label };
@@ -322,6 +381,9 @@ export function jobSubtitle(job: Job, now = Date.now()): string {
     case "running":
       return line(STATE_LABELS.running, rule);
     default:
-      return line(STATE_LABELS[job.state], formatRelative(job.at, now), rule);
+      return line(STATE_LABELS[job.state], isLeftNeed(job) && job.reason, formatRelative(job.at, now), rule);
   }
 }
+
+/** A need the user dismissed, or one that waited too long for them. */
+const isLeftNeed = (job: Job): boolean => job.state === "dismissed" || job.state === "lapsed";

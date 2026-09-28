@@ -1,5 +1,5 @@
 /**
- * Pure logic for the options page: its tabs, what each brain option shows
+ * Pure logic for the options page: its sections, what each brain option shows
  * and allows, which fields are visible, and inline validation. The page
  * (options.ts) only renders what these functions return.
  */
@@ -21,9 +21,9 @@ import { builtInJev, HOSTED_LABEL, resolveBrain } from "../engine/brain-resolver
 import { brainLabel, modelLabel } from "../ui/labels.js";
 import type { AccountView, BrainStatus } from "../ui-protocol.js";
 
-// ---------------------------------------------------------------- tabs
+// ---------------------------------------------------------------- sections (the sidebar)
 
-export const TABS = [
+export const SECTIONS = [
   { id: "account", label: "Account" },
   { id: "keys", label: "API keys" },
   { id: "ai", label: "AI" },
@@ -33,13 +33,13 @@ export const TABS = [
   { id: "memory", label: "Memory" },
   { id: "advanced", label: "Advanced" },
 ] as const;
-export type TabId = (typeof TABS)[number]["id"];
+export type SectionId = (typeof SECTIONS)[number]["id"];
 
 /**
- * Other names a link may use for a tab (options.html#jev opens AI, at its Jev section). "speed" was Jev's own tab;
+ * Other names a link may use for a section (options.html#jev opens AI, at its Jev group). "speed" was Jev's own tab;
  * automation (with approvals) was on AI and the schedule on Tasks before they moved to Permission.
  */
-const TAB_ALIASES: Record<string, TabId> = {
+const SECTION_ALIASES: Record<string, SectionId> = {
   brain: "ai",
   model: "ai",
   helper: "ai",
@@ -59,30 +59,32 @@ const TAB_ALIASES: Record<string, TabId> = {
   "self-hosting": "advanced",
 };
 
-/** "#ai" / "ai" / "#jev" -> the tab; null for anything unknown. */
-export function tabFromHash(hash: string | null | undefined): TabId | null {
-  const id = (hash ?? "").replace(/^#/, "").trim().toLowerCase();
+const hashName = (hash: string | null | undefined) => (hash ?? "").replace(/^#/, "").trim().toLowerCase();
+
+/** "#ai" / "ai" / "#jev" -> the section; null for anything unknown. */
+export function sectionFromHash(hash: string | null | undefined): SectionId | null {
+  const id = hashName(hash);
   if (!id) return null;
-  if (TABS.some((t) => t.id === id)) return id as TabId;
-  return TAB_ALIASES[id] ?? null;
+  if (SECTIONS.some((s) => s.id === id)) return id as SectionId;
+  return SECTION_ALIASES[id] ?? null;
 }
 
-/** Links that name a section inside a tab -> that section's element id. */
-const SECTIONS: Record<string, string> = { jev: "jev-group", speed: "jev-group", voice: "voice-group", schedule: "schedule-group" };
+/** Links that name a group inside a section -> that group's element id. */
+const ANCHORS: Record<string, string> = { jev: "jev-group", speed: "jev-group", voice: "voice-group", schedule: "schedule-group" };
 
-/** "#jev" -> "jev-group": the section to scroll to once its tab shows; null for a tab's own link. */
-export function sectionFromHash(hash: string | null | undefined): string | null {
-  return SECTIONS[(hash ?? "").replace(/^#/, "").trim().toLowerCase()] ?? null;
+/** "#jev" -> "jev-group": the group to scroll to once its section shows; null for a section's own link. */
+export function anchorFromHash(hash: string | null | undefined): string | null {
+  return ANCHORS[hashName(hash)] ?? null;
 }
 
-/** The tab an arrow key moves to (wraps around); Home / End go to the ends. */
-export function nextTab(current: TabId, key: string): TabId | null {
-  const i = TABS.findIndex((t) => t.id === current);
-  const n = TABS.length;
-  if (key === "ArrowRight" || key === "ArrowDown") return TABS[(i + 1) % n]!.id;
-  if (key === "ArrowLeft" || key === "ArrowUp") return TABS[(i - 1 + n) % n]!.id;
-  if (key === "Home") return TABS[0].id;
-  if (key === "End") return TABS[n - 1]!.id;
+/** The section an arrow key moves to (wraps around); Home / End go to the ends. */
+export function nextSection(current: SectionId, key: string): SectionId | null {
+  const i = SECTIONS.findIndex((s) => s.id === current);
+  const n = SECTIONS.length;
+  if (key === "ArrowRight" || key === "ArrowDown") return SECTIONS[(i + 1) % n]!.id;
+  if (key === "ArrowLeft" || key === "ArrowUp") return SECTIONS[(i - 1 + n) % n]!.id;
+  if (key === "Home") return SECTIONS[0].id;
+  if (key === "End") return SECTIONS[n - 1]!.id;
   return null;
 }
 

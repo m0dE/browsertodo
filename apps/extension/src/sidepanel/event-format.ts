@@ -266,8 +266,8 @@ const ORIGIN_OF: Partial<Record<TaskSource, string>> = { local: "Scheduled run",
 /** The status line a first turn with files starts with (see run/turn.ts). */
 const PREPARING_FILES = /^Preparing (\d+) file\(s\)$/;
 
-/** The prompt as typed, or the task's instructions (only its one-line title for runs that did not save them). */
-const firstMessage = (s: SessionInfo): string => (s.source === "adhoc" && s.instructions?.trim()) || s.title;
+/** The prompt as typed, or the task's instructions (only its title for runs that did not save them: older ones). */
+const firstMessage = (s: SessionInfo): string => s.instructions?.trim() || s.title;
 
 /** The first message of a conversation, from its session and its events (the first turn's files). */
 export function openingTurn(s: SessionInfo, events: readonly AgentEvent[], now = Date.now()): OpeningView {

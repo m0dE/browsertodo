@@ -3,16 +3,17 @@
  * Send, the orb in the middle of the panel, voice's notices, and the
  * microphone permission.
  *
- * - The mic button and the voice shortcut do the same: start a hands-free
- *   session (hands-free.ts) with the engine picked in Settings, or end the one
- *   that is on, wherever it listens. The session shows itself on the button
- *   (filled in the live colour, a ring following the voice; its tooltip says
- *   it ends voice), the orb, and the box (a glow and "Listening… just talk"
- *   while it listens for this tab; muted, no glow and a placeholder that says
- *   so); the status strip at the top is hands-free.ts's.
- * - While a session runs here: Mute (a toggle, Alt+M) left of the mic, and
- *   Interrupt while a line is said (Esc does the same). The task's own Stop
- *   is the composer's (a square), apart from these.
+ * - The Voice button (a small mic and the word) and the voice shortcut do the
+ *   same: start a hands-free session (hands-free.ts) with the engine picked in
+ *   Settings, or end the one that is on, wherever it listens. The session
+ *   shows itself on the button (still "Voice", pressed: filled in the live
+ *   colour, a ring following the voice; its tooltip says it ends voice mode),
+ *   the orb, and the box (a glow and "Listening… just talk" while it listens
+ *   for this tab; muted, no glow and a placeholder that says so); the status
+ *   strip at the top is hands-free.ts's.
+ * - While a session runs here: Mute / Unmute (words, a toggle, Alt+M) left of
+ *   Voice, and Interrupt while a line is said (Esc does the same). The task's
+ *   own Stop is the composer's (a square), apart from these. One mic icon only.
  * - Plans without voice (and signed out) see a lock that explains, with a
  *   way to pick a plan. The microphone is asked for on mic-permission.html,
  *   since a side panel cannot show Chrome's prompt.
@@ -25,7 +26,7 @@ import { FIXES } from "./error-help.js";
 import type { NoticeLevel } from "./notice-queue.js";
 import type { NoticeAction } from "./notices.js";
 import { h, restartAnimation } from "../ui/dom.js";
-import { INTERRUPT_LABEL } from "../voice/voice-bar-view.js";
+import { INTERRUPT_LABEL, MUTE_KEY } from "../voice/voice-bar-view.js";
 
 /** What the mic button shows ("handsfree": a hands-free session is on). */
 export type VoiceUiState = "locked" | "idle" | "handsfree";
@@ -33,10 +34,10 @@ export type VoiceUiState = "locked" | "idle" | "handsfree";
 /** From the plan catalog, e.g. "Voice needs the Plus or Pro plan". */
 export const LOCKED_TEXT = `Voice needs ${plansWithText("voice")}`;
 
-/** The mic button's tooltip and accessible name: it starts voice, or (on) ends it. */
+/** The Voice button's tooltip and accessible name: it starts voice mode, or (on) ends it. */
 export function micButtonTitle(state: VoiceUiState, shortcut: string | null): string {
   if (state === "locked") return LOCKED_TEXT;
-  const base = state === "handsfree" ? "End voice" : "Voice";
+  const base = state === "handsfree" ? "End voice mode" : "Voice mode";
   return shortcut ? `${base} · ${shortcut}` : base;
 }
 
@@ -127,15 +128,12 @@ export interface VoiceInput {
 
 const svg = (size: number, body: string) =>
   `<svg viewBox="0 0 16 16" width="${size}" height="${size}" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
-const MIC_OFF_PATHS =
-  '<path d="M10.25 6.5V4a2.25 2.25 0 0 0-4.4-.66M5.75 5.75v1.75a2.25 2.25 0 0 0 3.6 1.8M3.25 7.75a4.75 4.75 0 0 0 7.6 3.8M12.6 9.2c.1-.47.15-.95.15-1.45M8 12.5v1.75M2.25 2.25l11.5 11.5"/>';
-/** Mute: the crossed-out mic, filled grey while pressed (muted); never a second plain mic next to the voice mic. */
-const MUTE_ICON = svg(15, MIC_OFF_PATHS);
 /** Interrupt: the speaker with its sound cut. */
 const INTERRUPT_ICON = svg(15, '<path d="M2.5 6.25h2.25L8 3.5v9l-3.25-2.75H2.5z"/><path d="m10.75 6 3.5 4M14.25 6l-3.5 4"/>');
 
+/** The Voice button: a small mic before the word (a lock over it while the plan has no voice). */
 const MIC_ICON =
-  '<svg class="mic" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.75" y="1.75" width="4.5" height="8" rx="2.25"/><path d="M3.25 7.75a4.75 4.75 0 0 0 9.5 0M8 12.5v1.75"/></svg>' +
+  '<svg class="mic" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.75" y="1.75" width="4.5" height="8" rx="2.25"/><path d="M3.25 7.75a4.75 4.75 0 0 0 9.5 0M8 12.5v1.75"/></svg>' +
   '<svg class="lock" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="currentColor"><path d="M5 7V5.5a3 3 0 0 1 6 0V7h.5A1.5 1.5 0 0 1 13 8.5v4a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 12.5v-4A1.5 1.5 0 0 1 4.5 7H5Zm1.5 0h3V5.5a1.5 1.5 0 0 0-3 0V7Z"/></svg>';
 
 export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
@@ -146,12 +144,13 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
   let handsFree: HandsFreeControl | null = null;
   let look: HandsFreeLook | null = null;
 
-  const button = h("button.now-tool.voice-mic", { type: "button" });
+  const button = h("button.voice-mic", { type: "button" });
   button.innerHTML = MIC_ICON;
-  // While a session runs here: Interrupt (a line is being said) and Mute, left of the mic.
+  button.append(h("span.voice-word", null, "Voice"));
+  // While a session runs here: Interrupt (a line is being said) and Mute, left of Voice.
   const interrupt = h("button.now-tool.voice-interrupt", { type: "button", hidden: true, title: INTERRUPT_LABEL, "aria-label": INTERRUPT_LABEL });
   interrupt.innerHTML = INTERRUPT_ICON;
-  const mute = h("button.now-tool.voice-mute", { type: "button", hidden: true, "aria-pressed": "false" });
+  const mute = h("button.voice-mute", { type: "button", hidden: true, "aria-pressed": "false", "aria-keyshortcuts": MUTE_KEY.label });
   composer.actionSlot.append(interrupt, mute, button);
 
   const caption = h("p.voice-caption");
@@ -194,7 +193,7 @@ export function initVoiceInput(deps: VoiceInputDeps): VoiceInput {
       mute.setAttribute("aria-pressed", String(m.pressed));
       mute.title = m.label;
       mute.setAttribute("aria-label", m.label);
-      if (!mute.firstChild) mute.innerHTML = MUTE_ICON;
+      mute.textContent = m.pressed ? "Unmute" : "Mute";
     }
     interrupt.hidden = !look?.interrupt;
     orb.hidden = !look?.orb;

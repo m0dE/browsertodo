@@ -78,7 +78,9 @@
 
       <!-- A job's page (job-page.ts): its conversation, live (chat.ts), and its earlier runs above it. -->
       <section id="view-job" class="view job-view" aria-labelledby="job-title" hidden>
-        <p id="job-elsewhere" class="job-elsewhere" role="status" hidden></p>
+        <!-- The agent's tab while the user is not on it (job-page.ts): its title and site, and View to watch it there. -->
+        <div id="job-agent-tab" class="job-agent-tab" role="group" aria-label="The agent's tab" hidden></div>
+        <p id="job-agent-tab-said" class="sr-only" role="status"></p>
         <div id="chat-log" class="log scroll" aria-live="polite"></div>
         <!-- Raw: the conversation with its timings (raw-view.ts), in place of the log while open. -->
         <div id="chat-raw" class="raw" role="region" aria-label="Raw conversation with timings" hidden></div>

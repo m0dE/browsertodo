@@ -50,7 +50,7 @@ function setup() {
     forward: (t) => void log.push(`forward:${t}`),
     userWords: (w) => void log.push(`words:${w.join(" | ")}`),
     stopTask: async () => (log.push("stopTask"), "Stopped the task."),
-    answerApproval: async (allow: boolean) => (log.push(`answerApproval:${allow}`), "Allowed: the agent goes on."),
+    answerApproval: async (allow: boolean) => (log.push(`answerApproval:${allow}`), "Allowed: the task goes on."),
     endVoice: () => void log.push("end"),
     useThisTab: async () => (log.push("useThisTab"), "Moved: you now work in Recipes (example.com)."),
     failed: (f) => void log.push(`failed:${(f as { kind: string }).kind}`),
@@ -116,7 +116,7 @@ describe("RealtimeEngine", () => {
     t.socket.event({ type: "response.function_call_arguments.done", call_id: "c1", name: "send_to_agent", arguments: JSON.stringify({ text: "Post gm on X" }) });
     await settle();
     expect(t.log).toContain("forward:Post gm on X");
-    expect(t.socket.sent.find((e) => e.type === "conversation.item.create" && e.item.type === "function_call_output")!.item.output).toBe("Sent to the agent. Its updates will follow.");
+    expect(t.socket.sent.find((e) => e.type === "conversation.item.create" && e.item.type === "function_call_output")!.item.output).toBe("Started. Your updates on it will follow.");
   });
 
   it("stop_task and end_voice reach the panel", async () => {

@@ -166,8 +166,12 @@ export function repeatsRequest(text: string, inputId: string | null, last: Forwa
   return sharedWordShare(text, last.text) >= REPEATED_REQUEST_OVERLAP_MIN;
 }
 
-/** How the narrator's updates begin (realtime-feed.ts) and how it words passing one on ("Tell the user the result: ..."). */
-const UPDATE_WORDING = /^\s*(?:agent update|tell the user)\b/i;
+/**
+ * How the narrator's updates begin (realtime-feed.ts: "Your update (...)", formerly "Agent update") and how it words
+ * passing one on ("Tell the user the result: ..."). The heading needs its "(" or ":" so a user's "your update was
+ * wrong" is still theirs.
+ */
+const UPDATE_WORDING = /^\s*(?:(?:your|agent) update\s*[(:]|tell the user\b)/i;
 /** A request with at least this share of its words in an update the narrator was given passes that update on. */
 export const UPDATE_ECHO_MIN = 0.8;
 /** ...unless at least this share of its words are the user's own words of the turn. */

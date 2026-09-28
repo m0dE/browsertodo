@@ -246,6 +246,7 @@ describe("spoken line (task_* spoken)", () => {
     const schema = z.toJSONSchema(ToolArgs.task_pause, { io: "input" }) as { properties: Record<string, { maxLength?: number; description?: string }>; required: string[] };
     expect(schema.properties.spoken!.maxLength).toBe(MAX_SPOKEN_CHARS);
     expect(schema.properties.spoken!.description).toMatch(/read aloud/);
+    expect(schema.properties.spoken!.description).toContain('in the first person as BrowserTODO ("I…"), never "the agent"');
     expect(schema.required).toEqual(["reason"]);
   });
 });

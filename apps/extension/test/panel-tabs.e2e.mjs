@@ -67,6 +67,7 @@ try {
             draft: d.getElementById("now-text").value,
             chat: d.getElementById("chat-log").textContent,
             mark: v.__mark ?? null,
+            agentTab: d.querySelector("#job-agent-tab:not([hidden]) .job-tab-name")?.textContent ?? null,
           };
         }),
     );
@@ -262,28 +263,30 @@ try {
     const active = await sw.evaluate(async (w) => (await chrome.tabs.query({ active: true, windowId: w }))[0].id, windowId);
     assert.equal(active, tabC, "the user stays on the tab with the panel");
     assert.equal((await panelOf(tabC)).visible, true);
+    // The panel names the tab the chat went on in, to watch it there (the user is not on it).
+    const row = await waitFor(async () => (await panelOf(tabC))?.agentTab, "the agent's tab row in the chrome:// tab's panel");
     // A second message from that panel goes to the same chat, in the same agent tab (no new tab each time).
     await inPanel(tabC, "send", "Again");
     await waitFor(async () => ((await panelOf(tabC))?.chat.match(new RegExp(REPLY, "g")) ?? []).length >= 2, "the second reply in the panel");
     const tabsAfter = await sw.evaluate(async () => (await chrome.tabs.query({})).length);
     assert.equal(tabsAfter, tabsBefore + 1, "one agent tab");
-    return `chat in tab ${moved}; the panel of tab ${tabC} shows both replies; the user stayed on ${tabC}`;
+    return `chat in tab ${moved}; the panel of tab ${tabC} shows both replies and the agent's tab ("${row}"); the user stayed on ${tabC}`;
   });
 
-  await step("another tab's running job, opened in B's panel: Show tab shows that tab, with its own panel open on that job", async () => {
+  await step("another tab's running job, opened in B's panel: the row under its header names the agent's tab, and View brings that tab to the front, with its own panel open on that job", async () => {
     const fake = await installFakeBrain(sw, { gated: true, makeAct: (reply) => async () => reply, arg: REPLY });
     const ui = routerUi(sw);
     const { sessionId } = await ui({ type: "run.adhoc", instructions: "Wait in A", tabId: tabA });
     await fake.started("Wait in A");
     await activate(pageB, tabB);
     await panelShows(tabB, "B's panel to show");
-    // B's list has A's running job: opened, its page says it runs in another tab, with Show tab.
+    // B's list has A's running job: opened, its page shows the agent's tab (A's page title), with View.
     await waitFor(() => host.evaluate(([id, key]) => {
       const v = chrome.extension.getViews().find((x) => x.location.search === `?tab=${id}`);
       const row = v?.document.querySelector(`.job-row[data-key="${key}"]`);
       row?.click();
-      return !!v?.document.querySelector("#job-elsewhere:not([hidden]) button");
-    }, [tabB, `chat:${sessionId}`]), "A's running job in B's panel, with Show tab");
+      return v?.document.querySelector("#job-agent-tab:not([hidden]) .job-tab-name")?.textContent === "Web page";
+    }, [tabB, `chat:${sessionId}`]), "A's running job in B's panel, with the agent's tab and View");
     // The user's click in the real side panel: a trusted gesture there (sidePanel.open needs one).
     const port = Number(readFileSync(join(ext.profile, "DevToolsActivePort"), "utf8").split("\n")[0]);
     const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -291,7 +294,7 @@ try {
     const ws = new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => ((ws.onopen = resolve), (ws.onerror = reject)));
     const answered = new Promise((resolve) => (ws.onmessage = (m) => resolve(JSON.parse(m.data))));
-    ws.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: `document.querySelector("#job-elsewhere button").click()`, userGesture: true } }));
+    ws.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: `document.querySelector("#job-agent-tab button").click()`, userGesture: true } }));
     await answered;
     ws.close();
     const p = await panelShows(tabA, "A's own panel to open and show");

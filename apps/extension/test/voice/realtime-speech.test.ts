@@ -52,7 +52,7 @@ function client(languages = ["en"]) {
   const heard: string[][] = [];
   const traces: string[] = [];
   const handlers: RealtimeHandlers = {
-    onTool: (name, args, inputId, words) => (tools.push([name, args, inputId, words]), "Sent to the agent. Its updates will follow."),
+    onTool: (name, args, inputId, words) => (tools.push([name, args, inputId, words]), "Started. Your updates on it will follow."),
     onAudio: (b64) => void audio.push(b64),
     onHeard: (w) => void heard.push(w),
     onTrace: (e) => void traces.push(e.name),
@@ -164,7 +164,7 @@ describe("other people talking nearby in another language", () => {
 
 describe("the narrator passing on its own update (the owner's trace, turn 5)", () => {
   const RESULT =
-    'Agent update (finished): The task is done. Tell the user in one to three short sentences: "Done. Mecha Royale, Rooftop, Bounty and ARRR will each post three times a day."';
+    'Your update (finished): The task is done. Tell the user in one to three short sentences, in the first person: "Done. Mecha Royale, Rooftop, Bounty and ARRR will each post three times a day."';
   const ECHO = "Tell the user the result: Done. Mecha Royale, Rooftop, Bounty and ARRR will each post three times a day.";
 
   it("on a turn of background speech: refused, the narrator told it was an update, nothing acknowledged", async () => {
@@ -196,7 +196,7 @@ describe("the narrator passing on its own update (the owner's trace, turn 5)", (
 
   it("the user's answer made of the update's words is theirs ('post it' to 'Should I post it?')", async () => {
     const t = client();
-    t.c.note('Agent update (needs the user): The agent asks: "Should I post it?" Ask the user, and pass their answer on with send_to_agent.', "question");
+    t.c.note('Your update (you need the user): Your question: "Should I post it?" Ask the user, and give their answer to send_to_agent.', "question");
     t.turn("in1");
     t.words("in1", "yes, post it");
     t.calls("in1", "Yes, post it");
@@ -207,6 +207,9 @@ describe("the narrator passing on its own update (the owner's trace, turn 5)", (
   it("echoesUpdate: the feed's wording, or mostly an update's words and not the user's", () => {
     expect(echoesUpdate(ECHO, [], null)).toBe(true);
     expect(echoesUpdate("Agent update: done", [], "anything")).toBe(true);
+    expect(echoesUpdate("Your update (finished): done", [], "anything")).toBe(true);
+    // The user's own words that begin like it are theirs.
+    expect(echoesUpdate("your update was wrong, post it again", [], "your update was wrong, post it again")).toBe(false);
     expect(echoesUpdate("Mecha Royale, Rooftop, Bounty and ARRR will each post three times a day", [RESULT], null)).toBe(true);
     expect(echoesUpdate("Mecha Royale, Rooftop, Bounty and ARRR will each post three times a day", [RESULT], "make Mecha Royale Rooftop Bounty and ARRR each post three times a day")).toBe(false);
     expect(echoesUpdate("Post gm on X", [RESULT], null)).toBe(false);

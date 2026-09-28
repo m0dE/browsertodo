@@ -13,7 +13,7 @@ export const LIST_CASES = [
       const want = [
         ["Needs you", ["task:t5", "chat:s-r3"]],
         ["Running", ["chat:s-r1", "task:t2"]],
-        ["Scheduled", ["task:t3", "task:t4", "task:t1"]],
+        ["Upcoming", ["task:t3", "task:t4", "task:t1"]],
       ];
       if (JSON.stringify(g.slice(0, 3)) !== JSON.stringify(want)) fail(`titles: groups ${JSON.stringify(g)}`);
       const recent = g.find(([name]) => name === "Recent")?.[1] ?? [];
@@ -53,12 +53,12 @@ export const LIST_CASES = [
       if (sent.sessionId !== "s-r2") fail(`titles: the message went to ${sent.sessionId ?? "a new job"}`);
       await backToList(p);
 
-      // The running chat of tab 2: its page says so, Show tab goes there, nothing is bound here.
+      // The running chat of tab 2: its page offers its tab (View goes there), nothing is bound here.
       await openJob(p, "chat:s-r1");
-      await p.waitForSelector("#job-elsewhere:not([hidden])");
-      await p.click("#job-elsewhere button");
+      await p.waitForSelector("#job-agent-tab:not([hidden])");
+      await p.click("#job-agent-tab button");
       await p.waitForFunction(() => window.__requests.some((r) => r.type === "tab.focus"));
-      if ((await p.evaluate(() => window.__requests.find((r) => r.type === "tab.focus").tabId)) !== 2) fail("titles: Show tab did not go to tab 2");
+      if ((await p.evaluate(() => window.__requests.find((r) => r.type === "tab.focus").tabId)) !== 2) fail("titles: View did not go to tab 2");
       if (await p.evaluate(() => window.__requests.some((r) => r.type === "chat.bind" && r.sessionId === "s-r1"))) fail("titles: a chat running in tab 2 was bound here");
       reportErrors(p, `titles ${label}`);
       await p.close();
@@ -107,7 +107,7 @@ export const LIST_CASES = [
     async run({ ctx, size, scheme, label, fail, groups, expectMenu, pick, openPanel, openJob, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "series");
       const g = await groups(p);
-      if (JSON.stringify(g) !== JSON.stringify([["Scheduled", ["task:tip1"]], ["Recent", ["task:t9"]]])) fail(`series: list ${JSON.stringify(g)}`);
+      if (JSON.stringify(g) !== JSON.stringify([["Upcoming", ["task:tip1"]], ["Recent", ["task:t9"]]])) fail(`series: list ${JSON.stringify(g)}`);
       const meta = await p.textContent('.job-row[data-key="task:tip1"] .job-meta');
       if (meta !== "Daily at 9:00 AM") fail(`series: row meta "${meta}"`);
       await openJob(p, "task:tip1");
@@ -147,6 +147,71 @@ export const LIST_CASES = [
       const gone = await p.evaluate(() => ({ tasks: window.__requests.filter((r) => r.type === "tasks.delete").map((r) => r.id), runs: window.__requests.filter((r) => r.type === "session.delete").map((r) => r.sessionId) }));
       if (gone.tasks.sort().join() !== "tip1,tip2,tip3" || gone.runs.sort().join() !== "r-tip1,r-tip2,r-tip3") fail(`series: deleted ${JSON.stringify(gone)}`);
       reportErrors(p, `series ${label}`);
+      await p.close();
+    },
+  },
+  // Dismissing jobs (job-dismiss.ts): Dismiss all on Needs you, Undo; ✕ on a row (on hover) moves a need to Recent
+  // as Dismissed with Undo above the box; Delete on a focused row does the same and the focus goes on; nothing is kept
+  // until Undo's time is over or the panel goes away (then jobs.dismiss); a Recent row dismissed leaves the list, and
+  // a search still finds it.
+  {
+    names: ["panel-list-dismiss-hover", "panel-list-dismiss-undo"],
+    async run({ ctx, size, scheme, label, fail, groups, openPanel, shoot, checkLayout, reportErrors }) {
+      const p = await openPanel(ctx, "recent");
+      const needs = async () => (await groups(p)).find(([g]) => g === "Needs you")?.[1] ?? [];
+      const recent = async () => (await groups(p)).find(([g]) => g === "Recent")?.[1] ?? [];
+      const sent = () => p.evaluate(() => window.__requests.filter((r) => r.type === "jobs.dismiss").map((r) => r.dismissals));
+      if ((await needs()).join() !== "task:t5,chat:s-r3") fail(`dismiss: Needs you ${JSON.stringify(await needs())}`);
+
+      // Dismiss all, then Undo: both back, nothing kept.
+      await p.click("#job-groups .group-action");
+      if ((await needs()).length) fail("dismiss: Dismiss all left rows under Needs you");
+      await p.waitForSelector('#now-notice:not([hidden]) >> text=Dismissed 2 jobs');
+      await p.click('#now-notice button:has-text("Undo")');
+      await p.waitForFunction(() => document.querySelectorAll('section[aria-labelledby="group-needs"] .job-row').length === 2);
+
+      // ✕ on hover.
+      await p.hover('.job-row[data-key="chat:s-r3"]');
+      const x = await p.evaluate(() => {
+        const b = document.querySelector('button.job-dismiss[data-key="chat:s-r3"]');
+        return { opacity: getComputedStyle(b).opacity, label: b.getAttribute("aria-label"), key: document.querySelector('.job-row[data-key="chat:s-r3"]').getAttribute("aria-keyshortcuts") };
+      });
+      if (x.opacity !== "1" || x.label !== "Dismiss Find cheap flights to Lisbon" || x.key !== "Delete") fail(`dismiss: the row's ✕ ${JSON.stringify(x)}`);
+      if (await p.evaluate(() => getComputedStyle(document.querySelector('button.job-dismiss[data-key="task:t5"]')).opacity) !== "0") fail("dismiss: ✕ shows on a row not hovered");
+      if (await p.$('button.job-dismiss[data-key="task:t3"]')) fail("dismiss: an upcoming job has ✕");
+      await checkLayout(p, `dismiss-hover ${label}`);
+      await shoot(p, "panel-list-dismiss-hover", size, scheme);
+      await p.click('button.job-dismiss[data-key="chat:s-r3"]');
+      const moved = await p.evaluate(() => {
+        const r = document.querySelector('.job-row[data-key="chat:s-r3"]');
+        return { group: r.closest(".job-group").querySelector(".group-head").firstChild.textContent, state: r.dataset.state, meta: r.querySelector(".job-meta")?.textContent, notice: document.querySelector("#now-notice .notice-text")?.textContent };
+      });
+      if (JSON.stringify(moved) !== JSON.stringify({ group: "Recent", state: "dismissed", meta: "Needs you to pick dates", notice: "Dismissed “Find cheap flights to Lisbon”" })) fail(`dismiss: ✕ ${JSON.stringify(moved)}`);
+      if ((await sent()).length) fail("dismiss: kept before Undo's time was over");
+      await p.mouse.move(0, 0);
+      await checkLayout(p, `dismiss-undo ${label}`);
+      await shoot(p, "panel-list-dismiss-undo", size, scheme);
+
+      // Delete on the focused row: the one before is kept now, the focus goes to the next row.
+      await p.focus('.job-row[data-key="task:t5"]');
+      await p.keyboard.press("Delete");
+      const after = await p.evaluate(() => ({ focus: document.activeElement?.dataset?.key ?? null, needs: document.querySelector('section[aria-labelledby="group-needs"]') !== null }));
+      if (after.needs || after.focus !== "chat:s-r1") fail(`dismiss: after Delete ${JSON.stringify(after)}`);
+      const first = await sent();
+      if (first.length !== 1 || !first[0]["chat:s-r3"]?.needs?.startsWith("run:s-r3:")) fail(`dismiss: kept ${JSON.stringify(first)}`);
+      // The panel going away keeps what waits.
+      await p.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+      await p.waitForFunction(() => window.__requests.filter((r) => r.type === "jobs.dismiss").length === 2);
+      const second = (await sent())[1];
+      if (!second["task:t5"]?.needs?.startsWith("task:t5:")) fail(`dismiss: Delete kept ${JSON.stringify(second)}`);
+
+      // A Recent job dismissed leaves the list; a search finds it.
+      await p.focus('.job-row[data-key="chat:s-r2"]');
+      await p.keyboard.press("Backspace");
+      if ((await recent()).includes("chat:s-r2")) fail("dismiss: a Recent job put away is still listed");
+      await p.fill("#job-search", "chrome web store");
+      await p.waitForFunction(() => !!document.querySelector('.job-row[data-key="chat:s-r2"]'));
+      reportErrors(p, `dismiss ${label}`);
       await p.close();
     },
   },

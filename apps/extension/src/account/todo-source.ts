@@ -1,5 +1,5 @@
 /**
- * Where the TODO tab's tasks live: the signed-in account (the API), or this
+ * Where the TODO list's tasks live: the signed-in account (the API), or this
  * browser (the local store, used when signed out). Both answer with the
  * same row shape, so the tab's UI does not change.
  *
@@ -129,7 +129,7 @@ export class AccountTodo implements TodoSource {
 }
 
 /**
- * This browser's tasks (signed out). The TODO tab does not show them (signed
+ * This browser's tasks (signed out). The TODO tools do not use them (signed
  * out it is one Log in button, so none can be added there): they are the
  * engine's local queue, tasks kept from before the list moved into the
  * account. They run here and use no cloud storage; moving them into the

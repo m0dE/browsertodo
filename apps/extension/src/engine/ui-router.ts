@@ -2,7 +2,7 @@
  * Background side of ui-protocol.ts: answers every UiRequest. The pushes to
  * the side panel are in ui-hub.ts.
  */
-import { ApprovalAnswer, type ApprovalAnsweredBy, cleanUserTitle, errorMessage, isChatSession, IssuableKeyRole, MAX_TRACE_TEXT, redactSettings, secretProblem, type ExtensionSettings, type HelperInfo, type HelperMethods, type LocalTask, type TraceCategory, type TraceEvent, type TraceValue } from "@browsertodo/shared";
+import { ApprovalAnswer, type ApprovalAnsweredBy, cleanUserTitle, errorMessage, IssuableKeyRole, MAX_TRACE_TEXT, redactSettings, secretProblem, type ExtensionSettings, type HelperInfo, type HelperMethods, type LocalTask, type TraceCategory, type TraceEvent, type TraceValue } from "@browsertodo/shared";
 import type { AccountService } from "../account/account.js";
 import { LocalTodo, type TodoSource } from "../account/todo-source.js";
 import { HELPER_CALL_TIMEOUT_MS } from "../helper-link.js";
@@ -15,7 +15,7 @@ import { todoAllowed } from "../account/types.js";
 import { incomingAttachments } from "./attachment-store.js";
 import type { AdhocInput } from "./run/jobs.js";
 import type { Runner } from "./runner.js";
-import { MAX_SESSIONS, type SessionStore } from "./sessions.js";
+import type { SessionStore } from "./sessions.js";
 import type { ChatTitler } from "./chat-titles.js";
 import type { TestResult } from "./settings-tests.js";
 import { WrongPassphraseError, type Vault } from "../vault.js";
@@ -63,7 +63,7 @@ export interface UiRouterDeps {
   vault: RouterVault;
   /** The browsertodo account. Absent: no account features (always signed out). */
   account?: RouterAccount;
-  /** The TODO tab's tasks: the account's when signed in, else the local store. */
+  /** The TODO list's tasks: the account's when signed in, else the local store. */
   todo?(): Promise<TodoSource>;
   /** Which conversation belongs to which browser tab. Absent: chats are not per tab. */
   tabChats?: {
@@ -78,7 +78,7 @@ export interface UiRouterDeps {
   /** Where conversations run (extension, browser, OS, helper), for the Raw view's export. */
   traceEnv?(): Promise<TraceEnv>;
   /** Approval requests waiting for the user (approval/broker.ts). Absent: nothing waits, and answers are refused. */
-  approvals?: { answer(sessionId: string, id: string, answer: ApprovalAnswer, by?: ApprovalAnsweredBy): boolean };
+  approvals?: { answer(sessionId: string, id: string, answer: ApprovalAnswer, by?: ApprovalAnsweredBy): boolean; waitingSessions(): string[] };
   /**
    * The user's OK for a TODO task the agent changes or cancels (engine/schedule-task.ts), at the session's
    * automation level (AgentSlots.confirm); throws the refusal. Absent: nothing waits.
@@ -105,7 +105,7 @@ export type ExtraRequest = { type: "helper.getLog"; lines: number };
 
 export class UiRouter {
   /**
-   * The TODO tools: schedule, list, change and cancel tasks in the TODO tab's list (the account's, on a plan with
+   * The TODO tools: schedule, list, change and cancel tasks in the TODO list (the account's, on a plan with
    * the TODO list), and Undo on the chat's cards. The brains call it for their session (engine/schedule-task.ts).
    */
   readonly scheduler: TaskScheduler;
@@ -120,7 +120,7 @@ export class UiRouter {
     });
   }
 
-  /** Whether there is a TODO list to schedule into, as the TODO tab judges it: signed in, on a plan with it. */
+  /** Whether there is a TODO list to schedule into, as the jobs list judges it: signed in, on a plan with it. */
   private async todoAccess(): Promise<TodoAccess> {
     const view = await this.deps.account?.view();
     if (!view?.signedIn) return "signed-out";
@@ -149,6 +149,8 @@ export class UiRouter {
     if (account) state.account = account;
     if (d.tabChats) state.tabChats = await d.tabChats.all().catch(() => ({}));
     if (d.runningTabs) state.runningTabs = await d.runningTabs().catch(() => ({}));
+    const awaiting = d.approvals?.waitingSessions() ?? [];
+    if (awaiting.length) state.awaitingApproval = awaiting;
     const memoryQuestion = d.memoryQuestion ? await d.memoryQuestion().catch(() => null) : null;
     if (memoryQuestion) state.memoryQuestion = memoryQuestion;
     const memoryBackfill = d.memoryBackfill ? await d.memoryBackfill().catch(() => null) : null;
@@ -374,7 +376,7 @@ export class UiRouter {
         await this.account().revokeKey(String(msg.id ?? ""));
         return { ok: true } satisfies UiResults["account.keys.revoke"];
       case "sessions.list": {
-        const sessions = msg.chats ? (await d.sessions.list(MAX_SESSIONS)).filter(isChatSession).slice(0, msg.limit ?? 50) : await d.sessions.list(msg.limit ?? 50, msg.taskId);
+        const sessions = await d.sessions.list(msg.limit ?? 50, msg.taskId);
         d.titles?.shown(sessions);
         return { sessions } satisfies UiResults["sessions.list"];
       }
@@ -389,6 +391,15 @@ export class UiRouter {
         const renamed = await d.sessions.retitle(msg.sessionId, title, "user");
         if (!renamed) throw new Error(`No session ${msg.sessionId}`);
         return { session: renamed } satisfies UiResults["session.rename"];
+      }
+      case "session.delete": {
+        const sessionId = optId(msg.sessionId);
+        if (!sessionId) throw new Error("sessionId is required");
+        if (d.runner.runningSessions.some((s) => s.sessionId === sessionId)) throw new Error("It is running: stop it first");
+        // No tab keeps it, and its kept-open agent session and tabs close.
+        if (d.tabChats) for (const [tab, id] of Object.entries(await d.tabChats.all())) if (id === sessionId) await d.tabChats.unbind(Number(tab), sessionId);
+        await d.runner.newChat(sessionId);
+        return { ok: await d.sessions.delete(sessionId) } satisfies UiResults["session.delete"];
       }
       case "sessions.events": {
         const session = await d.sessions.get(msg.sessionId);

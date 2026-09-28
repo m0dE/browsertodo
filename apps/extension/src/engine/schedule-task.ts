@@ -6,18 +6,18 @@
  *   daily task at 9am");
  * - list_scheduled_tasks lists the waiting tasks (id, next run, schedule in words);
  * - update_scheduled_task changes one (instructions, time, repeat, account);
- * - cancel_scheduled_task cancels one (it moves to Finished, like the TODO tab's Cancel).
+ * - cancel_scheduled_task cancels one (it is over, like a job's Cancel).
  *
- * The tasks go where the TODO tab's tasks go (the signed-in account's list, a
+ * The tasks go where the TODO list's tasks go (the signed-in account's list, a
  * paid feature), and the tab shows each change at once (the TODO source's
  * change push). Every change is written to the conversation as a card with
- * View in TODO and Undo: task_scheduled (Undo deletes the task) and
+ * View and Undo: task_scheduled (Undo deletes the task) and
  * task_changed (Undo puts the task back as it was, or back in the queue).
  *
  * Approvals: creating a task never waits (the user asked for it, and Undo is
  * right there). Changing or cancelling a task this chat scheduled does not
  * wait either (the same holds). Changing or cancelling any other task (one
- * the user made in the TODO tab, or another chat made) waits for the user's
+ * the user made, or another chat made) waits for the user's
  * OK at every automation level but full autonomy (deps.approve, the session's
  * approval gate): it touches something the user set up on purpose.
  *
@@ -67,7 +67,7 @@ export type TodoApprovalAsk = Omit<ApprovalRequest, "id" | "expiresAt">;
 const PAST_GRACE_MS = 60_000;
 
 export interface TaskSchedulerDeps {
-  /** The TODO tab's tasks (the account's when signed in). */
+  /** The TODO list's tasks (the account's when signed in). */
   todo(): Promise<TodoSource>;
   access(): Promise<TodoAccess>;
   sessions: Pick<SessionStore, "note" | "eventsOf">;
@@ -316,9 +316,9 @@ export class TaskScheduler {
     const title = quote(titleOf(task.instructions));
     try {
       await this.deps.approve(sessionId, {
-        action: change === "cancelled" ? `Cancel the TODO task ${title}` : `Change the TODO task ${title}`,
+        action: change === "cancelled" ? `Cancel the scheduled job ${title}` : `Change the scheduled job ${title}`,
         site: "",
-        why: change === "cancelled" ? "cancels a task in your TODO list" : "changes a task in your TODO list",
+        why: change === "cancelled" ? "cancels one of your scheduled jobs" : "changes one of your scheduled jobs",
         ...(text ? { text } : {}),
       });
     } catch (err) {

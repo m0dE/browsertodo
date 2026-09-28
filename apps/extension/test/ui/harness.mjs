@@ -3,7 +3,7 @@
 // a `chrome` stub with canned data, and takes screenshots in light and dark mode.
 //
 // Usage: node apps/extension/test/ui/harness.mjs [--headed] [--only=<substring>]
-// --only matches the screenshot file name, e.g. --only=panel-todo-480-dark or --only=composer.
+// --only matches the screenshot file name, e.g. --only=panel-list-480-dark or --only=composer.
 // Exits non-zero on page errors or layout problems (composer not flush, overlap, clipping, wrapped bars).
 import { chromium } from "@playwright/test";
 import { dirname, join } from "node:path";
@@ -14,7 +14,7 @@ import { createChecks } from "./harness/checks.mjs";
 import { OPT_SIZES, OPTION_CASES, OPTION_FLOWS } from "./harness/options-cases.mjs";
 import { PANEL_CASES, panelHelpers, SIZES } from "./harness/panel-cases.mjs";
 import { TODO_CASES } from "./harness/todo-cases.mjs";
-import { RECENT_CASES } from "./harness/recent-cases.mjs";
+import { LIST_CASES } from "./harness/list-cases.mjs";
 import { ATTACHMENT_CASES } from "./harness/attachment-cases.mjs";
 import { MEMORY_PANEL_CASES, runMemoryOptions } from "./harness/memory-cases.mjs";
 import { renderThumbnail } from "./harness/scenarios.mjs";
@@ -44,7 +44,7 @@ for (const size of SIZES) {
     const ctx = await browser.newContext({ viewport: { width: size.w, height: size.h }, colorScheme: scheme, deviceScaleFactor: 1 });
     const label = `${size.w} ${scheme}`;
     const t = { ...h, ...panelHelpers(label, h.problem), ctx, size, scheme, label };
-    for (const c of [...PANEL_CASES, ...TODO_CASES, ...MEMORY_PANEL_CASES, ...RECENT_CASES, ...ATTACHMENT_CASES]) if (c.when ? c.when(t) : h.wantAny(c.names, size, scheme)) await c.run(t);
+    for (const c of [...PANEL_CASES, ...TODO_CASES, ...MEMORY_PANEL_CASES, ...LIST_CASES, ...ATTACHMENT_CASES]) if (c.when ? c.when(t) : h.wantAny(c.names, size, scheme)) await c.run(t);
     await ctx.close();
   }
 }

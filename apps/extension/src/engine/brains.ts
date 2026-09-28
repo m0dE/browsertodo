@@ -88,7 +88,7 @@ export interface Brain {
   continue?(opts: BrainContinueOptions): BrainRun;
   /** False when the conversation's agent session is known to be gone. */
   isOpen?(sessionId: string): boolean;
-  /** Closes a conversation's kept-open agent session (New chat). */
+  /** Closes a conversation's kept-open agent session (its chat is over: a new job in its tab, or Delete). */
   end?(sessionId: string): Promise<void>;
   /** Conversations whose agent session is open. */
   openSessions?(): string[];

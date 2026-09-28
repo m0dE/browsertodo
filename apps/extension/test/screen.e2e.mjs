@@ -175,9 +175,9 @@ try {
     return `${first}: ${JSON.stringify(inBox)}; open-chat again focused, the voice key started voice in it (signed out: it points at the locked mic)`;
   });
 
-  await step("an empty Enter in Chat starts 'look at this page' in this tab, which the agent looks at in the background", async () => {
-    // The panel tab is in the background; the sign-up tab is active: the panel shows its (new) chat.
-    await waitFor(() => panel.evaluate(() => !!document.querySelector("#chat-log .chat-empty")), "the new chat");
+  await step("an empty Enter on the jobs list starts 'look at this page' in this tab, which the agent looks at in the background", async () => {
+    // The panel tab is in the background; the sign-up tab is active (it has no job): the panel shows the list.
+    await waitFor(() => panel.evaluate(() => !document.getElementById("view-list").hidden), "the jobs list");
     await panel.evaluate(() => {
       const t = document.getElementById("now-text");
       t.value = "";
@@ -258,7 +258,7 @@ try {
       await chrome.tabs.update(t.id, { active: true });
       return t.id;
     }, windowId);
-    await waitFor(() => panel.evaluate(() => !!document.querySelector("#chat-log .chat-empty")), "the mailbox tab's new chat");
+    await waitFor(() => panel.evaluate(() => !document.getElementById("view-list").hidden), "the jobs list for the mailbox tab");
     await panel.fill("#now-text", "check my email");
     await panel.focus("#now-text");
     await panel.keyboard.press("Enter");

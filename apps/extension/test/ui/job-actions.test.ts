@@ -1,0 +1,63 @@
+import { describe, expect, it } from "vitest";
+import type { SessionInfo, TaskStatus } from "@browsertodo/shared";
+import { jobActions } from "../../src/sidepanel/job-actions.js";
+import { buildJobs, type JobTask } from "../../src/sidepanel/jobs.js";
+
+const NOW = Date.parse("2026-09-27T12:00:00Z");
+const at = (min: number) => new Date(NOW + min * 60_000).toISOString();
+
+function session(id: string, extra: Partial<SessionInfo> = {}): SessionInfo {
+  return { sessionId: id, source: "adhoc", title: id, instructions: `Do ${id}`, brain: "claude-api", jev: false, startedAt: at(-10), endedAt: at(-8), outcome: "done", ...extra };
+}
+function task(status: TaskStatus, extra: Partial<JobTask> = {}): JobTask {
+  return { id: "t", instructions: "Post the tip", account: null, mediaIds: [], notBefore: at(60), priority: 0, status, attempts: 1, leaseOwner: null, leaseExpiresAt: null, retryAfter: null, resultSummary: null, resultUrl: null, resultScreenshotId: null, pauseReason: null, failReason: null, createdAt: at(-100), updatedAt: at(-100), ...extra } as JobTask;
+}
+const live = (s: SessionInfo): SessionInfo => ({ ...s, endedAt: undefined, outcome: undefined });
+
+function labels(opts: { sessions?: SessionInfo[]; running?: SessionInfo[]; tasks?: JobTask[] }, source: "local" | "account" = "local"): string[] {
+  const [job] = buildJobs({ sessions: opts.sessions ?? [], running: opts.running ?? [], tasks: opts.tasks ?? [] }, NOW);
+  return jobActions(job!, source).map((a) => a.label);
+}
+
+describe("a chat's menu", () => {
+  it("ended: schedule its request, Raw, Rename, Delete", () => {
+    expect(labels({ sessions: [session("c")] })).toEqual(["Schedule", "Raw", "Rename", "Delete"]);
+  });
+  it("running: Pause and Show tab; no Delete", () => {
+    const s = live(session("c"));
+    expect(labels({ sessions: [s], running: [s] })).toEqual(["Pause", "Schedule", "Show tab", "Raw", "Rename"]);
+  });
+  it("stopped for the user: Resume", () => {
+    expect(labels({ sessions: [session("c", { outcome: "paused", reason: "Log in to X" })] })).toEqual(["Resume", "Schedule", "Raw", "Rename", "Delete"]);
+  });
+  it("an empty send (look at the page) has no request to schedule", () => {
+    expect(labels({ sessions: [session("c", { instructions: "" })] })).toEqual(["Raw", "Rename", "Delete"]);
+  });
+});
+
+describe("a task's menu", () => {
+  it("waiting: Run now, Edit schedule, Delete (this browser) or Cancel too (the account's queue)", () => {
+    expect(labels({ tasks: [task("pending")] })).toEqual(["Run now", "Edit schedule", "Delete"]);
+    expect(labels({ tasks: [task("pending")] }, "account")).toEqual(["Run now", "Edit schedule", "Cancel", "Delete"]);
+  });
+  it("written by the agent: Trust while it waits", () => {
+    expect(labels({ tasks: [task("pending", { agentAuthored: true })] })).toEqual(["Run now", "Edit schedule", "Trust", "Delete"]);
+    expect(labels({ tasks: [task("done", { agentAuthored: true })] })).not.toContain("Trust");
+  });
+  it("paused with a run here: Resume goes on from it; Raw shows it", () => {
+    const run = session("r", { source: "local", taskId: "t", outcome: "paused", reason: "Log in" });
+    expect(labels({ tasks: [task("paused")], sessions: [run] })).toEqual(["Run now", "Resume", "Edit schedule", "Raw", "Delete"]);
+    // The account's queue runs it again by itself.
+    expect(labels({ tasks: [task("paused")] }, "account")).toEqual(["Run now", "Resume", "Edit schedule", "Cancel", "Delete"]);
+  });
+  it("running here: Pause, Show tab, Raw; running elsewhere in the account's queue: nothing to do but wait", () => {
+    const run = live(session("r", { source: "local", taskId: "t" }));
+    expect(labels({ tasks: [task("running")], sessions: [run], running: [run] })).toEqual(["Pause", "Show tab", "Raw"]);
+    expect(labels({ tasks: [task("running")] }, "account")).toEqual([]);
+  });
+  it("over: Raw and Delete; failed: Run now too", () => {
+    const run = session("r", { source: "local", taskId: "t" });
+    expect(labels({ tasks: [task("done")], sessions: [run] })).toEqual(["Raw", "Delete"]);
+    expect(labels({ tasks: [task("failed")], sessions: [run] })).toEqual(["Run now", "Raw", "Delete"]);
+  });
+});

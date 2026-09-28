@@ -140,6 +140,20 @@ describe("PanelCommands: the shortcut opens the panel of the tab it was pressed 
     expect(openPanel(pc, 7).posted).toEqual([{ type: "panel.focus", draft: "newer" }]);
   });
 
+  it("recreating: the new page gets back the job the old one showed (and none when it showed the list)", () => {
+    const { pc } = setup();
+    const port = openPanel(pc, 7, false, "and reply");
+    port.deliver({ type: "panel.document", focused: false, draft: "and reply", job: "chat:s1" });
+    pc.onCommand(OPEN_CHAT_COMMAND, tab(7));
+    port.hostDisconnect();
+    expect(openPanel(pc, 7).posted).toEqual([{ type: "panel.focus", draft: "and reply", job: "chat:s1" }]);
+
+    const list = setup();
+    openPanel(list.pc, 7, false, "");
+    list.pc.onCommand(OPEN_CHAT_COMMAND, tab(7));
+    expect(openPanel(list.pc, 7).posted).toEqual([{ type: "panel.focus" }]);
+  });
+
   it("the panel page opened as a tab, with the focus: it gets Chat and the input (it has no tab panel to open)", () => {
     const { pc, open } = setup();
     const page = pageInTab(pc, true);

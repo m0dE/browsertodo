@@ -185,19 +185,28 @@ export function installChromeStub(data) {
     },
     // A task's details: what its memory keeps of its earlier runs (data.taskRuns, for the task whose instructions start with data.taskRunsFor).
     "memory.taskRuns": (req) => ({ runs: data.taskRunsFor && req.task.instructions.startsWith(data.taskRunsFor) ? (data.taskRuns ?? []) : [] }),
-    "tasks.add": () => ({ task: data.tasks[0] }),
+    // A new task: the stub keeps it, as the list would.
+    "tasks.add": (req) => {
+      const now = new Date().toISOString();
+      const task = { id: `t-new${data.tasks.length}`, instructions: req.instructions, status: "pending", account: req.account ?? null, mediaIds: [], notBefore: req.notBefore ?? null, repeat: req.repeat ?? null, priority: 0, attempts: 0, leaseOwner: null, leaseExpiresAt: null, retryAfter: null, resultSummary: null, resultUrl: null, resultScreenshotId: null, pauseReason: null, failReason: null, createdAt: now, updatedAt: now, media: [] };
+      data.tasks = [task, ...data.tasks];
+      return { task };
+    },
     "tasks.update": (req) => ({ task: { ...data.tasks.find((t) => t.id === req.id), ...req.patch } }),
     // Run on a row: the task runs now (a new session for it, bound to nothing).
     "tasks.run": (req) => ({ sessionId: `s-run-${req.id}` }),
-    "tasks.delete": () => ({ ok: true }),
-    "tasks.retry": () => ({ task: data.tasks[0] }),
-    // chats: only conversations to go on with (a one-off chat, or a run the user went on with), as the router lists them.
-    "sessions.list": (req) => {
-      const chat = (s) => s.source === "adhoc" || (s.turns ?? 1) > 1;
-      const list = data.sessions.filter((s) => (req.taskId === undefined || s.taskId === req.taskId) && (!req.chats || chat(s)));
-      return { sessions: list.slice(0, req.limit ?? 50) };
+    "tasks.delete": (req) => {
+      data.tasks = data.tasks.filter((t) => t.id !== req.id);
+      return { ok: true };
     },
-    // A chat renamed in History: the session changes (and is pushed, as the background does).
+    "tasks.retry": () => ({ task: data.tasks[0] }),
+    "sessions.list": (req) => ({ sessions: data.sessions.filter((s) => req.taskId === undefined || s.taskId === req.taskId).slice(0, req.limit ?? 50) }),
+    // A job's Delete: the conversation is gone.
+    "session.delete": (req) => {
+      data.sessions = data.sessions.filter((s) => s.sessionId !== req.sessionId);
+      return { ok: true };
+    },
+    // A chat renamed from its job's menu: the session changes (and is pushed, as the background does).
     "session.rename": (req) => {
       const cur = data.sessions.find((s) => s.sessionId === req.sessionId);
       if (cur.source !== "adhoc") throw new Error("Only chats can be renamed: a TODO run is named by its task");

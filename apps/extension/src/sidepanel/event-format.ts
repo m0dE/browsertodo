@@ -1,4 +1,4 @@
-/** Pure view models for agent events in Chat and the History tab. */
+/** Pure view models for agent events in a job's conversation (and its earlier runs). */
 import { describeSchedule, localTimeZone, picksText, SCREEN_HELP_TEXT, type AgentEvent, type AttachmentRef, type Chip, type ElementPicks, type SessionInfo, type TaskSource, type TodoChange } from "@browsertodo/shared";
 import { clip, isLongSummary, toolArgsSummary } from "../text.js";
 import { speakable } from "../voice/spoken-line.js";
@@ -262,7 +262,7 @@ export interface OpeningView {
   at: string;
 }
 
-const ORIGIN_OF: Partial<Record<TaskSource, string>> = { local: "From your TODO list", cloud: "Scheduled" };
+const ORIGIN_OF: Partial<Record<TaskSource, string>> = { local: "Scheduled run", cloud: "Scheduled run" };
 /** The status line a first turn with files starts with (see run/turn.ts). */
 const PREPARING_FILES = /^Preparing (\d+) file\(s\)$/;
 

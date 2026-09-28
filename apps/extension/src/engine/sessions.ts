@@ -252,16 +252,29 @@ export class SessionStore {
     return last ? Number(last.slice(sessionId.length + 1)) + 1 : 0;
   }
 
+  /** Deletes a conversation with its events, trace and files (the user's Delete). False when there is none. */
+  async delete(sessionId: string): Promise<boolean> {
+    const deleted = await this.enqueue(async () => {
+      if (!(await this.sessions.get(sessionId))) return false;
+      await this.remove(sessionId);
+      return true;
+    });
+    if (deleted) this.seq.delete(sessionId);
+    return deleted;
+  }
+
   private async prune(): Promise<void> {
     const all = (await this.sessions.list()).map((e) => e.value);
     if (all.length <= MAX_SESSIONS) return;
     all.sort(byStart);
-    for (const s of all.slice(0, all.length - MAX_SESSIONS)) {
-      await this.sessions.delete(s.sessionId);
-      await this.events.deletePrefix(`${s.sessionId}:`);
-      await this.trace?.delete(s.sessionId);
-      await this.attachments?.deleteSession(s.sessionId);
-    }
+    for (const s of all.slice(0, all.length - MAX_SESSIONS)) await this.remove(s.sessionId);
+  }
+
+  private async remove(sessionId: string): Promise<void> {
+    await this.sessions.delete(sessionId);
+    await this.events.deletePrefix(`${sessionId}:`);
+    await this.trace?.delete(sessionId);
+    await this.attachments?.deleteSession(sessionId);
   }
 
   private emitSession(s: SessionInfo): void {

@@ -7,6 +7,8 @@ import { MemoryKvDb } from "./memory-kv.js";
 
 let sessions: SessionStore;
 let shown: string[][];
+let unbound: [number, string][];
+let closed: string[];
 let req: <T = any>(r: UiRequest) => Promise<T>;
 
 const at = (min: number) => new Date(Date.parse("2026-09-27T10:00:00Z") + min * 60_000).toISOString();
@@ -17,8 +19,15 @@ function session(id: string, min: number, extra: Partial<SessionInfo> = {}): Ses
 beforeEach(async () => {
   sessions = new SessionStore(new MemoryKvDb());
   shown = [];
-  // Only what these requests use: the sessions and the titler.
-  const deps = { sessions, titles: { shown: (list: readonly SessionInfo[]) => shown.push(list.map((s) => s.sessionId)) } } as unknown as UiRouterDeps;
+  unbound = [];
+  closed = [];
+  // Only what these requests use: the sessions, the titler, the runner (what runs; closing a chat) and the tabs' chats.
+  const deps = {
+    sessions,
+    titles: { shown: (list: readonly SessionInfo[]) => shown.push(list.map((s) => s.sessionId)) },
+    runner: { runningSessions: [session("chat-running", 40, { endedAt: undefined, outcome: undefined })], newChat: async (id: string) => (closed.push(id), { ok: true }) },
+    tabChats: { all: async () => ({ "7": "chat-old", "8": "chat-new" }), unbind: async (tab: number, id: string) => (unbound.push([tab, id]), id) },
+  } as unknown as UiRouterDeps;
   const router = new UiRouter(deps);
   req = async (r) => {
     const res = (await router.handle(r)) as UiResponse<any>;
@@ -31,16 +40,10 @@ beforeEach(async () => {
   await sessions.create(session("chat-new", 30));
 });
 
-describe("sessions.list for the new chat's recent chats", () => {
-  it("chats: only conversations to go on with, newest first, and asks for their titles", async () => {
-    const { sessions: list } = await req<{ sessions: SessionInfo[] }>({ type: "sessions.list", chats: true, limit: 2 });
-    expect(list.map((s) => s.sessionId)).toEqual(["chat-new", "todo-chat"]);
-    expect(shown).toEqual([["chat-new", "todo-chat"]]);
-  });
-
-  it("History's list (every run) also asks for its chats' titles", async () => {
+describe("sessions.list for the jobs list", () => {
+  it("every run, newest first, and asks for its chats' titles", async () => {
     const { sessions: list } = await req<{ sessions: SessionInfo[] }>({ type: "sessions.list", limit: 10 });
-    expect(list).toHaveLength(4);
+    expect(list.map((s) => s.sessionId)).toEqual(["chat-new", "todo-chat", "todo-run", "chat-old"]);
     expect(shown[0]).toHaveLength(4);
   });
 });
@@ -58,5 +61,18 @@ describe("session.rename", () => {
     await expect(req({ type: "session.rename", sessionId: "todo-run", title: "Mine" })).rejects.toThrow(/named by its task/);
     await expect(req({ type: "session.rename", sessionId: "nope", title: "Mine" })).rejects.toThrow(/No session/);
     expect((await sessions.get("chat-new"))!.title).toBe("Title chat-new");
+  });
+});
+
+describe("session.delete", () => {
+  it("deletes a conversation that is not running: no tab keeps it, its agent session closes", async () => {
+    expect(await req({ type: "session.delete", sessionId: "chat-old" })).toEqual({ ok: true });
+    expect(await sessions.get("chat-old")).toBeNull();
+    expect(unbound).toEqual([[7, "chat-old"]]);
+    expect(closed).toEqual(["chat-old"]);
+  });
+
+  it("refuses a running conversation", async () => {
+    await expect(req({ type: "session.delete", sessionId: "chat-running" })).rejects.toThrow(/stop it first/);
   });
 });

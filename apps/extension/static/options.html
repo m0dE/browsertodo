@@ -23,7 +23,7 @@
             <div id="acct-out" class="acct-block">
               <h2 class="group-title">Account</h2>
               <div class="box pad">
-                <p class="hint">Log in with Google to use BrowserTODO AI without setting up Claude or Jev. With a paid plan, your TODO list is kept in your account and runs on schedule.</p>
+                <p class="hint">Log in with Google to use BrowserTODO AI without setting up Claude or Jev. With a paid plan, your scheduled jobs are kept in your account and run on schedule.</p>
                 <div class="row">
                   <button id="acct-signin" type="button" class="primary">Log in with Google</button>
                   <span id="acct-signin-msg" class="msg"></span>
@@ -299,8 +299,8 @@
           </dialog>
 
           <div class="group" id="schedule-group">
-            <h2 class="group-title" id="h-scheduled-automation">Scheduled tasks (TODO list)</h2>
-            <p class="group-hint">What a task from your TODO list may do without asking you, and when tasks run.</p>
+            <h2 class="group-title" id="h-scheduled-automation">Scheduled jobs</h2>
+            <p class="group-hint">What a scheduled job may do without asking you, and when scheduled jobs run.</p>
             <div class="box options" id="scheduled-automation" role="radiogroup" aria-labelledby="h-scheduled-automation"></div>
             <div class="box">
               <div class="srow">
@@ -475,7 +475,7 @@
             <p class="group-hint">Only if you run your own server.</p>
             <div class="box">
               <div class="srow">
-                <label class="srow-label" for="f-accountApiBase"><b>Account server</b><small>Sign-in, your account's TODO list, billing and BrowserTODO AI. Changing it signs you out of the current server.</small></label>
+                <label class="srow-label" for="f-accountApiBase"><b>Account server</b><small>Sign-in, your account's scheduled jobs, billing and BrowserTODO AI. Changing it signs you out of the current server.</small></label>
                 <div class="srow-control"><input id="f-accountApiBase" type="url" spellcheck="false" placeholder="https://browsertodo-api.example.com" aria-describedby="err-accountApiBase" /><small id="err-accountApiBase" class="field-error"></small></div>
               </div>
               <div class="srow">

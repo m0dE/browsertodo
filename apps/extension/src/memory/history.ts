@@ -1,5 +1,5 @@
 /**
- * search_history: the agent's look into the user's past chats and task runs, as the History tab keeps them (the
+ * search_history: the agent's look into the user's past chats and task runs, as the side panel's jobs keep them (the
  * SessionStore), for "what did you tell me yesterday" when no episode was written for it (or memory's episode is too
  * short to answer). Deterministic, no model:
  *

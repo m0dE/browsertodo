@@ -1,4 +1,4 @@
-/** The chat's TODO cards: a task the agent scheduled, changed or cancelled; its line, View in TODO, Undo, and undone. */
+/** The chat's TODO cards: a task the agent scheduled, changed or cancelled; its line, View (its job), Undo, and undone. */
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentEvent } from "@browsertodo/shared";
 import { describeEvent, scheduledView } from "../../src/sidepanel/event-format.js";
@@ -35,10 +35,10 @@ describe("scheduled card", () => {
     expect(el.getAttribute("data-task-id")).toBe("t9");
     expect(byClass(el, "sched-line")!.textContent).toBe("Scheduled:Check the order status· Once, today at 6:45 PM");
     expect(byClass(el, "sched-line")!.title).toContain("https://shop.example.com/orders/42");
-    expect(el.all("button").map((b) => b.textContent)).toEqual(["View in TODO", "Undo"]);
+    expect(el.all("button").map((b) => b.textContent)).toEqual(["View", "Undo"]);
   });
 
-  it("View in TODO and Undo name the task", async () => {
+  it("View and Undo name the task", async () => {
     const a = actions();
     const el = card(false, a);
     byClass(el, "sched-view")!.click();
@@ -64,14 +64,14 @@ describe("scheduled card", () => {
     expect(el.classList.contains("undone")).toBe(true);
     expect(byClass(el, "sched-label")!.textContent).toBe("Undone:");
     expect(el.all("button")).toEqual([]);
-    expect(el.textContent).toContain("Removed from your TODO list.");
+    expect(el.textContent).toContain("Removed from your jobs.");
   });
 });
 
 describe("changed and cancelled cards", () => {
   beforeAll(installMiniDom);
 
-  it("Changed: the task with its new time; Undo names the change, View in TODO the task", async () => {
+  it("Changed: the task with its new time; Undo names the change, View the task", async () => {
     const a = actions();
     const el = cardOf(UPDATED, false, a);
     expect(el.getAttribute("data-change-id")).toBe("c1");
@@ -89,10 +89,10 @@ describe("changed and cancelled cards", () => {
   it("Cancelled: the task as it was; undone it is back in the list", () => {
     const el = cardOf(CANCELLED, false, actions());
     expect(byClass(el, "sched-line")!.textContent).toBe("Cancelled:Dentist: leave at 2:30· Once, Thu, Oct 1 at 2:30 PM");
-    expect(byClass(el, "sched-undo")!.title).toBe("Put this task back in your TODO list");
+    expect(byClass(el, "sched-undo")!.title).toBe("Schedule this job again");
     const undone = cardOf(CANCELLED, true, actions());
     expect(byClass(undone, "sched-label")!.textContent).toBe("Undone:");
-    expect(undone.textContent).toContain("Back in your TODO list.");
+    expect(undone.textContent).toContain("Scheduled again.");
     expect(undone.all("button")).toEqual([]);
     expect(cardOf(UPDATED, true, actions()).textContent).toContain("Put back as it was.");
   });

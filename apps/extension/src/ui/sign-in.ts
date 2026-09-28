@@ -1,4 +1,4 @@
-/** The Google sign-in every Log in button starts (side panel header and TODO tab, options page). */
+/** The Google sign-in every Log in button starts (the options page). */
 import { SIGN_IN_NOT_SET_UP } from "../account/google-auth.js";
 import { uiRequest, type AccountView, type UiState } from "../ui-protocol.js";
 import { busy, flash } from "./dom.js";

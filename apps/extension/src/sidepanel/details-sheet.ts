@@ -45,11 +45,6 @@ export function renderPreviousRuns(runs: readonly PreviousRun[], earlier?: strin
   );
 }
 
-export interface SheetOptions {
-  /** "Open in TODO" (shown when the model has a TODO entry). */
-  onOpenInTodo?(taskId: string): void;
-}
-
 /** The instructions with their line breaks, and http(s) links that open in a new tab. */
 export function renderText(text: string): HTMLElement {
   return h(
@@ -69,14 +64,12 @@ function returnFocus(trigger: HTMLElement | null): void {
   target?.focus();
 }
 
-export function openDetails(model: DetailsModel, trigger: HTMLElement | null, opts: SheetOptions = {}): HTMLDialogElement {
+export function openDetails(model: DetailsModel, trigger: HTMLElement | null): HTMLDialogElement {
   current?.close();
-  let back: HTMLElement | null = trigger;
+  const back: HTMLElement | null = trigger;
 
   const msg = h("span.msg", { role: "status" });
   const copyBtn = h("button.ghost.small", { type: "button", disabled: !model.text }, model.copyLabel);
-  const todoId = model.todoId;
-  const todoBtn = todoId && opts.onOpenInTodo ? h("button.ghost.small", { type: "button", title: "Show this task in the TODO tab" }, "Open in TODO") : null;
   const closeBtn = h("button.ghost.small", { type: "button" }, "Close");
 
   const rows: HTMLElement[] = [];
@@ -110,7 +103,7 @@ export function openDetails(model: DetailsModel, trigger: HTMLElement | null, op
             )
           : null,
       ),
-      h("div.sheet-actions", null, copyBtn, todoBtn, msg),
+      h("div.sheet-actions", null, copyBtn, msg),
     ),
   );
 
@@ -129,12 +122,6 @@ export function openDetails(model: DetailsModel, trigger: HTMLElement | null, op
       msg.textContent = ok ? "Copied." : "Could not copy. Select the text and copy it instead.";
       msg.dataset.tone = ok ? "ok" : "bad";
     });
-  });
-  todoBtn?.addEventListener("click", () => {
-    // Focus goes to the task in the TODO tab, not back to the trigger.
-    back = null;
-    dialog.close();
-    opts.onOpenInTodo?.(todoId!);
   });
 
   document.body.append(dialog);
@@ -187,11 +174,7 @@ export async function gatherDetails(from: { session: SessionInfo } | { task: Det
 }
 
 /** Gathers what is known, then opens the sheet. */
-export async function showDetails(
-  from: Parameters<typeof gatherDetails>[0],
-  trigger: HTMLElement | null,
-  opts: SheetOptions = {},
-): Promise<void> {
+export async function showDetails(from: Parameters<typeof gatherDetails>[0], trigger: HTMLElement | null): Promise<void> {
   const input = await gatherDetails(from);
-  openDetails(detailsModel(input), trigger, opts);
+  openDetails(detailsModel(input), trigger);
 }

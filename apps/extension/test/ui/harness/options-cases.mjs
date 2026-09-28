@@ -230,8 +230,8 @@ export const OPTION_CASES = [
     ["on the Permission tab", async () => (await p.getAttribute("#tab-permission", "aria-selected")) === "true" && (await p.textContent("#tab-permission")) === "Permission"],
     ["hash normalised", async () => (await p.evaluate(() => location.hash)) === "#permission"],
     ["tab order: AI, Permission, Tasks", async () => (await p.locator("#tabs [role=tab]").allTextContents()).slice(2, 5).join(" | ") === "AI | Permission | Tasks"],
-    ["sections: Chat, then Scheduled tasks", async () =>
-      (await p.evaluate(() => [...document.querySelectorAll("#panel-permission > .group > h2")].map((e) => e.textContent).join(" | "))) === "Chat | Scheduled tasks (TODO list)"],
+    ["sections: Chat, then Scheduled jobs", async () =>
+      (await p.evaluate(() => [...document.querySelectorAll("#panel-permission > .group > h2")].map((e) => e.textContent).join(" | "))) === "Chat | Scheduled jobs"],
     ["three levels, the middle one checked", async () =>
       (await p.locator("#automation-levels .opt b").allTextContents()).join(" | ") === "Ask before every action | Ask before posting, sending or paying | Full autonomy (dangerous)" &&
       (await p.isChecked("input[name=automationLevel][value=ask_consequential]"))],

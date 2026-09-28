@@ -1,5 +1,5 @@
 /**
- * The Raw view of the Chat tab (its action bar's "Raw"): the whole
+ * The Raw view of a job's conversation (its "⋯" menu's Raw): the whole
  * conversation as it happened, with how long everything took, for finding
  * bottlenecks. On top a summary (total time, time to the first response,
  * model / tool / voice time, the slowest items, tokens); below, each turn's

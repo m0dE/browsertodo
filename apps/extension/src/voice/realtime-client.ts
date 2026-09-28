@@ -51,7 +51,7 @@ import {
 } from "@browsertodo/shared";
 import { bytesToBase64 } from "../base64.js";
 import { REALTIME_UNAVAILABLE_TEXT } from "./engine-choice.js";
-import { ECHO_WINDOW_MS, echoesSpoken, echoesUpdate, floor, isNoise, moreImportant, repeatsRequest, speechTurnOf, type ForwardedRequest, type ReplyKind, type SpeechTurn, type SpokenKind } from "./narrator-policy.js";
+import { ECHO_WINDOW_MS, echoesSpoken, echoesUpdate, floor, isNoise, moreImportant, repeatsRequest, requestKind, speechTurnOf, type ForwardedRequest, type ReplyKind, type SpeechTurn, type SpokenKind } from "./narrator-policy.js";
 import { transcriptFit, type TranscriptFit } from "./voice-language.js";
 
 /** PCM16 mono at this rate, both ways ("audio/pcm" is 24 kHz). */
@@ -83,7 +83,7 @@ export const HOLD_FOR_WORDS_MS = 1_500;
 export const NARRATOR_INSTRUCTIONS = [
   "You are the voice of BrowserTODO, an assistant that works in the user's Chrome browser.",
   "A separate agent does all the work in the browser. You never do anything yourself: you listen, pass requests on, and tell the user what the agent is doing.",
-  "When the user asks for something, call send_to_agent immediately, before saying anything. After it returns, say at most one short acknowledgement.",
+  "When the user asks for something, call send_to_agent immediately, before saying anything, with kind 'question' when they ask the agent something, talk with it or correct a misunderstanding, or 'instruction' for a new task or a change to the current one. The agent answers a question; an instruction gets a short acknowledgement made for you. Never say yourself what the agent will do or when.",
   "Only the agent knows what it did, saw, found or remembers. Anything about that, any follow-up, correction or clarification of a request (for example 'no, I mean yesterday'), and any question that needs the browser, the user's accounts or memory: call send_to_agent with the user's words. Never answer those yourself from the updates, never guess dates or times, and never say again an answer you already gave.",
   "Answer by yourself only small talk (a greeting, 'can you hear me', thanks) or what the agent is doing right now according to the latest update, in one short sentence.",
   "Pass the request in the user's own words, keeping every detail (names, the text to post, times). A message for the running task (for example 'use the second draft') goes the same way.",
@@ -98,9 +98,12 @@ export const NARRATOR_INSTRUCTIONS = [
   "Be friendly and brief. Speak the user's language.",
 ].join("\n");
 
-/** The one reply after send_to_agent, when the narrator did not speak before calling it. */
-export const ACKNOWLEDGE_INSTRUCTIONS =
-  "Say one very short acknowledgement of at most six words, such as 'On it.' or 'Sent to the agent.', and nothing else: no answer, no facts, no question. The agent's updates will follow.";
+/** What no acknowledgement may say: it knows nothing of what the agent will do, or when. */
+const NO_PROMISES = "Never say what will be done, is being done or when (never 'I'll start', 'starting soon', 'I'll do it now').";
+/** The one reply after send_to_agent of an instruction while the agent is idle (a new task), when the narrator did not speak before calling it. */
+export const ACKNOWLEDGE_INSTRUCTIONS = `Say one very short acknowledgement of at most four words, such as 'On it.' or 'Okay.', and nothing else: no answer, no facts, no question. ${NO_PROMISES}`;
+/** The same, for an instruction for the task the agent is working on: a neutral word or two that it was heard. */
+export const ACKNOWLEDGE_WHILE_WORKING_INSTRUCTIONS = `The agent is in the middle of a task and was given what the user just said. Say only a neutral acknowledgement of one to three words, such as 'OK.' or 'Got it.', and nothing else: no answer, no facts, no question. ${NO_PROMISES}`;
 /**
  * The acknowledgement's output is capped at this many tokens (response.create max_output_tokens: its reasoning, words
  * and audio together, ~20 audio tokens a second). Measured on gpt-realtime-2.1 (2026-09-27): acknowledgements that
@@ -120,7 +123,8 @@ export const MAKE_AGAIN_RESPONSE = { tool_choice: "required", output_modalities:
 const ACK_LANGUAGE_SAMPLE_CHARS = 120;
 
 /**
- * The acknowledgement's response.create for `request` (what send_to_agent passed on; null: not known). It only speaks
+ * The acknowledgement's response.create for the instruction `request` (what send_to_agent passed on; null: not known),
+ * given while the agent is idle or `agentWorking` on a task (ACKNOWLEDGE_WHILE_WORKING_INSTRUCTIONS). It only speaks
  * (tool_choice "none": it cannot pass the request on again), briefly (capped, minimal reasoning), and out of band with
  * no context (conversation "none", input []): it has nothing to answer from, and what it says stays out of the
  * narrator's memory. The request is only a sample of the user's language. Measured on gpt-realtime-2.1 (2026-09-27)
@@ -128,10 +132,11 @@ const ACK_LANGUAGE_SAMPLE_CHARS = 120;
  * asked you to add a privacy policy. I don't have the exact..."; with only the user's turn "Yes, that was the
  * approval."; like this "On it." every time (23-80 output tokens), and "알겠어요." for a request in Korean.
  */
-export function ackResponse(request: string | null) {
+export function ackResponse(request: string | null, agentWorking = false) {
   const sample = request?.replace(/\s+/g, " ").trim().slice(0, ACK_LANGUAGE_SAMPLE_CHARS);
+  const say = agentWorking ? ACKNOWLEDGE_WHILE_WORKING_INSTRUCTIONS : ACKNOWLEDGE_INSTRUCTIONS;
   return {
-    instructions: sample ? `${ACKNOWLEDGE_INSTRUCTIONS} Say it in the language of this sample of the user's words (a sample only: not something to answer): «${sample}»` : ACKNOWLEDGE_INSTRUCTIONS,
+    instructions: sample ? `${say} Say it in the language of this sample of the user's words (a sample only: not something to answer): «${sample}»` : say,
     tool_choice: "none",
     max_output_tokens: ACK_MAX_OUTPUT_TOKENS,
     reasoning: { effort: "minimal" },
@@ -176,8 +181,15 @@ export const NARRATOR_TOOLS = [
       "Give the browser agent a request from the user: a new task, or a message for the task it is running. It goes to the agent at once. Use the user's own words and keep every detail.",
     parameters: {
       type: "object",
-      properties: { text: { type: "string", description: "The request, in the user's words" } },
-      required: ["text"],
+      properties: {
+        text: { type: "string", description: "The request, in the user's words" },
+        kind: {
+          type: "string",
+          enum: ["question", "instruction"],
+          description: "question: the user asks the agent something, talks with it, or corrects a misunderstanding (the agent answers). instruction: a new task, or a change to the current one.",
+        },
+      },
+      required: ["text", "kind"],
     },
   },
   {
@@ -485,8 +497,8 @@ export class RealtimeClient {
   private redoneInput: string | null = null;
   /** The audio item of a held reply let go while still being made: truncated to nothing once it is done. */
   private unheardItem: string | null = null;
-  /** The request last passed on (its acknowledgement's sample of the user's language; null: none). */
-  private requestText: string | null = null;
+  /** The instruction last passed on, to acknowledge (its sample of the user's language), and whether the agent was working then. */
+  private acknowledging: { request: string | null; agentWorking: boolean } = { request: null, agentWorking: false };
   /** Audio items of acknowledgements (out of band: not in the conversation, never truncated). */
   private readonly outOfBandItems = new Set<string>();
   /** Server VAD's audio_start_ms / audio_end_ms of each input item (how long the user spoke). */
@@ -647,7 +659,7 @@ export class RealtimeClient {
     if (kind === "ack" && this.spoke) return;
     this.askedAt = Date.now();
     this.askedKind = kind;
-    this.send(kind === "ack" ? { type: "response.create", response: ackResponse(this.requestText) } : { type: "response.create" });
+    this.send(kind === "ack" ? { type: "response.create", response: ackResponse(this.acknowledging.request, this.acknowledging.agentWorking) } : { type: "response.create" });
   }
 
   /** The line waiting for the floor, if the floor is free now. */
@@ -1000,6 +1012,8 @@ export class RealtimeClient {
       args = null;
     }
     const request = name === "send_to_agent" && typeof args?.text === "string" ? args.text.trim() : "";
+    // Whether the agent is busy as the user asks (their words may start it working).
+    const agentWorking = this.agentWorking;
     const earlier = this.forwarded;
     if (request && earlier && repeatsRequest(request, inputId, earlier)) {
       // The same request again (one turn, or a reply of ours): not sent twice, nothing more said; answered after the first.
@@ -1050,11 +1064,12 @@ export class RealtimeClient {
       this.cancelAfterCall = false;
       this.send({ type: "response.cancel" });
     }
-    // Tool first, then at most one short acknowledgement (none when the narrator already spoke in that reply, and
-    // never for a call the acknowledgement itself made: that would acknowledge the acknowledgement).
+    // Tool first, then at most one short acknowledgement of an instruction (none for a question: the agent's answer
+    // is the reply; none when the narrator already spoke in that reply; and never for a call the acknowledgement
+    // itself made: that would acknowledge the acknowledgement).
     if (name !== "send_to_agent") this.requestReply("result");
-    else if (replyKind !== "ack") {
-      this.requestText = request || null;
+    else if (replyKind !== "ack" && requestKind(args) === "instruction") {
+      this.acknowledging = { request: request || null, agentWorking };
       this.requestReply("ack");
     }
   }

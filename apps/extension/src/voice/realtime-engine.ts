@@ -19,6 +19,7 @@ import { PcmPlayer } from "./pcm-player.js";
 import { RealtimeClient, realtimeFailure, REALTIME_SAMPLE_RATE, takeoverUrl, type NarratorTool, type OpenSocket, type RealtimeFailure } from "./realtime-client.js";
 import type { RealtimeTicket } from "./realtime-access.js";
 import { NarratorFeed } from "./realtime-feed.js";
+import { requestKind } from "./narrator-policy.js";
 import { meterLevel, rms } from "./speech.js";
 import { toInt16 } from "./wav.js";
 
@@ -231,8 +232,11 @@ export class RealtimeEngine implements HandsFreeEngine {
         const text = typeof args.text === "string" ? args.text.trim() : "";
         if (!text) return "Error: say what to send (text).";
         ev.forward(text, heard);
-        // Its acknowledgement is the narrator's line for now: milestones for it wait NARRATOR_MILESTONE_GAP_MS.
-        this.feed.request(Date.now());
+        // Asked while the agent works: its answer is its next words (a question asked when idle starts a turn whose
+        // end says it). Otherwise its acknowledgement is the narrator's line for now: milestones for it wait
+        // NARRATOR_MILESTONE_GAP_MS.
+        if (requestKind(args) === "question" && this.agentWorking) this.feed.question();
+        else this.feed.request(Date.now());
         return "Sent to the agent. Its updates will follow.";
       }
       // The request already went out: taking it back stops its task.

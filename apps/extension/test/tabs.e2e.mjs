@@ -1,7 +1,7 @@
 // A chat per browser tab, in the built extension in Playwright's Chromium: one-off runs
 // started from two tabs run at the same time, each acting on its own tab (even after the
-// user switched away), the side panel's chat follows the active tab, a chat whose tab shows
-// a chrome:// page moves to a new tab, and closing a chat's tab stops its run.
+// user switched away), the side panel (the page opened as a tab) shows the job of the active tab (the jobs list
+// when it has none), a chat whose tab shows a chrome:// page moves to a new tab, and closing a chat's tab stops its run.
 // The brain is a scripted fake installed in the service worker (no helper, no API key).
 // Usage: pnpm build && node apps/extension/test/tabs.e2e.mjs [--headed]
 import assert from "node:assert/strict";
@@ -54,32 +54,33 @@ try {
   const activate = (tabId) => sw.evaluate(async (t) => void (await chrome.tabs.update(t, { active: true })), tabId);
   const panelView = () =>
     panel.evaluate(() => ({
-      // The chat's first message: the prompt that opened it.
-      title: document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent ?? null,
-      empty: !!document.querySelector("#chat-log .chat-empty"),
-      chips: [...document.querySelectorAll("#chat-switch:not([hidden]) .act-chip")].map((c) => c.textContent.trim()),
+      // The job page's first message: the prompt that opened it.
+      title: document.querySelector("#view-job:not([hidden]) #chat-log .ev-first .ev-user-text")?.textContent ?? null,
+      // The jobs list (no job in this tab).
+      empty: !document.getElementById("view-list").hidden,
+      running: [...document.querySelectorAll('#view-list:not([hidden]) section[aria-labelledby="group-running"] .job-row .job-title')].map((c) => c.textContent.trim()),
     }));
   const clicks = (page) => page.evaluate(() => window.clicks);
   const turnEnded = (sessionId, turns, what) => sessionWhen(sw, sessionId, what, { until: (s) => s.turns === turns && s.endedAt });
 
   let a;
   let b;
-  await step("tab A: a new chat, then a one-off started there is bound to it", async () => {
+  await step("tab A: the jobs list, then a one-off started there is bound to it and its job shows", async () => {
     await activate(tabA);
-    await waitFor(async () => (await panelView()).empty, "tab A's empty chat");
+    await waitFor(async () => (await panelView()).empty, "the jobs list for tab A");
     a = await ui({ type: "run.adhoc", instructions: "task A", tabId: tabA });
     assert.equal((await bindings())[tabA], a.sessionId);
     await waitFor(async () => (await panelView()).title === "task A", "the panel showing task A");
     return `session ${a.sessionId} in tab ${tabA}`;
   });
 
-  await step("switching to tab B shows B's (empty) chat with a chip for A's running chat", async () => {
+  await step("switching to tab B shows the list (B has no job) with A's job running", async () => {
     await activate(tabB);
     const v = await waitFor(async () => {
       const x = await panelView();
-      return x.empty && x.chips.length === 1 ? x : null;
-    }, "tab B's empty chat");
-    assert.deepEqual(v.chips, ["Task A"]);
+      return x.empty && x.running.length === 1 ? x : null;
+    }, "the list for tab B");
+    assert.deepEqual(v.running, ["Task A"]);
     return JSON.stringify(v);
   });
 
@@ -116,14 +117,14 @@ try {
     return "A clicked on /a, B on /b";
   });
 
-  await step("the panel's chat follows the active tab", async () => {
+  await step("the panel shows the job of the active tab", async () => {
     await activate(tabA);
     await waitFor(async () => (await panelView()).title === "task A", "tab A's chat");
     await activate(tabB);
     await waitFor(async () => (await panelView()).title === "task B", "tab B's chat");
     await activate(panelTab);
     await waitFor(async () => (await panelView()).empty, "a tab without a chat");
-    return "A -> task A, B -> task B, other -> new chat";
+    return "A -> task A, B -> task B, other -> the list";
   });
 
   await step("the next message in tab A's chat acts on tab A again", async () => {
@@ -138,12 +139,14 @@ try {
     return "clicks: A 2, B 1";
   });
 
-  await step("New Chat in tab B clears only B's chat; Open in Chat binds it to the current tab", async () => {
+  await step("run.newChat in tab B unbinds only B's chat; chat.bind binds it again and the panel shows it", async () => {
     await ui({ type: "run.newChat", sessionId: b.sessionId, tabId: tabB });
     let map = await bindings();
     assert.equal(map[tabB], undefined);
     assert.equal(map[tabA], a.sessionId);
-    await waitFor(async () => (await panelView()).empty, "tab B's new chat");
+    // The user goes back to the list (the job stays on screen until then).
+    await panel.click("#job-back");
+    await waitFor(async () => (await panelView()).empty, "the jobs list");
     const st = await ui({ type: "chat.bind", sessionId: b.sessionId, tabId: tabB });
     assert.equal(st.tabChats[tabB], b.sessionId);
     await waitFor(async () => (await panelView()).title === "task B", "task B back in tab B");
@@ -151,24 +154,23 @@ try {
     return JSON.stringify(map);
   });
 
-  await step("the History tab: clicking a past run opens that conversation in Chat, bound to the active tab", async () => {
+  await step("the list: picking a past job opens it, bound to the active tab", async () => {
     await ui({ type: "run.newChat", sessionId: b.sessionId, tabId: tabB });
-    await waitFor(async () => (await panelView()).empty, "tab B's new chat");
-    await panel.click("#tab-btn-history");
-    const row = panel.locator(`.sessions li button[data-id="${b.sessionId}"]`);
+    await panel.click("#job-back");
+    await waitFor(async () => (await panelView()).empty, "the jobs list");
+    const row = panel.locator(`.job-row[data-key="chat:${b.sessionId}"]`);
     await row.waitFor();
     await row.click();
     const shown = await waitFor(
       () =>
         panel.evaluate(() => ({
-          tab: document.querySelector(".tabs [aria-selected=true]")?.id,
-          title: document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent,
+          title: document.querySelector("#view-job:not([hidden]) #chat-log .ev-first .ev-user-text")?.textContent,
           ends: document.querySelectorAll("#chat-log .ev-end").length,
-          readOnlyView: !!document.getElementById("hist-past"),
-        })).then((v) => (v.tab === "tab-btn-chat" && v.title === "task B" && v.ends > 0 ? v : null)),
-      "task B in Chat",
+          head: document.getElementById("job-title").textContent,
+        })).then((v) => (v.title === "task B" && v.ends > 0 ? v : null)),
+      "task B on its page",
     );
-    assert.equal(shown.readOnlyView, false, "no read-only run view any more");
+    assert.equal(shown.head, "Task B");
     assert.equal((await bindings())[tabB], b.sessionId, "bound to the active tab");
     return JSON.stringify(shown);
   });
@@ -215,7 +217,7 @@ try {
     assert.equal(ended.reason, "The tab was closed");
     assert.equal((await bindings())[d], undefined);
     const { sessions } = await ui({ type: "sessions.list" });
-    assert.ok(sessions.some((x) => x.sessionId === s.sessionId), "still in History");
+    assert.ok(sessions.some((x) => x.sessionId === s.sessionId), "still in the jobs list");
     return `${ended.outcome}: ${ended.reason}`;
   });
 } finally {

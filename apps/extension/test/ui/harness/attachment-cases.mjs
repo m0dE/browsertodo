@@ -29,7 +29,7 @@ export const ATTACHMENT_CASES = [
   {
     names: ["panel-attach-chips", "panel-attach-chips-conversation"],
     async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, checkLayout, reportErrors }) {
-      const p = await openPanel(ctx, "idle", ".chat-empty");
+      const p = await openPanel(ctx, "idle");
       await p.setInputFiles("#now-files", [
         { name: "sunrise-over-the-bay.jpg", mimeType: "image/jpeg", buffer: jpeg() },
         { name: "q3-report.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4 fake") },
@@ -87,7 +87,7 @@ export const ATTACHMENT_CASES = [
   {
     names: ["panel-attach-errors", "panel-attach-drop"],
     async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, checkLayout, reportErrors }) {
-      const p = await openPanel(ctx, "idle", ".chat-empty");
+      const p = await openPanel(ctx, "idle");
       const notice = () => p.evaluate(() => document.getElementById("now-notice").hidden ? null : (document.querySelector("#now-notice .notice-text")?.textContent ?? null));
       await p.setInputFiles("#now-files", [{ name: "not-really.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: Buffer.from("plain text") }]);
       await p.waitForFunction(() => /not a Word document/.test(document.getElementById("now-notice").textContent));
@@ -108,7 +108,7 @@ export const ATTACHMENT_CASES = [
       await p.close();
 
       if (want("panel-attach-drop", size, scheme)) {
-        const d = await openPanel(ctx, "idle", ".chat-empty");
+        const d = await openPanel(ctx, "idle");
         const image = thumbnail;
         // Paste a screenshot (the clipboard holds only the image).
         await d.evaluate((b64) => {
@@ -144,7 +144,7 @@ export const ATTACHMENT_CASES = [
   {
     names: ["panel-attach-sent"],
     async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors }) {
-      const p = await openPanel(ctx, "idle", ".chat-empty");
+      const p = await openPanel(ctx, "idle");
       await p.setInputFiles("#now-files", [
         { name: "sunrise-over-the-bay.jpg", mimeType: "image/jpeg", buffer: jpeg() },
         { name: "launch-plan.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: docx() },

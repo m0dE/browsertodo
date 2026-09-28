@@ -2,7 +2,7 @@
 
 ## Google sign-in (Log In)
 
-The TODO tab's **Log In** uses `chrome.identity.launchWebAuthFlow` with a Google
+**Log in with Google** (the side panel's account menu) uses `chrome.identity.launchWebAuthFlow` with a Google
 OAuth **Web application** client. The client ID is baked in at build time:
 
 ```sh

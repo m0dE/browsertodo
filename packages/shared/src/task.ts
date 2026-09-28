@@ -247,7 +247,7 @@ export const ApiError = z.object({ error: z.string(), details: z.unknown().optio
 export type ApiError = z.infer<typeof ApiError>;
 
 /**
- * A task stored in the extension (no cloud needed), and the TODO tab's row:
+ * A task stored in the extension (no cloud needed), as the jobs list has it:
  * a cloud Task with its repeat rule at the top (notBefore is its `at`).
  * mediaIds refer to files stored in the extension. When a repeating task
  * finishes, the extension creates the next occurrence as a new pending task

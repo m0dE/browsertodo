@@ -40,13 +40,18 @@ export class NarratorFeed {
     this.said = null;
   }
 
+  /** The user asked the agent something while it works on a request: its next words are the answer (said once). */
+  question(): void {
+    this.memory.awaitingAnswer = true;
+  }
+
   /** An event of the chat the session follows: the notes for the narrator. */
   push(ev: AgentEvent, now: number): FeedNote[] {
     const spoken = narrationOf(ev, this.memory, now);
     switch (ev.type) {
       case "assistant_text":
         if (ev.text.trim()) this.said = clip(ev.text, MAX_AGENT_TEXT);
-        return [];
+        return spoken ? [{ text: `Agent update (answer): The agent answered the user's question: "${spoken.line}" Tell the user its answer in one or two short sentences.`, speak: "result" }] : [];
       case "user_message":
         // Said to the narrator (send_to_agent): it knows. Typed in the panel: a new request it should know of.
         if (ev.voice) return [];

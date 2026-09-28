@@ -70,7 +70,7 @@ describe("AgentSlots", () => {
       end: () => {},
     });
     gated.take(1, "B");
-    const change = { action: 'Cancel the TODO task "Dentist"', site: "", why: "cancels a task in your TODO list" };
+    const change = { action: 'Cancel the scheduled job "Dentist"', site: "", why: "cancels one of your scheduled jobs" };
     await gated.confirm("B", change);
     expect(asked).toEqual([["B", change.action]]);
     gated.release(1, "B", { keepTabs: true });

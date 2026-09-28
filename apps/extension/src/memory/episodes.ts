@@ -15,7 +15,7 @@
  * failures are logged and retried at most MAX_EPISODE_ATTEMPTS times, then dropped.
  *
  * Backfill: conversations from before the writer existed (or while it was off) have no episode. At a worker start
- * (resume), once per BACKFILL_VERSION, the History's ended conversations of the last BACKFILL_DAYS that have none are
+ * (resume), once per BACKFILL_VERSION, the ended conversations of the last BACKFILL_DAYS that have none are
  * listed, newest first, at most MAX_BACKFILL_SESSIONS, and kept in the same stored state; they are written one at a
  * time, BACKFILL_GAP_MS apart, only when nothing in the queue is due and no run is going on (deps.busy), by the same
  * pass as any other (the same checks, the conversation's own brain's writer, metered the same way). The list

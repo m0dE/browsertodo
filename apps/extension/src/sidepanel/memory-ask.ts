@@ -1,5 +1,5 @@
 /**
- * The TODO tab's card "Add this computer's memory to <account>?" (UiState.memoryQuestion): shown after signing in to
+ * The jobs list's card "Add this computer's memory to <account>?" (UiState.memoryQuestion): shown after signing in to
  * another account than the one this computer's memory was synced with, until the user picks Add or Keep separate
  * (memory.syncChoice). Settings > Memory asks the same.
  */

@@ -38,7 +38,7 @@ export type ScheduleTaskArgs = z.infer<typeof ScheduleTaskArgs>;
 
 /** schedule_task's description for the model (the prompt says when to use it). */
 export const SCHEDULE_TASK_DESCRIPTION =
-  "Put a task in the user's TODO list, to run later at a time or on a repeat (e.g. 'check again in 3 hours', 'make this a daily task at 9am', 'repeat what we just did every Monday'). It runs by itself later with no memory of this chat, so `task` must be complete on its own. The user sees it in their TODO tab at once, with Undo in the chat. Only when the user asks for something to run later or again.";
+  "Put a task in the user's TODO list, to run later at a time or on a repeat (e.g. 'check again in 3 hours', 'make this a daily task at 9am', 'repeat what we just did every Monday'). It runs by itself later with no memory of this chat, so `task` must be complete on its own. The user sees it in their jobs list at once, with Undo in the chat. Only when the user asks for something to run later or again.";
 
 export const ListScheduledTasksArgs = z.object({});
 export type ListScheduledTasksArgs = z.infer<typeof ListScheduledTasksArgs>;
@@ -66,7 +66,7 @@ export const CancelScheduledTaskArgs = z.object({ task_id: TaskId });
 export type CancelScheduledTaskArgs = z.infer<typeof CancelScheduledTaskArgs>;
 
 export const CANCEL_SCHEDULED_TASK_DESCRIPTION =
-  "Cancel a waiting task in the user's TODO list so it does not run (it moves to Finished in the TODO tab; a repeating task stops repeating). Only when the user asks to cancel, delete or drop it. The chat shows a card with Undo. Cancelling a task this chat did not schedule may first wait for the user's OK on an approval card: do not ask in words first.";
+  "Cancel a waiting task in the user's TODO list so it does not run (it is over in their jobs list; a repeating task stops repeating). Only when the user asks to cancel, delete or drop it. The chat shows a card with Undo. Cancelling a task this chat did not schedule may first wait for the user's OK on an approval card: do not ask in words first.";
 
 // ---- What they store and answer ---------------------------------------------
 
@@ -118,14 +118,14 @@ const nextRunLine = (s: Pick<ScheduledTask, "nextRun" | "timeZone">) => `Next ru
 
 /** What schedule_task answers the model once the task is stored. */
 export function scheduledTaskText(s: ScheduledTask): string {
-  return `Scheduled in the user's TODO list (task ${s.taskId}): "${titleOf(s.instructions)}" · ${s.when}. ${nextRunLine(s)} It shows in their TODO tab now, and the chat shows them a card with Undo. Tell them in one short line, with the time in their time zone.`;
+  return `Scheduled in the user's TODO list (task ${s.taskId}): "${titleOf(s.instructions)}" · ${s.when}. ${nextRunLine(s)} It shows in their jobs list now, and the chat shows them a card with Undo. Tell them in one short line, with the time in their time zone.`;
 }
 
 /** What update_scheduled_task / cancel_scheduled_task answer the model once the change is made. */
 export function changedTaskText(change: TodoChange, s: ScheduledTask): string {
   const title = titleOf(s.instructions);
   if (change === "cancelled") {
-    return `Cancelled task ${s.taskId} in the user's TODO list: "${title}". It will not run (it moved to Finished in their TODO tab), and the chat shows them a card with Undo. Tell them in one short line.`;
+    return `Cancelled task ${s.taskId} in the user's TODO list: "${title}". It will not run (it is over in their jobs list), and the chat shows them a card with Undo. Tell them in one short line.`;
   }
   return `Changed task ${s.taskId} in the user's TODO list: "${title}" · ${s.when}. ${nextRunLine(s)} The chat shows them a card with Undo. Tell them in one short line, with the time in their time zone.`;
 }

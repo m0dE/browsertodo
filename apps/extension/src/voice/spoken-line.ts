@@ -39,6 +39,11 @@ export function speakable(text: string, max = MAX_SPOKEN_CHARS): string {
   return clip(end ? plain.slice(0, end.index + 1) : plain, max);
 }
 
+/** The agent's answer to what the user asked it while it worked, as plain words (at most MAX_SPOKEN_CHARS). */
+export function answerLine(text: string): string {
+  return clip(plainText(text), MAX_SPOKEN_CHARS);
+}
+
 /** An error's one short line (the error card's message). */
 export function errorLine(text: string): string {
   return errorHelp(text).message;

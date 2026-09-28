@@ -13,7 +13,7 @@
 import { USER_STOP_REASON, type AgentEvent } from "@browsertodo/shared";
 import { containedWordShare, sharedWordShare } from "../text.js";
 import { milestoneOf, siteName } from "./milestones.js";
-import { endLine, errorLine } from "./spoken-line.js";
+import { answerLine, endLine, errorLine } from "./spoken-line.js";
 
 /** What a narrator reply is: its answer to the user's speech, or one it was asked for (see SpokenKind). */
 export type ReplyKind = "speech" | SpokenKind;
@@ -38,9 +38,19 @@ export interface NarrationMemory {
   sites: string[];
   /** The last result or question said (never said twice). */
   lastLine: string | null;
+  /** The user asked the agent something while it worked: its next words are the answer, said once. */
+  awaitingAnswer: boolean;
 }
 
-export const freshMemory = (now = -Infinity): NarrationMemory => ({ lastSpokenAt: now, milestones: [], sites: [], lastLine: null });
+export const freshMemory = (now = -Infinity): NarrationMemory => ({ lastSpokenAt: now, milestones: [], sites: [], lastLine: null, awaitingAnswer: false });
+
+/**
+ * What the user's words passed on to the agent are, as the narrator understood them (send_to_agent's `kind`): a
+ * question (something asked of the agent, conversation, or a correction of a misunderstanding), answered by the
+ * agent, or an instruction (a new task or a change to the one running). A call without it is an instruction.
+ */
+export type RequestKind = "question" | "instruction";
+export const requestKind = (args: Record<string, unknown> | null): RequestKind => (args?.kind === "question" ? "question" : "instruction");
 
 /** A step is news only when it changes where the agent is or who it is: another site, an account, a sign-in. */
 function meaningfulStep(ev: Extract<AgentEvent, { type: "tool_call" }>, memory: NarrationMemory): string | null {
@@ -68,13 +78,22 @@ function news(line: string, memory: NarrationMemory, now: number): boolean {
 
 /**
  * What an event of the chat may make the narrator say, or null: nothing to say (it may still be passed on as a note
- * for context). Speaks for: the result (the agent's spoken line), its question, a problem, and a meaningful step now
- * and then (NARRATOR_MILESTONE_GAP_MS apart, MAX_MILESTONES_PER_REQUEST). Never for the user's message or words, the
- * agent's own text (it restates the request), routine steps or status lines. `line`: the words it is about.
+ * for context). Speaks for: the result (the agent's spoken line), its answer to a question the user asked while it
+ * worked, its question, a problem, and a meaningful step now and then (NARRATOR_MILESTONE_GAP_MS apart,
+ * MAX_MILESTONES_PER_REQUEST). Never for the user's message or words, the agent's other text (it restates the
+ * request), routine steps or status lines. `line`: the words it is about.
  */
 export function narrationOf(ev: AgentEvent, memory: NarrationMemory, now: number): { kind: SpokenKind; line: string } | null {
   switch (ev.type) {
+    case "assistant_text": {
+      const line = memory.awaitingAnswer ? answerLine(ev.text) : "";
+      if (!line) return null;
+      memory.awaitingAnswer = false;
+      return news(line, memory, now) ? { kind: "result", line } : null;
+    }
     case "task_end": {
+      // The turn's end says what is left to say (its answer included).
+      memory.awaitingAnswer = false;
       const line = endLine(ev);
       // A reason without a spoken line is the agent's question as it wrote it (not when the user stopped it).
       const kind = ev.outcome === "paused" && !ev.spoken && ev.reason && ev.reason.trim() !== USER_STOP_REASON ? "question" : "result";

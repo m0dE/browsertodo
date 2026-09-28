@@ -270,17 +270,20 @@ try {
     return `chat in tab ${moved}; the panel of tab ${tabC} shows both replies; the user stayed on ${tabC}`;
   });
 
-  await step("a chip of another tab's running chat, clicked in B's panel: that tab shows, with its own panel open on that chat", async () => {
+  await step("another tab's running job, opened in B's panel: Show tab shows that tab, with its own panel open on that job", async () => {
     const fake = await installFakeBrain(sw, { gated: true, makeAct: (reply) => async () => reply, arg: REPLY });
     const ui = routerUi(sw);
     const { sessionId } = await ui({ type: "run.adhoc", instructions: "Wait in A", tabId: tabA });
     await fake.started("Wait in A");
     await activate(pageB, tabB);
     await panelShows(tabB, "B's panel to show");
-    await waitFor(() => host.evaluate((id) => {
+    // B's list has A's running job: opened, its page says it runs in another tab, with Show tab.
+    await waitFor(() => host.evaluate(([id, key]) => {
       const v = chrome.extension.getViews().find((x) => x.location.search === `?tab=${id}`);
-      return !!v?.document.querySelector("button.act-chip");
-    }, tabB), "the chip of A's running chat in B's panel");
+      const row = v?.document.querySelector(`.job-row[data-key="${key}"]`);
+      row?.click();
+      return !!v?.document.querySelector("#job-elsewhere:not([hidden]) button");
+    }, [tabB, `chat:${sessionId}`]), "A's running job in B's panel, with Show tab");
     // The user's click in the real side panel: a trusted gesture there (sidePanel.open needs one).
     const port = Number(readFileSync(join(ext.profile, "DevToolsActivePort"), "utf8").split("\n")[0]);
     const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -288,13 +291,14 @@ try {
     const ws = new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => ((ws.onopen = resolve), (ws.onerror = reject)));
     const answered = new Promise((resolve) => (ws.onmessage = (m) => resolve(JSON.parse(m.data))));
-    ws.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: `document.querySelector("button.act-chip").click()`, userGesture: true } }));
+    ws.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: `document.querySelector("#job-elsewhere button").click()`, userGesture: true } }));
     await answered;
     ws.close();
     const p = await panelShows(tabA, "A's own panel to open and show");
     const active = await sw.evaluate(async (w) => (await chrome.tabs.query({ active: true, windowId: w }))[0].id, windowId);
     assert.equal(active, tabA, "tab A in front");
-    await waitFor(async () => (await panelOf(tabA))?.chat.includes("Wait in A"), "A's chat in A's panel");
+    // A's panel opens on the job working in its tab.
+    await waitFor(async () => (await panelOf(tabA))?.chat.includes("Wait in A"), "A's job in A's panel");
     await fake.release("Wait in A");
     await waitFor(async () => (await ui({ type: "state.get" })).runningSessions.every((s) => s.sessionId !== sessionId), "the run to end");
     return JSON.stringify({ tab: p.tab, visible: p.visible });

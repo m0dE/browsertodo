@@ -77,7 +77,8 @@ describe("the narrator: tool first, at most one acknowledgement", () => {
   }
 
   it("is told to call send_to_agent before saying anything, and to acknowledge at most once after", () => {
-    expect(NARRATOR_INSTRUCTIONS).toContain("When the user asks for something, call send_to_agent immediately, before saying anything. After it returns, say at most one short acknowledgement.");
+    expect(NARRATOR_INSTRUCTIONS).toContain("When the user asks for something, call send_to_agent immediately, before saying anything, with kind 'question'");
+    expect(NARRATOR_INSTRUCTIONS).toContain("Never say yourself what the agent will do or when.");
     const { socket } = client();
     expect(socket.sent[0]!.session.audio.input.transcription).toEqual({ model: "gpt-transcribe", prompt: TRANSCRIPTION_PROMPT });
   });

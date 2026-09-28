@@ -1,46 +1,33 @@
 import { describe, expect, it } from "vitest";
-import type { SessionInfo } from "@browsertodo/shared";
-import { chatForTab, followChat, isBound, otherRunning, ownChatOfTab, tabOfSession } from "../../src/sidepanel/tab-chat.js";
+import { chatInTab, followChat, isBound, ownChatOfTab, tabOfSession } from "../../src/sidepanel/tab-chat.js";
 
 const state = {
   tabChats: { "1": "A", "2": "B" },
   runningTabs: { B: [2, 5], S: [9], A: [1] },
 };
 
-describe("chatForTab: the conversation the panel shows for a tab", () => {
-  it("the tab's own conversation, or an empty new chat", () => {
-    expect(chatForTab(1, state)).toBe("A");
-    expect(chatForTab(2, state)).toBe("B");
-    expect(chatForTab(3, state)).toBeNull();
-    expect(chatForTab(null, state)).toBeNull();
-    expect(chatForTab(1, {})).toBeNull();
-  });
-
-  it("a run in a tab with no chat (a scheduled run) shows there; an agent's extra tab does not steal a bound chat", () => {
-    expect(chatForTab(9, state)).toBe("S");
-    // Tab 5 was opened by B's agent, and B belongs to tab 2.
-    expect(chatForTab(5, state)).toBeNull();
-    // Left with New chat: that tab is a new chat again.
-    expect(chatForTab(9, state, { left: new Map([[9, "S"]]) })).toBeNull();
-  });
-
-  it("a conversation just started from the tab shows before the state says so", () => {
-    expect(chatForTab(3, state, { pending: { tab: 3, sessionId: "N" } })).toBe("N");
-    expect(chatForTab(4, state, { pending: { tab: 3, sessionId: "N" } })).toBeNull();
-    // Once it is bound somewhere (it moved to a new tab), the pending note no longer applies.
-    expect(chatForTab(3, { tabChats: { "8": "N" } }, { pending: { tab: 3, sessionId: "N" } })).toBeNull();
-    expect(chatForTab(8, { tabChats: { "8": "N" } }, { pending: { tab: 3, sessionId: "N" } })).toBe("N");
-  });
-});
-
-describe("ownChatOfTab: the chat hands-free voice talks to and narrates", () => {
+describe("ownChatOfTab: the tab's own chat (its job shows; hands-free voice talks to it)", () => {
   it("the tab's bound or just-started chat, never a scheduled run that only acts in the tab (its results were read out)", () => {
     expect(ownChatOfTab(1, state)).toBe("A");
     expect(ownChatOfTab(3, state, { pending: { tab: 3, sessionId: "N" } })).toBe("N");
-    // Tab 9 has no chat; a scheduled run S works in it: the panel shows S there, voice does not follow it.
-    expect(chatForTab(9, state)).toBe("S");
+    expect(ownChatOfTab(4, state, { pending: { tab: 3, sessionId: "N" } })).toBeNull();
+    // Once it is bound somewhere (it moved to a new tab), the pending note no longer applies.
+    expect(ownChatOfTab(3, { tabChats: { "8": "N" } }, { pending: { tab: 3, sessionId: "N" } })).toBeNull();
+    // Tab 9 has no chat; a scheduled run S only works in it.
     expect(ownChatOfTab(9, state)).toBeNull();
     expect(ownChatOfTab(null, state)).toBeNull();
+  });
+});
+
+describe("chatInTab: the job a panel following the active tab shows", () => {
+  it("the tab's own chat, else a run working there that belongs to no tab, else none (the list)", () => {
+    expect(chatInTab(1, state)).toBe("A");
+    expect(chatInTab(9, state)).toBe("S");
+    // Tab 5 was opened by B's agent, and B belongs to tab 2.
+    expect(chatInTab(5, state)).toBeNull();
+    expect(chatInTab(3, state)).toBeNull();
+    expect(chatInTab(3, state, { pending: { tab: 3, sessionId: "N" } })).toBe("N");
+    expect(chatInTab(null, state)).toBeNull();
   });
 });
 
@@ -75,11 +62,5 @@ describe("where a conversation lives", () => {
     expect(tabOfSession("X", state)).toBeNull();
     expect(isBound("A", state)).toBe(true);
     expect(isBound("S", state)).toBe(false);
-  });
-
-  it("the switcher offers the running conversations of other tabs", () => {
-    const s = (id: string) => ({ sessionId: id }) as SessionInfo;
-    expect(otherRunning([s("A"), s("B"), s("S")], "A").map((x) => x.sessionId)).toEqual(["B", "S"]);
-    expect(otherRunning([s("A")], null).map((x) => x.sessionId)).toEqual(["A"]);
   });
 });

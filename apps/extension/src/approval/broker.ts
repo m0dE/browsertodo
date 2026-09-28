@@ -112,6 +112,11 @@ export class ApprovalBroker {
     for (const p of [...this.pending.values()]) if (p.sessionId === sessionId) p.settle("ended", "turn_end");
   }
 
+  /** The conversations with a request waiting now (the side panel lists them under Needs you). */
+  waitingSessions(): string[] {
+    return [...new Set([...this.pending.values()].map((p) => p.sessionId))];
+  }
+
   /** Requests waiting now, oldest first (all conversations, or one). */
   waiting(sessionId?: string): ApprovalRequest[] {
     return [...this.pending.values()].filter((p) => !sessionId || p.sessionId === sessionId).map((p) => p.request);

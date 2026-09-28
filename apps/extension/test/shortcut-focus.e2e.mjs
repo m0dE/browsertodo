@@ -48,7 +48,7 @@ try {
     if (t.windowId !== w) await chrome.tabs.move(t.id, { windowId: w, index: 0 });
   }, [HOST, windowId]);
 
-  /** The real side panel of `w`: its page's focus, the focused element, the selected tab, the box, the chat, a mark. */
+  /** The real side panel of `w`: its page's focus, the focused element, its view (the list or a job), the box, the chat, a mark. */
   const panelOf = (w = windowId) =>
     host.evaluate(async (w) => {
       for (const v of chrome.extension.getViews()) {
@@ -58,7 +58,8 @@ try {
         return {
           hasFocus: d.hasFocus(),
           active: d.activeElement?.id || d.activeElement?.tagName,
-          tab: d.querySelector("[role=tab][aria-selected=true]")?.id,
+          view: d.getElementById("view-job").hidden ? "list" : "job",
+          rows: [...d.querySelectorAll(".job-row .job-title")].map((t) => t.textContent),
           draft: d.getElementById("now-text").value,
           chat: d.getElementById("chat-log").textContent,
           voice: d.querySelector(".voice-mic")?.dataset.state ?? null,
@@ -75,9 +76,14 @@ try {
         for (const v of chrome.extension.getViews()) {
           if (v.location.pathname !== "/sidepanel.html" || (await v.chrome.windows.getCurrent()).id !== w) continue;
           const d = v.document;
-          if (what === "history") {
-            d.getElementById("tab-btn-history").click();
-            d.getElementById("tab-btn-history").focus();
+          if (what === "open") {
+            // The user picks the job's row in the list.
+            [...d.querySelectorAll(".job-row")].find((r) => r.querySelector(".job-title").textContent === arg).click();
+          } else if (what === "back") {
+            d.getElementById("job-back").click();
+            d.getElementById("job-search").focus();
+          } else if (what === "focus-back") {
+            d.getElementById("job-back").focus();
           } else if (what === "type") {
             const t = d.getElementById("now-text");
             t.value = arg;
@@ -97,19 +103,19 @@ try {
     await web.click("#q");
     await waitFor(async () => (await panelOf())?.hasFocus === false, "the panel to lose the focus to the page");
   };
-  /** The panel's input has the real keyboard focus, in Chat. */
-  const inputHasRealFocus = async (what, w = windowId) => {
+  /** The panel's input has the real keyboard focus (in the view `view`: the list, or a job's page). */
+  const inputHasRealFocus = async (what, w = windowId, view = null) => {
     const t0 = Date.now();
     const got = await waitFor(
       async () => {
         const f = await panelOf(w);
-        return f?.hasFocus && f.active === "now-text" && f.tab === "tab-btn-chat" ? f : null;
+        return f?.hasFocus && f.active === "now-text" && (!view || f.view === view) ? f : null;
       },
       what,
       { timeout: 3000 },
     ).catch(() => null);
     const f = await panelOf(w);
-    assert.ok(got, `${what}: panel ${JSON.stringify(f)} (expected hasFocus=true, active=now-text, tab=tab-btn-chat)`);
+    assert.ok(got, `${what}: panel ${JSON.stringify(f)} (expected hasFocus=true, active=now-text${view ? `, view=${view}` : ""})`);
     return { panel: got, ms: Date.now() - t0 };
   };
 
@@ -120,33 +126,36 @@ try {
   await sessionWhen(sw, sessionId, "the web tab's run to end");
   await web.bringToFront();
 
-  await step("no panel open: the shortcut opens it with the real keyboard focus in the input", async () => {
+  await step("no panel open: the shortcut opens it on the jobs list with the real keyboard focus in the input", async () => {
     assert.equal(await press(WEB), "opened");
-    const { panel, ms } = await inputHasRealFocus("the new panel's input to have the focus");
-    await waitFor(async () => (await panelOf()).chat.includes(REPLY), "the web tab's chat in the panel");
+    const { panel, ms } = await inputHasRealFocus("the new panel's input to have the focus", windowId, "list");
+    await waitFor(async () => (await panelOf()).rows.includes(TASK), "the web tab's job in the list");
+    // The user opens it: its page, with the conversation.
+    await inPanel("open", TASK);
+    await waitFor(async () => (await panelOf()).chat.includes(REPLY), "the web tab's job on its page");
     return `focused ${ms} ms after the handler; ${JSON.stringify({ hasFocus: panel.hasFocus, active: panel.active })}`;
   });
 
-  await step("focus in the panel (on the History tab): the shortcut focuses the input in Chat, without reloading the panel", async () => {
+  await step("focus in the panel (on the job's back button): the shortcut focuses the input, without reloading the panel", async () => {
     await inPanel("mark", "kept");
-    await inPanel("history");
-    await waitFor(async () => (await panelOf())?.active === "tab-btn-history", "the History tab to have the focus");
+    await inPanel("focus-back");
+    await waitFor(async () => (await panelOf())?.active === "job-back", "the back button to have the focus");
     assert.equal(await press(WEB), "focused");
-    const { panel } = await inputHasRealFocus("the input to have the focus");
+    const { panel } = await inputHasRealFocus("the input to have the focus", windowId, "job");
     assert.equal(panel.mark, "kept", "the same panel page");
     return "same page, input focused";
   });
 
-  await step("focus in the web page, text in the box: the shortcut recreates the panel with the real focus in the input, the text and the chat", async () => {
+  await step("focus in the web page, text in the box: the shortcut recreates the panel with the real focus in the input, the text and the job", async () => {
     await inPanel("type", DRAFT);
     await userClicksIntoPage();
     const t0 = Date.now();
     assert.equal(await press(WEB), "reopened");
     const { panel, ms } = await inputHasRealFocus("the input to have the real keyboard focus after the shortcut");
     assert.equal(panel.mark, null, "a new panel page");
-    // The page says hello once it runs; the background then gives it the focus with the text back.
+    // The page says hello once it runs; the background then gives it the focus with the text and the job back.
     await waitFor(async () => (await panelOf()).draft === DRAFT, "the text in the box to be back", { timeout: 3000 });
-    await waitFor(async () => (await panelOf()).chat.includes(REPLY), "the web tab's chat in the new panel", { timeout: 3000 });
+    await waitFor(async () => (await panelOf()).chat.includes(REPLY), "the web tab's job in the new panel", { timeout: 3000 });
     const shown = Date.now() - t0;
     assert.ok((await panelOf()).hasFocus, "the focus stayed in the panel");
     return `focused ${ms} ms after the handler; the box has ${JSON.stringify(DRAFT)} and the chat "${REPLY}" ${shown} ms after the press`;
@@ -168,7 +177,7 @@ try {
     const got = await waitFor(
       async () => {
         const f = await panelOf();
-        return f?.hasFocus && f.mark === null && f.tab === "tab-btn-chat" && f.tip ? f : null;
+        return f?.hasFocus && f.mark === null && f.tip ? f : null;
       },
       "the new panel to have the focus and the locked-mic tip",
       { timeout: 5000 },
@@ -186,11 +195,11 @@ try {
     return "voice";
   });
 
-  await step("on History with the focus in the web page: the shortcut focuses the input in Chat", async () => {
-    await inPanel("history");
+  await step("on the list with the focus in the web page: the shortcut recreates the panel on the list, the input focused", async () => {
+    await inPanel("back");
     await userClicksIntoPage();
     assert.equal(await press(WEB), "reopened");
-    const { ms } = await inputHasRealFocus("the input to have the real keyboard focus after the shortcut");
+    const { ms } = await inputHasRealFocus("the input to have the real keyboard focus after the shortcut", windowId, "list");
     return `focused ${ms} ms after the handler`;
   });
 

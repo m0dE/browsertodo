@@ -3,7 +3,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { installChromeStub } from "./chrome-stub.mjs";
-import { scenario } from "./scenarios.mjs";
+import { scenario, tabJobKey } from "./scenarios.mjs";
 
 /** Visible to the user: laid out, and not inside a hidden element or a closed reveal. */
 export const shownJs = (sel) => {
@@ -49,8 +49,13 @@ export function createChecks({ browser, base, only, shots }) {
     taken.push(file);
   }
 
-  /** Opens the side panel on a scenario; `opts.edit` changes its canned data, `opts.init` are more init scripts (e.g. installVoiceFakes). */
-  async function openPanel(ctx, kind, waitFor = "#chat-log > *", opts = {}) {
+  /**
+   * Opens the side panel on a scenario; `opts.edit` changes its canned data, `opts.init` are more init scripts (e.g.
+   * installVoiceFakes). The panel opens on the jobs list; `opts.job` opens a job's page first: a job key, or "tab" for
+   * the job of the conversation the panel's tab has (bound to tab 1, or running there). Without `opts.job`, a
+   * `waitFor` in the conversation (#chat-log, .ev-*) opens the tab's job, anything else waits on the list.
+   */
+  async function openPanel(ctx, kind, waitFor = "#job-groups > *", opts = {}) {
     const page = await ctx.newPage();
     const errors = [];
     page.on("pageerror", (e) => errors.push(String(e.stack ?? e)));
@@ -62,7 +67,10 @@ export function createChecks({ browser, base, only, shots }) {
     await page.goto(`${base}/sidepanel.html${opts.search ?? ""}`);
     await page.evaluate(() => localStorage.clear());
     await page.reload();
+    const job = opts.job ?? (/#chat-log|\.ev-/.test(waitFor) ? "tab" : null);
     try {
+      await page.waitForSelector("#job-groups > *", { state: "attached" });
+      if (job) await openJob(page, job === "tab" ? tabJobKey(data) : job);
       // "attached": rows inside a folded steps group are in the log but not visible.
       await page.waitForSelector(waitFor, { state: "attached" });
     } catch (err) {
@@ -71,6 +79,20 @@ export function createChecks({ browser, base, only, shots }) {
     }
     page.errors = errors;
     return page;
+  }
+
+  /** Opens a job's page from the list (its row), and waits for the page. */
+  async function openJob(page, key) {
+    if (!(await page.isVisible("#view-list"))) await backToList(page);
+    const row = page.locator(`.job-row[data-key="${key}"]`);
+    await row.click();
+    await page.waitForSelector("#view-job:not([hidden])");
+  }
+
+  /** Back to the list ("‹"). */
+  async function backToList(page) {
+    await page.click("#job-back");
+    await page.waitForSelector("#view-list:not([hidden])");
   }
 
   function reportErrors(page, label) {
@@ -84,25 +106,29 @@ export function createChecks({ browser, base, only, shots }) {
       const comp = document.getElementById("composer");
       const main = document.querySelector("main");
       if (document.documentElement.scrollWidth > window.innerWidth) out.push("horizontal page scroll");
-      // The tab row and the Chat action bar each stay on one line, inside the panel.
+      // The header stays on one line, inside the panel.
       const one = (sel, what) => {
         const row = document.querySelector(sel);
         if (!row || !row.offsetParent) return;
         const r = row.getBoundingClientRect();
         const kids = [...row.children].filter((k) => k.getBoundingClientRect().width);
-        const top = kids[0]?.getBoundingClientRect().top;
-        for (const k of kids) {
+        const mid = kids.map((k) => k.getBoundingClientRect()).map((b) => (b.top + b.bottom) / 2);
+        for (const [i, k] of kids.entries()) {
           const b = k.getBoundingClientRect();
-          if (Math.abs(b.top - top) > 1 && !k.classList.contains("bar-sep")) out.push(`${what}: ${k.id || k.textContent.trim()} wraps`);
-          if (b.right > r.right + 0.5) out.push(`${what}: ${k.id || k.textContent.trim()} clipped`);
+          if (Math.abs(mid[i] - mid[0]) > 2) out.push(`${what}: ${k.id || k.className} is not on the header's line`);
+          if (b.right > r.right + 0.5 || b.left < r.left - 0.5) out.push(`${what}: ${k.id || k.className} clipped`);
         }
       };
-      one(".tabs", "tab row");
-      one(".chat-bar", "chat bar");
-      const tab = document.querySelector(".tabs [aria-selected=true]")?.dataset.tab;
-      // The TODO tab as one call to action (Log In signed out; Get a plan on a plan without the TODO list) has no composer.
-      const ctaOnly = tab === "todo" && ["out", "locked"].includes(document.getElementById("tab-todo").dataset.auth);
-      if (comp.hidden !== (tab === "history" || ctaOnly)) out.push(`composer ${comp.hidden ? "hidden" : "shown"} on the ${tab} tab${ctaOnly ? " (call to action)" : ""}`);
+      one("#list-head", "list header");
+      one("#job-head", "job header");
+      // Rows are one tight line (a quiet second line at most), nothing spilling sideways.
+      for (const row of document.querySelectorAll("#view-list:not([hidden]) .job-row")) {
+        const r = row.getBoundingClientRect();
+        if (r.height > 46) out.push(`row ${row.dataset.key} is ${Math.round(r.height)}px tall`);
+        if (row.scrollWidth > row.clientWidth + 1) out.push(`row ${row.dataset.key} spills sideways`);
+      }
+      // The composer is under both views.
+      if (comp.hidden) out.push("composer hidden");
       if (comp.hidden) return out;
       const c = comp.getBoundingClientRect();
       if (Math.abs(c.bottom - window.innerHeight) > 1) out.push(`composer bottom ${c.bottom} != viewport ${window.innerHeight}`);
@@ -194,6 +220,8 @@ export function createChecks({ browser, base, only, shots }) {
     wantAny,
     shoot,
     openPanel,
+    openJob,
+    backToList,
     reportErrors,
     checkLayout,
     openOptions,

@@ -447,7 +447,14 @@ const router = new UiRouter({
     return out;
   },
 });
-sessions.subscribe({ onEvent: (e) => hub.event(e), onSession: (s) => hub.session(s) });
+sessions.subscribe({
+  onEvent: (e) => {
+    hub.event(e);
+    // An approval asked or answered: the jobs list moves the conversation in or out of Needs you (UiState.awaitingApproval).
+    if (e.type === "approval_request" || e.type === "approval_resolved") hub.pushState();
+  },
+  onSession: (s) => hub.session(s),
+});
 
 // Which tabs the agent controls shows in its tab group, the toolbar badge and on the page (control-indicator.ts).
 const controlIndicator = new ControlIndicator({
@@ -542,7 +549,7 @@ chrome.windows.onFocusChanged.addListener((windowId) => voiceSessions.windowFocu
 chrome.windows.onRemoved.addListener((windowId) => voiceSessions.windowRemoved(windowId));
 // A tab a running agent's page opened (target=_blank, window.open) joins that run's tabs.
 chrome.tabs.onCreated.addListener((tab) => void slots.adopt(tab).catch(() => {}));
-// A closed tab loses its chat (the session stays in History); a turn running there stops.
+// A closed tab loses its chat (the session stays in the jobs list); a turn running there stops.
 chrome.tabs.onRemoved.addListener((tabId) => {
   panelCommands.tabRemoved(tabId);
   voiceSessions.tabRemoved(tabId);

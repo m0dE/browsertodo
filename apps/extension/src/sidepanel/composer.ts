@@ -1,15 +1,15 @@
 /**
- * The input bar pinned to the bottom of the Chat and TODO tabs. It talks to
- * the conversation the Chat tab shows (the current browser tab's): while its
+ * The input bar pinned to the bottom of the panel, under the jobs list and under
+ * a job's page. On a job's page it talks to the job's conversation: while its
  * turn runs, a message goes into that turn (and Stop pauses it); once the
- * turn ended, a message is the conversation's next turn. With no conversation
- * shown (a new chat) the box is "Do this now", which starts a new one in the
- * current tab. Every request names that tab.
+ * turn ended, a message is the conversation's next turn. Under the list (no
+ * conversation) it starts a new job in the current tab. Every request names
+ * that tab.
  *
- * In Chat, sending an empty box means "look at this page and do what is
- * needed" (SCREEN_HELP_TEXT, see emptySend); under TODO an empty box does
- * nothing. After a turn, Chat offers the agent's follow-up suggestion faded
- * in the box (see suggestion.ts): Tab takes it, it is never sent by itself.
+ * Sending an empty box means "look at this page and do what is needed"
+ * (SCREEN_HELP_TEXT, see emptySend). After a turn, the job's page offers the
+ * agent's follow-up suggestion faded in the box (see suggestion.ts): Tab
+ * takes it, it is never sent by itself.
  *
  * Files go with a message too (attachments/): pasted into the box, dropped
  * anywhere on the panel, or picked with the paperclip; they show as chips
@@ -28,13 +28,12 @@ import { renderTrayChips } from "./attachments/view.js";
 import { initModelPicker } from "./model-menu.js";
 import { initNotices, type Notices } from "./notices.js";
 import { FollowUpSuggestion, suggestionDescription, type SuggestionOffer } from "./suggestion.js";
-import type { TabName } from "./tabs.js";
 import { ChatMemory } from "./chat-memory.js";
 
 export type ComposerMode = "new" | "conversation" | "running";
 
-/** The Chat placeholder: an empty send looks at the page. */
-export const SCREEN_PLACEHOLDER = "Figure out what to do based on the current screen";
+/** The box under the list starts a new job (an empty send looks at the page: Send's tooltip says so). */
+export const NEW_JOB_PLACEHOLDER = "Start a new job…";
 /** The placeholder while hands-free voice listens for this box's tab. */
 export const LISTENING_PLACEHOLDER = "Listening… just talk";
 /** The placeholder while hands-free is on for this tab with the microphone muted. */
@@ -48,18 +47,16 @@ export const SCREEN_SEND_TITLE = "Describe a task, or press Enter to let Browser
 type EmptySendRequest = Extract<UiRequest, { type: "run.message" }> | Extract<UiRequest, { type: "run.adhoc" }>;
 
 /**
- * What Send does with an empty box (and no text): in Chat, look at the
- * page — a new conversation, or the shown one's next turn — else nothing,
- * with a hint. A running turn is looking already; files need a few words.
+ * What Send does with an empty box (and no text): look at the page — a new
+ * job, or the shown one's next turn. A running turn is looking already;
+ * files need a few words.
  */
 export function emptySend(opts: {
-  panelTab: TabName;
   mode: ComposerMode;
   sessionId: string | null;
   hasFiles: boolean;
   tabId: number | null;
 }): { request: EmptySendRequest } | { hint: string } {
-  if (opts.panelTab !== "chat") return { hint: "Type a task to run it now" };
   if (opts.hasFiles) return { hint: "Say what to do with the files" };
   if (opts.mode === "running") return { hint: "The agent is working: type a message, or press Stop" };
   const tab = opts.tabId === null ? {} : { tabId: opts.tabId };
@@ -74,7 +71,7 @@ export interface ComposerView {
   setRunning(running: readonly SessionInfo[]): void;
   /** Keeps the model chip in step with the settings and brain status. */
   setState(state: UiState): void;
-  /** The conversation the Chat tab shows (null: a new chat). */
+  /** The conversation of the job shown (null: the list, or a job that never ran: the box starts a new job). */
   setConversation(session: SessionInfo | null): void;
   /** The conversation the box talks to, or null ("Do this now"). */
   target(): SessionInfo | null;
@@ -93,12 +90,8 @@ export interface ComposerView {
   setDraft(value: string): void;
   /** Hands-free voice is on (it may write into the box): the follow-up suggestion stays hidden meanwhile. */
   setDictating(look: DictationLook): void;
-  /** The side panel tab shown (the composer sits under Chat and TODO; only Chat sends empty messages). */
-  setPanelTab(tab: TabName): void;
   /** Continue a stopped conversation now: sends the typed note if there is one, otherwise just continues. */
   continueNow(sessionId: string): Promise<void>;
-  /** New chat left this conversation: the tab has no chat any more, its kept-open agent session is closed (a running turn keeps running). */
-  leave(sessionId: string): void;
   /** Says above the box why something the panel did for this chat failed. */
   showError(err: unknown): void;
   /** The notice line above the box (voice tips, hints, errors): one at a time, never over the box. */
@@ -121,7 +114,6 @@ const NOTICE_KEY = "composer";
 /** Files that could not be added say so under this key. */
 const FILES_NOTICE = "files";
 
-const NEW_PLACEHOLDER = "Do this now, e.g. “Post ‘good morning’ on X”";
 const CHAT_PLACEHOLDER = "Message BrowserTODO…";
 const MAX_ROWS = 8;
 
@@ -247,7 +239,6 @@ export function initComposer(opts: {
   });
   let running = new Set<string>();
   let shown: SessionInfo | null = null;
-  let panelTab: TabName = "chat";
 
   const target = (): SessionInfo | null => shown;
   const mode = (): ComposerMode => {
@@ -390,10 +381,10 @@ export function initComposer(opts: {
     );
   });
 
-  /** Empty box: in Chat, look at the page (see emptySend). */
+  /** Empty box: look at the page (see emptySend). */
   function sendEmpty(): void {
     const t = target();
-    const next = emptySend({ panelTab, mode: mode(), sessionId: t?.sessionId ?? null, hasFiles: tray.count > 0, tabId: opts.tabId?.() ?? null });
+    const next = emptySend({ mode: mode(), sessionId: t?.sessionId ?? null, hasFiles: tray.count > 0, tabId: opts.tabId?.() ?? null });
     if ("hint" in next) return hint(next.hint);
     dismissSuggestion();
     void busy(
@@ -417,12 +408,11 @@ export function initComposer(opts: {
 
   function render(): void {
     const m = mode();
-    const inChat = panelTab === "chat";
-    placeholder = m !== "new" ? CHAT_PLACEHOLDER : inChat ? SCREEN_PLACEHOLDER : NEW_PLACEHOLDER;
-    suggestion.setOffer(inChat && m === "conversation" ? offerOf(target()) : null);
+    placeholder = m !== "new" ? CHAT_PLACEHOLDER : NEW_JOB_PLACEHOLDER;
+    suggestion.setOffer(m === "conversation" ? offerOf(target()) : null);
     fit();
-    // In Chat an empty box can be sent: it looks at the page.
-    const screenOk = inChat && m !== "running" && tray.count === 0;
+    // An empty box can be sent: it looks at the page.
+    const screenOk = m !== "running" && tray.count === 0;
     form.classList.toggle("screen-ok", screenOk);
     submit.title = screenOk ? SCREEN_SEND_TITLE : "Send";
     text.setAttribute("aria-label", m === "new" ? "Task to do now" : m === "running" ? "Message to the agent" : "Next message in this conversation");
@@ -461,11 +451,6 @@ export function initComposer(opts: {
     focus() {
       text.focus();
     },
-    setPanelTab(tab) {
-      if (tab === panelTab) return;
-      panelTab = tab;
-      render();
-    },
     async continueNow(sessionId) {
       const note = text.value.trim();
       dismissSuggestion();
@@ -480,10 +465,6 @@ export function initComposer(opts: {
       } catch (err) {
         showError(err);
       }
-    },
-    leave(sessionId) {
-      text.focus();
-      void uiRequest({ type: "run.newChat", sessionId, ...tab() }).catch(showError);
     },
     setState(state) {
       model.setState(state);

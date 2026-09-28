@@ -93,7 +93,7 @@ describe("FollowUpSuggestion", () => {
   it("Enter is never the suggestion's: an empty Enter still looks at the page", () => {
     const s = offered();
     expect(s.onKey(key("Enter"), "")).toBeNull();
-    expect(emptySend({ panelTab: "chat", mode: "conversation", sessionId: "s1", hasFiles: false, tabId: 3 })).toEqual({
+    expect(emptySend({ mode: "conversation", sessionId: "s1", hasFiles: false, tabId: 3 })).toEqual({
       request: { type: "run.message", sessionId: "s1", text: "", screen: true, tabId: 3 },
     });
   });

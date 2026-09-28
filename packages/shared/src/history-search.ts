@@ -1,5 +1,5 @@
 /**
- * search_history: the agent looks through the user's past chats and task runs (the History tab, kept in the
+ * search_history: the agent looks through the user's past chats and task runs (the side panel's jobs, kept in the
  * extension) by words, a time ("yesterday", "last week", "in March"), and a site; or reads one of them. What the
  * tool and its implementation (apps/extension/src/memory/history.ts) share: the arguments, the description, the
  * limits.
@@ -29,4 +29,4 @@ export const SearchHistoryArgs = z.object({
 export type SearchHistoryArgs = z.infer<typeof SearchHistoryArgs>;
 
 export const SEARCH_HISTORY_DESCRIPTION =
-  "Search the user's past chats and task runs with you (the History tab): what was asked, what you did and what you answered. Give query (words and time words like 'yesterday'), site, or both; each result has its date, title, first request, result and session id. Give session_id to read one conversation's transcript. Use it when the user refers to an earlier conversation ('what did you tell me yesterday', 'the emails from last time').";
+  "Search the user's past chats and task runs with you (their jobs list): what was asked, what you did and what you answered. Give query (words and time words like 'yesterday'), site, or both; each result has its date, title, first request, result and session id. Give session_id to read one conversation's transcript. Use it when the user refers to an earlier conversation ('what did you tell me yesterday', 'the emails from last time').";

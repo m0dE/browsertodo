@@ -83,9 +83,27 @@ export const EMAIL_ANSWER = [
 /** The follow-up the agent suggests after the email answer (task_complete's suggestion). */
 export const SUGGESTION = "Reply to Jordan and say I'll sign by Thursday";
 
+/**
+ * The job of the conversation tab 1 has in `data` (bound to it, else running there): what the old panel showed on
+ * opening, now one click into the list. Its key as the panel makes it (jobs.ts): a chat's, or its task's series'.
+ */
+export function tabJobKey(data) {
+  const st = data.state;
+  const sid = st.tabChats?.["1"] ?? Object.entries(st.runningTabs ?? {}).find(([, tabs]) => tabs.includes(1))?.[0] ?? st.running?.sessionId;
+  const s = [...(st.runningSessions ?? []), st.running, ...data.sessions].find((x) => x?.sessionId === sid);
+  if (!s || s.source === "adhoc") return `chat:${sid}`;
+  const t = data.tasks.find((x) => x.id === s.taskId);
+  return `task:${(t && (t.seriesId ?? t.id)) || s.seriesId || s.taskId}`;
+}
+
 export function scenario(kind) {
   const now = Date.now();
   const iso = (minutes) => new Date(now + minutes * 60_000).toISOString();
+  /** Minutes from now to the soonest of `hours` (o'clock, this machine's zone: the browser's) still to come. */
+  const untilNext = (...hours) => {
+    const times = hours.flatMap((h) => [0, 1].map((d) => new Date(new Date(now).setHours(24 * d + h, 0, 0, 0)).getTime()));
+    return (Math.min(...times.filter((t) => t > now)) - now) / 60_000;
+  };
   const helper = {
     version: "0.2.0",
     jevAvailable: true,
@@ -195,7 +213,7 @@ export function scenario(kind) {
   });
   const tasks = [
     task("t2", "running", running.title, { account: "browsertodo" }),
-    task("t1", "pending", "Reply to new mentions with a short thank-you\nKeep it friendly.", { account: "browsertodo", notBefore: iso(95), repeat: { cron: "0 9,18 * * *", tz: Intl.DateTimeFormat().resolvedOptions().timeZone } }),
+    task("t1", "pending", "Reply to new mentions with a short thank-you\nKeep it friendly.", { account: "browsertodo", notBefore: iso(untilNext(9, 18)), repeat: { cron: "0 9,18 * * *", tz: Intl.DateTimeFormat().resolvedOptions().timeZone } }),
     task("t3", "pending", "Post the photo of the week with the caption from the doc", { media: [{ id: "m1", name: "week38.jpg", type: "image/jpeg", size: 184000 }] }),
     task("t4", "pending", "Like the three newest posts from @anthropic", { retryAfter: iso(8), attempts: 1 }),
     task("t5", "paused", "Log in to example.com and download the September invoice", { pauseReason: "Needs a one-time code sent by SMS" }),
@@ -252,13 +270,14 @@ export function scenario(kind) {
     // A one-off chat runs in tab 1 (it belongs there); tab 2 has no chat yet.
     running.source = "adhoc";
     running.title = "Summarize this pull request and post the summary as a comment";
+    running.instructions = running.title;
     state.tabChats = { "1": "s-live" };
     state.runningTabs = { "s-live": [1] };
   }
   if (kind === "conversation") {
     // A one-off conversation with two turns: the second started with the user's message.
     const conv = {
-      sessionId: "s-conv", source: "adhoc", title: "Post on X from @alpha: our launch is live", brain: "claude-code", jev: true,
+      sessionId: "s-conv", source: "adhoc", title: "Post on X from @alpha: our launch is live", instructions: "Post on X from @alpha: our launch is live", brain: "claude-code", jev: true,
       model: "claude-sonnet-5", startedAt: iso(-2), endedAt: iso(-1), firstStartedAt: iso(-6), outcome: "done", turns: 2,
       summary: "Liked the first reply", url: "https://x.com/alpha/status/1838912345678901299",
       logPath: "C:\\Users\\me\\AppData\\Local\\browsertodo\\runs\\s-conv-2026\\log.jsonl",
@@ -557,7 +576,7 @@ export function scenario(kind) {
       tev(-1, { type: "user_message", text: "cancel the TODO for the dentist" }),
       tev(-1, { type: "tool_call", id: "3", name: "list_scheduled_tasks", args: {} }),
       tev(-1, { type: "tool_call", id: "4", name: "cancel_scheduled_task", args: { task_id: "t-dentist" } }),
-      tev(-1, { type: "approval_request", request: { id: "ap-todo", action: 'Cancel the TODO task "Dentist appointment: leave the office by 2:30 PM."', site: "", why: "cancels a task in your TODO list", expiresAt: iso(9) } }),
+      tev(-1, { type: "approval_request", request: { id: "ap-todo", action: 'Cancel the scheduled job "Dentist appointment: leave the office by 2:30 PM."', site: "", why: "cancels one of your scheduled jobs", expiresAt: iso(9) } }),
       tev(-1, { type: "approval_resolved", id: "ap-todo", outcome: "allow_once" }),
       tev(-1, { type: "task_changed", changeId: "c-cancel", taskId: "t-dentist", change: "cancelled", instructions: dentist, schedule: { at: iso(60 * 26) } }),
       tev(0, { type: "assistant_text", text: "Cancelled the dentist TODO; Undo on the card puts it back." }),
@@ -657,6 +676,50 @@ export function scenario(kind) {
       state.runningSessions = [];
       state.runningTabs = {};
       state.tabChats = {};
+    }
+  }
+  if (kind === "nojobs") {
+    // A first run: no chat, no task, nothing running.
+    state.running = null;
+    sessions.splice(0, sessions.length);
+    tasks.splice(0, tasks.length);
+  }
+  if (kind === "series") {
+    // A repeating task that ran three times (the last one failed), waiting for tomorrow's run: one job, its runs inside.
+    state.running = null;
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const TIP = "Post a short tip about keyboard shortcuts on X from @browsertodo";
+    const repeat = { cron: "0 9 * * *", tz: zone };
+    const day = 24 * 60;
+    /** The last 9:00 that went by (minutes from now, negative). */
+    const nine = untilNext(9) - day;
+    const row = (id, status, minutes, extra = {}) => task(id, status, TIP, { seriesId: "tip1", repeat, account: "browsertodo", createdAt: iso(minutes - 10), updatedAt: iso(minutes), ...extra });
+    tasks.splice(0, tasks.length,
+      // Each ran at 9:00 (the last three mornings) and ended a few minutes later; the next waits for the next 9:00.
+      row("tip3", "pending", nine + 3, { notBefore: iso(nine + day) }),
+      row("tip2", "failed", nine - day + 3, { failReason: "X asked to confirm the login" }),
+      row("tip1", "done", nine - 2 * day + 3, { resultUrl: "https://x.com/browsertodo/status/1839000000000000001" }),
+      task("t9", "done", "Post 'good morning' on X", { updatedAt: iso(-3 * day) }),
+    );
+    const run = (id, taskId, minutes, extra) => ({ sessionId: id, source: "local", taskId, seriesId: "tip1", title: TIP, brain: "claude-code", jev: true, model: "claude-sonnet-5", startedAt: iso(minutes - 3), endedAt: iso(minutes), ...extra });
+    const runs = [
+      run("r-tip3", "tip3", nine + 3, { outcome: "done", summary: "Posted: Ctrl+. opens BrowserTODO from any tab", url: "https://x.com/browsertodo/status/1839000000000000003" }),
+      run("r-tip2", "tip2", nine - day + 3, { outcome: "failed", reason: "X asked to confirm the login" }),
+      run("r-tip1", "tip1", nine - 2 * day + 3, { outcome: "done", summary: "Posted: Ctrl+, talks to it", url: "https://x.com/browsertodo/status/1839000000000000001" }),
+    ];
+    sessions.splice(0, sessions.length, ...runs);
+    const rev = (sid, minutes, e) => ({ ...e, ts: iso(minutes), sessionId: sid });
+    for (const r of runs) {
+      const m = (Date.parse(r.endedAt) - now) / 60_000;
+      eventsBySession[r.sessionId] = [
+        rev(r.sessionId, m - 3, { type: "status", text: "Claude Code started (claude-sonnet-5)" }),
+        rev(r.sessionId, m - 3, { type: "assistant_text", text: "Opening X to write today's tip." }),
+        rev(r.sessionId, m - 2, { type: "tool_call", id: "1", name: "navigate", args: { url: "https://x.com/compose/post" } }),
+        rev(r.sessionId, m - 2, { type: "tool_result", id: "1", name: "navigate", text: "Opened https://x.com/compose/post" }),
+        r.outcome === "done"
+          ? rev(r.sessionId, m, { type: "task_end", outcome: "done", summary: r.summary, url: r.url })
+          : rev(r.sessionId, m, { type: "task_end", outcome: "failed", reason: r.reason }),
+      ];
     }
   }
   // Nothing runs in tab 1 when the default run is not running.

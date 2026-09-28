@@ -58,20 +58,19 @@ describe("detailsModel", () => {
     expect(m.chip?.hint).toMatch(/Waits until/);
     expect(labels(m)).toEqual(["Account", "Source", "Next run", "Repeats", "Attempts", "Last run by", "Created", "Updated", "Task id", "Run id"]);
     expect(field(m, "Account")?.value).toBe("@browsertodo");
-    expect(field(m, "Source")?.value).toBe("Your account's TODO list");
+    expect(field(m, "Source")?.value).toBe("Scheduled in your account");
     expect(field(m, "Next run")?.value).toBe("Sep 24, 2026, 1:30 PM");
     expect(field(m, "Repeats")?.value).toBe("Daily at 9:00 AM and 6:00 PM");
     expect(field(m, "Attempts")?.value).toBe("0");
     expect(field(m, "Last run by")?.value).toBe("Claude API · claude-sonnet-5 · Jev on");
     expect(field(m, "Task id")).toMatchObject({ value: "t1", mono: true });
     expect(m.files).toEqual([{ name: "week38.jpg", detail: "image/jpeg · 180 KB" }]);
-    expect(m.todoId).toBe("t1");
   });
 
   it("leaves out what the task does not have", () => {
     const m = detailsModel({ task: task({ account: null, notBefore: null, repeat: null, media: [], mediaIds: [] }), listSource: "local" }, NOW, WHEN);
     expect(labels(m)).toEqual(["Source", "Attempts", "Created", "Updated", "Task id"]);
-    expect(field(m, "Source")?.value).toBe("This browser's TODO list");
+    expect(field(m, "Source")?.value).toBe("Scheduled in this browser");
     expect(m.files).toEqual([]);
   });
 
@@ -122,7 +121,6 @@ describe("detailsModel", () => {
     expect(labels(m)).toEqual(["Account", "Source", "Last pause reason", "Run by", "Started", "Ended", "Run id"]);
     expect(field(m, "Source")?.value).toBe("Chat message");
     expect(field(m, "Started")?.value).toBe("Sep 24, 2026, 10:00 AM");
-    expect(m.todoId).toBeUndefined();
   });
 
   it("a running run shows as running with no end time", () => {
@@ -137,10 +135,9 @@ describe("detailsModel", () => {
     expect(clipped.textNote).toBe("Only the start of the instructions was saved with this run.");
     expect(field(clipped, "Source")?.value).toBe("Cloud queue (API)");
     expect(field(clipped, "Task id")?.value).toBe("c9");
-    expect(clipped.todoId).toBeUndefined();
     const whole = detailsModel({ session: session({ title: "Like three posts" }) }, NOW, WHEN);
     expect(whole.textNote).toBe("Only a one-line copy of the instructions was saved with this run.");
-    expect(field(whole, "Source")?.value).toBe("This browser's TODO list");
+    expect(field(whole, "Source")?.value).toBe("Scheduled in this browser");
   });
 });
 

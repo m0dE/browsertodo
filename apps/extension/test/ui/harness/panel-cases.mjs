@@ -31,32 +31,32 @@ const LONG_TEXT = [
 /** Checks shared by the panel cases, for the size and scheme `label`; problems go to `problem`. */
 export function panelHelpers(label, problem) {
   const fail = (what) => problem(`${what} (${label})`);
-  /** The Chat action bar: each button's label, whether it can be used, and its tooltip. */
-  const chatBar = (p) =>
-    p.evaluate(() =>
-      Object.fromEntries(
-        ["chat-new", "chat-show", "chat-raw-btn"].map((id) => {
-          const b = document.getElementById(id);
-          return [id, { text: b.textContent, on: b.getAttribute("aria-disabled") !== "true", title: b.title }];
-        }),
-      ),
-    );
-  const expectBar = async (p, want, what) => {
-    const bar = await chatBar(p);
-    const order = await p.evaluate(() => [...document.querySelectorAll(".chat-bar .bar-btn")].map((b) => b.textContent).join(" | "));
-    if (order !== "New chat | Show tab | Raw") fail(`chat bar order "${order}"`);
-    for (const [id, on] of Object.entries(want)) {
-      if (bar[id].on !== on) fail(`${what}: #${id} ${bar[id].on ? "enabled" : "disabled"}`);
-      if (!bar[id].title) fail(`${what}: #${id} has no tooltip`);
-    }
-    return bar;
+  /** The job page's "⋯" menu: its items (opened, then closed again unless `keep`). */
+  const menuItems = async (p, keep = false) => {
+    await p.click("#job-menu summary");
+    await p.waitForSelector("#job-menu[open] #job-menu-pop button");
+    const items = await p.evaluate(() => [...document.querySelectorAll("#job-menu-pop button")].map((b) => ({ label: b.textContent, title: b.title })));
+    if (items.some((i) => !i.title)) fail(`a menu item without a tooltip: ${JSON.stringify(items)}`);
+    if (!keep) await p.evaluate(() => (document.getElementById("job-menu").open = false));
+    return items.map((i) => i.label);
   };
+  const expectMenu = async (p, want, what) => {
+    const got = (await menuItems(p)).join(" | ");
+    if (got !== want.join(" | ")) fail(`${what}: menu "${got}", want "${want.join(" | ")}"`);
+  };
+  /** Picks a menu item. */
+  const pick = async (p, label) => {
+    if (!(await p.evaluate(() => document.getElementById("job-menu").open))) await p.click("#job-menu summary");
+    await p.locator("#job-menu-pop button", { hasText: label }).first().click();
+  };
+  /** The list's groups: [label, row keys][]. */
+  const groups = (p) =>
+    p.evaluate(() => [...document.querySelectorAll(".job-group")].map((g) => [g.querySelector(".group-head").firstChild.textContent, [...g.querySelectorAll(".job-row")].map((r) => r.dataset.key)]));
   /** Every status chip explains itself. */
   const expectChipHints = async (p, what) => {
     const bare = await p.evaluate(() => [...document.querySelectorAll(".chip")].filter((c) => c.offsetParent && !c.title && !c.closest(".ev-jev")).map((c) => c.textContent));
     if (bare.length) fail(`${what}: chips without a tooltip: ${bare.join(", ")}`);
   };
-  const tabsText = (p) => p.evaluate(() => [...document.querySelectorAll(".tabs [role=tab]")].map((t) => t.textContent.trim()).join(" | "));
   /**
    * The chat's first message (the prompt or task that opened it, the first thing in the log): its text, its origin
    * label, its files line, the time under it, the brain chip right after it; null when the chat has none.
@@ -83,23 +83,26 @@ export function panelHelpers(label, problem) {
     });
   /** Waits until the chat's first message starts with `text`. */
   const waitFirst = (p, text) => p.waitForFunction((t) => document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent.startsWith(t), text);
-  return { fail, chatBar, expectBar, expectChipHints, tabsText, firstMessage, waitFirst };
+  return { fail, menuItems, expectMenu, pick, groups, expectChipHints, firstMessage, waitFirst };
 }
 
 export const PANEL_CASES = [
-  // Idle: nothing running. Chat is the default tab and shows an empty new chat; the composer starts a one-off task.
+  // Idle: the panel opens on the jobs list (the name and the avatar over it, no tabs); the composer starts a new job.
   {
-    names: ["panel-chat-idle", "panel-composer-long", "panel-model-menu", "panel-composer-files"],
-    async run({ ctx, size, scheme, label, fail, expectBar, tabsText, want, openPanel, shoot, checkLayout, reportErrors }) {
-      const p = await openPanel(ctx, "idle", ".chat-empty");
-      if ((await tabsText(p)) !== "Chat | TODO | History") fail(`tabs "${await tabsText(p)}"`);
-      const bar = await expectBar(p, { "chat-new": false, "chat-show": false }, "idle chat");
-      if (!/already a new chat/.test(bar["chat-new"].title)) fail(`New Chat tooltip "${bar["chat-new"].title}"`);
-      // Disabled bar buttons do nothing.
-      await p.click("#chat-show", { force: true });
-      if (await p.evaluate(() => window.__requests.some((r) => r.type === "agent.show"))) fail("disabled bar button sent a request");
+    names: ["panel-list-idle", "panel-composer-long", "panel-model-menu", "panel-composer-files"],
+    async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, checkLayout, reportErrors }) {
+      const p = await openPanel(ctx, "idle");
+      const head = await p.evaluate(() => ({
+        brand: document.getElementById("brand").textContent,
+        acct: !!document.querySelector("#list-head #acct"),
+        jobHead: document.getElementById("job-head").hidden,
+        old: !!document.querySelector("[role=tablist], #tab-chat, #tab-todo, #tab-history, .chat-bar, #chat-new"),
+        search: document.getElementById("job-search").placeholder,
+        status: document.getElementById("status").hidden,
+      }));
+      if (head.brand !== "BrowserTODO" || !head.acct || !head.jobHead || head.old || head.search !== "Search jobs" || !head.status) fail(`list header ${JSON.stringify(head)}`);
       await checkLayout(p, `idle ${label}`);
-      await shoot(p, "panel-chat-idle", size, scheme);
+      await shoot(p, "panel-list-idle", size, scheme);
       if (want("panel-composer-long", size, scheme)) {
         await p.click("#now-text");
         await p.keyboard.insertText(LONG_TEXT);
@@ -146,7 +149,7 @@ export const PANEL_CASES = [
         const saved = await p.evaluate(() => window.__requests.some((r) => r.type === "settings.save" && r.settings.anthropicModel === "claude-opus-5-5"));
         // Click outside closes.
         await chip.click();
-        await p.locator(".chat-empty .empty-title").click();
+        await p.locator("#brand").click();
         const outside = await p.evaluate(() => document.getElementById("model-menu").hidden);
         // Thorough reasoning: a switch like Jev's, saved with the settings.
         await chip.click();
@@ -169,14 +172,14 @@ export const PANEL_CASES = [
       await p.close();
     },
   },
-  // An empty box in Chat: the placeholder says what Enter does; Send looks usable; the new chat shows the shortcut.
-  // Enter starts "look at this page" in this tab; the chat shows it as a quiet user turn. Under TODO an empty
-  // box does nothing but say so. The shortcut's push switches to Chat and focuses the box; Change opens Chrome's page.
+  // An empty box: the placeholder says what Enter does; Send looks usable; with no jobs yet the list shows the
+  // shortcut. Enter starts "look at this page" in this tab, and its job opens with it as a quiet user turn. The
+  // shortcut's push focuses the box in the view shown; Set a shortcut opens Chrome's page when none is set.
   {
     names: ["panel-empty-send", "panel-empty-send-sent", "panel-restricted", "panel-empty-noshortcut"],
-    async run({ ctx, size, scheme, label, fail, firstMessage, openPanel, shoot, checkLayout, reportErrors }) {
+    async run({ ctx, size, scheme, label, fail, firstMessage, openPanel, backToList, shoot, checkLayout, reportErrors }) {
       const SCREEN = "Figure out what to do based on the current screen";
-      const p = await openPanel(ctx, "idle", ".chat-empty .shortcut-hint");
+      const p = await openPanel(ctx, "nojobs", ".jobs-empty .shortcut-hint");
       const look = await p.evaluate(() => {
         const t = document.getElementById("now-text");
         const b = document.getElementById("now-submit");
@@ -185,11 +188,11 @@ export const PANEL_CASES = [
           focused: document.activeElement === t,
           opacity: getComputedStyle(b).opacity,
           title: b.title,
-          hint: document.querySelector(".chat-empty .shortcut-hint")?.textContent,
+          hint: document.querySelector(".jobs-empty .shortcut-hint")?.textContent,
           hello: window.__portSent.some((m) => m.type === "panel.hello" && m.windowId === 1),
         };
       });
-      if (look.placeholder !== SCREEN) fail(`empty send: placeholder "${look.placeholder}"`);
+      if (look.placeholder !== "Start a new job…") fail(`empty send: placeholder "${look.placeholder}"`);
       if (!look.focused) fail("empty send: the box is not focused when the panel opens");
       if (look.opacity !== "1") fail(`empty send: Send looks unavailable (opacity ${look.opacity})`);
       if (!/look at this page/.test(look.title)) fail(`empty send: Send tooltip "${look.title}"`);
@@ -208,13 +211,12 @@ export const PANEL_CASES = [
       await checkLayout(p, `empty send ${label}`);
       await shoot(p, "panel-empty-send", size, scheme);
 
-
       await p.click("#now-text");
       await p.keyboard.press("Enter");
       await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.adhoc" && r.screen === true));
       const req = await p.evaluate(() => window.__requests.find((r) => r.type === "run.adhoc" && r.screen));
       if (req.instructions !== "" || req.tabId !== 1) fail(`empty send: request ${JSON.stringify(req)}`);
-      await p.waitForSelector("#chat-log .ev-user.screen");
+      await p.waitForSelector("#view-job:not([hidden]) #chat-log .ev-user.screen");
       const push = (e) => p.evaluate((ev) => window.__push({ type: "event", event: { ...ev, ts: new Date().toISOString(), sessionId: "s-new" } }), e);
       await push({ type: "tool_call", id: "1", name: "screenshot", args: {} });
       await push({ type: "tool_result", id: "1", name: "screenshot", thumbnail });
@@ -226,10 +228,11 @@ export const PANEL_CASES = [
       });
       await push({ type: "tool_call", id: "3", name: "open_tabs", args: { urls: ["http://127.0.0.1/mail"] } });
       await p.waitForSelector("#chat-log .ev-text");
-      // The empty send is the chat's first message, in its own quiet look (no header over it repeating it).
-      const turn = await p.evaluate(() => ({ text: document.querySelector("#chat-log .ev-user.screen")?.textContent, users: document.querySelectorAll("#chat-log .ev-user").length }));
+      // The empty send is the job's first message, in its own quiet look; the page's title says it too.
+      const turn = await p.evaluate(() => ({ text: document.querySelector("#chat-log .ev-user.screen")?.textContent, users: document.querySelectorAll("#chat-log .ev-user").length, title: document.getElementById("job-title").textContent }));
       const first = await firstMessage(p);
       if (turn.text !== SCREEN || turn.users !== 1 || !first?.first || !first.screen || first.text !== SCREEN || first.header || !first.when) fail(`empty send: user turn ${JSON.stringify({ turn, first })}`);
+      if (turn.title !== SCREEN) fail(`empty send: the job's title "${turn.title}"`);
       await checkLayout(p, `empty send sent ${label}`);
       await shoot(p, "panel-empty-send-sent", size, scheme);
 
@@ -244,94 +247,131 @@ export const PANEL_CASES = [
       await checkLayout(p, `restricted ${label}`);
       await shoot(p, "panel-restricted", size, scheme);
 
-      // The keyboard shortcut's push: Chat, with the cursor in the box.
-      await p.click("#tab-btn-todo");
+      // The keyboard shortcut's push: the cursor in the box, on the job's page and on the list alike.
+      await p.focus("#job-back");
       await p.evaluate(() => window.__push({ type: "panel.focus" }));
-      const focused = await p.evaluate(() => ({ tab: document.querySelector(".tabs [aria-selected=true]").dataset.tab, box: document.activeElement?.id }));
-      if (focused.tab !== "chat" || focused.box !== "now-text") fail(`shortcut focus ${JSON.stringify(focused)}`);
+      if ((await p.evaluate(() => document.activeElement?.id)) !== "now-text" || !(await p.isVisible("#view-job"))) fail("shortcut focus on a job's page");
+      await backToList(p);
+      await p.focus("#job-search");
+      await p.evaluate(() => window.__push({ type: "panel.focus" }));
+      if ((await p.evaluate(() => document.activeElement?.id)) !== "now-text" || !(await p.isVisible("#view-list"))) fail("shortcut focus on the list");
       // The page's focus is reported with the text in the box (the shortcut recreates the panel from there when it lacks the focus).
       if (!(await p.evaluate(() => window.__portSent.some((m) => m.type === "panel.document")))) fail("page focus not reported");
       reportErrors(p, `empty send ${label}`);
       await p.close();
 
-      // Under TODO an empty box does nothing, and says so.
-      const t = await openPanel(ctx, "idle", ".chat-empty");
-      await t.click("#tab-btn-todo");
-      await t.click("#now-text");
-      await t.keyboard.press("Enter");
-      await t.waitForFunction(() => document.querySelector("#now-notice:not([hidden]) .notice-text")?.textContent);
-      const todo = await t.evaluate(() => ({
-        sent: window.__requests.some((r) => r.type === "run.adhoc" || r.type === "run.message"),
-        msg: document.querySelector("#now-notice:not([hidden]) .notice-text")?.textContent,
-        placeholder: document.getElementById("now-text").placeholder,
-        opacity: getComputedStyle(document.getElementById("now-submit")).opacity,
-      }));
-      if (todo.sent || todo.msg !== "Type a task to run it now" || !todo.placeholder.startsWith("Do this now") || todo.opacity === "1") fail(`TODO empty send ${JSON.stringify(todo)}`);
-      reportErrors(t, `todo empty ${label}`);
-      await t.close();
-
-      // No key assigned (another extension has it): the new chat links to Chrome's shortcut settings instead.
-      const n = await openPanel(ctx, "noshortcut", ".chat-empty .shortcut-hint");
-      const hint = await n.evaluate(() => document.querySelector(".chat-empty .shortcut-hint").textContent);
-      if (hint !== "Set a keyboard shortcut to open this chat at any time.") fail(`no shortcut: hint "${hint}"`);
-      await n.click(".chat-empty .shortcut-link");
+      // No key assigned (another extension has it): the empty list links to Chrome's shortcut settings instead.
+      const n = await openPanel(ctx, "noshortcut", ".jobs-empty .shortcut-hint", { edit: (d) => (d.sessions.splice(0), d.tasks.splice(0)) });
+      const hint = await n.evaluate(() => document.querySelector(".jobs-empty .shortcut-hint").textContent);
+      if (hint !== "Set a keyboard shortcut to open BrowserTODO at any time.") fail(`no shortcut: hint "${hint}"`);
+      await n.click(".jobs-empty .shortcut-link");
       if (!(await n.evaluate(() => window.__created.includes("chrome://extensions/shortcuts")))) fail("no shortcut: the link did not open chrome://extensions/shortcuts");
       await shoot(n, "panel-empty-noshortcut", size, scheme);
       reportErrors(n, `no shortcut ${label}`);
       await n.close();
     },
   },
-  // Tab memory: values saved by older panels open the renamed tabs.
+  // Older panels kept their last tab (and links may carry #todo or #history): every one opens the list, and is forgotten.
   {
     when: ({ size, scheme, only }) => size.w === 360 && scheme === "light" && !only,
     async run({ ctx, label, fail, openPanel, reportErrors }) {
-      const p = await openPanel(ctx, "idle", ".chat-empty");
-      for (const [old, tab] of [["tasks", "todo"], ["activity", "chat"], ["history", "history"], ["bogus", "chat"]]) {
-        await p.evaluate((v) => localStorage.setItem("tab", v), old);
+      const p = await openPanel(ctx, "idle");
+      for (const [key, value, hash] of [["tab", "tasks", ""], ["browsertodo.panel.tab", "history", "#history"], ["browsertodo.panel.tab", "todo", "#todo"]]) {
+        await p.evaluate(([k, v]) => localStorage.setItem(k, v), [key, value]);
+        // (A hash alone does not load the page again: a reload does.)
+        await p.goto(`${new URL(p.url()).origin}/sidepanel.html${hash}`);
         await p.reload();
-        await p.waitForSelector(`#tab-${tab}:not([hidden])`);
-        const sel = await p.evaluate(() => document.querySelector(".tabs [aria-selected=true]").dataset.tab);
-        if (sel !== tab) fail(`saved tab "${old}" opened "${sel}"`);
+        await p.waitForSelector("#view-list:not([hidden]) #job-groups > *");
+        const got = await p.evaluate(() => ({ job: !document.getElementById("view-job").hidden, kept: localStorage.getItem("tab") ?? localStorage.getItem("browsertodo.panel.tab"), hash: location.hash }));
+        if (got.job || got.kept !== null || got.hash) fail(`saved tab "${value}" ${hash}: ${JSON.stringify(got)}`);
       }
-      reportErrors(p, `tab memory ${label}`);
+      reportErrors(p, `old tabs ${label}`);
       await p.close();
     },
   },
-  // Empty todo list: nothing due, so Run due is not shown; with cloud sync (its queue unknown here) it is.
+  // No jobs yet: the list says how to start one (and the shortcuts), and nothing else.
   {
-    names: ["panel-todo-empty"],
+    names: ["panel-list-empty"],
     async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors }) {
-      const p = await openPanel(ctx, "empty", ".chat-empty");
-      await p.click("#tab-btn-todo");
-      await p.waitForSelector("#tasks-empty:not([hidden])");
-      const runDue = () => p.evaluate(() => ({ shown: !document.getElementById("run-now").hidden, text: document.getElementById("run-now").textContent, title: document.getElementById("run-now").title }));
-      const idle = await runDue();
-      if (idle.shown) fail(`Run due shown with nothing due ${JSON.stringify(idle)}`);
-      await checkLayout(p, `empty ${label}`);
-      await shoot(p, "panel-todo-empty", size, scheme);
-      const st = scenario("empty").state;
-      await p.evaluate((s) => window.__push({ type: "state", state: s }), { ...st, settings: { ...st.settings, cloudEnabled: true } });
-      const cloud = await runDue();
-      if (!cloud.shown || cloud.text !== "Run due" || !/check the cloud queue/.test(cloud.title)) fail(`Run due with cloud sync ${JSON.stringify(cloud)}`);
-      reportErrors(p, `empty ${label}`);
+      const p = await openPanel(ctx, "nojobs", ".jobs-empty");
+      const got = await p.evaluate(() => ({ title: document.querySelector(".jobs-empty .empty-title")?.textContent, groups: document.querySelectorAll(".job-group").length, text: document.querySelector(".jobs-empty").textContent }));
+      if (got.title !== "No jobs yet" || got.groups || !/every day at 9/.test(got.text)) fail(`empty list ${JSON.stringify(got)}`);
+      await checkLayout(p, `list empty ${label}`);
+      await shoot(p, "panel-list-empty", size, scheme);
+      reportErrors(p, `list empty ${label}`);
       await p.close();
     },
   },
-  // A running session: TODO, then Chat with its action bar, then the History tab.
+  // The list with every group (Needs you, Running, Scheduled soonest first, Recent newest first), one line per job;
+  // the keyboard moves through it (from the search field too); a job opens on its page (its conversation, its "⋯"
+  // menu); back gives the list as it was left (the search, the scroll, the row); a finished job opened here is bound
+  // to this tab.
   {
-    names: ["panel-todo", "panel-model-running", "panel-finished-menu", "panel-chat-running", "panel-history", "panel-history-open"],
-    async run({ ctx, size, scheme, label, fail, expectBar, expectChipHints, firstMessage, want, only, openPanel, shoot, checkLayout, reportErrors, wantAny, shots, taken }) {
-      const page = await openPanel(ctx, "ok", ".ev-tool");
-      await page.click("#tab-btn-todo");
-      await page.waitForSelector(".task");
-      const rn = await page.evaluate(() => ({ text: document.getElementById("run-now").textContent, shown: !document.getElementById("run-now").hidden, title: document.getElementById("run-now").title }));
-      if (rn.text !== "Run due (1)" || !rn.shown || rn.title !== "Run the 1 task whose time has come now, instead of waiting for the next check (every 15 minutes)") fail(`Run due ${JSON.stringify(rn)}`);
-      await expectChipHints(page, "todo");
-      await checkLayout(page, `todo ${label}`);
-      await shoot(page, "panel-todo", size, scheme);
-      await page.click("#run-now");
-      await page.waitForFunction(() => window.__requests.some((r) => r.type === "run.due"));
-      await page.evaluate(() => (document.getElementById("tasks-msg").textContent = ""));
+    names: ["panel-list", "panel-list-search", "panel-model-running", "panel-chat-running", "panel-job-menu", "panel-job-opened"],
+    async run({ ctx, size, scheme, label, fail, want, groups, expectMenu, pick, firstMessage, openPanel, backToList, shoot, checkLayout, reportErrors, shots, taken }) {
+      const page = await openPanel(ctx, "ok");
+      const g = await groups(page);
+      const layout = [
+        ["Needs you", ["task:t5", "chat:s-3"]],
+        ["Running", ["task:t2"]],
+        ["Scheduled", ["task:t3", "task:t4", "task:t1"]],
+        ["Recent", ["task:t6", "task:t7"]],
+      ];
+      if (JSON.stringify(g) !== JSON.stringify(layout)) fail(`list groups ${JSON.stringify(g)}`);
+      const rows = await page.evaluate(() =>
+        [...document.querySelectorAll(".job-row")].map((r) => ({
+          key: r.dataset.key,
+          title: r.querySelector(".job-title").textContent,
+          meta: r.querySelector(".job-meta")?.textContent ?? "",
+          when: r.querySelector(".job-when").textContent,
+          aria: r.getAttribute("aria-label"),
+          icon: r.querySelector(".job-icon").title,
+          oneLine: r.querySelector(".job-title").scrollHeight <= r.querySelector(".job-title").clientHeight + 1,
+        })),
+      );
+      const row = (key) => rows.find((r) => r.key === key);
+      if (row("task:t5")?.meta !== "Needs a one-time code sent by SMS" || row("chat:s-3")?.meta !== "Needs you to pick dates") fail(`needs-you rows ${JSON.stringify(rows.slice(0, 2))}`);
+      if (row("task:t2")?.when !== "now" || row("task:t3")?.when !== "Due now" || !/^Retries /.test(row("task:t4")?.when ?? "") || !/^Daily at 9:00 AM and 6:00 PM$/.test(row("task:t1")?.meta ?? "")) fail(`scheduled rows ${JSON.stringify(rows)}`);
+      if (row("task:t6")?.meta !== "x.com" || !/ago$/.test(row("task:t6")?.when ?? "")) fail(`recent row ${JSON.stringify(row("task:t6"))}`);
+      if (!rows.every((r) => r.aria?.startsWith(r.title) && r.icon && r.oneLine)) fail(`row names, icons or lines ${JSON.stringify(rows)}`);
+      if (rows.some((r) => /\d \d|\*/.test(r.meta))) fail(`raw cron in a row: ${JSON.stringify(rows)}`);
+      await checkLayout(page, `list ${label}`);
+      await shoot(page, "panel-list", size, scheme);
+
+      // The keyboard: Down from the search field to the first row, on through the groups, End, Home, Up back to the search.
+      await page.focus("#job-search");
+      const focusKey = () => page.evaluate(() => document.activeElement?.dataset?.key ?? document.activeElement?.id);
+      const keys = [];
+      for (const k of ["ArrowDown", "ArrowDown", "ArrowDown", "End", "Home", "ArrowUp"]) {
+        await page.keyboard.press(k);
+        keys.push(await focusKey());
+      }
+      if (keys.join() !== "task:t5,chat:s-3,task:t2,task:t7,task:t5,job-search") fail(`list keys moved ${keys.join()}`);
+
+      // Search: every word in a title, request or site; the groups keep their order; a short panel scrolls.
+      await page.setViewportSize({ width: size.w, height: 420 });
+      await page.fill("#job-search", "post");
+      const found = await groups(page);
+      if (JSON.stringify(found) !== JSON.stringify([["Running", ["task:t2"]], ["Scheduled", ["task:t3", "task:t4"]], ["Recent", ["task:t6", "task:t7"]]])) fail(`search "post" ${JSON.stringify(found)}`);
+      await checkLayout(page, `list search ${label}`);
+      await shoot(page, "panel-list-search", size, scheme);
+      await page.evaluate(() => (document.getElementById("view-list").scrollTop = 60));
+      const scrolled = await page.evaluate(() => document.getElementById("view-list").scrollTop);
+
+      // Enter opens the running job: its page, the box to type in, the view said to screen readers.
+      await page.focus('.job-row[data-key="task:t2"]');
+      await page.keyboard.press("Enter");
+      await page.waitForSelector("#view-job:not([hidden]) #chat-log .ev-tool", { state: "attached" });
+      await page.setViewportSize({ width: size.w, height: size.h });
+      const opened = await page.evaluate(() => ({
+        title: document.getElementById("job-title").textContent,
+        sub: document.getElementById("job-sub").textContent,
+        said: document.getElementById("view-announce").textContent,
+        focus: document.activeElement?.id,
+        list: document.getElementById("view-list").hidden && document.getElementById("list-head").hidden,
+        composer: !document.getElementById("composer").hidden,
+      }));
+      if (!opened.title.startsWith("Post the launch thread") || opened.sub !== "Running" || !opened.said.startsWith("Job: Post the launch") || opened.focus !== "now-text" || !opened.list || !opened.composer) fail(`opened job ${JSON.stringify(opened)}`);
       if (want("panel-model-running", size, scheme)) {
         // The running task keeps its model: the chip shows it but does not open.
         const chip = page.locator("#now-model");
@@ -342,70 +382,56 @@ export const PANEL_CASES = [
         await page.locator("#composer").screenshot({ path: join(shots, `panel-model-running-${size.w}-${scheme}.png`) });
         taken.push(join(shots, `panel-model-running-${size.w}-${scheme}.png`));
       }
-      if (want("panel-finished-menu", size, scheme)) {
-        await page.locator("#finished > summary").click();
-        await expectChipHints(page, "finished");
-        await page.locator("#finished-list .menu summary").first().click();
-        await page.locator("#finished-list .menu[open] .menu-pop").scrollIntoViewIfNeeded();
-        await shoot(page, "panel-finished-menu", size, scheme);
-        await page.locator("#tab-todo .section-head h2").click();
-      }
-      if (wantAny(["panel-chat-running", "panel-history", "panel-history-open"], size, scheme)) {
-        await page.click("#tab-btn-chat");
-        await page.waitForSelector("#chat-log .ev-tool", { state: "attached" });
-        // Running: New chat and Show Tab work.
-        await expectBar(page, { "chat-new": true, "chat-show": true }, "running chat");
-        // One steps group unfolded, with one long result open.
-        await page.locator("details.ev-result").first().evaluate((d) => {
-          d.open = true;
-          d.closest("details.ev-steps").open = true;
-        });
-        await page.locator("#chat-log").evaluate((l) => (l.scrollTop = l.scrollHeight));
-        await checkLayout(page, `chat ${label}`);
-        await shoot(page, "panel-chat-running", size, scheme);
-        await page.click("#chat-show");
-        const shown = await page.evaluate(() => window.__requests.find((r) => r.type === "agent.show"));
-        if (shown?.sessionId !== "s-live") fail(`Show Tab sent ${JSON.stringify(shown)}`);
+      // One steps group unfolded, with one long result open.
+      await page.locator("details.ev-result").first().evaluate((d) => {
+        d.open = true;
+        d.closest("details.ev-steps").open = true;
+      });
+      await page.locator("#chat-log").evaluate((l) => (l.scrollTop = l.scrollHeight));
+      await checkLayout(page, `chat ${label}`);
+      await shoot(page, "panel-chat-running", size, scheme);
+      // Its menu: what a running task can do here.
+      await expectMenu(page, ["Pause", "Show tab", "Raw"], "running job");
+      await page.click("#job-menu summary");
+      await checkLayout(page, `job menu ${label}`);
+      await shoot(page, "panel-job-menu", size, scheme);
+      await pick(page, "Show tab");
+      await page.waitForFunction(() => window.__requests.some((r) => r.type === "agent.show"));
+      const shown = await page.evaluate(() => window.__requests.find((r) => r.type === "agent.show"));
+      if (shown?.sessionId !== "s-live") fail(`Show tab sent ${JSON.stringify(shown)}`);
 
-        // History: the list of runs, no composer. Picking a finished run (by keyboard) opens it in Chat, bound to this tab.
-        await page.click("#tab-btn-history");
-        await page.waitForSelector(".sessions li");
-        await expectChipHints(page, "history");
-        await checkLayout(page, `history ${label}`);
-        await shoot(page, "panel-history", size, scheme);
-        if (await page.evaluate(() => !!document.querySelector("#hist-past, #hist-log, #hist-open, #hist-rawlog"))) fail("the read-only run view is still in the page");
-        const pastRow = page.locator(".sessions li button").nth(1);
-        const pastId = await pastRow.getAttribute("data-id");
-        await pastRow.focus();
-        await page.keyboard.press("Enter");
-        await page.waitForSelector("#tab-chat:not([hidden]) #chat-log .ev-text");
-        const opened = await page.evaluate(() => ({
-          tab: document.querySelector(".tabs [aria-selected=true]")?.id,
-          title: document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent,
-          bind: window.__requests.filter((r) => r.type === "chat.bind").at(-1),
-          composer: !document.getElementById("composer").hidden,
-          focus: document.activeElement?.id,
-        }));
-        if (opened.tab !== "tab-btn-chat" || opened.title !== "Post 'good morning' on X" || opened.bind?.sessionId !== pastId || opened.bind?.tabId !== 1 || !opened.composer || opened.focus !== "now-text") {
-          fail(`History row did not open the run in Chat: ${JSON.stringify(opened)}`);
-        }
-        await checkLayout(page, `history open ${label}`);
-        await shoot(page, "panel-history-open", size, scheme);
-        // A running one opens in Chat too.
-        await page.click("#tab-btn-history");
-        await page.waitForSelector(".sessions li");
-        await page.locator(".sessions li button").first().click();
-        await page.waitForSelector("#tab-chat:not([hidden]) #chat-log .ev-tool", { state: "attached" });
-      }
-      reportErrors(page, `running ${label}`);
+      // Back ("‹", or Esc on the page): the list as it was left, the opened row focused.
+      await page.setViewportSize({ width: size.w, height: 420 });
+      await page.focus("#job-back");
+      await page.keyboard.press("Escape");
+      await page.waitForSelector("#view-list:not([hidden])");
+      const back = await page.evaluate(() => ({ query: document.getElementById("job-search").value, top: document.getElementById("view-list").scrollTop, focus: document.activeElement?.dataset?.key, said: document.getElementById("view-announce").textContent }));
+      if (back.query !== "post" || Math.abs(back.top - scrolled) > 1 || back.focus !== "task:t2" || back.said !== "Jobs") fail(`back to the list ${JSON.stringify({ ...back, scrolled })}`);
+      await page.setViewportSize({ width: size.w, height: size.h });
+
+      // A finished job opens here, bound to this tab; the box goes on with it.
+      await page.click('.job-row[data-key="task:t6"]');
+      await page.waitForSelector("#view-job:not([hidden]) #chat-log .ev-first");
+      const done = await page.evaluate(() => ({
+        title: document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent,
+        bind: window.__requests.filter((r) => r.type === "chat.bind").at(-1),
+        placeholder: document.getElementById("now-text").placeholder,
+      }));
+      const first = await firstMessage(page);
+      if (done.title !== "Post 'good morning' on X" || done.bind?.sessionId !== "s-2" || done.bind?.tabId !== 1 || done.placeholder !== "Message BrowserTODO…" || !first?.first) fail(`finished job opened ${JSON.stringify(done)}`);
+      await expectMenu(page, ["Raw", "Delete"], "finished task");
+      await checkLayout(page, `job opened ${label}`);
+      await shoot(page, "panel-job-opened", size, scheme);
+      await backToList(page);
+      reportErrors(page, `list ${label}`);
       await page.close();
     },
   },
-  // Task details: the chat's first message (a task run's instructions, or a past chat's prompt), and a TODO title,
-  // open a sheet with everything known.
+  // Task details: a job's first message (a task run's instructions, or a past chat's prompt), and the request of a
+  // task that never ran, open a sheet with everything known.
   {
     names: ["panel-first-task", "panel-details-chat", "panel-details-focus", "panel-details-todo", "panel-first-long", "panel-details-message"],
-    async run({ ctx, size, scheme, label, fail, want, firstMessage, waitFirst, openPanel, shoot, checkLayout, reportErrors, base, shots, taken }) {
+    async run({ ctx, size, scheme, label, fail, want, firstMessage, waitFirst, openPanel, openJob, shoot, checkLayout, reportErrors, base, shots, taken }) {
       const p = await openPanel(ctx, "details", ".ev-tool");
       const known = scenario("details");
       await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: base });
@@ -435,11 +461,11 @@ export const PANEL_CASES = [
 
       // Chat: the task run opens with its instructions as the first message, labelled with where they came from.
       const first = await firstMessage(p);
-      if (!first?.first || first.origin !== "From your TODO list" || first.text !== known.state.running.title || !first.when || first.header || first.head !== "Claude API · claude-sonnet-5 · Jev on") fail(`task run's first message ${JSON.stringify(first)}`);
+      if (!first?.first || first.origin !== "Scheduled run" || first.text !== known.state.running.title || !first.when || first.header || first.head !== "Claude API · claude-sonnet-5 · Jev on") fail(`task run's first message ${JSON.stringify(first)}`);
       await checkLayout(p, `details-task-run ${label}`);
       await shoot(p, "panel-first-task", size, scheme);
-      // It is reachable by keyboard (Tab from the action bar) and shows a focus ring.
-      await p.focus("#chat-raw-btn");
+      // It is reachable by keyboard (Tab from the job's menu) and shows a focus ring.
+      await p.focus("#job-menu summary");
       await p.keyboard.press("Tab");
       const ring = await p.evaluate(() => {
         const t = document.activeElement;
@@ -454,12 +480,12 @@ export const PANEL_CASES = [
       const t2 = known.tasks[0];
       if (chat.heading !== "Task details" || chat.text !== t2.instructions) fail(`chat details text ${JSON.stringify(chat.text)}`);
       if (chat.links.length !== 2 || chat.links.some((l) => !l.blank || !/noopener/.test(l.rel)) || chat.links[1].href !== "https://browsertodo.example.com/pricing") fail(`chat details links ${JSON.stringify(chat.links)}`);
-      for (const [k, v] of [["Status", "running"], ["Account", "@browsertodo"], ["Source", "This browser's TODO list"], ["Attempts", "1"], ["Task id", "t2"], ["Run id", "s-live"], ["Last run by", "Claude API · claude-sonnet-5 · Jev on"]]) {
+      for (const [k, v] of [["Status", "running"], ["Account", "@browsertodo"], ["Source", "Scheduled in this browser"], ["Attempts", "1"], ["Task id", "t2"], ["Run id", "s-live"], ["Last run by", "Claude API · claude-sonnet-5 · Jev on"]]) {
         if (chat.fields[k] !== v) fail(`chat details ${k}: ${chat.fields[k]}`);
       }
       if (!chat.fields.Created || !chat.fields.Updated) fail("chat details: no times");
       if (chat.files.join() !== "launch-banner-final-v3.png,thread.txt") fail(`chat details files ${chat.files}`);
-      if (chat.buttons.join(" | ") !== "Close | Copy instructions | Open in TODO") fail(`chat details buttons ${chat.buttons.join(" | ")}`);
+      if (chat.buttons.join(" | ") !== "Close | Copy instructions") fail(`chat details buttons ${chat.buttons.join(" | ")}`);
       await shoot(p, "panel-details-chat", size, scheme);
       // Copy instructions puts the full text on the clipboard.
       await p.locator("dialog.sheet button", { hasText: "Copy instructions" }).click();
@@ -471,15 +497,9 @@ export const PANEL_CASES = [
       await p.keyboard.press("Escape");
       await p.waitForFunction(() => !document.querySelector("dialog.sheet"));
       if (!(await p.evaluate(() => document.activeElement?.classList.contains("ev-first")))) fail("Esc did not return focus to the first message");
-      // Open in TODO: the TODO tab, focused on the task (a click on the first message opens the sheet too).
-      await p.click("#chat-log .ev-first");
-      await p.waitForSelector("dialog.sheet[open]");
-      await p.locator("dialog.sheet button", { hasText: "Open in TODO" }).click();
-      await p.waitForFunction(() => document.activeElement?.dataset?.taskId === "t2");
-      if (await p.locator("#tab-todo").isHidden()) fail("Open in TODO did not show the TODO tab");
-
-      // TODO: a scheduled, repeating task with a file; a click on the backdrop closes it.
-      await p.locator('#task-list [data-task-id="t1"]').click();
+      // A task that never ran: its page shows its request, which opens the same sheet (a click on the backdrop closes it).
+      await openJob(p, "task:t1");
+      await p.click("#chat-log .job-intro .ev-first");
       await p.waitForSelector("dialog.sheet[open]");
       const todo = await sheet();
       checkSheet(todo, "details from todo");
@@ -489,17 +509,14 @@ export const PANEL_CASES = [
       }
       if (!todo.fields["Next run"]) fail("todo details: no Next run");
       if (todo.files.join() !== "thank-you.gif") fail(`todo details files ${todo.files}`);
-      if (todo.buttons.includes("Open in TODO")) fail("todo details offers Open in TODO from the TODO tab");
       await shoot(p, "panel-details-todo", size, scheme);
       await p.mouse.click(size.w / 2, 8);
       await p.waitForFunction(() => !document.querySelector("dialog.sheet"));
-      if ((await p.evaluate(() => document.activeElement?.dataset?.taskId)) !== "t1") fail("backdrop click did not return focus to the task");
+      if (!(await p.evaluate(() => document.activeElement?.closest(".job-intro")))) fail("backdrop click did not return focus to the task's request");
 
-      // History: a past one-off chat opens in Chat, with the whole message typed as its first bubble (a long,
-      // multi-line prompt, wrapped); the bubble opens its details.
-      await p.click("#tab-btn-history");
-      await p.locator(".sessions li button", { hasText: "Lisbon" }).click();
-      await p.waitForFunction(() => !document.getElementById("tab-chat").hidden);
+      // A past one-off chat opens with the whole message typed as its first bubble (a long, multi-line prompt,
+      // wrapped); the bubble opens its details.
+      await openJob(p, "chat:s-3");
       await waitFirst(p, "Find the cheapest flight");
       const lisbonFirst = await firstMessage(p);
       if (lisbonFirst.text !== known.sessions.find((x) => x.sessionId === "s-3").instructions || lisbonFirst.origin !== null) fail(`past chat's first message ${JSON.stringify(lisbonFirst)}`);
@@ -517,7 +534,6 @@ export const PANEL_CASES = [
       checkSheet(msg, "details of a chat message");
       const lisbon = known.sessions.find((x) => x.sessionId === "s-3");
       if (msg.heading !== "Chat message" || msg.text !== lisbon.instructions || msg.fields.Source !== "Chat message" || msg.fields["Last pause reason"] !== "Needs you to pick dates") fail(`message details ${JSON.stringify(msg)}`);
-      if (msg.buttons.includes("Open in TODO")) fail("chat message offers Open in TODO");
       await shoot(p, "panel-details-message", size, scheme);
       await p.locator("dialog.sheet button", { hasText: "Close" }).click();
       await p.waitForFunction(() => !document.querySelector("dialog.sheet"));
@@ -531,7 +547,7 @@ export const PANEL_CASES = [
   {
     names: ["panel-first-files", "panel-first-files-details"],
     async run({ ctx, size, scheme, label, fail, firstMessage, openPanel, shoot, checkLayout, reportErrors }) {
-      const p = await openPanel(ctx, "idle", ".chat-empty");
+      const p = await openPanel(ctx, "idle");
       await p.setInputFiles("#now-files", [
         { name: "week38-photo-of-the-week-final.jpg", mimeType: "image/jpeg", buffer: Buffer.from(thumbnail, "base64") },
         { name: "caption.txt", mimeType: "text/plain", buffer: Buffer.from("x") },
@@ -584,26 +600,26 @@ export const PANEL_CASES = [
     },
   },
   // A conversation: two turns in one thread, each opened by the user's bubble (the first is the prompt, with its time
-  // and the brain chip under it); the composer talks to it; New Chat empties the thread and goes back to "Do this now".
+  // and the brain chip under it); the composer talks to it. Back on the list the box starts a new job, and the tab's
+  // old chat is closed (its agent session and tabs: the tab has a new chat).
   {
-    names: ["panel-conversation", "panel-conversation-newchat", "panel-conversation-todo"],
-    async run({ ctx, size, scheme, label, fail, expectBar, firstMessage, want, only, openPanel, shoot, checkLayout, reportErrors }) {
+    names: ["panel-conversation", "panel-conversation-list", "panel-conversation-menu"],
+    async run({ ctx, size, scheme, label, fail, expectMenu, firstMessage, want, openPanel, backToList, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "conversation", "#chat-log .ev-user");
       const composer = () =>
         p.evaluate(() => ({
           placeholder: document.getElementById("now-text").placeholder,
           submit: document.getElementById("now-submit").textContent,
-          newChat: document.getElementById("chat-new").getAttribute("aria-disabled") !== "true",
           attach: !document.getElementById("now-attach").hidden,
           stop: !document.getElementById("now-stop").hidden,
         }));
-      const CHAT = { placeholder: "Message BrowserTODO…", submit: "Send", newChat: true, attach: true, stop: false };
-      const NEW = { placeholder: "Figure out what to do based on the current screen", submit: "Send", newChat: false, attach: true, stop: false };
+      const CHAT = { placeholder: "Message BrowserTODO…", submit: "Send", attach: true, stop: false };
+      const NEW = { placeholder: "Start a new job…", submit: "Send", attach: true, stop: false };
       const expectComposer = async (want, what) => {
         const got = await composer();
         if (JSON.stringify(got) !== JSON.stringify(want)) fail(`composer ${what}: ${JSON.stringify(got)}`);
       };
-      // The last conversation ended a minute ago: Chat shows it and the composer talks to it, also from TODO.
+      // The conversation ended a minute ago: its page shows it and the composer talks to it.
       await p.waitForFunction(() => document.getElementById("now-text").placeholder === "Message BrowserTODO…");
       const view = await p.evaluate(() => ({
         bubbles: [...document.querySelectorAll("#chat-log .ev-user")].map((b) => b.textContent),
@@ -614,9 +630,11 @@ export const PANEL_CASES = [
         heads: document.querySelectorAll("#chat-log .ev-head").length,
         // The second bubble opens the second turn: right after the first turn's end card.
         order: [...document.querySelectorAll("#chat-log > *")].map((e) => e.className).join(" ").includes("ev-end ev-user"),
+        sub: document.getElementById("job-sub").textContent,
       }));
       const conv = scenario("conversation").sessions[0];
       if (JSON.stringify(view.bubbles) !== JSON.stringify([conv.title, "Now like the first reply to it"]) || view.ends !== 2 || !view.order) fail(`thread ${JSON.stringify(view)}`);
+      if (view.sub !== "Done · 1 min ago") fail(`subtitle "${view.sub}"`);
       const first = await firstMessage(p);
       if (!first?.first || first.text !== conv.title || first.origin !== null || first.role !== "button" || first.tabIndex !== 0 || first.header) fail(`first message ${JSON.stringify(first)}`);
       // The first turn's start: the time under the prompt (not the latest turn's).
@@ -627,21 +645,16 @@ export const PANEL_CASES = [
       if (first.head !== "Claude Code · claude-sonnet-5 · Jev on" || view.heads !== 1 || first.startLines !== 0) fail(`brain shown more than once ${JSON.stringify({ first, heads: view.heads })}`);
       const wantPicks = ["Jev chose 2 of 2 element picks (clicks and typing)", "Jev chose 0 of 1 element pick (clicks and typing); Claude chose 1"];
       if (JSON.stringify(view.picks) !== JSON.stringify(wantPicks) || view.loosePicks !== 0) fail(`end card picks ${JSON.stringify(view)}`);
-      // Ended Claude Code conversation: no agent tab any more.
-      const bar = await expectBar(p, { "chat-new": true, "chat-show": false }, "ended conversation");
-      if (!/only has one while it is working/.test(bar["chat-show"].title)) fail(`Show Tab tooltip "${bar["chat-show"].title}"`);
-      await expectComposer(CHAT, "not in conversation mode on Chat");
+      // An ended chat: schedule its request, Raw, Rename, Delete (the agent has no tab now: no Show tab).
+      await expectMenu(p, ["Schedule", "Raw", "Rename", "Delete"], "ended conversation");
+      await expectComposer(CHAT, "not in conversation mode");
       await checkLayout(p, `conversation ${label}`);
       await shoot(p, "panel-conversation", size, scheme);
-      await p.click("#chat-show", { force: true });
-      if (await p.evaluate(() => window.__requests.some((r) => r.type === "agent.show"))) fail("disabled Show Tab sent agent.show");
-
-      await p.click("#tab-btn-todo");
-      await p.waitForSelector(".task");
-      await expectComposer(CHAT, "not in conversation mode on the TODO tab");
-      await checkLayout(p, `conversation-todo ${label}`);
-      await shoot(p, "panel-conversation-todo", size, scheme);
-      await p.click("#tab-btn-chat");
+      if (want("panel-conversation-menu", size, scheme)) {
+        await p.click("#job-menu summary");
+        await shoot(p, "panel-conversation-menu", size, scheme);
+        await p.keyboard.press("Escape");
+      }
 
       // A message goes to the same conversation.
       await p.click("#now-text");
@@ -651,29 +664,30 @@ export const PANEL_CASES = [
       const sent = await p.evaluate(() => window.__requests.find((r) => r.type === "run.message"));
       if (sent.sessionId !== "s-conv" || sent.text !== "And retweet it") fail(`message sent ${JSON.stringify(sent)}`);
 
-      // New Chat: an empty thread, back to "Do this now"; the conversation's agent session is closed.
-      await p.click("#chat-new");
-      await expectComposer(NEW, "still in the conversation after New Chat");
-      const closed = await p.evaluate(() => window.__requests.find((r) => r.type === "run.newChat"));
-      if (closed?.sessionId !== "s-conv") fail(`newChat sent ${JSON.stringify(closed)}`);
-      if (!(await p.locator(".chat-empty").isVisible())) fail("thread not emptied by New Chat");
-      await expectBar(p, { "chat-new": false, "chat-show": false }, "after New Chat");
-      await checkLayout(p, `conversation-newchat ${label}`);
-      await shoot(p, "panel-conversation-newchat", size, scheme);
-      // The next text starts a new conversation.
+      // Back on the list: the box starts a new job ("look at this page" when empty).
+      await backToList(p);
+      await expectComposer(NEW, "still in the conversation on the list");
+      await checkLayout(p, `conversation-list ${label}`);
+      await shoot(p, "panel-conversation-list", size, scheme);
+      // The next text starts a new job in this tab; the tab's old chat is over.
       await p.click("#now-text");
       await p.keyboard.insertText("Post gm");
       await p.keyboard.press("Enter");
       await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.adhoc" && r.instructions === "Post gm"));
+      await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.newChat"));
+      const closed = await p.evaluate(() => window.__requests.find((r) => r.type === "run.newChat"));
+      if (closed?.sessionId !== "s-conv" || "tabId" in closed) fail(`the old chat closed with ${JSON.stringify(closed)}`);
+      await p.waitForSelector("#view-job:not([hidden])");
+      if ((await p.textContent("#job-title")) !== "Post gm") fail(`the new job's page shows "${await p.textContent("#job-title")}"`);
       reportErrors(p, `conversation ${label}`);
       await p.close();
     },
   },
-  // Scheduling from the chat (schedule_task): the card (one line, View in TODO, Undo), the TODO row it points at,
-  // the card once undone, and on Free the refusal's card with Choose a plan.
+  // Scheduling from the chat (schedule_task): the card (one line, View, Undo), the task's job it opens, the card once
+  // undone, and on Free the refusal's card with Choose a plan.
   {
-    names: ["panel-scheduled", "panel-scheduled-todo", "panel-scheduled-undone", "panel-scheduled-free"],
-    async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, checkLayout, reportErrors }) {
+    names: ["panel-scheduled", "panel-scheduled-job", "panel-scheduled-undone", "panel-scheduled-free"],
+    async run({ ctx, size, scheme, label, fail, want, openPanel, openJob, shoot, checkLayout, reportErrors }) {
       const card = (p) =>
         p.evaluate(() => {
           const c = document.querySelector("#chat-log .ev-scheduled");
@@ -690,7 +704,7 @@ export const PANEL_CASES = [
             title: line.title,
           };
         });
-      if (want("panel-scheduled", size, scheme) || want("panel-scheduled-todo", size, scheme) || want("panel-scheduled-undone", size, scheme)) {
+      if (want("panel-scheduled", size, scheme) || want("panel-scheduled-job", size, scheme) || want("panel-scheduled-undone", size, scheme)) {
         const p = await openPanel(ctx, "scheduled", "#chat-log .ev-scheduled");
         const c = await card(p);
         // Three hours from now, in the browser's words ("today at 6:45 PM", or "tomorrow at ..." late at night).
@@ -699,7 +713,7 @@ export const PANEL_CASES = [
         if (!c?.line.startsWith(`Scheduled:${TASK.slice(0, 119)}…· Once, `) || !/Once, (today|tomorrow) at \d/.test(c.line)) fail(`card line "${c?.line}"`);
         // One line where it fits (480); at 360 the schedule may take a second line so the task stays readable.
         if (!c || c.lines > (size.w >= 480 ? 1 : 2) || c.taskW < 100 || !c.inside) fail(`card layout ${JSON.stringify(c)}`);
-        if (c?.buttons.join(" | ") !== "View in TODO | Undo") fail(`card buttons ${c?.buttons.join(" | ")}`);
+        if (c?.buttons.join(" | ") !== "View | Undo") fail(`card buttons ${c?.buttons.join(" | ")}`);
         if (!c?.title.includes("tracking number")) fail("card tooltip does not hold the whole task");
         // The card sits in the thread after the user's request, before the agent's reply.
         const order = await p.evaluate(() => [...document.querySelectorAll("#chat-log > *")].map((e) => e.className.split(" ")[0]).join(" "));
@@ -707,21 +721,17 @@ export const PANEL_CASES = [
         await checkLayout(p, `scheduled ${label}`);
         await shoot(p, "panel-scheduled", size, scheme);
 
-        // View in TODO: the TODO tab, with the task's row in view and focused.
+        // View: the task's job, waiting for its time.
         await p.click("#chat-log .sched-view");
-        await p.waitForFunction(() => document.querySelector('#tab-btn-todo[aria-selected="true"]') && document.activeElement?.dataset?.taskId === "t-sched");
-        const row = await p.evaluate(() => {
-          const li = document.querySelector('#tab-todo [data-task-id="t-sched"]').closest("li");
-          const r = li.getBoundingClientRect();
-          const list = document.getElementById("tab-todo").getBoundingClientRect();
-          return { found: li.classList.contains("found"), visible: r.top >= list.top - 1 && r.bottom <= list.bottom + 1 };
-        });
-        if (!row.found || !row.visible) fail(`View in TODO did not show the row ${JSON.stringify(row)}`);
-        await checkLayout(p, `scheduled-todo ${label}`);
-        await shoot(p, "panel-scheduled-todo", size, scheme);
+        await p.waitForFunction(() => !document.getElementById("view-job").hidden && document.querySelector("#chat-log .job-intro"));
+        const job = await p.evaluate(() => ({ title: document.getElementById("job-title").textContent, sub: document.getElementById("job-sub").textContent, intro: document.querySelector("#chat-log .job-intro .ev-user-text")?.textContent }));
+        if (!job.title.startsWith("Open https://shop.example.com/orders/48213") || !/^Once · (today|tomorrow) /.test(job.sub) || !job.intro?.includes("tracking number")) fail(`View opened ${JSON.stringify(job)}`);
+        await checkLayout(p, `scheduled-job ${label}`);
+        await shoot(p, "panel-scheduled-job", size, scheme);
 
+        // Back in the chat: Undo.
+        await openJob(p, "chat:s-sched");
         // Undo: the task is deleted, and the card says so (no buttons left).
-        await p.click("#tab-btn-chat");
         await p.click("#chat-log .sched-undo");
         await p.waitForSelector("#chat-log .ev-scheduled.undone");
         const sent = await p.evaluate(() => window.__requests.find((r) => r.type === "chat.undoScheduled"));
@@ -751,7 +761,7 @@ export const PANEL_CASES = [
     },
   },
   // The TODO tools from a calendar: a Changed card (a task this chat scheduled, moved without asking) and a Cancelled
-  // card (a task the user made, after its approval), each with View in TODO and Undo; Undo on the Cancelled card sends
+  // card (a task the user made, after its approval), each with View and Undo; Undo on the Cancelled card sends
   // its change id and the card says the task is back.
   {
     names: ["panel-todo-changed", "panel-todo-changed-undone"],
@@ -781,7 +791,7 @@ export const PANEL_CASES = [
       ];
       if (JSON.stringify(got.map((c) => [c.change, c.label])) !== JSON.stringify(want3)) fail(`cards ${JSON.stringify(got)}`);
       for (const c of got) {
-        if (c.buttons.join(" | ") !== "View in TODO | Undo") fail(`${c.change} buttons ${c.buttons.join(" | ")}`);
+        if (c.buttons.join(" | ") !== "View | Undo") fail(`${c.change} buttons ${c.buttons.join(" | ")}`);
         if (c.lines > (size.w >= 480 ? 1 : 2) || !c.inside) fail(`${c.change} layout ${JSON.stringify(c)}`);
       }
       if (!got[2]?.task.startsWith("Dentist appointment")) fail(`cancelled card task "${got[2]?.task}"`);
@@ -797,7 +807,7 @@ export const PANEL_CASES = [
       const sent = await p.evaluate(() => window.__requests.find((r) => r.type === "chat.undoTaskChange"));
       if (sent?.sessionId !== "s-todo" || sent.changeId !== "c-cancel") fail(`undo sent ${JSON.stringify(sent)}`);
       const after = (await cards(p))[2];
-      if (after?.label !== "Undone:" || after.buttons.length || after.note !== "Back in your TODO list.") fail(`undone card ${JSON.stringify(after)}`);
+      if (after?.label !== "Undone:" || after.buttons.length || after.note !== "Scheduled again.") fail(`undone card ${JSON.stringify(after)}`);
       // The other cards keep their buttons.
       if ((await cards(p)).slice(0, 2).some((c) => c.buttons.length !== 2)) fail("undo changed another card");
       await checkLayout(p, `todo-changed-undone ${label}`);
@@ -871,7 +881,7 @@ export const PANEL_CASES = [
       // Full autonomy: one short red line under the status, as long as it is on, with what it means as its tooltip;
       // Change opens Settings > Permission.
       if (want("panel-autonomy-full", size, scheme)) {
-        const p = await openPanel(ctx, "idle", ".chat-empty", { edit: (d) => (d.state.settings.automationLevel = "full") });
+        const p = await openPanel(ctx, "idle", undefined, { edit: (d) => (d.state.settings.automationLevel = "full") });
         const w = await p.evaluate(() => {
           const el = document.getElementById("autonomy-warning");
           const r = el.getBoundingClientRect();
@@ -953,10 +963,10 @@ export const PANEL_CASES = [
   },
   // The agent's follow-up suggestion: faded in the empty box exactly where typing starts, with a Tab hint; typing its
   // start keeps the rest showing; Tab takes it into the box (not sent); anything else hides it and Tab moves the focus;
-  // Esc dismisses it; an empty Enter still looks at the page; sending clears it; voice hides it; TODO never shows it.
+  // Esc dismisses it; an empty Enter still looks at the page; sending clears it; voice hides it; the list never shows it.
   {
     names: ["panel-suggest", "panel-suggest-typed", "panel-suggest-accepted", "panel-suggest-long"],
-    async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors, base }) {
+    async run({ ctx, size, scheme, label, fail, openPanel, openJob, backToList, shoot, checkLayout, reportErrors, base }) {
       await ctx.grantPermissions(["microphone"], { origin: base });
       const box = (p) =>
         p.evaluate(() => {
@@ -1102,11 +1112,12 @@ export const PANEL_CASES = [
       await voiceIs(p, ["idle"]);
       await expectBox(p, { value: "", ghost: SUGGESTION }, "after voice ended");
 
-      // Under TODO the box never offers it.
-      await p.click("#tab-btn-todo");
-      await expectBox(p, { ghost: null, described: null }, "under TODO");
-      await p.click("#tab-btn-chat");
-      await expectBox(p, { ghost: SUGGESTION }, "back in Chat");
+      // Under the list the box never offers it (it starts a new job); back on the job it does.
+      await backToList(p);
+      await expectBox(p, { ghost: null, described: null }, "under the list");
+      await openJob(p, "chat:s-ans");
+      await p.waitForSelector("#chat-log .ev-end");
+      await expectBox(p, { ghost: SUGGESTION }, "back on the job");
 
       // Esc dismisses it for this turn: the placeholder is back, Tab moves the focus, an empty Enter looks at the page.
       await focusBox(p);
@@ -1167,173 +1178,161 @@ export const PANEL_CASES = [
       await l.close();
     },
   },
-  // Two tasks at once, each in its own tab: the status line counts them; Chat shows this tab's and a chip for the other tab's.
+  // Two tasks at once, each in its own tab: both under Running; this tab's job opens here; the other's page says it
+  // runs in another tab (Show tab switches there) and is not bound here; Pause stops only it.
   {
-    names: ["panel-parallel", "panel-parallel-newchat"],
-    async run({ ctx, size, scheme, label, fail, only, firstMessage, waitFirst, openPanel, shoot, checkLayout, reportErrors }) {
-      const p = await openPanel(ctx, "parallel", "#chat-switch:not([hidden]) .act-chip");
-      if ((await p.locator("#status-meta").textContent()) !== "· 2 running") fail(`status meta "${await p.locator("#status-meta").textContent()}"`);
-      const chips = () => p.evaluate(() => [...document.querySelectorAll(".act-chip")].map((c) => c.dataset.id));
-      if ((await chips()).join() !== "s-par2") fail(`switcher in tab 1 ${JSON.stringify(await chips())}`);
-      if (!(await p.locator("#chat-log .ev-first .ev-user-text").textContent()).startsWith("Post the launch")) fail("tab 1 does not show its run");
-      const below = await p.evaluate(() => document.querySelector(".chat-bar").getBoundingClientRect().bottom <= document.getElementById("chat-switch").getBoundingClientRect().top);
-      if (!below) fail("switcher is not below the action bar");
+    names: ["panel-parallel", "panel-parallel-elsewhere"],
+    async run({ ctx, size, scheme, label, fail, groups, expectMenu, pick, firstMessage, openPanel, openJob, shoot, checkLayout, reportErrors }) {
+      const p = await openPanel(ctx, "parallel");
+      const running = (await groups(p)).find(([g]) => g === "Running")?.[1] ?? [];
+      if (running.join() !== "task:t3,task:t2") fail(`Running ${JSON.stringify(running)}`);
       await checkLayout(p, `parallel ${label}`);
       await shoot(p, "panel-parallel", size, scheme);
-      // The chip switches to the other run's tab, and the chat follows the tab.
-      await p.click('.act-chip[data-id="s-par2"]');
-      const focus = await p.evaluate(() => window.__requests.find((r) => r.type === "tab.focus"));
-      if (focus?.tabId !== 2) fail(`chip sent ${JSON.stringify(focus)}`);
+      // This tab's run: no "in another tab" line.
+      await openJob(p, "task:t2");
+      await p.waitForSelector("#chat-log .ev-first");
+      if (!(await p.locator("#chat-log .ev-first .ev-user-text").textContent()).startsWith("Post the launch")) fail("tab 1's job does not show its run");
+      if (await p.isVisible("#job-elsewhere")) fail("tab 1's own run says it runs elsewhere");
+      // The other tab's run: its page, where it runs, and nothing bound here.
+      const binds = await p.evaluate(() => window.__requests.filter((r) => r.type === "chat.bind").length);
+      await openJob(p, "task:t3");
       await p.waitForFunction(() => document.getElementById("chat-log").textContent.includes("Opening the doc"));
-      // The other run's chat: its task as the first message; its brain's start line is left to the chip.
+      await p.waitForFunction(() => document.querySelector("#job-elsewhere:not([hidden]) b")?.textContent === "Hacker News");
       const other = await firstMessage(p);
-      if (other?.origin !== "From your TODO list" || other.startLines !== 0 || other.head !== "Claude API · claude-sonnet-5 · Jev on") fail(`tab 2's first message ${JSON.stringify(other)}`);
-      if (!(await p.locator("#chat-log .ev-first .ev-user-text").textContent()).startsWith("Post the photo")) fail("switching tabs did not change the chat");
-      if ((await chips()).join() !== "s-live") fail(`switcher in tab 2 ${JSON.stringify(await chips())}`);
-      // Show Tab and the composer act on this tab's run; Stop stops only it.
-      await p.click("#chat-show");
-      await p.waitForFunction(() => window.__requests.some((r) => r.type === "agent.show"));
-      const shown = await p.evaluate(() => window.__requests.find((r) => r.type === "agent.show"));
-      if (shown.sessionId !== "s-par2") fail(`Show Tab sent ${JSON.stringify(shown)}`);
-      await p.click("#now-stop");
+      if (other?.origin !== "Scheduled run" || other.startLines !== 0 || other.head !== "Claude API · claude-sonnet-5 · Jev on") fail(`tab 2's first message ${JSON.stringify(other)}`);
+      if ((await p.evaluate(() => window.__requests.filter((r) => r.type === "chat.bind").length)) !== binds) fail("a job running in another tab was bound here");
+      const line = await p.textContent("#job-elsewhere");
+      if (line !== "Running in Hacker News · Show tab") fail(`elsewhere line "${line}"`);
+      await checkLayout(p, `parallel-elsewhere ${label}`);
+      await shoot(p, "panel-parallel-elsewhere", size, scheme);
+      // Show tab (the line): that tab.
+      await p.click("#job-elsewhere button");
+      await p.waitForFunction(() => window.__requests.some((r) => r.type === "tab.focus"));
+      const focus = await p.evaluate(() => window.__requests.find((r) => r.type === "tab.focus"));
+      if (focus?.tabId !== 2) fail(`Show tab sent ${JSON.stringify(focus)}`);
+      // The menu and the composer act on this job's run; Pause (and Stop) stop only it.
+      await expectMenu(p, ["Pause", "Show tab", "Raw"], "the other tab's run");
+      await pick(p, "Pause");
       await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.stop"));
-      const stop = await p.evaluate(() => window.__requests.find((r) => r.type === "run.stop"));
+      const pause = await p.evaluate(() => window.__requests.find((r) => r.type === "run.stop"));
+      if (pause.sessionId !== "s-par2") fail(`Pause sent ${JSON.stringify(pause)}`);
+      await p.click("#now-stop");
+      await p.waitForFunction(() => window.__requests.filter((r) => r.type === "run.stop").length === 2);
+      const stop = await p.evaluate(() => window.__requests.filter((r) => r.type === "run.stop").at(-1));
       if (stop.sessionId !== "s-par2") fail(`Stop sent ${JSON.stringify(stop)}`);
-      // New Chat in this tab: an empty chat, both runs offered as chips.
-      await p.click("#chat-new");
-      if (!(await p.locator(".chat-empty").isVisible())) fail("New Chat did not empty this tab's chat");
-      if ((await chips()).join() !== "s-live,s-par2") fail(`switcher after New Chat ${JSON.stringify(await chips())}`);
-      const left = await p.evaluate(() => window.__requests.find((r) => r.type === "run.newChat"));
-      if (left?.sessionId !== "s-par2" || left?.tabId !== 2) fail(`New Chat sent ${JSON.stringify(left)}`);
-      await checkLayout(p, `parallel-newchat ${label}`);
-      await shoot(p, "panel-parallel-newchat", size, scheme);
-      await p.click('.act-chip[data-id="s-live"]');
-      await waitFirst(p, "Post the launch");
       reportErrors(p, `parallel ${label}`);
       await p.close();
     },
   },
-  // A chat per tab: tab 1 has a running chat, tab 2 has none; switching tabs switches the chat.
+  // A chat per tab (the panel page as a tab, following its window's active tab): tab 1's own job shows while it is
+  // active, tab 2 (no chat) shows the list; a job started in tab 2 is tab 2's.
   {
     names: ["panel-tabs-a", "panel-tabs-b", "panel-tabs-b-started"],
-    async run({ ctx, size, scheme, label, fail, expectBar, firstMessage, waitFirst, openPanel, shoot, checkLayout, reportErrors }) {
+    async run({ ctx, size, scheme, label, fail, groups, expectMenu, firstMessage, waitFirst, openPanel, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "tabs", "#chat-log .ev-tool");
       const view = () =>
         p.evaluate(() => ({
-          title: document.querySelector("#chat-log .ev-first .ev-user-text")?.textContent ?? null,
-          empty: !!document.querySelector("#chat-log .chat-empty"),
-          chips: [...document.querySelectorAll("#chat-switch:not([hidden]) .act-chip")].map((c) => c.dataset.id),
+          title: document.querySelector("#view-job:not([hidden]) #chat-log .ev-first .ev-user-text")?.textContent ?? null,
+          list: !document.getElementById("view-list").hidden,
           placeholder: document.getElementById("now-text").placeholder,
           stop: !document.getElementById("now-stop").hidden,
         }));
       const a = await view();
-      if (!a.title?.startsWith("Summarize this pull request") || a.empty || a.chips.length || !a.stop) fail(`tab A ${JSON.stringify(a)}`);
-      await expectBar(p, { "chat-new": true, "chat-show": true }, "tab A");
+      if (!a.title?.startsWith("Summarize this pull request") || a.list || !a.stop) fail(`tab A ${JSON.stringify(a)}`);
+      await expectMenu(p, ["Pause", "Schedule", "Show tab", "Raw", "Rename"], "tab A");
       await checkLayout(p, `tabs-a ${label}`);
       await shoot(p, "panel-tabs-a", size, scheme);
-      // The user switches to tab 2: a new chat there, with a chip for tab 1's running chat.
+      // The user switches to tab 2: it has no chat, so the list, with tab 1's job under Running.
       await p.evaluate(() => window.__activateTab(2));
-      await p.waitForSelector("#chat-log .chat-empty");
+      await p.waitForSelector("#view-list:not([hidden])");
       const b = await view();
-      if (b.title !== null || b.chips.join() !== "s-live" || b.stop || b.placeholder !== "Figure out what to do based on the current screen") fail(`tab B ${JSON.stringify(b)}`);
-      await expectBar(p, { "chat-new": false, "chat-show": false }, "tab B");
+      const run = (await groups(p)).find(([g]) => g === "Running")?.[1];
+      if (b.title !== null || b.stop || b.placeholder !== "Start a new job…" || !run?.includes("chat:s-live")) fail(`tab B ${JSON.stringify({ ...b, run })}`);
       await checkLayout(p, `tabs-b ${label}`);
       await shoot(p, "panel-tabs-b", size, scheme);
-      // A task typed in tab 2 starts there, and its chat shows in tab 2.
+      // A task typed in tab 2 starts there, and its job opens.
       await p.click("#now-text");
       await p.keyboard.insertText("Translate this page's intro to French");
       await p.keyboard.press("Enter");
       await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.adhoc"));
       const started = await p.evaluate(() => window.__requests.find((r) => r.type === "run.adhoc"));
       if (started.tabId !== 2) fail(`run.adhoc from tab 2 sent ${JSON.stringify(started)}`);
-      await p.waitForFunction(() => !document.querySelector("#chat-log .chat-empty"));
       // A fresh chat: the prompt as typed is its first message, with the time under it.
       await waitFirst(p, "Translate");
       const fresh = await firstMessage(p);
       if (!fresh.first || fresh.text !== "Translate this page's intro to French" || fresh.origin !== null || !/^\d\d:\d\d$/.test(fresh.when ?? "") || fresh.header) fail(`fresh chat's first message ${JSON.stringify(fresh)}`);
       await checkLayout(p, `tabs-b-started ${label}`);
       await shoot(p, "panel-tabs-b-started", size, scheme);
-      // Back to tab 1: its chat is still there.
+      // Back to tab 1: its job shows again.
       await p.evaluate(() => window.__activateTab(1));
       await waitFirst(p, "Summarize this pull request");
       reportErrors(p, `tabs ${label}`);
       await p.close();
     },
   },
-  // Signed out: the TODO tab is one big centered Log In button (and one line), no list, no composer.
+  // Signed out: the list has this browser's jobs; the avatar's menu offers Log in (its progress above the box) and
+  // Settings; Schedule says scheduling needs an account, with Log in.
   {
-    names: ["panel-todo-login", "panel-todo-login-noclient"],
-    async run({ ctx, size, scheme, label, fail, want, only, openPanel, shoot, checkLayout, reportErrors }) {
+    names: ["panel-signedout", "panel-signedout-noclient", "panel-schedule-signedout"],
+    async run({ ctx, size, scheme, label, fail, want, openPanel, openJob, pick, shoot, checkLayout, reportErrors }) {
       for (const kind of ["loggedout", "loggedout-noclient"]) {
-        const name = kind === "loggedout" ? "panel-todo-login" : "panel-todo-login-noclient";
-        if (!want(name, size, scheme)) continue;
-        const p = await openPanel(ctx, kind, ".chat-empty");
-        await p.click("#tab-btn-todo");
-        await p.waitForSelector('#tab-todo[data-auth="out"] #login-btn');
-        const cta = await p.evaluate(() => {
-          const btn = document.getElementById("login-btn");
-          const b = btn.getBoundingClientRect();
-          const tab = document.getElementById("tab-todo").getBoundingClientRect();
-          const shown = [...document.querySelectorAll("#tab-todo > *")].filter((e) => e.getBoundingClientRect().height > 0).map((e) => e.id || e.className);
-          return {
-            w: b.width, h: b.height, font: parseFloat(getComputedStyle(btn).fontSize),
-            dx: Math.abs((b.left + b.right) / 2 - (tab.left + tab.right) / 2),
-            dy: Math.abs((b.top + b.bottom) / 2 - (tab.top + tab.bottom) / 2),
-            tabH: tab.height, shown, text: btn.textContent,
-            composer: document.getElementById("composer").hidden,
-            acct: (() => { const d = document.getElementById("acct"); const shown = (sel) => getComputedStyle(d.querySelector(sel)).display !== "none"; return !d.hidden && !d.hasAttribute("data-signed-in") && shown(".acct-anon") && shown("#acct-login") && shown("#acct-open-settings") && !shown("#acct-signout") && !shown(".acct-who"); })(),
-          };
-        });
-        if (cta.text !== "Log in") fail(`login button says "${cta.text}"`);
-        if (cta.w < 200 || cta.h < 46 || cta.font < 16) fail(`Log In is not big: ${JSON.stringify(cta)}`);
-        if (cta.dx > 2 || cta.dy > cta.tabH * 0.12) fail(`Log In is not centered: ${JSON.stringify(cta)}`);
-        if (cta.shown.join() !== "todo-login") fail(`signed-out TODO shows more than Log In: ${cta.shown.join(", ")}`);
-        if (!cta.composer) fail("composer shown under Log In");
-        if (!cta.acct) fail("signed-out account menu should show the person icon with Log in and Settings only");
+        const name = kind === "loggedout" ? "panel-signedout" : "panel-signedout-noclient";
+        if (!want(name, size, scheme) && !(kind === "loggedout" && want("panel-schedule-signedout", size, scheme))) continue;
+        const p = await openPanel(ctx, kind);
+        const look = await p.evaluate(() => ({
+          rows: document.querySelectorAll(".job-row").length,
+          composer: !document.getElementById("composer").hidden,
+          acct: (() => { const d = document.getElementById("acct"); const shown = (sel) => getComputedStyle(d.querySelector(sel)).display !== "none"; return !d.hidden && !d.hasAttribute("data-signed-in") && shown(".acct-anon") && shown("#acct-login") && shown("#acct-open-settings") && !shown("#acct-signout") && !shown(".acct-who"); })(),
+        }));
+        if (!look.rows || !look.composer) fail(`signed out list ${JSON.stringify(look)}`);
+        if (!look.acct) fail("signed-out account menu should show the person icon with Log in and Settings only");
         await checkLayout(p, `${kind} ${label}`);
+        await p.click("#acct-btn");
+        await p.click("#acct-login");
         if (kind === "loggedout-noclient") {
-          await p.click("#login-btn");
-          await p.waitForFunction(() => document.getElementById("login-msg").textContent.includes("Google sign-in isn't available"));
+          await p.waitForFunction(() => document.querySelector("#now-notice:not([hidden])")?.textContent.includes("Google sign-in isn't available"));
           if (await p.evaluate(() => window.__requests.some((r) => r.type === "account.signIn"))) fail("sign-in requested without a client ID");
           await shoot(p, name, size, scheme);
         } else {
           await shoot(p, name, size, scheme);
-          await p.click("#login-btn");
           await p.waitForFunction(() => window.__requests.some((r) => r.type === "account.signIn"));
-          await p.waitForSelector('#tab-todo[data-auth="in"] .task');
-          if (!(await p.locator("#composer").isVisible())) fail("composer not back after sign-in");
-          if (!(await p.locator("#acct").isVisible())) fail("avatar not shown after sign-in");
+          await p.waitForSelector("#acct[data-signed-in]");
+          // Signed in: the account's list is loaded again.
+          await p.waitForFunction(() => window.__requests.filter((r) => r.type === "tasks.list").length >= 2);
         }
-        // Chat still works signed out.
-        await p.click("#tab-btn-chat");
-        if (!(await p.locator("#composer").isVisible())) fail("composer hidden on Chat while signed out");
         reportErrors(p, `${kind} ${label}`);
+        await p.close();
+      }
+      if (want("panel-schedule-signedout", size, scheme)) {
+        const p = await openPanel(ctx, "loggedout", undefined, { edit: (d) => (d.sessions.find((x) => x.sessionId === "s-3").instructions = "Find the cheapest flight to Lisbon next weekend") });
+        await openJob(p, "chat:s-3");
+        await pick(p, "Schedule");
+        await p.waitForSelector("dialog.schedule-sheet[open]");
+        const gate = await p.evaluate(() => ({ text: document.querySelector("dialog.schedule-sheet").innerText, btn: document.getElementById("sched-gate-btn")?.textContent, fields: !!document.querySelector("dialog.schedule-sheet .sch") }));
+        if (!/Log in to schedule/.test(gate.text) || gate.btn !== "Log in" || gate.fields) fail(`signed-out Schedule ${JSON.stringify(gate)}`);
+        await shoot(p, "panel-schedule-signedout", size, scheme);
+        await p.click("#sched-gate-btn");
+        await p.waitForFunction(() => window.__requests.some((r) => r.type === "account.signIn"));
+        reportErrors(p, `schedule signed out ${label}`);
         await p.close();
       }
     },
   },
-  // Signed in: the account's list, the offer to move this browser's tasks, the avatar menu, BrowserTODO AI in the chip.
+  // Signed in: the account's jobs, the offer to move this browser's tasks, the avatar menu, BrowserTODO AI in the chip.
   {
-    names: ["panel-todo-account", "panel-account-menu", "panel-model-menu-hosted"],
-    async run({ ctx, size, scheme, label, fail, want, only, openPanel, shoot, checkLayout, reportErrors }) {
-      const p = await openPanel(ctx, "account", ".chat-empty");
-      await p.click("#tab-btn-todo");
-      await p.waitForSelector('#tab-todo[data-auth="in"] .task');
+    names: ["panel-list-account", "panel-account-menu", "panel-model-menu-hosted"],
+    async run({ ctx, size, scheme, label, fail, want, openPanel, openJob, menuItems, backToList, shoot, checkLayout, reportErrors }) {
+      const p = await openPanel(ctx, "account");
       if (!(await p.locator("#migrate").isVisible())) fail("no offer to move local tasks");
       if ((await p.locator("#migrate-go").textContent()) !== "Move 3 tasks to your account") fail(`migrate button "${await p.locator("#migrate-go").textContent()}"`);
-      // Account tasks: Retry/Cancel/Delete; paused ones also offer Continue (re-queues them now,
-      // e.g. after a top-up); never the local-only "Run again".
-      const rows = await p.evaluate(() =>
-        [...document.querySelectorAll("#task-list .task")].map((t) => ({
-          status: t.querySelector(".chip")?.textContent ?? "",
-          items: [...t.querySelectorAll(".menu-pop button")].map((b) => b.textContent).join("/"),
-        })),
-      );
-      if (rows.some((r) => r.items.includes("Run again"))) fail(`account task menus ${JSON.stringify(rows)}`);
-      if (rows.some((r) => r.items.includes("Continue") && !/needs you|paused/i.test(r.status))) fail(`Continue on a non-paused account task ${JSON.stringify(rows)}`);
-      if ((await p.locator("#status-text").textContent()) !== "BrowserTODO AI + Jev") fail(`status "${await p.locator("#status-text").textContent()}"`);
-      await checkLayout(p, `account todo ${label}`);
-      await shoot(p, "panel-todo-account", size, scheme);
+      if ((await p.getAttribute("#brand", "title")) !== "Working with BrowserTODO AI + Jev") fail(`brand tooltip "${await p.getAttribute("#brand", "title")}"`);
+      await checkLayout(p, `account list ${label}`);
+      await shoot(p, "panel-list-account", size, scheme);
+      // The account's queue: a paused task resumes there (tasks.retry) and can be cancelled; never "Run again".
+      await openJob(p, "task:t5");
+      const items = await menuItems(p);
+      if (items.join(" | ") !== "Run now | Resume | Edit schedule | Cancel | Delete") fail(`account paused task menu ${items.join(" | ")}`);
+      await backToList(p);
       await p.click("#migrate-go");
       await p.waitForFunction(() => window.__requests.some((r) => r.type === "account.migrate"));
       await p.waitForSelector("#migrate", { state: "hidden" });
@@ -1349,10 +1348,10 @@ export const PANEL_CASES = [
         await shoot(p, "panel-account-menu", size, scheme);
         await p.click("#acct-signout");
         await p.waitForFunction(() => window.__requests.some((r) => r.type === "account.signOut"));
-        await p.waitForSelector('#tab-todo[data-auth="out"] #login-btn');
+        await p.waitForSelector("#acct:not([data-signed-in])");
       }
       if (want("panel-model-menu-hosted", size, scheme)) {
-        const q = await openPanel(ctx, "account", ".chat-empty");
+        const q = await openPanel(ctx, "account");
         await q.click("#now-model");
         await q.waitForSelector("#model-menu:not([hidden])");
         const menu = await q.evaluate(() => ({
@@ -1374,76 +1373,55 @@ export const PANEL_CASES = [
       await p.close();
     },
   },
-  // Signed in on Free: the TODO list is a paid feature. One calm, centred Get a plan (and how many saved
-  // tasks wait in the account), no list, no composer; Chat still works; subscribing brings the list back.
+  // Signed in on Free: the TODO list is a paid feature. The list has the chats (they stay free) and none of the
+  // account's tasks; Schedule says what the plan lacks, with Get a plan; subscribing brings the tasks into the list.
   {
-    names: ["panel-todo-locked", "panel-todo-locked-empty"],
-    async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, checkLayout, reportErrors }) {
-      for (const name of ["panel-todo-locked", "panel-todo-locked-empty"]) {
-        if (!want(name, size, scheme)) continue;
-        const kind = name.replace("panel-", "");
-        const p = await openPanel(ctx, kind, ".chat-empty");
-        await p.click("#tab-btn-todo");
-        await p.waitForSelector('#tab-todo[data-auth="locked"] #todo-plan-btn');
-        const cta = await p.evaluate(() => {
-          const btn = document.getElementById("todo-plan-btn");
-          const b = btn.getBoundingClientRect();
-          const tab = document.getElementById("tab-todo").getBoundingClientRect();
-          const box = document.getElementById("todo-locked");
-          return {
-            w: b.width, h: b.height, font: parseFloat(getComputedStyle(btn).fontSize),
-            dx: Math.abs((b.left + b.right) / 2 - (tab.left + tab.right) / 2),
-            tabH: tab.height, boxDy: Math.abs((box.getBoundingClientRect().top + box.getBoundingClientRect().bottom) / 2 - (tab.top + tab.bottom) / 2),
-            shown: [...document.querySelectorAll("#tab-todo > *")].filter((e) => e.getBoundingClientRect().height > 0).map((e) => e.id || e.className),
-            text: [...box.querySelectorAll("p, button")].filter((e) => !e.hidden).map((e) => e.textContent),
-            composer: document.getElementById("composer").hidden,
-          };
-        });
-        const kept = name === "panel-todo-locked" ? ["You have 7 saved tasks; they come back when you subscribe."] : [];
-        const want_ = ["TODO needs a paid plan", "Tasks are stored in your account and run on schedule.", "Get a plan", ...kept];
-        if (JSON.stringify(cta.text) !== JSON.stringify(want_)) fail(`locked TODO says ${JSON.stringify(cta.text)}`);
-        if (cta.w < 200 || cta.h < 46 || cta.font < 16) fail(`Get a plan is not big: ${JSON.stringify(cta)}`);
-        if (cta.dx > 2 || cta.boxDy > cta.tabH * 0.12) fail(`the locked state is not centred: ${JSON.stringify(cta)}`);
-        if (cta.shown.join() !== "todo-locked") fail(`locked TODO shows more than Get a plan: ${cta.shown.join(", ")}`);
-        if (!cta.composer) fail("composer shown under Get a plan");
-        await checkLayout(p, `${kind} ${label}`);
-        await shoot(p, name, size, scheme);
-        // The account menu says what Free lacks.
-        const plan = await p.evaluate(() => document.querySelector("#acct .acct-plan").textContent);
-        if (plan !== "Free plan, no TODO list · $0.00 usage credit") fail(`account menu plan "${plan}"`);
-        // Get a plan: the dashboard's Billing page, in a new tab; back in the panel, the account is refreshed.
-        await p.click("#todo-plan-btn");
-        await p.waitForFunction(() => window.__created.includes("https://app.browsertodo.com/billing"));
-        const forced = () => p.evaluate(() => window.__requests.filter((r) => r.type === "account.refresh" && r.force === true).length);
-        const before = await forced();
-        await p.evaluate(() => {
-          dispatchEvent(new Event("blur"));
-          dispatchEvent(new Event("focus"));
-        });
-        await p.waitForFunction((n) => window.__requests.filter((r) => r.type === "account.refresh" && r.force === true).length === n + 1, before);
-        // One-off chats stay free: Chat keeps its composer.
-        await p.click("#tab-btn-chat");
-        if (!(await p.locator("#composer").isVisible())) fail("composer hidden on Chat on Free");
-        if (name === "panel-todo-locked") {
-          // Subscribing (the plan arrives with the next state): the same tasks come back, unlocked.
-          await p.click("#tab-btn-todo");
-          await p.evaluate(() => {
-            window.__data.tasksLocked = false;
-            const s = window.__data.state;
-            window.__push({ type: "state", state: { ...s, account: { ...s.account, plan: { id: "plus", status: "active", currentPeriodEnd: null, cancelAtPeriodEnd: false } } } });
-          });
-          await p.waitForSelector('#tab-todo[data-auth="in"] .task');
-          if (!(await p.locator("#composer").isVisible())) fail("composer not back after subscribing");
-        }
-        reportErrors(p, `${kind} ${label}`);
-        await p.close();
-      }
+    names: ["panel-todo-locked", "panel-schedule-locked"],
+    async run({ ctx, size, scheme, label, fail, want, openPanel, openJob, pick, backToList, shoot, checkLayout, reportErrors }) {
+      const p = await openPanel(ctx, "todo-locked", undefined, { edit: (d) => (d.sessions.find((x) => x.sessionId === "s-3").instructions = "Find the cheapest flight to Lisbon next weekend") });
+      const keys = () => p.evaluate(() => [...document.querySelectorAll(".job-row")].map((r) => r.dataset.key));
+      const locked = await keys();
+      // Only chats and runs whose tasks the list does not have: no waiting task of the account.
+      if (locked.some((k) => ["task:t1", "task:t3", "task:t4", "task:t5"].includes(k)) || !locked.includes("chat:s-3")) fail(`locked list ${JSON.stringify(locked)}`);
+      await checkLayout(p, `todo-locked ${label}`);
+      await shoot(p, "panel-todo-locked", size, scheme);
+      // The account menu says what Free lacks.
+      const plan = await p.evaluate(() => document.querySelector("#acct .acct-plan").textContent);
+      if (plan !== "Free plan, no TODO list · $0.00 usage credit") fail(`account menu plan "${plan}"`);
+      // Schedule on a chat: what the plan lacks, and Get a plan (the dashboard's Billing page, in a new tab).
+      await openJob(p, "chat:s-3");
+      await pick(p, "Schedule");
+      await p.waitForSelector("dialog.schedule-sheet[open]");
+      const gate = await p.evaluate(() => ({ text: document.querySelector("dialog.schedule-sheet").innerText, btn: document.getElementById("sched-gate-btn")?.textContent }));
+      if (!/TODO needs a paid plan/.test(gate.text) || !/run on schedule/.test(gate.text) || gate.btn !== "Get a plan") fail(`locked Schedule ${JSON.stringify(gate)}`);
+      await checkLayout(p, `schedule-locked ${label}`);
+      await shoot(p, "panel-schedule-locked", size, scheme);
+      await p.click("#sched-gate-btn");
+      await p.waitForFunction(() => window.__created.includes("https://app.browsertodo.com/billing"));
+      // Back in the panel, the account is refreshed.
+      const forced = () => p.evaluate(() => window.__requests.filter((r) => r.type === "account.refresh" && r.force === true).length);
+      const before = await forced();
+      await p.evaluate(() => {
+        dispatchEvent(new Event("blur"));
+        dispatchEvent(new Event("focus"));
+      });
+      await p.waitForFunction((n) => window.__requests.filter((r) => r.type === "account.refresh" && r.force === true).length === n + 1, before);
+      // Subscribing (the plan arrives with the next state): the same tasks come back into the list.
+      await backToList(p);
+      await p.evaluate(() => {
+        window.__data.tasksLocked = false;
+        const s = window.__data.state;
+        window.__push({ type: "state", state: { ...s, account: { ...s.account, plan: { id: "plus", status: "active", currentPeriodEnd: null, cancelAtPeriodEnd: false } } } });
+      });
+      await p.waitForSelector('.job-row[data-key="task:t1"]');
+      reportErrors(p, `todo-locked ${label}`);
+      await p.close();
     },
   },
   // Out of usage credit: the status line says so with Top up; the paused run's card has Top up too. Every one opens the dashboard's Billing page.
   {
     names: ["panel-out-of-credit"],
-    async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors }) {
+    async run({ ctx, size, scheme, label, fail, openPanel, backToList, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "hosted-out", "#chat-log .ev-end");
       const st = await p.evaluate(() => ({ text: document.getElementById("status-text").textContent, action: document.getElementById("status-action").textContent, chip: document.getElementById("now-model-label").textContent }));
       if (st.text !== "You're out of usage credit" || st.action !== "Top up" || st.chip !== "Out of usage credit") fail(`out of credit status ${JSON.stringify(st)}`);
@@ -1455,7 +1433,8 @@ export const PANEL_CASES = [
       await shoot(p, "panel-out-of-credit", size, scheme);
       await p.click("#chat-log [data-fix=topup]");
       await p.click("#status-action");
-      // Plan & billing in the account menu.
+      // Plan & billing in the account menu (over the list).
+      await backToList(p);
       await p.click("#acct-btn");
       await p.click("#acct-billing");
       // The model menu's Top up...
@@ -1544,15 +1523,15 @@ export const PANEL_CASES = [
       await p.close();
     },
   },
-  // Warning states.
+  // Warning states: no AI set up, runs paused. The strip under the header says so with its fix, over the list and a job.
   {
-    names: ["panel-nobrain-todo", "panel-model-menu-nojev"],
+    names: ["panel-nobrain", "panel-model-menu-nojev"],
     async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, checkLayout, reportErrors }) {
-      const p = await openPanel(ctx, "nobrain", ".chat-empty");
-      await p.click("#tab-btn-todo");
-      await p.waitForSelector(".task");
+      const p = await openPanel(ctx, "nobrain");
+      const st = await p.evaluate(() => ({ shown: !document.getElementById("status").hidden, tone: document.getElementById("status").dataset.tone, action: document.getElementById("status-action").textContent }));
+      if (!st.shown || st.tone !== "bad" || !st.action) fail(`no-AI strip ${JSON.stringify(st)}`);
       await checkLayout(p, `nobrain ${label}`);
-      await shoot(p, "panel-nobrain-todo", size, scheme);
+      await shoot(p, "panel-nobrain", size, scheme);
       if (want("panel-model-menu-nojev", size, scheme)) {
         // No Jev key anywhere: the Jev row is disabled with a hint.
         await p.click("#now-model");
@@ -1567,13 +1546,17 @@ export const PANEL_CASES = [
     },
   },
   {
-    names: ["panel-paused-history"],
-    async run({ ctx, size, scheme, label, openPanel, shoot, checkLayout, reportErrors }) {
-      const p = await openPanel(ctx, "paused", ".chat-empty");
-      await p.click("#tab-btn-history");
-      await p.waitForSelector(".sessions li");
+    names: ["panel-paused"],
+    async run({ ctx, size, scheme, label, fail, openPanel, openJob, shoot, checkLayout, reportErrors }) {
+      const p = await openPanel(ctx, "paused");
+      const st = await p.evaluate(() => ({ text: document.getElementById("status-text").textContent, action: document.getElementById("status-action").textContent }));
+      if (!st.text.startsWith("Runs paused: 3 tasks failed") || st.action !== "Resume") fail(`paused strip ${JSON.stringify(st)}`);
       await checkLayout(p, `paused ${label}`);
-      await shoot(p, "panel-paused-history", size, scheme);
+      await shoot(p, "panel-paused", size, scheme);
+      await openJob(p, "task:t6");
+      if (!(await p.isVisible("#status-action"))) fail("the paused strip is gone on a job's page");
+      await p.click("#status-action");
+      await p.waitForFunction(() => window.__requests.some((r) => r.type === "schedule.resume"));
       reportErrors(p, `paused ${label}`);
       await p.close();
     },
@@ -1581,7 +1564,7 @@ export const PANEL_CASES = [
   // Stopped by the user after typing the post: the next message continues that conversation.
   {
     names: ["panel-continue", "panel-continue-note", "panel-continue-newtask", "panel-continue-task-menu", "panel-continue-past-chat"],
-    async run({ ctx, size, scheme, label, fail, want, only, openPanel, shoot, checkLayout, reportErrors }) {
+    async run({ ctx, size, scheme, label, fail, want, only, openPanel, openJob, backToList, pick, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "stopped", "#chat-log .ev-tool");
       const data = scenario("stopped");
       const ended = data.sessions[0];
@@ -1595,15 +1578,14 @@ export const PANEL_CASES = [
         p.evaluate(() => ({
           placeholder: document.getElementById("now-text").placeholder,
           submit: document.getElementById("now-submit").textContent,
-          newChat: document.getElementById("chat-new").getAttribute("aria-disabled") !== "true",
           attach: !document.getElementById("now-attach").hidden,
         }));
       const expectMode = async (want, what) => {
         const got = await mode();
-        if (got.placeholder !== want.placeholder || got.submit !== want.submit || got.newChat !== want.newChat || got.attach !== want.attach) fail(`composer ${what}: ${JSON.stringify(got)}`);
+        if (got.placeholder !== want.placeholder || got.submit !== want.submit || got.attach !== want.attach) fail(`composer ${what}: ${JSON.stringify(got)}`);
       };
-      const CHAT = { placeholder: "Message BrowserTODO…", submit: "Send", newChat: true, attach: true };
-      const NEW = { placeholder: "Figure out what to do based on the current screen", submit: "Send", newChat: false, attach: true };
+      const CHAT = { placeholder: "Message BrowserTODO…", submit: "Send", attach: true };
+      const NEW = { placeholder: "Start a new job…", submit: "Send", attach: true };
       const lastMessage = () => p.evaluate(() => window.__requests.filter((r) => r.type === "run.message").at(-1) ?? null);
       await expectMode(CHAT, "not talking to the stopped conversation");
       await checkLayout(p, `continue ${label}`);
@@ -1625,35 +1607,31 @@ export const PANEL_CASES = [
       const req = await lastMessage();
       if (req?.sessionId !== "s-stop" || req?.text !== "It's already typed, just press Post") fail(`composer sent ${JSON.stringify(req)}`);
 
-      // New Chat goes back to "Do this now".
-      await p.click("#chat-new");
-      await expectMode(NEW, "still in the conversation after New Chat");
+      // Back on the list the box starts a new job.
+      await backToList(p);
+      await expectMode(NEW, "still in the conversation on the list");
       await checkLayout(p, `continue-newtask ${label}`);
       await shoot(p, "panel-continue-newtask", size, scheme);
 
-      // A past stopped run from History opens straight in Chat, with Continue, and the composer talks to it.
+      // A past stopped chat (under Needs you) opens with Continue, and the composer talks to it.
       if (want("panel-continue-past-chat", size, scheme)) {
-        await p.click("#tab-btn-history");
-        await p.waitForSelector(".sessions li");
-        await p.locator(".sessions li button", { hasText: "cheapest flight" }).click();
-        await p.waitForSelector("#tab-chat:not([hidden]) #chat-log .ev-continue");
-        if (!(await p.locator("#chat-log .ev-first .ev-user-text").textContent()).includes("cheapest flight")) fail("the History tab row did not show the run in Chat");
-        await expectMode(CHAT, "not talking to a past stopped run opened from History");
-        if ((await p.evaluate(() => document.activeElement?.id)) !== "now-text") fail("opening from History did not focus the box");
+        await openJob(p, "chat:s-3");
+        await p.waitForSelector("#chat-log .ev-continue");
+        if (!(await p.locator("#chat-log .ev-first .ev-user-text").textContent()).includes("cheapest flight")) fail("the list's row did not open the run");
+        await expectMode(CHAT, "not talking to a past stopped run opened from the list");
+        if ((await p.evaluate(() => document.activeElement?.id)) !== "now-text") fail("opening from the list did not focus the box");
         await checkLayout(p, `continue-past-chat ${label}`);
         await shoot(p, "panel-continue-past-chat", size, scheme);
       }
 
-      // TODO tab: the paused task's menu continues its latest run.
-      await p.click("#tab-btn-todo");
-      const menu = p.locator("#task-list li", { hasText: "September invoice" }).locator(".menu");
-      await menu.locator("summary").click();
+      // A paused task: its menu's Resume goes on from its latest run.
+      await openJob(p, "task:t5");
+      await p.click("#job-menu summary");
       await shoot(p, "panel-continue-task-menu", size, scheme);
-      await menu.locator("button", { hasText: "Continue" }).click();
-      await p.waitForFunction(() => window.__requests.some((r) => r.type === "run.continue"));
+      await pick(p, "Resume");
+      await p.waitForFunction(() => window.__requests.filter((r) => r.type === "run.continue").length >= 2);
       const cont = await p.evaluate(() => window.__requests.filter((r) => r.type === "run.continue").at(-1));
-      if (cont?.sessionId !== "s-5") fail(`task menu Continue sent ${JSON.stringify(cont)}`);
-      if (!(await p.locator("#tab-chat").isVisible())) fail("task menu Continue did not switch to Chat");
+      if (cont?.sessionId !== "s-5") fail(`Resume sent ${JSON.stringify(cont)}`);
       reportErrors(p, `continue ${label}`);
       await p.close();
     },
@@ -1694,7 +1672,7 @@ export const PANEL_CASES = [
 
       // Free plan: a lock; the tooltip and a click explain, "Choose a plan" opens the dashboard's Billing page.
       {
-        const p = await openPanel(ctx, "free", ".chat-empty");
+        const p = await openPanel(ctx, "free");
         if ((await voiceState(p)) !== "locked") fail(`free plan mic ${await voiceState(p)}`);
         if ((await p.getAttribute(mic, "title")) !== "Voice needs the Plus or Pro plan") fail(`locked tooltip "${await p.getAttribute(mic, "title")}"`);
         await p.click(mic);
@@ -1716,7 +1694,7 @@ export const PANEL_CASES = [
 
       // Paid plan: the mic is ready, its tooltip names the voice shortcut (both do the same).
       if (want("panel-voice-idle", size, scheme)) {
-        const p = await openPanel(ctx, "account", ".chat-empty");
+        const p = await openPanel(ctx, "account");
         if ((await voiceState(p)) !== "idle") fail(`paid plan mic ${await voiceState(p)}`);
         if ((await p.getAttribute(mic, "title")) !== `Voice · ${VOICE_SHORTCUT_LABEL}`) fail(`mic tooltip "${await p.getAttribute(mic, "title")}"`);
         await checkLayout(p, `voice-idle ${label}`);
@@ -1728,7 +1706,7 @@ export const PANEL_CASES = [
       // Standard picked in Settings: the mic starts hands-free on Standard (the orb, the words streaming into the box),
       // never the old one-shot dictation; pressed again it ends the session and the box is as it was.
       if (want("panel-voice-mic-standard", size, scheme)) {
-        const p = await openPanel(ctx, "account", ".chat-empty", { edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
+        const p = await openPanel(ctx, "account", undefined, { edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
         await p.click(mic);
         await waitPill(p, "listening");
         await waitVoice(p, "handsfree");
@@ -1755,7 +1733,7 @@ export const PANEL_CASES = [
 
       // Realtime (the default): the mic opens the narrator's session through the relay; pressed again it closes it.
       if (want("panel-voice-mic-realtime", size, scheme)) {
-        const p = await openPanel(ctx, "account", ".chat-empty", { init: [installVoiceFakes] });
+        const p = await openPanel(ctx, "account", undefined, { init: [installVoiceFakes] });
         await p.click(mic);
         await waitPill(p, "listening");
         await waitVoice(p, "handsfree");
@@ -1785,7 +1763,7 @@ export const PANEL_CASES = [
         });
         await p.addInitScript(installChromeStub, scenario("account"));
         await p.goto(`${base}/sidepanel.html`);
-        await p.waitForSelector(".chat-empty", { state: "attached" });
+        await p.waitForSelector("#job-groups > *", { state: "attached" });
         p.errors = errors;
         await p.click(mic);
         await p.waitForSelector("#now-notice:not([hidden])");
@@ -1810,7 +1788,7 @@ export const PANEL_CASES = [
       for (const reduced of [false, true]) {
         const name = reduced ? "panel-voicebar-reduced" : "panel-voicebar-hearing";
         if (!want(name, size, scheme)) continue;
-        const p = await openPanel(ctx, "account", ".chat-empty", { edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
+        const p = await openPanel(ctx, "account", undefined, { edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
         if (reduced) await p.emulateMedia({ reducedMotion: "reduce" });
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await p
@@ -1954,7 +1932,7 @@ export const PANEL_CASES = [
 
       // Standard: listening -> sending -> the task starts -> a line is said -> working -> the result is said -> stopped.
       if (["listening", "sending", "speaking", "working"].some((n) => want(`panel-handsfree-${n}`, size, scheme))) {
-        const p = await openPanel(ctx, "account", ".chat-empty", { edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
+        const p = await openPanel(ctx, "account", undefined, { edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
         await p.evaluate(() => (window.__ttsHold = true));
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
@@ -2055,7 +2033,7 @@ export const PANEL_CASES = [
 
       // Realtime: the cost notice the first time, the narrator talking (caption), and its send_to_agent starting a task.
       if (["cost", "narrator", "heard", "elsewhere-heard"].some((n) => want(`panel-handsfree-${n}`, size, scheme))) {
-        const p = await openPanel(ctx, "account", ".chat-empty", { edit: (d) => (d.state.settings.realtimeCostNoticed = false), init: [installVoiceFakes] });
+        const p = await openPanel(ctx, "account", undefined, { edit: (d) => (d.state.settings.realtimeCostNoticed = false), init: [installVoiceFakes] });
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
         await p.waitForSelector("#now-notice:not([hidden])");
@@ -2360,7 +2338,7 @@ export const PANEL_CASES = [
       // Realtime unavailable on the server: nothing starts (never Standard by itself); the notice says why and offers
       // Standard for this once.
       if (want("panel-handsfree-unavailable", size, scheme)) {
-        const p = await openPanel(ctx, "account", ".chat-empty", { init: [installVoiceFakes, () => (window.__rtMode = "unavailable")] });
+        const p = await openPanel(ctx, "account", undefined, { init: [installVoiceFakes, () => (window.__rtMode = "unavailable")] });
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await p.waitForSelector("#now-notice:not([hidden])");
         await p.waitForFunction(() => document.querySelector("#voice-bar").hidden, null, { timeout: 5000 }).catch(() => fail("voice went on without Realtime"));
@@ -2388,7 +2366,7 @@ export const PANEL_CASES = [
       // The Realtime connection drops mid-session: the strip says "Reconnecting…" while a new one is made, taking the
       // place of the old one on the server (takeover); the chat and the session go on.
       if (want("panel-handsfree-reconnecting", size, scheme)) {
-        const p = await openPanel(ctx, "account", ".chat-empty", { init: [installVoiceFakes] });
+        const p = await openPanel(ctx, "account", undefined, { init: [installVoiceFakes] });
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
         // The next connection opens but is not ready yet (so the strip can be seen), then the relay drops this one.
@@ -2427,7 +2405,7 @@ export const PANEL_CASES = [
     names: ["panel-handsfree-muted", "panel-handsfree-muted-speaking", "panel-handsfree-muted-working"],
     async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors, base }) {
       await ctx.grantPermissions(["microphone"], { origin: base });
-      const p = await openPanel(ctx, "account", ".chat-empty", { init: [installVoiceFakes] });
+      const p = await openPanel(ctx, "account", undefined, { init: [installVoiceFakes] });
       const appends = () => p.evaluate(() => window.__rt?.sent.filter((e) => e.type === "input_audio_buffer.append").length ?? 0);
       await p.evaluate(() => window.__push({ type: "panel.voice" }));
       await p.waitForFunction(() => document.querySelector("#voice-bar:not([hidden])")?.dataset.phase === "listening", null, { timeout: 20_000 });
@@ -2570,10 +2548,10 @@ export const PANEL_CASES = [
   // Raw: a three-turn voice conversation (Standard, then Realtime) with its timings, in place of the log.
   {
     names: ["panel-raw", "panel-raw-turn", "panel-raw-realtime"],
-    async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors, expectBar }) {
+    async run({ ctx, size, scheme, label, fail, openPanel, menuItems, pick, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "raw", "#chat-log .ev-end");
-      await expectBar(p, { "chat-new": true, "chat-show": false, "chat-raw-btn": true }, "raw: before");
-      await p.click("#chat-raw-btn");
+      if (!(await menuItems(p)).includes("Raw")) fail("raw: no Raw in the job's menu");
+      await pick(p, "Raw");
       await p.waitForSelector("#chat-raw .raw-turn");
       const got = await p.evaluate(() => {
         const raw = document.getElementById("chat-raw");
@@ -2582,7 +2560,6 @@ export const PANEL_CASES = [
         return {
           logHidden: document.getElementById("chat-log").hidden,
           rawShown: !raw.hidden && raw.getBoundingClientRect().height > 200,
-          pressed: document.getElementById("chat-raw-btn").getAttribute("aria-pressed"),
           tiles: [...raw.querySelectorAll(".raw-stat-label")].map((e) => e.textContent),
           tileTitles: [...raw.querySelectorAll(".raw-stat")].every((e) => e.title),
           slowest: raw.querySelectorAll(".raw-slowest li").length,
@@ -2596,7 +2573,8 @@ export const PANEL_CASES = [
           text: raw.textContent,
         };
       });
-      if (!got.logHidden || !got.rawShown || got.pressed !== "true") fail(`raw: not shown in place of the log ${JSON.stringify({ logHidden: got.logHidden, rawShown: got.rawShown, pressed: got.pressed })}`);
+      if (!got.logHidden || !got.rawShown) fail(`raw: not shown in place of the log ${JSON.stringify({ logHidden: got.logHidden, rawShown: got.rawShown })}`);
+      if (!(await menuItems(p)).includes("Close raw")) fail("raw: the menu does not offer Close raw while it is open");
       // The Realtime narrator's own tile follows speech to agent (trace-report.ts, "Narrator").
       const tiles = ["Total", "First response", "Speech → agent", "Narrator", "Model", "Tools", "Voice", "Other", "Tokens"];
       if (JSON.stringify(got.tiles) !== JSON.stringify(tiles)) fail(`raw: summary tiles ${JSON.stringify(got.tiles)}`);
@@ -2662,8 +2640,10 @@ export const PANEL_CASES = [
 
       // Back to chat: the log again.
       await p.click(".raw-back");
-      const back = await p.evaluate(() => ({ log: !document.getElementById("chat-log").hidden, raw: document.getElementById("chat-raw").hidden, pressed: document.getElementById("chat-raw-btn").getAttribute("aria-pressed") }));
-      if (!back.log || !back.raw || back.pressed !== "false") fail(`raw: back to chat ${JSON.stringify(back)}`);
+      const back = await p.evaluate(() => ({ log: !document.getElementById("chat-log").hidden, raw: document.getElementById("chat-raw").hidden }));
+      if (!back.log || !back.raw) fail(`raw: back to chat ${JSON.stringify(back)}`);
+      // The menu says Raw again (it said Close raw while it was open).
+      if (!(await menuItems(p)).includes("Raw")) fail("raw: the menu still says Close raw");
       await checkLayout(p, `raw back ${label}`);
       reportErrors(p, `raw ${label}`);
       await p.close();

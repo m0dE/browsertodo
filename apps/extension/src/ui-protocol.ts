@@ -149,6 +149,8 @@ export interface UiState {
   tabChats?: Record<string, string>;
   /** The tabs each running session acts in right now (session id -> tab ids, its main tab first). */
   runningTabs?: Record<string, number[]>;
+  /** Conversations with an action waiting for the user's OK (an approval card): listed under Needs you. Absent: none. */
+  awaitingApproval?: string[];
   /**
    * Signed in to another account than this computer's memory was synced with: nothing is sent until the user
    * answers "Add this computer's memory to <account>?" (memory.syncChoice). Absent: nothing to ask.
@@ -217,11 +219,11 @@ export type UiRequest =
       attachments?: UiAttachmentUpload[];
     }
   /**
-   * The conversation is over: close its kept-open agent session (a running
-   * turn keeps running). tabId: that tab has no conversation any more.
+   * The conversation is over (a new job took its tab): close its kept-open agent session and tabs (a running turn
+   * keeps running). tabId: that tab has no conversation any more.
    */
   | { type: "run.newChat"; sessionId?: string; tabId?: number }
-  /** A run picked in History: the conversation now belongs to this browser tab (it leaves any other tab). */
+  /** A job opened in the side panel: its conversation now belongs to this browser tab (it leaves any other tab). */
   | { type: "chat.bind"; sessionId: string; tabId: number }
   /** Undo on a scheduled card: the task the agent put in the TODO list (schedule_task) is deleted, and the card says so. */
   | { type: "chat.undoScheduled"; sessionId: string; taskId: string }
@@ -284,13 +286,12 @@ export type UiRequest =
   | { type: "account.keys.list" }
   | { type: "account.keys.create"; name: string; role: KeyRole }
   | { type: "account.keys.revoke"; id: string }
-  /**
-   * Newest first; taskId: only that task's runs; chats: only conversations (one-off chats, and runs the user went on
-   * with), for the new chat's recent chats. Chats still titled with their request get a title in the background.
-   */
-  | { type: "sessions.list"; limit?: number; taskId?: string; chats?: boolean }
-  /** The user's name for a chat (History): kept, never replaced by the title model. */
+  /** Newest first; taskId: only that task's runs. Chats still titled with their request get a title in the background. */
+  | { type: "sessions.list"; limit?: number; taskId?: string }
+  /** The user's name for a chat (the job's Rename): kept, never replaced by the title model. */
   | { type: "session.rename"; sessionId: string; title: string }
+  /** Delete a conversation that is not running (the job's Delete): its events, trace and files; no tab keeps it. */
+  | { type: "session.delete"; sessionId: string }
   | { type: "sessions.events"; sessionId: string }
   /** Site logins for get_credential (never used for X). Encrypted; unlocked per browser session. */
   | { type: "vault.list" }
@@ -386,6 +387,7 @@ export interface UiResults {
   "account.keys.revoke": { ok: boolean };
   "sessions.list": { sessions: SessionInfo[] };
   "session.rename": { session: SessionInfo };
+  "session.delete": { ok: boolean };
   "sessions.events": { session: SessionInfo; events: StampedAgentEvent[] };
   /** exists: a passphrase has been set; false: the next unlock chooses one. Site names are listed even while locked. */
   "vault.list": { exists: boolean; locked: boolean; sites: string[] };
@@ -431,10 +433,10 @@ export type UiPush =
   | { type: "session"; session: SessionInfo }
   | { type: "tasks.changed" }
   /**
-   * A keyboard shortcut: show the Chat tab and put the cursor in the input (see panel-command.ts);
-   * `draft`: the text the box had before the shortcut recreated the panel.
+   * A keyboard shortcut: put the cursor in the input (see panel-command.ts); `draft` and `job`: the text the box had
+   * and the job the page showed before the shortcut recreated the panel.
    */
-  | { type: "panel.focus"; draft?: string }
+  | { type: "panel.focus"; draft?: string; job?: string }
   /** The voice shortcut: hands-free voice on or off (as the mic button). */
   | { type: "panel.voice" }
   /** The hands-free session (null: none is on), and the tab the user looks at: when it changes, and when a panel connects. */

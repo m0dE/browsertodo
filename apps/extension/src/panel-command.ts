@@ -56,8 +56,11 @@ export type PanelMessage =
   | { type: "panel.listening"; listening: boolean; tabId?: number; engine?: VoiceEngineId; muted?: boolean }
   /** End the hands-free session, whichever panel runs it (Stop, or Use voice here, in another tab's panel). */
   | { type: "panel.voiceStop" }
-  /** The panel's page got or lost the keyboard focus; `draft`: the text in its box then (a recreated panel gets it back). */
-  | { type: "panel.document"; focused: boolean; draft: string };
+  /**
+   * The panel's page got or lost the keyboard focus, or showed another view; `draft`: the text in its box then, `job`:
+   * the job its page shows (absent: the jobs list). A recreated panel gets both back.
+   */
+  | { type: "panel.document"; focused: boolean; draft: string; job?: string };
 
 /** A UI port as this uses it (chrome.runtime.Port). */
 export interface PanelPort {
@@ -106,9 +109,19 @@ interface PanelInfo {
   focused: boolean;
   /** The text in the box when the page last got or lost the focus. */
   draft: string;
+  /** The job the page shows (null: the list). */
+  job: string | null;
+}
+
+/** What a recreated panel gets back: the text in its box, and the job it showed. */
+interface Restore {
+  draft: string;
+  job: string | null;
 }
 
 type Tab = { id?: number; windowId?: number } | null | undefined;
+
+const NOTHING: Restore = { draft: "", job: null };
 
 export class PanelCommands {
   private readonly panels = new Map<PanelPort, PanelInfo>();
@@ -116,7 +129,7 @@ export class PanelCommands {
    * Tabs whose panel a shortcut is opening -> the text to put back in its box, and whether to start listening:
    * when it says hello, it is told to focus (and to start voice input).
    */
-  private readonly opening = new Map<number, { draft: string; voice: boolean }>();
+  private readonly opening = new Map<number, Restore & { voice: boolean }>();
   /** The session last reported to the voice dep (JSON). */
   private reported = "null";
   private reports = 0;
@@ -125,7 +138,7 @@ export class PanelCommands {
 
   /** A side panel's UI port (after UiHub.attach accepted it). */
   attach(port: PanelPort): void {
-    const info: PanelInfo = { windowId: null, tabId: null, listening: false, voiceTab: null, engine: null, muted: false, since: 0, focused: false, draft: "" };
+    const info: PanelInfo = { windowId: null, tabId: null, listening: false, voiceTab: null, engine: null, muted: false, since: 0, focused: false, draft: "", job: null };
     this.panels.set(port, info);
     port.onDisconnect.addListener(() => {
       this.panels.delete(port);
@@ -144,7 +157,7 @@ export class PanelCommands {
         const pending = this.opening.get(msg.tabId);
         if (!pending) return;
         this.opening.delete(msg.tabId);
-        this.focus(port, pending.draft, pending.voice);
+        this.focus(port, pending, pending.voice);
       } else if (msg?.type === "panel.listening" && typeof msg.listening === "boolean") {
         if (msg.listening && !info.listening) info.since = ++this.reports;
         info.listening = msg.listening;
@@ -156,6 +169,7 @@ export class PanelCommands {
       } else if (msg?.type === "panel.document" && typeof msg.focused === "boolean") {
         info.focused = msg.focused;
         info.draft = typeof msg.draft === "string" ? msg.draft : "";
+        info.job = typeof msg.job === "string" && msg.job ? msg.job : null;
       }
     });
   }
@@ -193,7 +207,7 @@ export class PanelCommands {
     // The focus is in a panel page of the window already (a hidden tab's panel has none): it moves it to the input.
     const focused = inWindow.filter(([, p]) => p.focused);
     if (focused.length) {
-      for (const [port] of focused) this.focus(port, "", voice);
+      for (const [port] of focused) this.focus(port, NOTHING, voice);
       return voice ? "voice" : "focused";
     }
     const tabId = tab?.id;
@@ -201,19 +215,20 @@ export class PanelCommands {
     const own = this.panelsOfTab(tabId);
     // No page of its own yet, or none said hello since the worker restarted (open() leaves an open one as it is).
     if (!own.length) {
-      this.openFocused(tabId, "", voice);
+      this.openFocused(tabId, NOTHING, voice);
       return "opened";
     }
     // Listening (so this is open-chat): never recreated, the voice session would end. Chat and the box it gets.
     if (own.some(([, p]) => p.listening)) {
-      for (const [port] of own) this.focus(port, "", false);
+      for (const [port] of own) this.focus(port, NOTHING, false);
       return "focused";
     }
-    // The focus is in the web page: only a newly created panel page gets it (see the top of this file).
-    const draft = own.find(([, p]) => p.draft)?.[1].draft ?? "";
-    this.opening.set(tabId, { draft, voice });
+    // The focus is in the web page: only a newly created panel page gets it (see the top of this file), with the
+    // text in its box and the job it showed.
+    const restore: Restore = { draft: own.find(([, p]) => p.draft)?.[1].draft ?? "", job: own.find(([, p]) => p.job)?.[1].job ?? null };
+    this.opening.set(tabId, { ...restore, voice });
     this.deps.disable(tabId).catch((err: unknown) => this.log(`closing the side panel failed: ${String(err)}`));
-    this.openFocused(tabId, draft, voice);
+    this.openFocused(tabId, restore, voice);
     return "reopened";
   }
 
@@ -281,15 +296,15 @@ export class PanelCommands {
     }
   }
 
-  /** Tells a panel to put the cursor in its box (with `draft` back in it), then to start listening. */
-  private focus(port: PanelPort, draft: string, voice: boolean): void {
-    this.post(port, draft ? { type: "panel.focus", draft } : { type: "panel.focus" });
+  /** Tells a panel to put the cursor in its box (the draft back in it, on the job it showed), then to start listening. */
+  private focus(port: PanelPort, { draft, job }: Restore, voice: boolean): void {
+    this.post(port, { type: "panel.focus", ...(draft ? { draft } : {}), ...(job ? { job } : {}) });
     if (voice) this.post(port, { type: "panel.voice" });
   }
 
-  /** Opens the tab's panel; when it says hello it takes the focus, with `draft` back in its box (and listens). */
-  private openFocused(tabId: number, draft: string, voice: boolean): void {
-    this.opening.set(tabId, { draft, voice });
+  /** Opens the tab's panel; when it says hello it takes the focus, with what it had back (and listens). */
+  private openFocused(tabId: number, restore: Restore, voice: boolean): void {
+    this.opening.set(tabId, { ...restore, voice });
     this.deps.tabs?.add(tabId);
     this.deps.open(tabId).catch((err: unknown) => {
       // Nothing opens, so no hello will consume it.

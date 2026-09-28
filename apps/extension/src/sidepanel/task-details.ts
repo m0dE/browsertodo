@@ -22,7 +22,7 @@ import {
 import type { LocalMediaInfo } from "../ui-protocol.js";
 import { accountLabel, outcomeChip, sessionHeadline, trimUrlEnd } from "./format.js";
 
-/** A TODO entry as the TODO tab has it (cloud tasks may lack repeat and media). */
+/** A TODO entry as the jobs list has it (cloud tasks may lack repeat and media). */
 export type DetailsTask = Omit<LocalTask, "repeat"> & { repeat?: RepeatSchedule | null; media?: LocalMediaInfo[] };
 
 export interface DetailsInput {
@@ -79,8 +79,6 @@ export interface DetailsModel {
   origin?: Origin;
   fields: DetailsField[];
   files: { name: string; detail: string }[];
-  /** The TODO entry to show with "Open in TODO", when the list has it. */
-  todoId?: string;
   /** Its earlier runs, newest first (dates, outputs and notes), when its memory keeps them. */
   previousRuns?: PreviousRun[];
   /** What its memory says of runs older than those (the earlier-runs summary). */
@@ -98,8 +96,8 @@ export function previousRuns(runs: readonly MemoryEntry[], when: WhenOptions = {
 }
 
 export const ORIGIN_LABELS: Record<Origin, string> = {
-  account: "Your account's TODO list",
-  local: "This browser's TODO list",
+  account: "Scheduled in your account",
+  local: "Scheduled in this browser",
   api: "Cloud queue (API)",
   adhoc: "Chat message",
 };
@@ -214,7 +212,6 @@ export function detailsModel(input: DetailsInput, now = Date.now(), when: WhenOp
   if (textNote) model.textNote = textNote;
   if (chip) model.chip = { ...chip, hint: chipHint(chip.label) };
   if (origin) model.origin = origin;
-  if (task) model.todoId = task.id;
   if (input.runs?.length) {
     const kept = previousRuns(input.runs, when);
     if (kept.runs.length) model.previousRuns = kept.runs;

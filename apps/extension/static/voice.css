@@ -1,4 +1,4 @@
-/* Hands-free voice, live: the status strip under the tabs (voice-bar.ts), the voice controls in the composer row, and
+/* Hands-free voice, live: the status strip under the header (voice-bar.ts), the voice controls in the composer row, and
    the box while it listens for this tab (voice-input.ts), in one "live" colour distinct from the accent, like a
    recording light. The strip only tells; every control is at the bottom. --level (0..1, on the body) is the
    microphone's level. Reduced motion: nothing pulses; the meter and the rings stand still. Muted, the strip and the
@@ -20,7 +20,7 @@
   }
 }
 
-/* The strip: one line, full width under the tabs, above the orb's veil; the chat scrolls under it. */
+/* The strip: one line, full width under the header, above the orb's veil; the chat scrolls under it. */
 .voice-bar {
   position: relative; z-index: var(--z-above-veil); flex: none;
   display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; row-gap: 2px; min-height: 26px;

@@ -100,4 +100,18 @@ describe("SessionStore", () => {
     expect(await store.eventsOf("s000")).toEqual([]);
     expect(await store.list(2)).toHaveLength(2);
   });
+
+  it("delete removes a conversation with its events; the others stay", async () => {
+    const store = new SessionStore(new MemoryKvDb());
+    await store.create(info("a", "2026-09-24T10:00:00Z"));
+    await store.create(info("b", "2026-09-24T11:00:00Z"));
+    store.append("a", { type: "status", text: "x" });
+    store.append("b", { type: "status", text: "y" });
+    expect(await store.delete("a")).toBe(true);
+    expect(await store.get("a")).toBeNull();
+    expect(await store.eventsOf("a")).toEqual([]);
+    expect((await store.list()).map((s) => s.sessionId)).toEqual(["b"]);
+    expect(await store.eventsOf("b")).toHaveLength(1);
+    expect(await store.delete("a")).toBe(false);
+  });
 });

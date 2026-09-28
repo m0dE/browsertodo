@@ -12,3 +12,4 @@ apps/extension/config.json
 dist.building/
 /export/
 /dist.zip
+dist-dev/

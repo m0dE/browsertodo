@@ -20,10 +20,21 @@ import {
   NOISE_MAX_SPEECH_MS,
   echoesSpoken,
   repeatsRequest,
+  requestKind,
   speechTurnOf,
   type Floor,
 } from "../../src/voice/narrator-policy.js";
-import { ACK_MAX_OUTPUT_TOKENS, ackResponse, ACKNOWLEDGE_INSTRUCTIONS, HOLD_FOR_WORDS_MS, MAKE_AGAIN_RESPONSE, NARRATOR_INSTRUCTIONS, type RealtimeSocketLike } from "../../src/voice/realtime-client.js";
+import {
+  ACK_MAX_OUTPUT_TOKENS,
+  ackResponse,
+  ACKNOWLEDGE_INSTRUCTIONS,
+  ACKNOWLEDGE_WHILE_WORKING_INSTRUCTIONS,
+  HOLD_FOR_WORDS_MS,
+  MAKE_AGAIN_RESPONSE,
+  NARRATOR_INSTRUCTIONS,
+  NARRATOR_TOOLS,
+  type RealtimeSocketLike,
+} from "../../src/voice/realtime-client.js";
 import { RealtimeEngine } from "../../src/voice/realtime-engine.js";
 
 const GAP = NARRATOR_MILESTONE_GAP_MS;
@@ -462,7 +473,7 @@ describe("the owner's trace of 2026-09-27, gpt-realtime-2.1 with Claude Code: th
     }
   });
 
-  it("(2) the acknowledgement is capped (max_output_tokens) and told to say at most six words, no answer", async () => {
+  it("(2) the acknowledgement is capped (max_output_tokens) and told to say at most four words, no answer", async () => {
     // ~20 audio tokens a second: at most ~6 s even if its reasoning took nothing (the trace's ran 12.6 s, 492 tokens).
     const ack = ackResponse("What did the second email say exactly?");
     expect(ack).toMatchObject({ tool_choice: "none", max_output_tokens: ACK_MAX_OUTPUT_TOKENS, reasoning: { effort: "minimal" } });
@@ -472,7 +483,7 @@ describe("the owner's trace of 2026-09-27, gpt-realtime-2.1 with Claude Code: th
     expect(ack.instructions).toContain("a sample only: not something to answer): «What did the second email say exactly?»");
     expect(ackResponse(null).instructions).toBe(ACKNOWLEDGE_INSTRUCTIONS);
     expect(ACK_MAX_OUTPUT_TOKENS).toBeLessThanOrEqual(120);
-    expect(ACKNOWLEDGE_INSTRUCTIONS).toContain("at most six words");
+    expect(ACKNOWLEDGE_INSTRUCTIONS).toContain("at most four words");
     expect(ACKNOWLEDGE_INSTRUCTIONS).toContain("no answer, no facts, no question");
     expect(NARRATOR_INSTRUCTIONS).toContain("Never answer those yourself from the updates, never guess dates or times");
   });
@@ -608,5 +619,120 @@ describe("repeatsRequest: a request passed on again goes to the agent once", () 
     expect(repeatsRequest("And then open my calendar for tomorrow.", "in1", last)).toBe(false);
     expect(repeatsRequest("Resume from where I left off.", "in2", last)).toBe(false);
     expect(repeatsRequest("Resume from where I left off.", "in1", null)).toBe(false);
+  });
+});
+
+describe("the owner's report of 2026-09-27: 'can you speak Korean?' while the agent sent a refund email", () => {
+  /** The user says `said` (the narrator passes it on as `kind`), while the agent works or not. */
+  async function passedOn(said: string, kind: "question" | "instruction", working: boolean, input = "in1") {
+    const t = await started();
+    t.engine.setAgentWorking(working);
+    userTurn(t.s, input, `r_${input}`);
+    transcribed(t.s, input, said);
+    t.s.event({ type: "response.output_item.added", response_id: `r_${input}`, item: { type: "function_call", name: "send_to_agent" } });
+    t.s.event({ type: "response.function_call_arguments.done", response_id: `r_${input}`, call_id: `c_${input}`, name: "send_to_agent", arguments: JSON.stringify({ text: said, kind }) });
+    await settle();
+    t.s.event({ type: "response.done", response: { id: `r_${input}`, status: "completed" } });
+    await settle();
+    return t;
+  }
+  const notes = (s: FakeSocket) => s.sent.filter((e) => e.item?.role === "system").map((e) => e.item.content[0].text as string);
+
+  for (const [question, answer] of [
+    ["너 한국어 가능해?", "네, 한국어 가능해요! 지금 Streamlabs 환불 요청 이메일 보내는 중이에요."],
+    ["Can you speak Korean?", "Yes, I can speak Korean. I'm sending the Streamlabs refund email now."],
+  ] as const) {
+    it(`"${question}" mid-task: passed on, no acknowledgement; the agent's answer is said once, at once`, async () => {
+      const t = await passedOn(question, "question", true);
+      expect(t.forwarded).toEqual([question]);
+      expect(t.creates()).toEqual([]);
+      const T0 = Date.now();
+      t.engine.agentEvent({ type: "user_message", text: question, voice: true }, T0);
+      t.engine.agentEvent({ type: "assistant_text", text: answer }, T0 + 1_000);
+      expect(t.creates()).toEqual([{ type: "response.create" }]);
+      expect(notes(t.s)).toEqual([`Agent update (answer): The agent answered the user's question: "${answer}" Tell the user its answer in one or two short sentences.`]);
+      t.serve();
+      // Its next words go on with the task: not said.
+      t.engine.agentEvent({ type: "assistant_text", text: "Clicking Send on the refund email." }, T0 + 2_000);
+      t.engine.agentEvent({ type: "assistant_text", text: answer }, T0 + 3_000);
+      expect(t.creates()).toHaveLength(1);
+      // The task's end is said as usual.
+      t.engine.agentEvent({ type: "task_end", outcome: "done", summary: "Sent", spoken: "Sent the refund request to Streamlabs." }, T0 + 20_000);
+      expect(t.creates()).toHaveLength(2);
+    });
+  }
+
+  it("the narrator answering '너 한국어 가능해?' by itself (live, 2026-09-27: '응, 가능해. 한국어로 편하게 말해줘.'): never heard, made again, passed on as a question, no acknowledgement", async () => {
+    const t = await started();
+    t.engine.setAgentWorking(true);
+    userTurn(t.s, "in1", "r1", 1_500);
+    speaks(t.s, "r1", "응, 가능해. 한국어로 편하게 말해줘.");
+    transcribed(t.s, "in1", "너 한국어 가능해?");
+    t.s.event({ type: "response.done", response: { id: "r1", status: "cancelled" } });
+    expect(t.creates()).toEqual([{ type: "response.create", response: MAKE_AGAIN_RESPONSE }]);
+    t.s.event({ type: "response.created", response: { id: "r1b" } });
+    t.s.event({ type: "response.output_item.added", response_id: "r1b", item: { type: "function_call", name: "send_to_agent" } });
+    t.s.event({ type: "response.function_call_arguments.done", response_id: "r1b", call_id: "c1", name: "send_to_agent", arguments: JSON.stringify({ text: "너 한국어 가능해?", kind: "question" }) });
+    await settle();
+    t.s.event({ type: "response.done", response: { id: "r1b", status: "completed" } });
+    await settle();
+    expect(t.forwarded).toEqual(["너 한국어 가능해?"]);
+    expect(t.creates()).toHaveLength(1);
+    expect(t.played()).toEqual([]);
+    t.engine.agentEvent({ type: "assistant_text", text: "네, 한국어 가능해요!" }, Date.now());
+    expect(t.creates().slice(1)).toEqual([{ type: "response.create" }]);
+  });
+
+  it("the user's correction ('아니, 저는 그냥 한국어 가능한지 물어본 거예요') is a question too: no acknowledgement", async () => {
+    const t = await passedOn("아니, 저는 그냥 한국어 가능한지 물어본 거예요", "question", true);
+    expect(t.forwarded).toEqual(["아니, 저는 그냥 한국어 가능한지 물어본 거예요"]);
+    expect(t.creates()).toEqual([]);
+  });
+
+  it("a question when the agent is idle: no acknowledgement; its turn's end is the answer", async () => {
+    const t = await passedOn("What's on my calendar tomorrow?", "question", false);
+    expect(t.creates()).toEqual([]);
+    // The turn's own words are not the answer (its end is).
+    t.engine.agentEvent({ type: "assistant_text", text: "I'll open your calendar." }, Date.now());
+    expect(t.creates()).toEqual([]);
+    t.engine.agentEvent({ type: "task_end", outcome: "done", summary: "Read", spoken: "Two meetings tomorrow." }, Date.now() + 5_000);
+    expect(t.creates()).toEqual([{ type: "response.create" }]);
+  });
+
+  it('"also cc my accountant" mid-task: one neutral acknowledgement only', async () => {
+    const t = await passedOn("also cc my accountant", "instruction", true);
+    expect(t.forwarded).toEqual(["also cc my accountant"]);
+    expect(t.creates()).toEqual([{ type: "response.create", response: ackResponse("also cc my accountant", true) }]);
+    expect(t.creates()[0]!.response.instructions).toContain(ACKNOWLEDGE_WHILE_WORKING_INSTRUCTIONS);
+    t.serve();
+    expect(t.creates()).toHaveLength(1);
+  });
+
+  it("a new task when the agent is idle: one short acknowledgement", async () => {
+    const t = await passedOn("Send Streamlabs a refund request", "instruction", false);
+    expect(t.creates()).toEqual([{ type: "response.create", response: ackResponse("Send Streamlabs a refund request", false) }]);
+    expect(t.creates()[0]!.response.instructions).toContain(ACKNOWLEDGE_INSTRUCTIONS);
+  });
+
+  it("no acknowledgement may claim what will be done or when, and each stays small (max_output_tokens)", () => {
+    for (const say of [ACKNOWLEDGE_INSTRUCTIONS, ACKNOWLEDGE_WHILE_WORKING_INSTRUCTIONS]) {
+      expect(say).toContain("Never say what will be done, is being done or when (never 'I'll start', 'starting soon', 'I'll do it now').");
+      expect(say).toContain("no answer, no facts, no question");
+    }
+    expect(ACKNOWLEDGE_WHILE_WORKING_INSTRUCTIONS).toContain("neutral acknowledgement of one to three words");
+    expect(ACK_MAX_OUTPUT_TOKENS).toBeLessThanOrEqual(120);
+    for (const working of [false, true]) {
+      expect(ackResponse("너 한국어 가능해?", working)).toMatchObject({ tool_choice: "none", max_output_tokens: ACK_MAX_OUTPUT_TOKENS, reasoning: { effort: "minimal" }, conversation: "none", input: [] });
+    }
+  });
+
+  it("send_to_agent carries the narrator's own reading of the words (kind); a call without it is an instruction", () => {
+    const send = NARRATOR_TOOLS.find((t) => t.name === "send_to_agent")!;
+    expect(send.parameters.required).toEqual(["text", "kind"]);
+    expect(send.parameters.properties).toMatchObject({ kind: { type: "string", enum: ["question", "instruction"] } });
+    expect(requestKind({ text: "x", kind: "question" })).toBe("question");
+    expect(requestKind({ text: "x", kind: "instruction" })).toBe("instruction");
+    expect(requestKind({ text: "x" })).toBe("instruction");
+    expect(requestKind(null)).toBe("instruction");
   });
 });

@@ -1,13 +1,14 @@
 // Bundles the extension into dist/: background.js, options.js, sidepanel.js, the voice pages, static files and icons.
 import { build } from "esbuild";
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 
 const root = dirname(fileURLToPath(import.meta.url));
 // Output to the repo root so Chrome's "Load unpacked" points at <repo>/dist.
-const dist = join(root, "..", "..", "dist");
+// BROWSERTODO_DIST: build elsewhere (a work-in-progress build that must not replace the dist/ Chrome loads).
+const dist = process.env.BROWSERTODO_DIST ? resolve(process.env.BROWSERTODO_DIST) : join(root, "..", "..", "dist");
 // Built in a staging folder and swapped in only when complete, so a failed
 // build never leaves the loaded extension half-written.
 const staging = `${dist}.building`;

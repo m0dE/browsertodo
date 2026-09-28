@@ -297,7 +297,7 @@ describe("ApprovalGate for scheduled runs (full_within_task)", () => {
 });
 
 describe("ApprovalGate.confirm (a change outside the page: a TODO task changed or cancelled)", () => {
-  const CHANGE = { action: 'Cancel the TODO task "Dentist"', site: "", why: "cancels a task in your TODO list" };
+  const CHANGE = { action: 'Cancel the scheduled job "Dentist"', site: "", why: "cancels one of your scheduled jobs" };
 
   it("waits at every level but full autonomy, scheduled runs included", async () => {
     for (const level of ["ask_all", "ask_consequential", "full_within_task"] as const) {
@@ -315,7 +315,7 @@ describe("ApprovalGate.confirm (a change outside the page: a TODO task changed o
     await expect(denied.gate.confirm("s1", CHANGE)).rejects.toThrow(`${APPROVAL_REFUSAL_PREFIX} The user denied it (${CHANGE.action}).`);
     const t = setup({ answer: "allow_task" });
     await t.gate.confirm("s1", CHANGE);
-    await t.gate.confirm("s1", { ...CHANGE, action: 'Change the TODO task "Standup"' });
+    await t.gate.confirm("s1", { ...CHANGE, action: 'Change the scheduled job "Standup"' });
     await postFlow(t.call);
     expect(t.asked).toEqual([CHANGE]);
   });
@@ -392,9 +392,11 @@ describe("ApprovalBroker", () => {
     const { b } = broker();
     const p1 = b.request("s1", ask);
     const p2 = b.request("s2", ask);
+    expect(b.waitingSessions()).toEqual(["s1", "s2"]);
     b.end("s1");
     expect(await p1).toBe("ended");
     expect(b.waiting().map((r) => r.id)).toEqual(["a2"]);
+    expect(b.waitingSessions()).toEqual(["s2"]);
     b.answer("s2", "a2", "deny");
     expect(await p2).toBe("deny");
   });

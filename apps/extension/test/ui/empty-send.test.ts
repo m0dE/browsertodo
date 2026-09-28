@@ -1,10 +1,10 @@
-/** Sending an empty box: in Chat it looks at the page; elsewhere it does nothing, with a hint. */
+/** Sending an empty box: it looks at the page (a new job, or the next turn of the one shown). */
 import { describe, expect, it } from "vitest";
 import { SCREEN_HELP_TEXT } from "@browsertodo/shared";
-import { emptySend, SCREEN_PLACEHOLDER } from "../../src/sidepanel/composer.js";
+import { emptySend, NEW_JOB_PLACEHOLDER, SCREEN_SEND_TITLE } from "../../src/sidepanel/composer.js";
 import { describeEvent, isScreenHelp } from "../../src/sidepanel/event-format.js";
 
-const base = { panelTab: "chat" as const, mode: "new" as const, sessionId: null, hasFiles: false, tabId: 7 };
+const base = { mode: "new" as const, sessionId: null, hasFiles: false, tabId: 7 };
 
 describe("emptySend", () => {
   it("a new chat: a one-off run with the screen flag, in the panel's tab", () => {
@@ -18,14 +18,15 @@ describe("emptySend", () => {
     });
   });
 
-  it("nothing is sent under TODO, while a turn runs, or with files but no words", () => {
-    expect(emptySend({ ...base, panelTab: "todo" })).toEqual({ hint: "Type a task to run it now" });
+  it("nothing is sent while a turn runs, or with files but no words", () => {
     expect(emptySend({ ...base, mode: "running", sessionId: "S1" })).toMatchObject({ hint: expect.stringMatching(/working/) });
     expect(emptySend({ ...base, hasFiles: true })).toMatchObject({ hint: expect.stringMatching(/files/) });
   });
 
-  it("the Chat placeholder says what an empty send does, and the user's turn reads the same", () => {
-    expect(SCREEN_PLACEHOLDER).toBe(SCREEN_HELP_TEXT);
+  it("a new job's placeholder says what an empty send does, and the user's turn reads the same", () => {
+    // The list's box invites a new job; Send's tooltip says an empty send looks at the page.
+    expect(NEW_JOB_PLACEHOLDER).toBe("Start a new job…");
+    expect(SCREEN_SEND_TITLE).toMatch(/look at this page/);
     expect(isScreenHelp(SCREEN_HELP_TEXT)).toBe(true);
     expect(isScreenHelp("hello")).toBe(false);
     expect(describeEvent({ type: "user_message", text: SCREEN_HELP_TEXT })).toEqual({ kind: "user", text: SCREEN_HELP_TEXT, screen: true });

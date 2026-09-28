@@ -23,7 +23,7 @@ import { stopwatch } from "@browsertodo/shared";
 /** How the model gets an interjection: the framing both brains use. */
 export function interjectionText(texts: readonly string[]): string {
   const said = texts.map((t) => `"${t.trim()}"`).join(", then: ");
-  return `The user just said: ${said}. Act on it now: it changes the current task (keep doing what it does not change), or replaces or stops it if that is what it says.`;
+  return `The user just said: ${said}. Act on it now: a question or remark, answer it in a short reply before your next tool call (in the same message) and go on with the task; otherwise it changes the current task (keep doing what it does not change), or replaces or stops it if that is what it says.`;
 }
 
 /** Start of the answer to a task_* call made while a message from the user was still unread. */

@@ -138,8 +138,8 @@ describe("openingTurn: the conversation's first message", () => {
     expect(v.origin).toBeUndefined();
   });
   it("TODO list and cloud queue runs: their instructions, labelled with where they came from", () => {
-    expect(openingTurn(session({ source: "local", taskId: "t1", title: "Post gm on X" }), [], NOW)).toMatchObject({ text: "Post gm on X", origin: "From your TODO list" });
-    expect(openingTurn(session({ source: "cloud", taskId: "c1", title: "Post gm on X" }), [], NOW)).toMatchObject({ origin: "Scheduled" });
+    expect(openingTurn(session({ source: "local", taskId: "t1", title: "Post gm on X" }), [], NOW)).toMatchObject({ text: "Post gm on X", origin: "Scheduled run" });
+    expect(openingTurn(session({ source: "cloud", taskId: "c1", title: "Post gm on X" }), [], NOW)).toMatchObject({ origin: "Scheduled run" });
   });
   it("files: counted from the first turn's preparing line only", () => {
     const events: AgentEvent[] = [

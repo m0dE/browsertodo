@@ -16,7 +16,7 @@ describe("Interjections", () => {
     i.add("  ");
     i.add("and hurry");
     expect(i.unseen).toBe(true);
-    expect(i.take("request")).toBe('The user just said: "no, use page B", then: "and hurry". Act on it now: it changes the current task (keep doing what it does not change), or replaces or stops it if that is what it says.');
+    expect(i.take("request")).toBe('The user just said: "no, use page B", then: "and hurry". Act on it now: a question or remark, answer it in a short reply before your next tool call (in the same message) and go on with the task; otherwise it changes the current task (keep doing what it does not change), or replaces or stops it if that is what it says.');
     expect(i.unseen).toBe(false);
     expect(i.take("request")).toBeNull();
     expect(routes).toEqual([["request", 2]]);

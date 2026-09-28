@@ -372,7 +372,7 @@ export class Runner {
   }
 
   /**
-   * New chat: the conversation is over. Its kept-open agent session and the
+   * The conversation is over (a new job took its tab, or it is deleted). Its kept-open agent session and the
    * tabs its agent opened are closed (a running turn is left alone; the UI
    * just stops targeting it).
    */

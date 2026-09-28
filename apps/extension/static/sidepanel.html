@@ -10,64 +10,52 @@
   </head>
   <body class="panel">
     <header class="top">
-      <div id="status" class="status" data-tone="muted" role="status">
+      <!-- Over the jobs list: the name and the account avatar with its menu (ui/account-menu.ts, built by header.ts). -->
+      <div id="list-head" class="head">
+        <h1 id="brand" class="brand">BrowserTODO</h1>
+        <span class="spacer"></span>
+        <span id="acct-slot" class="acct-slot"></span>
+      </div>
+      <!-- Over a job's page (job-page.ts): back to the list, the job's title and where it is, and its actions. -->
+      <div id="job-head" class="head job-head" hidden>
+        <button id="job-back" type="button" class="icon job-back" title="Back to jobs" aria-label="Back to jobs">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg>
+        </button>
+        <div class="job-heading">
+          <h1 id="job-title" class="job-title" tabindex="-1"></h1>
+          <p id="job-sub" class="job-sub"></p>
+        </div>
+        <details id="job-menu" class="menu job-menu">
+          <summary title="Job actions" aria-label="Job actions">⋯</summary>
+          <div id="job-menu-pop" class="menu-pop" role="menu" aria-label="Job actions"></div>
+        </details>
+      </div>
+      <!-- Only while something is wrong (no AI, out of credit, runs paused), with the button that fixes it (header.ts). -->
+      <div id="status" class="status" data-tone="muted" role="status" hidden>
         <span class="dot" aria-hidden="true"></span>
         <span id="status-text" class="status-text">Connecting…</span>
-        <span id="status-meta" class="status-meta"></span>
         <button id="status-action" type="button" class="link" hidden></button>
-        <!-- The account avatar and its menu (ui/account-menu.ts, built by header.ts). -->
-        <span id="acct-slot" class="acct-slot"></span>
       </div>
       <!-- Shown while Settings > Permission is "Full autonomy" (autonomy-warning.ts). -->
       <p id="autonomy-warning" class="autonomy-warning" role="status" hidden>
         <span id="autonomy-warning-text"></span>
         <button id="autonomy-warning-change" type="button" class="link">Change</button>
       </p>
-      <nav class="tabs" role="tablist">
-        <button type="button" role="tab" id="tab-btn-chat" data-tab="chat" aria-controls="tab-chat" aria-selected="true">Chat <span id="live-dot" class="live-dot" title="The agent is working" hidden></span></button>
-        <button type="button" role="tab" id="tab-btn-todo" data-tab="todo" aria-controls="tab-todo" aria-selected="false">TODO</button>
-        <button type="button" role="tab" id="tab-btn-history" data-tab="history" aria-controls="tab-history" aria-selected="false">History</button>
-      </nav>
     </header>
-    <!-- While hands-free voice is on: a one-line status strip under the tabs (voice-bar.ts fills it); its controls are in the composer. -->
+    <!-- While hands-free voice is on: a one-line status strip under the header (voice-bar.ts fills it); its controls are in the composer. -->
     <div id="voice-bar" class="voice-bar" role="region" aria-label="Voice status" hidden></div>
+    <!-- Where the panel went (the list, a job), for screen readers. -->
+    <p id="view-announce" class="sr-only" aria-live="polite"></p>
 
     <main>
-      <!-- Chat: the conversation with the agent, live -->
-      <section id="tab-chat" class="tab chat" role="tabpanel" aria-labelledby="tab-btn-chat">
-        <div class="chat-bar" role="toolbar" aria-label="Chat actions">
-          <button id="chat-new" type="button" class="bar-btn">New chat</button>
-          <span class="bar-sep" aria-hidden="true"></span>
-          <button id="chat-show" type="button" class="bar-btn">Show tab</button>
-          <span class="bar-sep" aria-hidden="true"></span>
-          <button id="chat-raw-btn" type="button" class="bar-btn" aria-pressed="false" aria-controls="chat-raw">Raw</button>
+      <!-- The jobs list (job-list.ts): every chat, task and run, by what it needs. -->
+      <section id="view-list" class="view list-view scroll" aria-labelledby="brand">
+        <div class="list-search">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+          <input id="job-search" type="search" placeholder="Search jobs" aria-label="Search jobs" autocomplete="off" spellcheck="false" />
         </div>
-        <!-- Chats running in other tabs: one chip each (the conversation itself opens with its prompt, in the log). -->
-        <div id="chat-head" class="act-head" hidden>
-          <div id="chat-switch" class="act-switch" role="group" aria-label="Chats running in other tabs" hidden></div>
-        </div>
-        <div id="chat-log" class="log scroll" aria-live="polite"></div>
-        <!-- Raw: the conversation with its timings (raw-view.ts), in place of the log while open. -->
-        <div id="chat-raw" class="raw" role="region" aria-label="Raw conversation with timings" hidden></div>
-      </section>
-
-      <!-- TODO -->
-      <section id="tab-todo" class="tab scroll" role="tabpanel" aria-labelledby="tab-btn-todo" data-auth="loading" hidden>
-        <!-- Signed out: only this. The list lives in the user's account. -->
-        <div id="todo-login" class="login-cta">
-          <button id="login-btn" type="button" class="primary login-btn">Log in</button>
-          <p class="login-hint">Sign in with Google to keep your TODO list in your account and run it on schedule (paid plans).</p>
-          <p id="login-msg" class="msg" role="alert"></p>
-        </div>
-        <!-- Signed in on a plan without the TODO list: only this. Kept tasks wait in the account. -->
-        <div id="todo-locked" class="login-cta">
-          <p id="todo-locked-title" class="cta-title"></p>
-          <p id="todo-locked-why" class="login-hint"></p>
-          <button id="todo-plan-btn" type="button" class="primary login-btn"></button>
-          <p id="todo-kept" class="login-hint" hidden></p>
-        </div>
-        <!-- First sign-in with tasks saved in this browser. -->
-        <div id="migrate" class="card migrate" hidden>
+        <!-- First sign-in with tasks saved in this browser (migrate-offer.ts). -->
+        <div id="migrate" class="card list-note" hidden>
           <p id="migrate-text" class="migrate-text"></p>
           <p id="migrate-msg" class="msg"></p>
           <div class="row end">
@@ -76,7 +64,7 @@
           </div>
         </div>
         <!-- Signed in to another account than this computer's memory was synced with (memory-ask.ts). -->
-        <div id="memory-ask" class="card migrate" hidden>
+        <div id="memory-ask" class="card list-note" hidden>
           <p id="memory-ask-text" class="migrate-text"></p>
           <p id="memory-ask-hint" class="migrate-hint"></p>
           <p id="memory-ask-msg" class="msg"></p>
@@ -85,56 +73,19 @@
             <button id="memory-ask-add" type="button" class="primary small">Add</button>
           </div>
         </div>
-        <div class="section-head">
-          <h2>Tasks</h2>
-          <span id="todo-count" class="count"></span>
-          <span class="spacer"></span>
-          <button id="run-now" type="button" class="ghost small" hidden>Run due</button>
-          <button id="add-toggle" type="button" class="ghost small" aria-expanded="false" aria-controls="add-form" title="Schedule a task for later, or to repeat">Add task</button>
-        </div>
-        <p id="tasks-msg" class="msg" role="status"></p>
-        <form id="add-form" class="card add" aria-labelledby="add-title" novalidate hidden>
-          <h3 id="add-title" class="add-title">New task</h3>
-          <label class="field"><span>Task</span>
-            <textarea id="add-text" rows="4" required placeholder="What should the agent do? e.g. Post the weekly recap on X from @alpha"></textarea>
-          </label>
-          <div id="add-schedule"></div>
-          <p id="add-msg" class="msg" role="alert"></p>
-          <div class="row add-actions">
-            <button id="add-attach" type="button" class="ghost small icon-btn" title="Attach files" aria-label="Attach files"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M10.5 4.5 5.8 9.2a1.2 1.2 0 0 0 1.7 1.7l5-5a2.6 2.6 0 0 0-3.7-3.7l-5 5a4 4 0 0 0 5.6 5.7L14 8.3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-            <input id="add-files" type="file" multiple hidden />
-            <ul id="add-files-list" class="files inline"></ul>
-            <span id="add-kept" class="add-kept" hidden></span>
-            <span class="spacer"></span>
-            <button id="add-cancel" type="button" class="ghost">Cancel</button>
-            <button id="add-submit" type="submit" class="primary">Add</button>
-          </div>
-        </form>
-
-        <ul id="task-list" class="tasks"></ul>
-        <div id="tasks-empty" class="empty-state" hidden>
-          <p class="empty-title">Nothing scheduled</p>
-          <p>Use Add task to schedule something, or type below to run it now.</p>
-        </div>
-        <details id="finished" class="finished" hidden>
-          <summary>Finished <span id="finished-count" class="count"></span></summary>
-          <ul id="finished-list" class="tasks"></ul>
-        </details>
+        <div id="job-groups" class="job-groups"></div>
       </section>
 
-      <!-- History: every run, newest first; one opens in Chat -->
-      <section id="tab-history" class="tab history-tab" role="tabpanel" aria-labelledby="tab-btn-history" hidden>
-        <div id="hist-list" class="scroll history">
-          <ul id="history-list" class="sessions"></ul>
-          <div id="history-empty" class="empty-state" hidden>
-            <p class="empty-title">No runs yet</p>
-            <p>Every task the agent works on shows up here.</p>
-          </div>
-        </div>
+      <!-- A job's page (job-page.ts): its conversation, live (chat.ts), and its earlier runs above it. -->
+      <section id="view-job" class="view job-view" aria-labelledby="job-title" hidden>
+        <p id="job-elsewhere" class="job-elsewhere" role="status" hidden></p>
+        <div id="chat-log" class="log scroll" aria-live="polite"></div>
+        <!-- Raw: the conversation with its timings (raw-view.ts), in place of the log while open. -->
+        <div id="chat-raw" class="raw" role="region" aria-label="Raw conversation with timings" hidden></div>
       </section>
     </main>
 
-    <!-- One input for the Chat and TODO tabs: talks to the conversation Chat shows, or starts a new one. -->
+    <!-- One input under both views: starts a new job from the list, goes on with the job shown on its page. -->
     <footer id="composer" class="composer">
       <!-- Above the box, in the layout (a notice pushes the chat up, never covers the box): one notice at a time
            (notices.ts). -->
@@ -146,7 +97,7 @@
         <!-- The agent's follow-up suggestion shows faded under the (transparent) box, laid out exactly like the typed text (suggestion.ts). -->
         <div class="now-field">
           <div id="now-ghost" class="now-ghost" aria-hidden="true" hidden><span class="now-ghost-typed"></span><wbr><span class="now-ghost-rest"></span><kbd class="now-ghost-key">Tab</kbd></div>
-          <textarea id="now-text" rows="1" placeholder="Do this now, e.g. “Post ‘good morning’ on X”" aria-label="Task to do now"></textarea>
+          <textarea id="now-text" rows="1" placeholder="Start a new job…" aria-label="Task to do now"></textarea>
         </div>
         <span id="now-suggestion" class="sr-only"></span>
         <div class="now-bar">

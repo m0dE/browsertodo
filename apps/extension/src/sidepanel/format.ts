@@ -3,11 +3,8 @@ import {
   formatCents,
   hostedModel,
   OUT_OF_CREDIT,
-  plural,
-  isDueNow,
   type BrainKind,
   type Chip,
-  type LocalTask,
   type Tone,
 } from "@browsertodo/shared";
 import { todoAllowed } from "../account/types.js";
@@ -98,32 +95,6 @@ export function trimUrlEnd(url: string): string {
   }
 }
 
-type Timing = Pick<LocalTask, "status" | "notBefore" | "retryAfter">;
-
-/**
- * The TODO tab's "Run due (N)": N counts the tasks the next check would start
- * (isDueNow, the scheduler's own test). Hidden when there are none, unless
- * cloud sync (the runner-key queue) may have some. account: the list is the
- * signed-in account's.
- */
-export function runDueButton(
-  tasks: readonly Timing[],
-  settings: { intervalMinutes: number; cloudEnabled: boolean } | null,
-  now = Date.now(),
-  account = false,
-): { hidden: boolean; count: number; label: string; title: string } {
-  const count = tasks.filter((t) => isDueNow(t, now, account ? "account" : "local")).length;
-  const cloud = !account && !!settings?.cloudEnabled;
-  const n = settings?.intervalMinutes;
-  const every = n ? ` (every ${plural(n, "minute")})` : "";
-  return {
-    hidden: count === 0 && !cloud,
-    count,
-    label: count ? `Run due (${count})` : "Run due",
-    title: `Run ${count ? `the ${plural(count, "task")} whose time has come` : "what is due"}${cloud ? " and check the cloud queue" : ""} now, instead of waiting for the next check${every}`,
-  };
-}
-
 export function outcomeChip(outcome: string | undefined): Chip {
   switch (outcome) {
     case undefined:
@@ -186,12 +157,13 @@ export function modelChip(state: Pick<UiState, "settings" | "brain" | "account">
   return info;
 }
 
-/** What the tab shows: the list, or one call to action (Log in; Get a plan). "loading": the account is not known yet. */
+/** Whether scheduling works: signed out, a plan without the TODO list, or it does. "loading": the account is not known yet. */
 export type TodoGate = "loading" | "out" | "locked" | "in";
 
 /**
- * The tab's gate. locked: the last list's word (the server judges the plan);
- * before a list arrived, the plan as the account view has it.
+ * Scheduling's gate (the Schedule sheet). locked: the last list's word (the
+ * server judges the plan); before a list arrived, the plan as the account
+ * view has it.
  */
 export function todoGate(account: AccountView | null, listLocked: boolean | null): TodoGate {
   if (!account) return "loading";

@@ -1,5 +1,5 @@
 /**
- * How a task reads in a list, the same in the side panel's TODO tab and the
+ * How a task reads in a list, the same in the side panel's jobs and the
  * dashboard: its status chip and tooltip, list order, when it runs in words,
  * and whether it is due. Pure and DOM-free.
  */
@@ -86,7 +86,7 @@ export function repeatLabel(repeat: RepeatSchedule | LegacyRepeatRule | null | u
  * True when a task would start at the next check: pending with its time
  * come. `account`: the account's queue, which also takes up a paused task
  * once its retry time has come (the API's claim does the same in SQL).
- * The extension's scheduler picks local tasks with this, and the TODO tab
+ * The extension's scheduler picks local tasks with this, and the dashboard
  * counts "Run due (N)" with it.
  */
 export function isDueNow(task: Timing, now = Date.now(), source: "local" | "account" = "local"): boolean {
@@ -128,7 +128,7 @@ export function scheduleLabel(
   return next && Date.parse(next) > now ? `Once · ${whenText(next, now, opts)}` : "Due now";
 }
 
-/** The TODO list on a plan without it (the side panel's TODO tab and the dashboard's TODO page say the same). */
+/** The TODO list on a plan without it (the side panel's Schedule and the dashboard's TODO page say the same). */
 export const TODO_LOCKED = {
   title: "TODO needs a paid plan",
   why: "Tasks are stored in your account and run on schedule.",

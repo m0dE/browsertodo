@@ -1,9 +1,7 @@
 /**
- * A chat per browser tab: which conversation the Chat tab shows for the
- * panel's tab (its own tab, or the active tab of its window for the panel
- * page opened as a tab), and where another conversation lives. Pure.
+ * A chat per browser tab: which conversation is the panel's tab's own (its own tab, or the active tab of its window
+ * for the panel page opened as a tab), and where another conversation lives. Pure.
  */
-import type { SessionInfo } from "@browsertodo/shared";
 
 /** The parts of UiState this uses. */
 export interface TabChatState {
@@ -17,27 +15,23 @@ export interface TabChatState {
 export interface TabChatLocal {
   /** A conversation just started from this tab (until the state shows it bound). */
   pending?: { tab: number; sessionId: string } | null;
-  /** Running sessions the user left with New chat in a tab they act in (not bound to it). */
-  left?: ReadonlyMap<number, string>;
 }
 
 /**
- * The conversation of a browser tab: the one bound to it, else one just
- * started there, else a running session acting in it (a scheduled run, an
- * agent's extra tab). Null: an empty new chat.
+ * The conversation a panel that follows its window's active tab shows for tab `tab`: the tab's own, else a running
+ * session acting in it that belongs to no tab (a scheduled run). Null: none (the list).
  */
-export function chatForTab(tab: number | null, s: TabChatState, local: TabChatLocal = {}): string | null {
+export function chatInTab(tab: number | null, s: TabChatState, local: TabChatLocal = {}): string | null {
   const own = ownChatOfTab(tab, s, local);
   if (own || tab === null) return own;
-  for (const [sessionId, tabs] of Object.entries(s.runningTabs ?? {})) {
-    if (tabs.includes(tab) && local.left?.get(tab) !== sessionId && !isBound(sessionId, s)) return sessionId;
-  }
+  for (const [sessionId, tabs] of Object.entries(s.runningTabs ?? {})) if (tabs.includes(tab) && !isBound(sessionId, s)) return sessionId;
   return null;
 }
 
 /**
  * The conversation that is the tab's own: bound to it, or just started there. Never a running session that only
- * acts in the tab (a scheduled run, another chat's extra tab): hands-free voice talks to and narrates this one only.
+ * acts in the tab (a scheduled run, another chat's extra tab): the panel shows it when the tab's chat changes, and
+ * hands-free voice talks to and narrates this one only.
  */
 export function ownChatOfTab(tab: number | null, s: TabChatState, local: TabChatLocal = {}): string | null {
   if (tab === null) return null;
@@ -73,9 +67,4 @@ export function isBound(sessionId: string, s: TabChatState): boolean {
 export function tabOfSession(sessionId: string, s: TabChatState): number | null {
   for (const [tab, id] of Object.entries(s.tabChats ?? {})) if (id === sessionId) return Number(tab);
   return s.runningTabs?.[sessionId]?.[0] ?? null;
-}
-
-/** The running conversations of other tabs (the switcher's chips): every running session but the one shown. */
-export function otherRunning(running: readonly SessionInfo[], shownId: string | null): SessionInfo[] {
-  return running.filter((s) => s.sessionId !== shownId);
 }

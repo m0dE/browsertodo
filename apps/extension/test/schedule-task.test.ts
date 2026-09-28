@@ -245,16 +245,16 @@ describe("TaskScheduler.update", () => {
     t.todo.own({ id: "u1", instructions: "Weekly standup notes", notBefore: "2026-09-28T13:30:00.000Z", repeat: { cron: "30 9 * * 1", tz: NY } });
     await t.scheduler.update("s1", { task_id: "u1", task: "Open the standup link", schedule: { repeat: { cron: "30 9 * * 1-5", tz: NY } } });
     expect(approve).toHaveBeenCalledWith("s1", {
-      action: 'Change the TODO task "Weekly standup notes"',
+      action: 'Change the scheduled job "Weekly standup notes"',
       site: "",
-      why: "changes a task in your TODO list",
+      why: "changes one of your scheduled jobs",
       text: "When: Every weekday at 9:30 AM\nTask: Open the standup link",
     });
     expect(t.todo.tasks.get("u1")).toMatchObject({ instructions: "Open the standup link", repeat: { cron: "30 9 * * 1-5", tz: NY } });
   });
 
   it("not approved: nothing changes, no card, and the model reads the refusal", async () => {
-    const refusal = approvalRefusalText("deny", 'Change the TODO task "Weekly standup notes"');
+    const refusal = approvalRefusalText("deny", 'Change the scheduled job "Weekly standup notes"');
     const t = await setup({ approve: async () => Promise.reject(new Error(refusal)) });
     t.todo.own({ id: "u1", instructions: "Weekly standup notes", notBefore: "2026-09-28T13:30:00.000Z" });
     expect(await t.scheduler.tool("s1", "update_scheduled_task", { task_id: "u1", schedule: { at: "2026-09-29T09:30:00-04:00" } })).toEqual({ isError: true, text: refusal });
@@ -313,7 +313,7 @@ describe("TaskScheduler.cancel", () => {
     t.todo.own({ id: "u1", instructions: "Dentist: leave at 2:30", notBefore: "2026-10-01T18:30:00.000Z" });
     const r = await t.scheduler.tool("s1", "cancel_scheduled_task", { task_id: "u1" });
     expect(r.text).toMatch(/^Cancelled task u1 in the user's TODO list: "Dentist: leave at 2:30"\. It will not run/);
-    expect(approve).toHaveBeenCalledWith("s1", { action: 'Cancel the TODO task "Dentist: leave at 2:30"', site: "", why: "cancels a task in your TODO list" });
+    expect(approve).toHaveBeenCalledWith("s1", { action: 'Cancel the scheduled job "Dentist: leave at 2:30"', site: "", why: "cancels one of your scheduled jobs" });
     expect(t.todo.tasks.get("u1")!.status).toBe("cancelled");
     expect((await t.events()).at(-1)).toEqual({
       type: "task_changed",

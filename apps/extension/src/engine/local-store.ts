@@ -204,7 +204,7 @@ export class LocalStore {
     });
   }
 
-  /** Pending tasks whose notBefore and retryAfter have passed (isDueNow, as the TODO tab counts them), oldest first. */
+  /** Pending tasks whose notBefore and retryAfter have passed (isDueNow), oldest first. */
   async due(now = this.now()): Promise<StoredLocalTask[]> {
     return (await this.read()).filter((x) => isDueNow(x, now.getTime())).sort(byCreated);
   }

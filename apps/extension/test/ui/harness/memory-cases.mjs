@@ -461,9 +461,9 @@ export const MEMORY_PANEL_CASES = [
       if (!(await eventually(async () => (await requests(p, "chat.setMemory")).some((r) => r.on === true)))) fail("badge did not turn memory on");
       if (!(await eventually(async () => !(await shown(p, "#now-memory-off"))))) fail("badge still shown");
 
-      // A new chat (tab 2): the choice waits for its first message, which carries it.
+      // A new job (tab 2 has none: the list): the choice waits for its first message, which carries it.
       await p.evaluate(() => window.__activateTab(2));
-      await p.waitForSelector("#chat-log .chat-empty");
+      await p.waitForSelector("#view-list:not([hidden])");
       await p.click("#now-model");
       await p.click("#model-menu .mm-memory");
       if ((await item()).hint !== "Off for this new chat") fail(`new chat hint ${(await item()).hint}`);
@@ -542,9 +542,8 @@ export const MEMORY_PANEL_CASES = [
   {
     names: ["panel-memory-ask"],
     async run({ ctx, size, scheme, label, fail, openPanel, shoot, checkLayout, reportErrors }) {
-      const p = await openPanel(ctx, "account", ".chat-empty", { edit: (d) => (d.state = { ...d.state, memoryQuestion: { account: "ada.lovelace@example.com" } }) });
-      await p.click("#tab-btn-todo");
-      await p.waitForSelector("#memory-ask:not([hidden])");
+      const p = await openPanel(ctx, "account", undefined, { edit: (d) => (d.state = { ...d.state, memoryQuestion: { account: "ada.lovelace@example.com" } }) });
+      await p.waitForSelector("#view-list:not([hidden]) #memory-ask:not([hidden])");
       const card = await p.evaluate(() => ({
         text: document.getElementById("memory-ask-text").textContent,
         hint: document.getElementById("memory-ask-hint").textContent,
@@ -558,7 +557,7 @@ export const MEMORY_PANEL_CASES = [
       await p.click("#memory-ask-keep");
       if (!(await eventually(async () => (await requests(p, "memory.syncChoice")).some((r) => r.add === false)))) fail("Keep separate not sent");
       if (!(await eventually(async () => !(await shown(p, "#memory-ask"))))) fail("memory question still shown after the answer");
-      if (!(await eventually(async () => /stays separate from ada\.lovelace@example\.com/.test(await p.textContent("#tasks-msg"))))) fail("no word after Keep separate");
+      if (!(await eventually(async () => /stays separate from ada\.lovelace@example\.com/.test(await p.textContent("#now-notice"))))) fail("no word after Keep separate");
       reportErrors(p, `memory-ask ${label}`);
       await p.close();
     },

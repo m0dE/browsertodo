@@ -1,29 +1,37 @@
 /**
- * Side panel entry: wires the header (header.ts), the tabs (Chat | TODO |
- * History, tabs.ts), the composer and the push port to the background
- * (port.ts), and decides which conversation Chat shows: the one of the
- * browser tab the panel belongs to (each tab has its own panel, see
- * panel-tabs.ts; the page opened as a tab follows its window's active tab
- * instead), see tab-chat.ts.
+ * Side panel entry. Everything is a job (jobs.ts): the panel opens on the jobs list (job-list.ts), and a job opens
+ * on its own page (job-page.ts: its conversation, chat.ts); "‹" goes back to the list as it was left (job-nav.ts).
+ * The composer at the bottom starts a new job from the list and goes on with the job shown on its page. Wires the
+ * header (header.ts), the push port to the background (port.ts) and hands-free voice.
+ *
+ * Each browser tab has its own panel (panel-tabs.ts; the page opened as a tab follows its window's active tab
+ * instead) and its own chat (tab-chat.ts): opening a job binds it to the panel's tab, a new job started there is
+ * bound to it, and a panel shows the job its tab's chat became.
  */
 import { errorMessage, FILES_WHILE_RUNNING, type SessionInfo, type VoiceEngineId, type VoiceEnginesResponse } from "@browsertodo/shared";
+import { SIGN_IN_NOT_SET_UP } from "../account/google-auth.js";
 import { isStale, uiRequest, type UiAttachmentUpload, type UiPush, type UiState } from "../ui-protocol.js";
 import { initChat } from "./chat.js";
 import { initComposer } from "./composer.js";
 import { showDetails } from "./details-sheet.js";
 import { $, closeMenusOnOutsideClick } from "../ui/dom.js";
 import { setErrorFixes, type ErrorFixes } from "./error-view.js";
+import { todoGate } from "./format.js";
 import { initHeader } from "./header.js";
-import { initHistory } from "./history.js";
-import { initRecentChats } from "./recent-chats.js";
+import { JobData } from "./job-data.js";
+import { initJobList } from "./job-list.js";
+import { forgetOldTabs, JobNav, viewAnnouncement } from "./job-nav.js";
+import { initJobPage } from "./job-page.js";
+import { chatKey, seriesOf, taskKey, type Job } from "./jobs.js";
+import { initMemoryAsk } from "./memory-ask.js";
+import { initMigrateOffer } from "./migrate-offer.js";
 import { openSettings } from "./open-settings.js";
 import { initAutonomyWarning } from "./autonomy-warning.js";
 import { connectBackground } from "./port.js";
 import type { PanelMessage } from "../panel-command.js";
-import { chatForTab, followChat, isBound, ownChatOfTab, tabOfSession } from "./tab-chat.js";
+import { chatInTab, followChat, isBound, ownChatOfTab, tabOfSession } from "./tab-chat.js";
 import { openTabPanel, panelTabOf } from "../panel-tabs.js";
-import { initPanelTabs, tabHasComposer, type TabName } from "./tabs.js";
-import { initTasks } from "./tasks.js";
+import { openScheduleSheet } from "./schedule-sheet.js";
 import { OPEN_CHAT_COMMAND, openShortcutSettings, readShortcut, VOICE_COMMAND } from "../shortcut.js";
 import { voiceAllowed } from "../account/types.js";
 import { openBilling, refreshOnReturn } from "../ui/billing.js";
@@ -39,53 +47,100 @@ import { initHandsFree, type SendExtra } from "./hands-free.js";
 import { initVoiceInput, VOICE_NOTICE } from "./voice-input.js";
 import { PanelTrace } from "../trace/panel-trace.js";
 
-/** Relative times (the status line's next check, task times) are redrawn this often. */
+/** Relative times (the list's, the job's subtitle) are redrawn this often. */
 const CLOCK_TICK_MS = 60_000;
+/** Sign-in's progress and problems, above the box. */
+const ACCOUNT_NOTICE = "account";
+
+// Older panels kept their last tab (and a #todo or #history hash may still point at one): every panel opens on the list.
+forgetOldTabs(localStorage);
+if (location.hash) history.replaceState(null, "", location.pathname + location.search);
 
 let state: UiState | null = null;
-let currentTab: TabName = "chat";
-/** The conversation the Chat tab shows. */
-let focused: SessionInfo | null = null;
 /** The tab this side panel belongs to (null: the panel page opened as a tab). */
 const ownTab = panelTabOf(location.search);
 /**
- * The browser window this panel is in, and the tab whose conversation Chat shows: the panel's own tab (or where the
- * agent moved the chat it showed, see followChat), else the active tab of the window.
+ * The browser window this panel is in, and the tab it acts in: the panel's own tab (or where the agent moved the
+ * chat it showed, see followChat), else the active tab of the window.
  */
 let windowId: number | null = null;
 let activeTab: number | null = ownTab;
-/** The conversation Chat shows (null: an empty new chat). */
-let shownChat: string | null = null;
 /** A conversation just started from a tab, until the state shows it bound there. */
 let pending: { tab: number; sessionId: string } | null = null;
-/** The conversation last sent to from the tab Chat shows (kept once bound: its turn may move it, see followChat). */
+/** The conversation last sent to from the panel's tab (kept once bound: its turn may move it, see followChat). */
 let sent: { tab: number; sessionId: string } | null = null;
-/** Running sessions the user left with New chat in a tab they act in (not bound to it). */
-const left = new Map<number, string>();
+/** The panel tab's own chat as last seen (undefined: no state yet); when it becomes another one, its job shows. */
+let ownSeen: string | null | undefined;
 
-/** Shows the conversation of the active tab (or an empty new chat). */
-function resolveChat(): void {
-  if (pending && state && isBound(pending.sessionId, state)) pending = null;
-  shownChat = chatForTab(activeTab, state ?? {}, { pending, left });
-  chat.show(shownChat);
+const nav = new JobNav();
+const data = new JobData(uiRequest, (err) => console.warn(`[browsertodo] jobs not loaded: ${errorMessage(err)}`));
+const listView = $("view-list");
+const jobView = $("view-job");
+
+/** The job a conversation belongs to (a chat just started is its own). */
+function keyOfSession(sessionId: string): string {
+  const s = data.session(sessionId);
+  return s ? data.keyOfSession(s) : chatKey(sessionId);
 }
 
-/** Chat shows the conversation of `tab` from now on. */
-function setActive(tab: number | null): void {
+/** Shows a job's page; opened from the list, the list's place is kept for back. */
+function showJob(key: string): void {
+  nav.open(key, nav.view.kind === "list" ? list.place(null) : undefined);
+}
+
+/** Back to the list, as it was left. */
+function back(): void {
+  const place = nav.back();
+  list.show(place);
+  if (!place.focusKey) $<HTMLInputElement>("job-search").focus({ preventScroll: true });
+}
+
+/** A row was picked: its page. Its conversation is bound to this tab, unless it is running in another one. */
+function openJob(job: Job): void {
+  nav.open(job.key, list.place(job.key));
+  composer.focus();
+  const s = job.session;
+  if (!s || activeTab === null) return;
+  const where = state ? tabOfSession(s.sessionId, state) : null;
+  if (job.running && where !== null && where !== activeTab) return;
+  const tab = activeTab;
+  pending = { tab, sessionId: s.sessionId };
+  ownSeen = s.sessionId;
+  uiRequest({ type: "chat.bind", sessionId: s.sessionId, tabId: tab }).then(applyState, (err: unknown) => composer.showError(err));
+}
+
+/**
+ * A message, a new job or a continue went out from this tab: its job shows at once. A new job takes the tab's place
+ * of the chat it had, which is over then (its kept-open agent session and tabs close, as the tab has a new chat).
+ */
+function startedHere(sessionId: string): void {
+  const isNew = !data.session(sessionId);
+  if (activeTab !== null) {
+    const before = ownChatOfTab(activeTab, state ?? {}, { pending });
+    if (isNew && before && before !== sessionId && !state?.runningSessions.some((r) => r.sessionId === before)) {
+      void uiRequest({ type: "run.newChat", sessionId: before }).catch((err: unknown) => console.warn(`[browsertodo] closing chat ${before} failed: ${errorMessage(err)}`));
+    }
+    pending = sent = { tab: activeTab, sessionId };
+  }
+  ownSeen = sessionId;
+  showJob(keyOfSession(sessionId));
+}
+
+/**
+ * The panel acts in tab `tab` from now on (the page opened as a tab: the user switched tabs; a tab's own panel: its
+ * chat's tab closed). The panel shows the job of that tab (its own, or a run working there), or the list when it
+ * has none. `quiet`: the first look at the tabs, when the panel opens (on the list).
+ */
+function setActive(tab: number | null, quiet = false): void {
   if (tab === activeTab) return;
   activeTab = tab;
-  resolveChat();
-  handsFree.refresh();
-}
-
-/** A message, a new task or a continue went out from this tab: its conversation shows here at once. */
-function startedHere(sessionId: string): void {
-  if (activeTab !== null) {
-    pending = sent = { tab: activeTab, sessionId };
-    left.delete(activeTab);
+  if (state) ownSeen = ownChatOfTab(tab, state, { pending });
+  const shown = chatInTab(tab, state ?? {}, { pending });
+  if (!quiet) {
+    if (shown) showJob(keyOfSession(shown));
+    else if (nav.view.kind === "job") back();
   }
-  tabs.show("chat");
-  resolveChat();
+  handsFree.refresh();
 }
 
 /**
@@ -97,61 +152,11 @@ async function goToTab(tabId: number): Promise<boolean> {
   return (await uiRequest({ type: "tab.focus", tabId })).ok;
 }
 
-/** Switch to the tab another conversation lives in (its chat shows there). */
-async function switchTo(sessionId: string): Promise<boolean> {
-  const tab = state ? tabOfSession(sessionId, state) : null;
-  try {
-    if (tab !== null) return await goToTab(tab);
-    return (await uiRequest({ type: "agent.show", sessionId })).ok;
-  } catch {
-    return false;
-  }
-}
-
-/** A run picked in History: a running conversation of another tab is switched to; any other is bound to this tab. */
-async function openHere(s: SessionInfo): Promise<void> {
-  tabs.show("chat");
-  const st = state ?? {};
-  if (chatForTab(activeTab, st, { pending, left }) === s.sessionId) return composer.focus();
-  const elsewhere = tabOfSession(s.sessionId, st);
-  if (!s.endedAt && elsewhere !== null && elsewhere !== activeTab && (await switchTo(s.sessionId))) return;
-  if (activeTab === null) return;
-  const tab = activeTab;
-  try {
-    applyState(await uiRequest({ type: "chat.bind", sessionId: s.sessionId, tabId: tab }));
-  } catch (err) {
-    // Not bound: it still shows here now, and the box says why it will not stay with this tab.
-    composer.showError(err);
-  }
-  left.delete(tab);
-  pending = { tab, sessionId: s.sessionId };
-  resolveChat();
-  composer.focus();
-}
-
-/** "Open in TODO" from the details sheet: the TODO tab, scrolled to the task. */
-function openInTodo(taskId: string): void {
-  tabs.show("todo");
-  void tasks.reveal(taskId);
-}
-
-/** The details sheet of a run's task (its first message in Chat): "Open in TODO" when the list has it. */
-const runDetails = (s: SessionInfo, trigger: HTMLElement) => void showDetails({ session: s }, trigger, { onOpenInTodo: openInTodo });
-
 /** Get a plan, Top up, Plan & billing: the dashboard's Billing page. */
 function billing(): void {
   void openBilling(state?.account);
 }
 
-const tasks = initTasks({
-  onStarted: () => tabs.show("chat"),
-  onContinued: startedHere,
-  onState: (s) => applyState(s),
-  tabId: () => activeTab,
-  onDetails: (task, listSource, trigger) => void showDetails({ task, listSource }, trigger),
-  openBilling: billing,
-  onGateChange: () => updateComposer(),
-});
 /** This panel's part of each conversation's timing trace (sending, voice), for the Raw view. */
 const panelTrace = new PanelTrace((sessionId, events) => uiRequest({ type: "trace.add", sessionId, events }));
 /** The voice engines' models as the server last listed them (for the trace). */
@@ -192,15 +197,13 @@ const voice = initVoiceInput({
   openBilling: billing,
   host: document.body,
 });
-/** The chat of a browser tab (null: it has none yet); an unknown tab's is the one Chat shows. */
-const chatOfTab = (tab: number | null): string | null =>
-  tab === null ? (focused?.sessionId ?? pending?.sessionId ?? null) : chatForTab(tab, state ?? {}, { pending, left });
 /**
- * Hands-free voice's chat for its tab: the tab's own chat only, never a scheduled or other run that merely acts in
- * that tab (its results were once read out in a session that had asked nothing).
+ * Hands-free voice's chat for a tab: in the panel's tab, the job shown (the list: a new job, as the box would
+ * start); in another tab, that tab's own chat only, never a scheduled or other run that merely acts in that tab (its
+ * results were once read out in a session that had asked nothing).
  */
 const voiceChatOfTab = (tab: number | null): string | null =>
-  tab === null ? (focused?.sessionId ?? pending?.sessionId ?? null) : ownChatOfTab(tab, state ?? {}, { pending });
+  tab === null || tab === activeTab ? (nav.view.kind === "job" ? page.sessionId() : null) : ownChatOfTab(tab, state ?? {}, { pending });
 
 /**
  * Hands-free voice sends what was said to its chat, whichever tab is shown: the chat by its id (it stays in the tab
@@ -237,7 +240,6 @@ async function sendSpoken(text: string, target: { tabId: number | null; sessionI
   else {
     // Started from a tab not shown: it is that tab's chat once the state says so.
     pending = { tab, sessionId: r.sessionId };
-    left.delete(tab);
   }
   return r.sessionId;
 }
@@ -309,45 +311,36 @@ const handsFree = initHandsFree({
     return "Stopped the task.";
   },
   openBilling: billing,
-  signIn: () => signIn(),
+  signIn: () => void signIn(),
   onActive: reportListening,
   stopRemote: () => port.send({ type: "panel.voiceStop" }),
   bar: $("voice-bar"),
   trace: panelTrace,
   log: (m) => console.info(`[browsertodo] ${m}`),
 });
-// The new chat offers the recent chats to go on with; See all is History.
-const recent = initRecentChats({ onOpen: (s) => void openHere(s), onSeeAll: () => tabs.show("history") });
+
+/** The details sheet of a conversation's first message. */
+const runDetails = (s: SessionInfo, trigger: HTMLElement) => void showDetails({ session: s }, trigger);
+
+/** View on a scheduled card: that task's job (the list is loaded again first: the task may be new). */
+async function openTask(taskId: string): Promise<void> {
+  await data.loadTasks();
+  const job = data.jobs().find((j) => j.tasks.some((t) => t.id === taskId));
+  showJob(job?.key ?? taskKey(taskId));
+}
+
 const chat = initChat({
-  recent,
   // Continue in an end card: go on now (with the note typed in the box, if any).
   onContinue: (sessionId) => void composer.continueNow(sessionId),
   onFocus: (s) => {
-    focused = s;
     composer.setConversation(s);
     handsFree.refresh();
+    // A chat just started is known once its conversation loads: its page's title and menu follow.
+    if (nav.view.kind === "job") page.render();
   },
-  // New chat: this tab has no conversation any more (the session stays in History).
-  onLeave: (s) => {
-    if (activeTab !== null) {
-      left.set(activeTab, s.sessionId);
-      if (state?.tabChats?.[String(activeTab)] === s.sessionId) {
-        const rest = { ...state.tabChats };
-        delete rest[String(activeTab)];
-        state = { ...state, tabChats: rest };
-      }
-    }
-    if (pending?.sessionId === s.sessionId) pending = null;
-    if (sent?.sessionId === s.sessionId) sent = null;
-    composer.leave(s.sessionId);
-    // A tab's own panel that followed its chat to the agent's tab starts the new one in its own tab.
-    if (ownTab !== null) activeTab = ownTab;
-    resolveChat();
-  },
-  onSwitch: (s) => void switchTo(s.sessionId),
   onDetails: runDetails,
-  onOpenTask: openInTodo,
-  onShortcuts: () => void openShortcutSettings(),
+  onOpenTask: (taskId) => void openTask(taskId),
+  onRaw: () => page.render(),
   voiceEnv: () => {
     const settings = state?.settings;
     if (!settings) return undefined;
@@ -364,20 +357,95 @@ const chat = initChat({
     };
   },
 });
-const history = initHistory({ onOpenInChat: (s) => void openHere(s) });
-/** The voice shortcut arrived before the first state (a panel it just opened): run it once voice knows the plan. */
-let voicePending = false;
-/** Log in: the TODO tab's sign-in, where its progress shows. */
-function signIn(): void {
-  tabs.show("todo");
-  tasks.signIn();
+
+const list = initJobList(listView, { data, onOpen: openJob, onShortcuts: () => void openShortcutSettings() });
+const page = initJobPage({
+  data,
+  chat,
+  activeTab: () => activeTab,
+  tabOf: (sessionId) => (state ? tabOfSession(sessionId, state) : null),
+  tabTitle: async (tabId) => (await chrome.tabs.get(tabId).catch(() => null))?.title ?? null,
+  goToTab: (tabId) => void goToTab(tabId).catch((err: unknown) => composer.showError(err)),
+  continueNow: (sessionId) => void composer.continueNow(sessionId),
+  openSchedule: (job, trigger) =>
+    void openScheduleSheet(job, trigger, {
+      gate: todoGate(state?.account ?? null, data.source === "account" ? data.locked : null),
+      onSignIn: () => void signIn(),
+      onBilling: billing,
+      onSaved: (task, created) => {
+        void data.loadTasks();
+        if (created) showJob(taskKey(seriesOf(task)));
+      },
+    }),
+  onTaskDetails: (job, trigger) => job.task && void showDetails({ task: job.task, listSource: data.source }, trigger),
+  onSessionDetails: runDetails,
+  onBack: back,
+  onDeleted: back,
+  showError: (err) => composer.showError(err),
+});
+
+// Screen readers hear where the panel went; the two views and their headers swap.
+const announce = $("view-announce");
+nav.onChange((view) => {
+  const onList = view.kind === "list";
+  listView.hidden = !onList;
+  $("list-head").hidden = !onList;
+  jobView.hidden = onList;
+  $("job-head").hidden = onList;
+  if (onList) {
+    chat.setRaw(false);
+    chat.show(null);
+    chat.setBefore(null);
+    // The list may have missed pushes of other panels (a job deleted there).
+    void data.loadSessions();
+  } else page.show(view.key);
+  announce.textContent = viewAnnouncement(view, onList ? null : page.title() || null);
+  handsFree.refresh();
+  // A panel the shortcut recreates comes back on this view.
+  reportDocumentFocus();
+});
+// Esc on a job's page (not in a box, a menu or a sheet) goes back to the list.
+for (const el of [jobView, $("job-head")]) {
+  el.addEventListener("keydown", (e) => {
+    const t = e.target as HTMLElement;
+    if (e.key === "Escape" && !e.defaultPrevented && !t.closest("input, textarea, details[open], dialog")) back();
+  });
 }
 
-const header = initHeader({ onState: (s) => applyState(s), onBilling: billing, onSignIn: signIn });
+data.onChange(() => {
+  // A chat shown before its session was listed may turn out to be a task's run: its job is the task's.
+  const key = nav.jobKey;
+  if (key?.startsWith("chat:") && !data.job(key)) {
+    const s = data.session(key.slice("chat:".length));
+    const real = s ? data.keyOfSession(s) : key;
+    if (real !== key) return showJob(real);
+  }
+  if (nav.view.kind === "job") page.render();
+});
+
+/** The voice shortcut arrived before the first state (a panel it just opened): run it once voice knows the plan. */
+let voicePending = false;
+
+/** Log in with Google: progress and problems show above the box. */
+async function signIn(): Promise<void> {
+  if (state?.account && !state.account.signInConfigured) return composer.notices.show({ key: ACCOUNT_NOTICE, level: "error", text: SIGN_IN_NOT_SET_UP });
+  composer.notices.show({ key: ACCOUNT_NOTICE, level: "info", text: "Continue in the Google window…", sticky: true });
+  try {
+    applyState(await uiRequest({ type: "account.signIn" }));
+    composer.notices.clear(ACCOUNT_NOTICE);
+  } catch (err) {
+    composer.notices.show({ key: ACCOUNT_NOTICE, level: "error", text: errorMessage(err) });
+  }
+}
+
+const header = initHeader({ onState: (s) => applyState(s), onBilling: billing, onSignIn: () => void signIn() });
 // While the agent may act without asking, the panel says so (Settings > Permission).
 const autonomyWarning = initAutonomyWarning();
+const say = (text: string) => composer.notices.show({ key: ACCOUNT_NOTICE, level: "info", text });
+const migrate = initMigrateOffer({ onState: (s) => applyState(s), onMoved: say });
+const memoryAsk = initMemoryAsk({ onState: (s) => applyState(s), onAnswered: say });
 
-/** What the fix buttons of error cards and the status line do (error-help.ts names them). Billing ones need an account. */
+/** What the fix buttons of error cards and the problem strip do (error-help.ts names them). Billing ones need an account. */
 function errorFixes(s: UiState): ErrorFixes {
   const aiSettings = () => void openSettings("ai");
   const useHosted = () =>
@@ -388,19 +456,11 @@ function errorFixes(s: UiState): ErrorFixes {
     "api-key": aiSettings,
     "set-up-ai": aiSettings,
     "new-tab": () => void chrome.tabs.create({}),
-    login: signIn,
+    login: () => void signIn(),
     ...(s.account?.signedIn ? { topup: billing, plans: billing, "use-hosted": useHosted } : {}),
   };
 }
 closeMenusOnOutsideClick("details.menu");
-
-const tabs = initPanelTabs((name) => {
-  currentTab = name;
-  composer.setPanelTab(name);
-  updateComposer();
-  if (name === "todo") void tasks.refresh();
-  if (name === "history") history.refresh();
-});
 
 /** A tab's own panel: its window (the tab may be dragged to another one); the chat it follows goes back when that tab closes. */
 async function trackOwnTab(tab: number): Promise<void> {
@@ -424,10 +484,12 @@ async function trackOwnTab(tab: number): Promise<void> {
 /** The panel page opened as a tab: follows the active tab of its window. */
 async function trackTabs(): Promise<void> {
   if (ownTab !== null) return trackOwnTab(ownTab);
+  let first = true;
   const refresh = async () => {
     try {
       const [t] = await chrome.tabs.query(windowId === null ? { active: true, currentWindow: true } : { active: true, windowId });
-      setActive(t?.id ?? null);
+      setActive(t?.id ?? null, first);
+      first = false;
     } catch {
       // The window is closing.
     }
@@ -449,41 +511,48 @@ async function trackTabs(): Promise<void> {
   await refresh();
 }
 
-/** The composer sits under Chat and TODO, but not under the TODO tab's Log in or Get a plan button. */
-function updateComposer(): void {
-  $("composer").hidden = !tabHasComposer(currentTab) || (currentTab === "todo" && tasks.callToActionOnly());
-}
-
 function applyState(s: UiState): void {
   // An older state that arrived late (a slow answer after a newer push) would undo what the newer one says.
   if (isStale(s, state)) return;
+  const was = state;
   state = s;
   setErrorFixes(errorFixes(s));
   header.render(s);
   autonomyWarning.render(s.settings);
+  migrate.render(s.account);
+  memoryAsk.render(s);
   voice.setAllowed(!!s.account?.signedIn && voiceAllowed(s.account.plan));
   if (voicePending) {
     voicePending = false;
     voice.shortcut();
   }
   chat.setRunning(s.runningSessions);
-  recent.setRunning(s.runningSessions);
   composer.setRunning(s.runningSessions);
   handsFree.setRunning(s.runningSessions.map((r) => r.sessionId));
   composer.setState(s);
-  tasks.setState(s);
-  // A left running session that ended no longer needs hiding.
-  for (const [tab, id] of [...left]) if (!s.runningSessions.some((r) => r.sessionId === id)) left.delete(tab);
-  // The agent moved this panel's chat to the tab it works in: the panel goes on showing it (and talking to it).
+  data.setState(s);
+  // Signed in or out, or another plan: the TODO list comes from elsewhere, or is (un)locked now.
+  const a = was?.account;
+  const b = s.account;
+  if (was && (a?.signedIn !== b?.signedIn || a?.user?.email !== b?.user?.email || a?.plan?.id !== b?.plan?.id)) void data.loadTasks();
+  // The agent moved this panel's chat to the tab it works in: the panel goes on acting there.
   if (ownTab !== null && activeTab !== null) {
-    const followed = followChat(activeTab, shownChat, s, sent);
+    const followed = followChat(activeTab, nav.view.kind === "job" ? page.sessionId() : null, s, sent);
     if (followed !== activeTab) {
       activeTab = followed;
       handsFree.refresh();
     }
   }
-  resolveChat();
-  updateComposer();
+  if (pending && isBound(pending.sessionId, s)) pending = null;
+  // The tab's own chat became another one (voice, the API, the agent): its job shows. When the panel opens it shows
+  // the list, unless the tab's own chat is working right now (then that job).
+  const own = ownChatOfTab(activeTab, s, { pending });
+  if (own !== ownSeen) {
+    const first = ownSeen === undefined;
+    ownSeen = own;
+    if (own && (!first || s.runningSessions.some((r) => r.sessionId === own))) showJob(keyOfSession(own));
+  }
+  if (nav.view.kind === "job") page.render();
 }
 
 function onPush(msg: UiPush): void {
@@ -497,24 +566,24 @@ function onPush(msg: UiPush): void {
       break;
     case "session":
       chat.onSession(msg.session);
-      history.onSession(msg.session);
-      recent.onSession(msg.session);
-      if (focused?.sessionId === msg.session.sessionId) composer.setConversation(msg.session);
-      if (msg.session.endedAt && msg.session.source === "local") void tasks.refresh();
+      data.onSession(msg.session);
+      if (page.sessionId() === msg.session.sessionId && nav.view.kind === "job") composer.setConversation(chat.shown() ?? msg.session);
+      // A task's run ended: its task moved on (done, repeats, paused).
+      if (msg.session.endedAt && msg.session.source !== "adhoc") void data.loadTasks();
       break;
     case "tasks.changed":
-      void tasks.refresh();
+      void data.loadTasks();
       break;
     case "panel.focus":
-      // The keyboard shortcut: Chat, with the cursor in the box (a panel it recreated gets the text its box had).
-      tabs.show("chat");
+      // The keyboard shortcut: the cursor in the box, in the view shown (a panel it recreated gets the text its box
+      // had, and the job it showed).
       if (msg.draft && !composer.draft()) composer.setDraft(msg.draft);
+      if (msg.job && nav.view.kind === "list") showJob(msg.job);
       window.focus();
       composer.focus();
       break;
     case "panel.voice":
       // The voice shortcut (after panel.focus): hands-free on or off, as the mic button (see voice-input.ts shortcut()).
-      tabs.show("chat");
       if (state) voice.shortcut();
       else voicePending = true;
       break;
@@ -537,19 +606,20 @@ function hello(): void {
   if (handsFree.active && listeningReport.listening) port.send(listeningReport);
 }
 
-/** Whether this page has the keyboard focus, for the shortcut (see panel-command.ts), with the text in the box. */
+/** Whether this page has the keyboard focus, for the shortcut (see panel-command.ts), with the text in the box and the job shown. */
 function reportDocumentFocus(): void {
-  port.send({ type: "panel.document", focused: document.hasFocus(), draft: composer.draft() });
+  const job = nav.jobKey;
+  port.send({ type: "panel.document", focused: document.hasFocus(), draft: composer.draft(), ...(job ? { job } : {}) });
 }
 window.addEventListener("focus", reportDocumentFocus);
 // A tab's own panel shows only with its tab: on screen, the user looks at that tab (hands-free voice).
 document.addEventListener("visibilitychange", () => handsFree.refresh());
 window.addEventListener("blur", reportDocumentFocus);
 
-/** The keyboard shortcuts as Chrome assigned them (null: none is set), for the new chat and the mic's tooltip. */
+/** The keyboard shortcuts as Chrome assigned them (null: none is set), for the list's hint and the mic's tooltip. */
 async function loadShortcuts(): Promise<void> {
   const [open, talk] = await Promise.all([readShortcut(OPEN_CHAT_COMMAND), readShortcut(VOICE_COMMAND)]);
-  chat.setShortcuts({ open, voice: talk });
+  list.setShortcuts({ open, voice: talk });
   voice.setShortcut(talk);
 }
 
@@ -563,8 +633,7 @@ async function loadState(): Promise<void> {
   }
 }
 
-// The TODO list also feeds Run now and the task counts, whichever tab opens first.
-void tasks.refresh();
+void data.load();
 void trackTabs();
 // Every (re)connect: say which window this is, and fetch the state.
 const port = connectBackground(onPush, () => {
@@ -576,9 +645,10 @@ void loadShortcuts();
 refreshOnReturn(() => void uiRequest({ type: "account.refresh", force: true }).then(applyState, () => {}));
 // The shortcut may have been changed on chrome://extensions/shortcuts meanwhile.
 window.addEventListener("focus", () => void loadShortcuts());
-// Opened (by the shortcut or the toolbar button): the cursor is in the box.
+// Opened (by the shortcut or the toolbar button): the list, with the cursor in the box.
+list.show(nav.listPlace());
 composer.focus();
 setInterval(() => {
-  tasks.tick();
+  data.tick();
   if (state) header.render(state);
 }, CLOCK_TICK_MS);

@@ -1,4 +1,4 @@
-/** DOM for one conversation log entry (Chat and the History tab) (see event-format.ts for the pure view models). */
+/** DOM for one conversation log entry (a job's conversation and its earlier runs) (see event-format.ts for the pure view models). */
 import { chipHint, plural, TASK_END_TOOLS, type SessionInfo, type TodoChange } from "@browsertodo/shared";
 import { busy, h } from "../ui/dom.js";
 import { renderErrorHelp } from "./error-view.js";
@@ -11,7 +11,7 @@ import { renderSentFiles } from "./attachments/view.js";
 
 /** What a scheduled card's buttons do (the chat binds them; without them the card shows no buttons). */
 export interface ScheduledCardActions {
-  /** View in TODO: the TODO tab, scrolled to the task's row. */
+  /** View: the task's job page. */
   view(taskId: string): void;
   /** Undo on a Scheduled card: delete the task (the card then says it was undone). */
   undo(taskId: string): Promise<void>;
@@ -161,14 +161,14 @@ export function renderMemoryNote(v: MemoryNoteView, actions?: MemoryNoteActions)
 
 /** A TODO card's words by what the agent did: its label, what Undo does, and what the card says once undone. */
 const SCHEDULED_WORDS: Record<"scheduled" | TodoChange, { label: string; undo: string; undone: string }> = {
-  scheduled: { label: "Scheduled:", undo: "Delete this task from your TODO list", undone: "Removed from your TODO list." },
+  scheduled: { label: "Scheduled:", undo: "Delete this scheduled job", undone: "Removed from your jobs." },
   updated: { label: "Changed:", undo: "Put this task back as it was", undone: "Put back as it was." },
-  cancelled: { label: "Cancelled:", undo: "Put this task back in your TODO list", undone: "Back in your TODO list." },
+  cancelled: { label: "Cancelled:", undo: "Schedule this job again", undone: "Scheduled again." },
 };
 
 /**
  * A task the agent put in the TODO list, or changed or cancelled there: "Scheduled: <task> · <when>" (Changed:,
- * Cancelled:) on one line, with View in TODO and Undo. Undone, it says so and keeps no buttons. A failed undo says
+ * Cancelled:) on one line, with View (its job) and Undo. Undone, it says so and keeps no buttons. A failed undo says
  * why under the line and keeps Undo.
  */
 export function renderScheduled(v: ScheduledView, actions?: ScheduledCardActions): HTMLElement {
@@ -203,7 +203,7 @@ export function renderScheduled(v: ScheduledView, actions?: ScheduledCardActions
     h(
       "div.sched-actions",
       null,
-      h("button.small.sched-view", { type: "button", title: "Show this task in the TODO tab", onclick: () => actions.view(v.taskId) }, "View in TODO"),
+      h("button.small.sched-view", { type: "button", title: "Open this scheduled job", onclick: () => actions.view(v.taskId) }, "View"),
       undo,
     ),
     note,

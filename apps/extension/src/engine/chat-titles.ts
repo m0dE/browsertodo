@@ -6,7 +6,7 @@
  *
  * A turn's title is written at once, one call at a time, in the worker that ran the turn (a worker that stops
  * meanwhile leaves the cleaned request, and the chat is titled when it is next shown). Chats from before titles, or
- * whose title failed, are titled when a list shows them (History, the new chat's recent chats): at most
+ * whose title failed, are titled when a list shows them (the side panel's jobs list): at most
  * MAX_TITLE_BACKFILL per worker start, after the turns' titles and never while a run is going on, like the episode
  * backfill. Brains without a writer (the scripted test brain) keep the cleaned request.
  */

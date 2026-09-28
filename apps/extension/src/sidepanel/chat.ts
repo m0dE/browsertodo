@@ -1,21 +1,15 @@
 /**
- * Chat tab: the conversation of the browser tab that is active in the
- * panel's window, live (every turn of it in one thread: the user's messages
- * as bubbles, starting with the prompt or task that opened it, the agent's
- * text, tool calls, results and Jev decisions, and what hands-free voice said
- * aloud, shown playing while it is said; with Realtime voice the user's own
- * words take the place of the request the narrator sent for them), its
- * action bar (New chat | Show tab | Raw: the conversation with its timings,
- * raw-view.ts, in place of the log until Back to chat) and, while conversations of
- * other tabs run, one chip each to switch to their tab. Which conversation
- * that is comes from sidepanel.ts (see tab-chat.ts); past runs live in the
- * History tab (history.ts).
+ * A job's conversation, live (every turn of it in one thread: the user's messages as bubbles, starting with the
+ * prompt or task that opened it, the agent's text, tool calls, results and Jev decisions, and what hands-free voice
+ * said aloud, shown playing while it is said; with Realtime voice the user's own words take the place of the request
+ * the narrator sent for them), on the job's page (job-page.ts), which also puts the job's earlier runs above it
+ * (setBefore) and opens Raw (the conversation with its timings, raw-view.ts) in place of the log. Which conversation
+ * that is comes from sidepanel.ts.
  */
 import { errorMessage, type SessionInfo, type StampedAgentEvent } from "@browsertodo/shared";
 import { isContinuableOutcome } from "../continue.js";
 import { uiRequest } from "../ui-protocol.js";
-import { chatActions, type BarAction } from "./chat-actions.js";
-import { $, busy, h } from "../ui/dom.js";
+import { $, h } from "../ui/dom.js";
 import { errorHelp } from "./error-help.js";
 import { renderErrorHelp } from "./error-view.js";
 import {
@@ -48,22 +42,24 @@ import { LiveTexts } from "./live-text.js";
 import { bindApprovalKeys, renderApproval, type ApprovalCardActions } from "./approval-card.js";
 import { approvalEnding, approvalView } from "./approval-view.js";
 import { MarkdownView } from "./markdown.js";
-import { renderSwitcher } from "./session-switcher.js";
 import { initRawView } from "./raw-view.js";
 import type { ReportEnv } from "../trace/trace-report.js";
-import { otherRunning } from "./tab-chat.js";
 
 export interface ChatView {
   /** The running sessions from UiState, oldest first (several tasks can run at once). */
   setRunning(sessions: readonly SessionInfo[]): void;
   onEvent(ev: StampedAgentEvent): void;
   onSession(session: SessionInfo): void;
-  /** Show this conversation (the current tab's); null: an empty new chat. */
+  /** Show this conversation; null: none (the list is shown, or a job that never ran). */
   show(sessionId: string | null): void;
   /** The conversation shown, or null. */
   shown(): SessionInfo | null;
-  /** The keyboard shortcuts (open the chat; talk), as the user reads them (null: none is set), for the new chat. */
-  setShortcuts(shortcuts: Shortcuts): void;
+  /** What goes above the conversation, in the same scroll (a job's earlier runs; a task that never ran); null: nothing. */
+  setBefore(el: HTMLElement | null): void;
+  /** Raw (the conversation with its timings) in place of the log, or the log again. */
+  setRaw(on: boolean): void;
+  /** Raw is open. */
+  readonly rawOpen: boolean;
   /**
    * Hands-free voice is saying a line in a chat (null: the line is over). It shows playing at the end of that
    * chat until its kept copy (a "spoken" event) takes its place.
@@ -74,61 +70,102 @@ export interface ChatView {
 export interface ChatOptions {
   /** The Continue button in a task_end card. */
   onContinue?(sessionId: string): void;
-  /** The conversation the tab shows changed (null: an empty, new chat). */
+  /** The conversation shown changed (null: none). */
   onFocus?(session: SessionInfo | null): void;
-  /** New chat left this conversation. */
-  onLeave?(session: SessionInfo): void;
-  /** A chip of another tab's running conversation was picked: switch to that tab. */
-  onSwitch?(session: SessionInfo): void;
   /** The conversation's first message was picked: show its task's details. */
   onDetails?(session: SessionInfo, trigger: HTMLElement): void;
-  /** The new chat's link to set a shortcut (chrome://extensions/shortcuts), when none is set. */
-  onShortcuts?(): void;
   /** What the panel knows about voice, for the Raw view's export. */
   voiceEnv?(): ReportEnv["voice"];
-  /** View in TODO on a scheduled card: the TODO tab, at that task. */
+  /** View on a scheduled card: that task's job. */
   onOpenTask?(taskId: string): void;
-  /** Under the new chat: the recent chats to go on with (recent-chats.ts). */
-  recent?: { readonly el: HTMLElement; refresh(): void };
-}
-
-/** The panel's keyboard shortcuts as the user reads them ("Ctrl+.", "Ctrl+,"); null: Chrome assigned none. */
-export interface Shortcuts {
-  open: string | null;
-  voice: string | null;
+  /** Raw opened or closed (by the view's own Back too). */
+  onRaw?(open: boolean): void;
 }
 
 const eventKey = (e: StampedAgentEvent) => JSON.stringify(e);
 /** Recent events of conversations not on screen, kept for when one is shown: at most this many. */
 const MAX_BUFFERED_EVENTS = 300;
 
-/** A text button in the action bar; aria-disabled (not disabled) so its tooltip still shows. */
-export function setBarAction(btn: HTMLButtonElement, a: BarAction): void {
-  btn.setAttribute("aria-disabled", String(a.disabled));
-  btn.title = a.title;
+/** How the buttons in a conversation's events act (none: a past run, read only). */
+interface EventHandlers {
+  onContinue?: (sessionId: string) => void;
+  scheduled?: ScheduledCardActions;
+  approval?: ApprovalCardActions;
+  memory?: MemoryNoteActions;
 }
-const usable = (btn: HTMLButtonElement) => btn.getAttribute("aria-disabled") !== "true" && !btn.disabled;
+
+/**
+ * The element of events[i] with its view (for placing it in the log), or null when it shows nothing of its own.
+ * `session`: the conversation, when known (a cloud run cannot be continued from here).
+ */
+function eventNode(
+  events: readonly StampedAgentEvent[],
+  i: number,
+  session: SessionInfo | null,
+  on: EventHandlers,
+): { el: HTMLElement; view: ReturnType<typeof describeEvent> } | null {
+  const e = events[i]!;
+  // The brain chip under the first message already says which brain started.
+  if (e.type === "status" && isBrainStartLine(e.text)) return null;
+  // An undo changes its task's card (see markUndone); it shows nothing of its own.
+  if (e.type === "task_unscheduled" || e.type === "task_change_undone") return null;
+  // An approval's ending changes its card (see refreshApprovals).
+  if (e.type === "approval_resolved") return null;
+  // An undo changes its memory note (see markMemoryUndone).
+  if (e.type === "memory_undone") return null;
+  // Words that led to no request are kept for the record (Raw), not shown.
+  if (e.type === "heard") return null;
+  const s = e.type === "task_end" && session?.sessionId === e.sessionId ? session : null;
+  const canContinue = !!on.onContinue && e.type === "task_end" && isContinuableOutcome(e.outcome) && s?.source !== "cloud";
+  const undone = (taskId: string) => events.some((x) => x.type === "task_unscheduled" && x.taskId === taskId);
+  const changeUndone = (changeId: string) => events.some((x) => x.type === "task_change_undone" && x.changeId === changeId);
+  const memoryUndone = (changeId: string) => events.some((x) => x.type === "memory_undone" && x.changeId === changeId);
+  const turn: TurnContext =
+    e.type === "task_end"
+      ? { picks: turnPicks(events, i), error: turnError(events, i) }
+      : e.type === "spoken"
+        ? { echo: spokenEchoes(events, i) }
+        : e.type === "task_scheduled"
+          ? { undone: undone(e.taskId) }
+          : e.type === "task_changed"
+            ? { undone: changeUndone(e.changeId) }
+            : e.type === "approval_request"
+              ? { approval: approvalEnding(events, e.request.id) }
+              : e.type === "memory"
+                ? { memoryUndone: memoryUndone(e.changeId) }
+                : {};
+  const view = describeEvent(e, turn);
+  const el = renderEvent(view, canContinue ? () => on.onContinue?.(e.sessionId) : undefined, on.scheduled, on.approval, on.memory);
+  return { el, view };
+}
+
+/** A past run as it ended (a job's earlier run): its first message, the brain, and every event, without buttons. */
+export function renderPastRun(s: SessionInfo, events: readonly StampedAgentEvent[], onDetails?: (s: SessionInfo, trigger: HTMLElement) => void): HTMLElement {
+  const box = h("div.log.run-log");
+  box.append(renderOpening(openingTurn(s, events), (trigger) => onDetails?.(s, trigger)), renderSessionHead(s));
+  events.forEach((_, i) => {
+    const node = eventNode(events, i, s, {});
+    if (node) placeEvent(box, node.el, node.view);
+  });
+  return box;
+}
 
 export function initChat(opts: ChatOptions = {}): ChatView {
   const log = $("chat-log");
-  const head = $("chat-head");
-  const switcher = $("chat-switch");
-  const newBtn = $<HTMLButtonElement>("chat-new");
-  const showBtn = $<HTMLButtonElement>("chat-show");
-  const rawBtn = $<HTMLButtonElement>("chat-raw-btn");
   const rawHost = $("chat-raw");
   const raw = initRawView(rawHost, { voiceEnv: () => opts.voiceEnv?.(), onBack: () => setRaw(false) });
+  /** Above the conversation: a job's earlier runs, or a task that never ran. */
+  let before: HTMLElement | null = null;
 
   /** Raw in place of the log (true), or the log (false). */
   function setRaw(on: boolean): void {
     const id = on ? shownId : null;
+    const was = raw.shown !== null;
     if (id) raw.open(id);
     else raw.close();
     rawHost.hidden = !id;
     log.hidden = !!id;
-    rawBtn.setAttribute("aria-pressed", String(!!id));
-    if (!id) updateSwitcher();
-    else head.hidden = true;
+    if (was !== !!id) opts.onRaw?.(!!id);
   }
 
   /** The id of the conversation shown (set at once), and its info once known. */
@@ -138,19 +175,10 @@ export function initChat(opts: ChatOptions = {}): ChatView {
   let backfilling = false;
   /** Recent events of every session, for a conversation shown after they arrived. */
   let buffered: StampedAgentEvent[] = [];
-  /** The panel's keyboard shortcuts: undefined until known. */
-  let shortcuts: Shortcuts | undefined;
-  /** Every running session, for the switcher. */
+  /** Every running session. */
   let runningList: readonly SessionInfo[] = [];
   /** onFocus starts after init: the first view (nothing shown) needs no notice, and callers may not be wired yet. */
   let ready = false;
-
-  function updateBar(): void {
-    const a = chatActions(current, new Set(runningList.map((s) => s.sessionId)));
-    setBarAction(newBtn, a.newChat);
-    setBarAction(showBtn, a.showTab);
-    setBarAction(rawBtn, a.raw);
-  }
 
   /** Text Claude is still writing, and its elements while its conversation is shown. */
   const live = new LiveTexts();
@@ -158,7 +186,7 @@ export function initChat(opts: ChatOptions = {}): ChatView {
   let paintQueued = false;
 
   /**
-   * The buttons of TODO cards: View in TODO, and Undo (the card turns "undone" when its task_unscheduled, or a
+   * The buttons of TODO cards: View (the task's job), and Undo (the card turns "undone" when its task_unscheduled, or a
    * changed card's task_change_undone, arrives).
    */
   const scheduledActions: ScheduledCardActions = {
@@ -170,8 +198,6 @@ export function initChat(opts: ChatOptions = {}): ChatView {
       if (current) await uiRequest({ type: "chat.undoTaskChange", sessionId: current.sessionId, changeId });
     },
   };
-  const undone = (taskId: string) => events.some((e) => e.type === "task_unscheduled" && e.taskId === taskId);
-  const changeUndone = (changeId: string) => events.some((e) => e.type === "task_change_undone" && e.changeId === changeId);
 
   /** Undo on memory notes (the note turns "undone" when its memory_undone arrives). */
   const memoryActions: MemoryNoteActions = {
@@ -179,7 +205,6 @@ export function initChat(opts: ChatOptions = {}): ChatView {
       if (current) await uiRequest({ type: "memory.undo", sessionId: current.sessionId, changeId });
     },
   };
-  const memoryUndone = (changeId: string) => events.some((e) => e.type === "memory_undone" && e.changeId === changeId);
 
   /** An undone memory change's note, wherever it is in the log, now says so. */
   function markMemoryUndone(changeId: string): void {
@@ -218,38 +243,18 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     if (ev?.type === "task_changed" && card) card.replaceWith(renderScheduled(scheduledView(ev, true)));
   }
 
+  const handlers: EventHandlers = {
+    ...(opts.onContinue ? { onContinue: opts.onContinue } : {}),
+    scheduled: scheduledActions,
+    approval: approvalActions,
+    memory: memoryActions,
+  };
+
   function renderOne(ev: StampedAgentEvent, i: number): void {
-    // The brain chip under the first message already says which brain started.
-    if (ev.type === "status" && isBrainStartLine(ev.text)) return;
-    // An undo changes its task's card (see markUndone); it shows nothing of its own.
-    if (ev.type === "task_unscheduled" || ev.type === "task_change_undone") return;
-    // An approval's ending changes its card (see refreshApprovals).
-    if (ev.type === "approval_resolved") return;
-    // An undo changes its memory note (see markMemoryUndone).
-    if (ev.type === "memory_undone") return;
-    // Words that led to no request are kept for the record (Raw), not shown.
-    if (ev.type === "heard") return;
-    const e = ev;
-    const s = e.type === "task_end" && current?.sessionId === e.sessionId ? current : null;
-    const canContinue = !!opts.onContinue && e.type === "task_end" && isContinuableOutcome(e.outcome) && s?.source !== "cloud";
-    const turn: TurnContext =
-      e.type === "task_end"
-        ? { picks: turnPicks(events, i), error: turnError(events, i) }
-        : e.type === "spoken"
-          ? { echo: spokenEchoes(events, i) }
-          : e.type === "task_scheduled"
-            ? { undone: undone(e.taskId) }
-            : e.type === "task_changed"
-              ? { undone: changeUndone(e.changeId) }
-              : e.type === "approval_request"
-                ? { approval: approvalEnding(events, e.request.id) }
-                : e.type === "memory"
-                  ? { memoryUndone: memoryUndone(e.changeId) }
-                  : {};
-    const view = describeEvent(e, turn);
-    const el = renderEvent(view, canContinue ? () => opts.onContinue?.(e.sessionId) : undefined, scheduledActions, approvalActions, memoryActions);
-    if (e.type === "spoken") placeKept(el, e.text);
-    else placeEvent(log, el, view);
+    const node = eventNode(events, i, current, handlers);
+    if (!node) return;
+    if (ev.type === "spoken") placeKept(node.el, ev.text);
+    else placeEvent(log, node.el, node.view);
   }
 
   /** The line hands-free voice is saying now (in any chat). */
@@ -337,25 +342,17 @@ export function initChat(opts: ChatOptions = {}): ChatView {
   }
 
   function renderLog(): void {
+    const top = before ? [before] : [];
     if (!shownId) {
-      log.replaceChildren(
-        h(
-          "div.empty-state.chat-empty",
-          null,
-          h("p.empty-title", null, "New chat"),
-          shortcutHint(),
-        ),
-        ...(opts.recent ? [opts.recent.el] : []),
-      );
-      opts.recent?.refresh();
+      log.replaceChildren(...top);
       return;
     }
     if (!current) {
-      log.replaceChildren(h("p.empty", null, "Loading…"));
+      log.replaceChildren(...top, h("p.empty", null, "Loading…"));
       return;
     }
     lives = [];
-    log.replaceChildren(renderOpeningOf(current), renderSessionHead(current));
+    log.replaceChildren(...top, renderOpeningOf(current), renderSessionHead(current));
     events.forEach((ev, i) => renderOne(ev, i));
     liveEls.clear();
     showSpeaking();
@@ -363,22 +360,6 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     pruneContinue(log);
     paintLive();
     log.scrollTop = log.scrollHeight;
-  }
-
-  /**
-   * "Ctrl+. to open · Ctrl+, to talk"; with only the open key, "Press Ctrl+. to open this chat at any time.";
-   * without it, a link to set one.
-   */
-  function shortcutHint(): HTMLElement | null {
-    if (!shortcuts) return null;
-    const { open, voice } = shortcuts;
-    const talk = voice ? [" · ", h("kbd", null, voice), " to talk"] : [];
-    if (!open) {
-      const link = h("button.link.shortcut-link", { type: "button", onclick: () => opts.onShortcuts?.() }, "Set a keyboard shortcut");
-      return h("p.shortcut-hint", null, link, " to open this chat at any time", ...(voice ? talk : ["."]));
-    }
-    if (!voice) return h("p.shortcut-hint", null, "Press ", h("kbd", null, open), " to open this chat at any time.");
-    return h("p.shortcut-hint", null, h("kbd", null, open), " to open", ...talk);
   }
 
   function refreshHead(s: SessionInfo): void {
@@ -400,18 +381,8 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     if (current && el && el.dataset.files !== String(openingTurn(current, events).files ?? 0)) el.replaceWith(renderOpeningOf(current));
   }
 
-  /** Other tabs' running conversations: one chip each, to switch to that tab. */
-  function updateSwitcher(): void {
-    const others = otherRunning(runningList, shownId);
-    switcher.hidden = !others.length;
-    if (others.length) renderSwitcher(switcher, others, (s) => opts.onSwitch?.(s));
-    head.hidden = !others.length || raw.shown !== null;
-  }
-
   function render(): void {
     renderLog();
-    updateSwitcher();
-    updateBar();
     log.classList.toggle("busy", !!current && runningList.some((s) => s.sessionId === current!.sessionId));
     if (ready) opts.onFocus?.(current);
   }
@@ -474,10 +445,6 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     if (follow) log.scrollTop = log.scrollHeight;
   }
 
-  function appendError(text: string): void {
-    if (current) append({ type: "error", text, ts: new Date().toISOString(), sessionId: current.sessionId });
-  }
-
   // A log read at its bottom stays there when it gets shorter (the header grows, the panel is resized).
   // Scrolling up lets go of the bottom, reaching it again holds it. (Not "is it near the bottom now": a
   // scroll event can come after the log already got shorter, and that must not let go.)
@@ -501,21 +468,6 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     for (const r of records) for (const n of r.addedNodes) if (n instanceof Element) stick.observe(n);
   }).observe(log, { childList: true });
 
-  newBtn.addEventListener("click", () => {
-    const s = current;
-    if (!usable(newBtn) || !s) return;
-    opts.onLeave?.(s);
-  });
-  showBtn.addEventListener("click", () => {
-    const s = current;
-    if (!usable(showBtn) || !s) return;
-    void busy(showBtn, () => uiRequest({ type: "agent.show", sessionId: s.sessionId }), appendError);
-  });
-  rawBtn.addEventListener("click", () => {
-    if (!usable(rawBtn) || !shownId) return;
-    setRaw(raw.shown === null);
-  });
-
   render();
   ready = true;
 
@@ -529,8 +481,6 @@ export function initChat(opts: ChatOptions = {}): ChatView {
         current = watching;
         refreshHead(current);
       }
-      updateSwitcher();
-      updateBar();
     },
     onEvent(ev) {
       raw.touched(ev.sessionId);
@@ -551,7 +501,6 @@ export function initChat(opts: ChatOptions = {}): ChatView {
       current = s;
       refreshHead(current);
       if (s.endedAt) log.scrollTop = log.scrollHeight;
-      updateBar();
       opts.onFocus?.(current);
     },
     show(sessionId) {
@@ -573,10 +522,18 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     shown() {
       return current;
     },
-    setShortcuts(next) {
-      if (shortcuts?.open === next.open && shortcuts.voice === next.voice) return;
-      shortcuts = next;
-      if (!shownId) renderLog();
+    setBefore(el) {
+      if (el === before) return;
+      const old = before;
+      before = el;
+      if (old?.parentElement === log) {
+        if (el) old.replaceWith(el);
+        else old.remove();
+      } else if (el && log.firstChild !== el) log.prepend(el);
+    },
+    setRaw,
+    get rawOpen() {
+      return raw.shown !== null;
     },
     setSpeaking(line) {
       speaking = line;

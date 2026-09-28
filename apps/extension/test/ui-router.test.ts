@@ -183,6 +183,15 @@ describe("UiRouter", () => {
     expect(await t.router.handle({ type: "tasks.resume", id: task.id })).toMatchObject({ ok: false, error: expect.stringMatching(/only a paused task/) });
   });
 
+  it("tasks.series lists one series of this browser's tasks, newest first, in one page", async () => {
+    const t = setup();
+    const { task } = await t.req({ type: "tasks.add", instructions: "post a tip", repeat: { cron: "0 9 * * *", tz: "UTC" } });
+    await t.req({ type: "tasks.add", instructions: "another job" });
+    const page = await t.req({ type: "tasks.series", seriesId: task.seriesId ?? task.id });
+    expect(page).toEqual({ tasks: [expect.objectContaining({ id: task.id, instructions: "post a tip" })], nextCursor: null });
+    expect(await t.req({ type: "tasks.series", seriesId: "nope" })).toEqual({ tasks: [], nextCursor: null });
+  });
+
   it("tasks.* manage the local list", async () => {
     const t = setup();
     const { task } = await t.req({ type: "tasks.add", instructions: "post it", account: "@me", repeat: { cron: "0 9 * * *", tz: "UTC" }, media: [{ name: "a.png", type: "image/png", dataBase64: btoa("x") }] });

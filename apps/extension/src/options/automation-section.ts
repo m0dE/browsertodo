@@ -17,6 +17,7 @@ export interface AutomationSection {
 export function initAutomationSection(opts: { onState(state: UiState): void }): AutomationSection {
   const levels = $("automation-levels");
   const scheduled = $("scheduled-automation");
+  const scheduledNote = $("scheduled-automation-note");
   const warning = $("automation-warning");
   const msg = $("automation-msg");
   const dialog = $<HTMLDialogElement>("automation-confirm");
@@ -62,7 +63,7 @@ export function initAutomationSection(opts: { onState(state: UiState): void }): 
 
   function rows<T extends string>(name: string, options: AutomationOption<T>[], onPick: (id: T) => void): HTMLElement[] {
     return options.map((o) => {
-      const input = h("input", { type: "radio", name, value: o.id, checked: o.checked, onchange: () => onPick(o.id) });
+      const input = h("input", { type: "radio", name, value: o.id, checked: o.checked, disabled: o.disabled ?? false, onchange: () => onPick(o.id) });
       return h(
         "div.opt",
         { "data-automation": o.id, "data-dangerous": o.dangerous ?? false },
@@ -78,6 +79,8 @@ export function initAutomationSection(opts: { onState(state: UiState): void }): 
     scheduled.replaceChildren(...rows<ScheduledAutomation>("scheduledAutomation", v.scheduled, (id) => void save({ scheduledAutomation: id })));
     warning.hidden = !v.warning;
     warning.textContent = v.warning ?? "";
+    scheduledNote.hidden = !v.scheduledNote;
+    scheduledNote.textContent = v.scheduledNote ?? "";
   }
 
   return {

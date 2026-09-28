@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applySettingsPatch } from "../../src/settings-store.js";
-import { DEFAULT_SETTINGS, parseSettings } from "@browsertodo/shared";
-import { automationView, FULL_AUTONOMY_WARNING, needsConfirmation } from "../../src/options/automation-view.js";
+import { AUTOMATION_LEVELS, DEFAULT_SETTINGS, parseSettings } from "@browsertodo/shared";
+import { automationView, FULL_AUTONOMY_WARNING, needsConfirmation, SCHEDULED_UNDER_FULL_NOTE } from "../../src/options/automation-view.js";
 import { SECTIONS } from "../../src/options/settings-view.js";
 import { AUTONOMY_WARNING_TEXT } from "../../src/sidepanel/autonomy-warning.js";
 
@@ -26,6 +26,17 @@ describe("Settings > Permission", () => {
     const v = automationView({ automationLevel: "full", scheduledAutomation: "full_within_task" });
     expect(v.levels.find((l) => l.checked)).toMatchObject({ id: "full", dangerous: true });
     expect(v.warning).toBe(FULL_AUTONOMY_WARNING);
+  });
+
+  it("full autonomy covers scheduled jobs: their choices are greyed out with a note, and apply again when it is off", () => {
+    const full = automationView({ automationLevel: "full", scheduledAutomation: "full_within_task" });
+    expect(full.scheduled.every((c) => c.disabled)).toBe(true);
+    expect(full.scheduledNote).toBe(SCHEDULED_UNDER_FULL_NOTE);
+    expect(FULL_AUTONOMY_WARNING).toMatch(/scheduled jobs/);
+    expect(AUTOMATION_LEVELS.find((l) => l.id === "full")!.detail).toMatch(/^Never asks, in chats and scheduled jobs\./);
+    const off = automationView({ automationLevel: "ask_consequential", scheduledAutomation: "full_within_task" });
+    expect(off.scheduled.some((c) => c.disabled)).toBe(false);
+    expect(off.scheduledNote).toBeNull();
   });
 
   it("the side panel's banner is short and names the section and the level as Settings shows them", () => {

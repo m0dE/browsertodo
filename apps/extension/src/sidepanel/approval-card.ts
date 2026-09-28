@@ -1,14 +1,16 @@
 /**
  * The approval card in the chat: an action waiting for the user's OK (what,
  * where, why it waits, and the exact text it posts or sends) with Allow once,
- * Allow for this task and Deny, also on Alt+Y / Alt+T / Alt+N. Once answered
- * (or timed out, or its turn ended) it keeps one line saying how it ended.
- * The view model is approval-view.ts.
+ * Allow for this task and Deny, also on Alt+Y / Alt+T / Alt+N. A card its run
+ * paused at (nobody was there to answer) is decided in one click: Allow &
+ * continue (Alt+Y) or Don't (Alt+N). Once answered (or timed out, or its turn
+ * ended) it keeps one line saying how it ended. The view model is
+ * approval-view.ts.
  */
 import { type ApprovalAnswer } from "@browsertodo/shared";
 import { h } from "../ui/dom.js";
 import { clockLabel } from "./format.js";
-import { APPROVAL_BUTTONS, APPROVAL_KEYS, approvalKeyOf, type ApprovalView } from "./approval-view.js";
+import { APPROVAL_BUTTONS, APPROVAL_KEYS, approvalKeyOf, PAUSED_BUTTONS, type ApprovalView } from "./approval-view.js";
 
 export interface ApprovalCardActions {
   /** Sends the answer (by: a button, or its key); false when the request no longer waits. */
@@ -31,12 +33,14 @@ function shield(): SVGSVGElement {
 const ALLOWED = new Set(["allow_once", "allow_task"]);
 
 export function renderApproval(v: ApprovalView, actions?: ApprovalCardActions): HTMLElement {
-  const pending = v.state === "pending";
+  // A card its run paused at, still to be decided, waits like one of a running turn.
+  const pending = v.state === "pending" || !!v.decidable;
   const tone = pending ? "pending" : ALLOWED.has(v.state) ? "allowed" : "refused";
+  const title = v.decidable ? "Paused for your OK" : pending ? "Waiting for your OK" : `${v.outcome ?? ""}${v.byVoice ? " (by voice)" : ""}`;
   const card = h(
     "div.ev-approval",
-    { "data-approval-id": v.id, "data-state": tone, role: "group", "aria-label": pending ? "Approval needed" : `Approval: ${v.outcome ?? ""}` },
-    h("div.appr-head", null, shield(), h("span.appr-title", null, pending ? "Waiting for your OK" : `${v.outcome ?? ""}${v.byVoice ? " (by voice)" : ""}`)),
+    { "data-approval-id": v.id, "data-state": tone, "data-outcome": v.state, "data-decidable": v.decidable ? "true" : null, role: "group", "aria-label": pending ? "Approval needed" : `Approval: ${v.outcome ?? ""}` },
+    h("div.appr-head", null, shield(), h("span.appr-title", null, title)),
     h(
       "div.appr-action",
       null,
@@ -47,8 +51,8 @@ export function renderApproval(v: ApprovalView, actions?: ApprovalCardActions): 
     v.text ? h("div.appr-text", { title: "The exact text" }, v.text) : null,
   );
   if (!pending || !actions) return card;
-  const note = h("div.appr-note", { role: "status" }, `No answer by ${clockLabel(v.expiresAt)} counts as Deny.`);
-  const buttons = APPROVAL_BUTTONS.map(({ answer, label }) => {
+  const note = h("div.appr-note", { role: "status" }, v.decidable ? "The run stopped here: nobody was there to answer." : `No answer by ${clockLabel(v.expiresAt)} counts as Deny.`);
+  const buttons = (v.decidable ? PAUSED_BUTTONS : APPROVAL_BUTTONS).map(({ answer, label }) => {
     const cls = answer === "allow_once" ? "button.small.primary" : answer === "deny" ? "button.small.danger" : "button.small";
     const b = h(cls as "button", { type: "button", "data-answer": answer, title: `${label} (${APPROVAL_KEYS[answer].label})`, "aria-keyshortcuts": APPROVAL_KEYS[answer].label }, label);
     b.addEventListener("click", () => {

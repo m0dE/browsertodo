@@ -132,6 +132,9 @@ export interface BrowserCallContext {
   sessionId?: string;
 }
 
+/** What browser.clickXAccountEntry did: clicked the entry, or why not (it was not there, X replaced it, ...). */
+export type XAccountEntryClick = { clicked: true } | { clicked: false; reason: string };
+
 /** Params and results of every browser RPC method. */
 export type BrowserMethods = {
   "browser.navigate": { params: { url: string }; result: { url: string; title: string } };
@@ -157,6 +160,16 @@ export type BrowserMethods = {
     result: { ok: true } & Partial<ScrollReport>;
   };
   "browser.upload": { params: { index: number; paths: string[] }; result: { ok: true } };
+  /**
+   * switch_x_account's pick in X's open account menu, and nothing else: the personal entry
+   * ("Switch to @handle", testid UserCell) of exactly this handle, found and clicked in one synchronous
+   * step in the page (X replaces the menu's nodes when it flips to its delegate view, so no element
+   * number or earlier read may stand for it). Never a delegate's "Act as" cell, nothing outside the menu.
+   * waitMs: how long the page may wait for the menu to show its accounts. press: a real mouse press
+   * instead (for a page that ignored the click), aimed at that same node and refused when X replaced it
+   * before the press. clicked false: the entry was not in the menu at that moment (see reason).
+   */
+  "browser.clickXAccountEntry": { params: { handle: string; waitMs?: number; press?: boolean }; result: XAccountEntryClick };
   "browser.currentUrl": { params: Record<string, never>; result: { url: string } };
   /**
    * Opens each URL in a new tab of the agent's window, loading in parallel, and

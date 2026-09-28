@@ -10,17 +10,19 @@
  *
  * A session belongs to the browser tab it started in (voice/hands-free-tab.ts):
  * what is said goes to that tab's chat by its id, and that chat's events are
- * narrated, whichever tab the user looks at. The background knows the one
- * session and the tab in front of the user, and tells every panel
- * (setSession). While the user looks at another tab, the bar says where it
- * listens, and what is said carries a note naming both tabs (so is the
- * narrator told): neither the agent nor the narrator sees that tab; "use
- * this tab" (said, or the narrator's use_this_tab) moves the session there.
- * A panel that runs no session shows another tab's (Go to tab, Use voice
- * here, Stop) and nothing live; Use voice here and the mic there end it
- * where it runs, then start it in this panel with the same engine (one
- * microphone). The voice key and the mic end a session this panel runs,
- * wherever it listens; closing its tab ends it.
+ * narrated, whichever tab the user looks at. The side panel stays on screen
+ * on every tab of its window, and the bar always names the session's tab
+ * ("Voice on · Inbox"). The background knows the one session and the tab in
+ * front of the user, and tells every panel (setSession). While the user
+ * looks at another tab, the bar offers Go to tab and Use voice here, and
+ * what is said carries a note naming both tabs (so is the narrator told):
+ * neither the agent nor the narrator sees that tab; "use this tab" (said, or
+ * the narrator's use_this_tab) moves the session there. A panel that runs no
+ * session (another window's) shows the one another panel runs (Go to tab,
+ * Use voice here, Turn off) and nothing live; Use voice here and the mic
+ * there end it where it runs, then start it in this panel with the same
+ * engine (one microphone). The voice key and the mic end a session this
+ * panel runs, wherever it listens; closing its tab ends it.
  *
  * What is said aloud is part of the chat: each line (not the milestones,
  * which repeat the tool rows) is kept in its chat as a "spoken" event, shown
@@ -47,7 +49,7 @@
  * transcribed or sent (Realtime bills no input audio), the narrator and the
  * lines said go on, and the bar, the box and the badge show it, with a soft
  * sound. The session ending unmutes; moving it to another tab (use this tab,
- * or Use voice here in another tab's panel) keeps it muted, so a move never
+ * or Use voice here in another panel) keeps it muted, so a move never
  * turns the microphone on by itself.
  *
  * Audio lives in the side panel, not an offscreen document: the session is
@@ -71,7 +73,6 @@ import {
   TAB_CLOSED_NOTE,
   useThisTabAnswer,
   useThisTabLine,
-  viewedTab,
   voiceKeyAction,
   type TabPage,
   type UseTabOutcome,
@@ -144,12 +145,10 @@ export interface HandsFreeDeps {
   };
   /** Voice's notices above the box (why it cannot start or stopped, the cost). */
   notify(tip: VoiceTip & { key?: string }): void;
-  /** The browser tab the panel shows (null: unknown). */
+  /** The browser tab the panel shows: its window's active tab (null: unknown). */
   activeTab(): number | null;
-  /** The tab this panel belongs to (null: the panel page opened as a tab, which shows its window's active tab). */
-  homeTab: number | null;
-  /** The panel is on screen (its tab is in front); refresh() is called when that changes. Default: not known (false). */
-  visible?(): boolean;
+  /** This panel page's id: the background names the panel running the session by it (VoiceSessionView.panel). */
+  panel: string;
   /** The chat of a browser tab (null: it has none yet). */
   chatOf(tabId: number | null): string | null;
   /** The tabs a chat lives in now: the tab it belongs to and the tabs its running task works in. */
@@ -212,9 +211,11 @@ export interface HandsFree extends HandsFreeControl {
   refresh(): void;
   /** A browser tab closed (its own ends the session). */
   tabClosed(tabId: number): void;
+  /** A browser tab's title or address changed: the bar names the session's tab as it is now. */
+  tabUpdated(tabId: number): void;
   /** The session as the background knows it (null: none), with the tab the user looks at. */
   setSession(view: VoiceSessionView | null): void;
-  /** The background asks this panel to end its session (Stop or Use voice here in another tab's panel). */
+  /** The background asks this panel to end its session (Stop or Use voice here in another panel). */
   stopHere(): void;
   /** The chat the session talks to (null: none, or a new chat not started yet). */
   chat(): string | null;
@@ -238,12 +239,12 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   let working = false;
   /** Something was sent this session (the orb then gives way to the chat). */
   let sent = false;
-  /** The tab the session belongs to, and its title and address (for the bar on other tabs, and the notes). */
+  /** The tab the session belongs to, and its title and address (for the bar, and the notes). */
   let tab: number | null = null;
   let homePage: TabPage | null = null;
-  /** The session as the background last said (this panel's, another panel's, or none), and its tab's title. */
+  /** The session as the background last said (this panel's, another panel's, or none), and its tab's title and address. */
   let remote: VoiceSessionView | null = null;
-  let remoteTitle: string | null = null;
+  let remotePage: TabPage | null = null;
   /** Use voice here: waiting for the session to end where it runs, to start here with its engine and mute. */
   let takeOver: { engine: VoiceEngineId | null; muted: boolean } | null = null;
   /** A session starting muted (moved here muted), until the state machine holds it. */
@@ -319,13 +320,13 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     if (chat) for (const t of deps.tabsOf(chat)) ownTabs.add(t);
   };
   /** The tab the user looks at (null: not known). */
-  const viewing = () => viewedTab(deps.homeTab, remote, deps.activeTab(), deps.visible?.() ?? false);
+  const viewing = () => deps.activeTab();
   const here = () => {
     learnTabs();
     return !listensElsewhere(ownTabs, viewing());
   };
-  /** Another tab's session, as this panel shows it (Go to tab, Use voice here, Stop). */
-  const shownRemote = () => (!on() && remoteSession(remote, deps.homeTab) === "notice" ? remote : null);
+  /** Another panel's session, as this panel shows it (Go to tab, Use voice here, Turn off). */
+  const shownRemote = () => (!on() && remoteSession(remote, deps.panel) === "notice" ? remote : null);
 
   // The strip's links act on this panel's session, else on the one another panel runs.
   const bar = initVoiceBar(deps.bar, {
@@ -340,7 +341,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
   function render(): void {
     if (!on()) {
       const r = shownRemote();
-      bar.show(r ? remoteBarView({ title: remoteTitle, engine: r.engine, muted: r.muted === true }) : null);
+      bar.show(r ? remoteBarView({ where: remotePage, engine: r.engine, muted: r.muted === true }) : null);
       delete deps.bar.dataset.phase;
       deps.voice.showHandsFree(null);
       return;
@@ -357,7 +358,8 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
       reconnecting,
       engine: engine?.id ?? null,
       elapsedMs: t - startedAt,
-      elsewhere: elsewhere ? { title: homePage?.title ?? null } : null,
+      where: homePage,
+      elsewhere,
     });
     bar.show(view);
     // The phase, and where the session is at home (for debugging and tests): its chat and its tabs.
@@ -715,7 +717,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     if (next !== null) ownTabs.add(next);
     follower.start();
     narration = new Narration();
-    if (next !== null) void deps.tabPage(next).then((p) => (tab === next ? ((homePage = p), render()) : undefined), () => undefined);
+    if (next !== null) learnHomePage(next);
   }
 
   /** Tells the background where the session is (or that it ended), on which engine, and whether it is muted. */
@@ -898,16 +900,21 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     });
   }
 
-  /** The other tab's title, for the notice (it may have changed since). */
-  function learnRemoteTitle(view: VoiceSessionView): void {
-    void deps.tabPage(view.tabId).then(
+  /** The tab of the session another panel runs, for the bar (it may have changed since). */
+  function learnRemotePage(tabId: number): void {
+    void deps.tabPage(tabId).then(
       (p) => {
-        if (remote?.tabId !== view.tabId) return;
-        remoteTitle = p?.title ?? null;
+        if (remote?.tabId !== tabId) return;
+        remotePage = p;
         render();
       },
       () => undefined,
     );
+  }
+
+  /** This panel's session's tab, for the bar and the notes (its title may have changed). */
+  function learnHomePage(tabId: number): void {
+    void deps.tabPage(tabId).then((p) => (tab === tabId ? ((homePage = p), render()) : undefined), () => undefined);
   }
 
   /** The session's chat may have changed (a message started one; its tab shows another): narrate it, and whether it works. */
@@ -975,7 +982,7 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     },
     toggle(reason) {
       // This panel's own session ends (wherever it listens); another tab's moves here; else one starts here.
-      if (!on() && remoteSession(remote, deps.homeTab) !== "none") return useVoiceHere();
+      if (!on() && remoteSession(remote, deps.panel) !== "none") return useVoiceHere();
       if (voiceKeyAction(on()) === "start") void start();
       else if (starting) finish(null);
       else stop(reason);
@@ -995,6 +1002,10 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
     tabClosed(closed) {
       if (on() && endsWithTab(tab, closed)) finish(TAB_CLOSED_NOTE, "tab closed");
     },
+    tabUpdated(tabId) {
+      if (on() && tabId === tab) learnHomePage(tabId);
+      else if (shownRemote()?.tabId === tabId) learnRemotePage(tabId);
+    },
     setSession(view) {
       const before = remote;
       remote = view;
@@ -1009,12 +1020,9 @@ export function initHandsFree(deps: HandsFreeDeps): HandsFree {
         if (moving) void start(moving.engine, moving.muted, true);
         return render();
       }
-      const kind = remoteSession(view, deps.homeTab);
-      // Moved to this panel's tab by voice: this panel takes it over.
-      if (kind === "adopt") useVoiceHere();
-      if (kind === "notice") {
-        if (view.tabId !== before?.tabId) remoteTitle = null;
-        learnRemoteTitle(view);
+      if (remoteSession(view, deps.panel) === "notice") {
+        if (view.tabId !== before?.tabId) remotePage = null;
+        learnRemotePage(view.tabId);
       }
       render();
     },

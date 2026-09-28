@@ -66,12 +66,6 @@ export interface AgentTabOptions {
    * run (scheduled) then opens a tab of its own instead of reusing it.
    */
   isChatTab?(tabId: number): boolean | Promise<boolean>;
-  /**
-   * True when the tab has its own side panel open (panel-tabs.ts): a tab
-   * that replaces it (a chrome:// page, a tab another run uses) then opens
-   * in the background, so the user stays with the panel.
-   */
-  showsPanel?(tabId: number): boolean;
 }
 
 /**
@@ -388,9 +382,8 @@ export class AgentTab {
     }
     if (tab?.id === undefined) return createWindowTab();
     if (isControllableUrl(tab.url ?? tab.pendingUrl) && !(await this.opts.isTaken?.(tab.id))) return tab.id;
-    // Shown only in place of the tab the user is looking at, unless its side panel is where the user follows the chat.
-    const active = !!tab.active && !this.opts.showsPanel?.(tab.id);
-    const created = await chrome.tabs.create({ windowId: tab.windowId, index: tab.index + 1, active, url: "about:blank" });
+    // Shown in place of the tab the user is looking at (the side panel follows it there).
+    const created = await chrome.tabs.create({ windowId: tab.windowId, index: tab.index + 1, active: !!tab.active, url: "about:blank" });
     return mustId(created);
   }
 

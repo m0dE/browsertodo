@@ -10,7 +10,7 @@ const B = 12;
 const C = 21;
 const WIN = 1;
 const WIN2 = 2;
-const inA: VoiceSessionInfo = { tabId: A, windowId: WIN, host: A, engine: "realtime" };
+const inA: VoiceSessionInfo = { tabId: A, windowId: WIN, panel: "pa", engine: "realtime" };
 
 function setup(opts: { stored?: unknown; alive?: boolean } = {}) {
   const broadcast = vi.fn();

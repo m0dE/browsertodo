@@ -4,10 +4,11 @@
 // account switcher, the inline composer with a hidden file input, the Post
 // button, and a lock page. The data-testid values mirror X's HTML as of
 // 2026 and must be re-checked against the live site.
-// Like the real X: the account menu keeps the other accounts in a collapsed
-// "Personal accounts" section, a profile of another account has a
-// "Follow back @handle" button (it follows), and a post URL naming the wrong
-// handle redirects to its author's.
+// Like the real X: the account menu lists the other accounts only when it first
+// opens after a page load, then flips to "Delegate accounts" with "Personal
+// accounts" folded into plain text (see nav()); a profile of another account
+// has a "Follow back @handle" button (it follows), and a post URL naming the
+// wrong handle redirects to its author's.
 //
 // Usage: node test/fixtures/fake-x/server.mjs [--port 443]
 // API:   GET /api/feed  -> { "@alpha": [...], ... }   POST /api/reset
@@ -52,34 +53,97 @@ main{flex:1;padding:16px;max-width:600px}
 </style></head><body>${body}</body></html>`;
 }
 
-function nav(acct) {
-  const items = ACCOUNTS.filter((a) => a.handle !== acct.handle)
-    .map(
-      (a) =>
-        `<button data-testid="UserCell" aria-label="Switch to ${esc(a.handle)}" onclick="location.href='/i/switch?to=${encodeURIComponent(a.handle)}'">${esc(a.name)} ${esc(a.handle)}</button>`,
-    )
-    .join("");
+/** Accounts the signed-in account manages as a delegate ("Act as" in the menu); switching to one is never wanted. */
+export const DELEGATES = [
+  { handle: "@delta", name: "Delta" },
+  { handle: "@epsilon", name: "Epsilon" },
+];
+
+/**
+ * The side nav with X's account menu, built like the real one as the owner's run logs show it (Sep 2026, an account
+ * with delegates). The first time it opens after a page load it lists the other signed-in accounts
+ * ('button "Switch to @h" (testid=UserCell)', "Manage accounts", "Log out @me"); `flipMs` later X re-renders it
+ * (new nodes) with "Delegate accounts" expanded ('button "Act as" (testid=UserCell)'), a "View delegate accounts"
+ * item, and "Personal accounts" as a plain-text header: no role, no tabindex, so read_page lists no element for it.
+ * Every later opening in the same page load shows the delegate view at once.
+ */
+function nav(acct, flipMs) {
+  const others = ACCOUNTS.filter((a) => a.handle !== acct.handle).map((a) => ({ h: a.handle, n: a.name }));
+  const data = JSON.stringify({ me: { h: acct.handle, n: acct.name }, others, delegates: DELEGATES.map((d) => ({ h: d.handle, n: d.name })), flipMs });
   return `<nav>
   <a href="/home" data-testid="AppTabBar_Home_Link">Home</a><br>
   <a href="/compose/post" data-testid="SideNav_NewTweet_Button" role="link">Post</a>
-  <div id="menu" role="group"><div>${esc(acct.name)} ${esc(acct.handle)}</div>
-    <div role="button" tabindex="0" aria-expanded="false" id="personal"
-      onclick="var p=document.getElementById('personal-list');var o=p.style.display!=='block';p.style.display=o?'block':'none';this.setAttribute('aria-expanded',String(o))">Personal accounts</div>
-    <div id="personal-list" style="display:none">${items}</div>
-    <a role="menuitem" href="/i/flow/login" data-testid="AccountSwitcher_AddAccount_Button">Add an existing account</a>
-    <a role="menuitem" href="/logout" data-testid="AccountSwitcher_Logout_Button">Log out ${esc(acct.handle)}</a></div>
-  <button class="acct-btn" data-testid="SideNav_AccountSwitcher_Button" aria-label="Account menu"
-    onclick="var m=document.getElementById('menu');m.style.display=m.style.display==='block'?'none':'block'">
+  <div id="menu" role="group"></div>
+  <button class="acct-btn" data-testid="SideNav_AccountSwitcher_Button" aria-label="Account menu" id="acct-btn">
     ${esc(acct.name)} ${esc(acct.handle)}</button>
-</nav>`;
+</nav>
+<script>
+(function () {
+  var D = ${data.replace(/</g, "\\u003c")};
+  var menu = document.getElementById("menu");
+  var delegatesIn = false, timer = null;
+  function el(tag, attrs, text) {
+    var e = document.createElement(tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    if (text) e.textContent = text;
+    return e;
+  }
+  function cell(label, a, href) {
+    var b = el("button", { "data-testid": "UserCell", "aria-label": label }, a.n + " " + a.h);
+    b.addEventListener("click", function () { location.href = href; });
+    return b;
+  }
+  function item(label, href, testid) { return el("a", { role: "menuitem", href: href, "data-testid": testid }, label); }
+  function personalCells() {
+    return D.others.map(function (a) { return cell("Switch to " + a.h, a, "/i/switch?to=" + encodeURIComponent(a.h)); });
+  }
+  function render() {
+    menu.replaceChildren();
+    menu.append(el("div", {}, D.me.n + " " + D.me.h));
+    if (!delegatesIn) {
+      personalCells().forEach(function (c) { menu.append(c); });
+    } else {
+      menu.append(el("div", {}, "Delegate accounts"));
+      D.delegates.forEach(function (d) { menu.append(cell("Act as", d, "/i/delegate/switch?to=" + encodeURIComponent(d.h))); });
+      // Folded: a plain div (no role, no tabindex); clicking it would show the personal accounts.
+      var head = el("div", { id: "personal-header" }, "Personal accounts");
+      var list = el("div", { id: "personal-list", style: "display:none" });
+      personalCells().forEach(function (c) { list.append(c); });
+      head.addEventListener("click", function () { list.style.display = list.style.display === "none" ? "block" : "none"; });
+      menu.append(head, list);
+    }
+    menu.append(item("Manage accounts", "/account/switch", "AccountSwitcher_ManageAccounts_Button"));
+    if (delegatesIn) menu.append(item("View delegate accounts", "/i/delegate/delegations", "AccountSwitcher_ManageAccounts_Button"));
+    menu.append(item("Log out " + D.me.h, "/logout", "AccountSwitcher_Logout_Button"));
+  }
+  var t0 = Date.now();
+  // What happened in the menu (fakeX.menuEvents()): when it opened and flipped, and what each press in it hit.
+  function note(what) { navigator.sendBeacon("/api/menu-event", JSON.stringify({ what: what, ms: Date.now() - t0, path: location.pathname })); }
+  menu.addEventListener("mousemove", function () { if (!menu.__moved) { menu.__moved = 1; note("move"); } });
+  function target(e) {
+    var c = e.target.closest("button,a,div");
+    return c ? (c.getAttribute("aria-label") || c.textContent).slice(0, 40) : "?";
+  }
+  menu.addEventListener("mousedown", function (e) { note("press " + target(e)); });
+  // switch_x_account clicks the entry in the page (no mouse press): its click, trusted or not.
+  menu.addEventListener("click", function (e) { note((e.isTrusted ? "click " : "page click ") + target(e)); });
+  document.getElementById("acct-btn").addEventListener("click", function () {
+    if (menu.style.display === "block") { menu.style.display = "none"; note("close"); return; }
+    render();
+    menu.style.display = "block";
+    note(delegatesIn ? "open (delegate view)" : "open (personal accounts)");
+    if (!delegatesIn && !timer) timer = setTimeout(function () { delegatesIn = true; if (menu.style.display === "block") render(); note("flip to delegate view"); }, D.flipMs);
+  });
+})();
+</script>`;
 }
 
-function home(acct, feed) {
+function home(acct, feed, menuFlipMs) {
   const posts = (feed[acct.handle] ?? [])
     .slice().reverse()
     .map((p) => `<div class="post"><a href="/${acct.handle.slice(1)}/status/${p.id}">${esc(p.text)}</a>${p.media.length ? ` [${p.media.length} media]` : ""}</div>`)
     .join("");
-  return page("Home / X", `${nav(acct)}<main>
+  return page("Home / X", `${nav(acct, menuFlipMs)}<main>
   <h1>Home</h1>
   <div data-testid="primaryColumn">
     <div contenteditable="true" role="textbox" aria-label="Post text" data-testid="tweetTextarea_0" id="editor"></div>
@@ -147,6 +211,12 @@ export function createFakeX() {
   const stuck = new Set();
   /** Images made on /grok/imagine (a tab the composer's "Generate with Grok" opens, like X's). */
   const images = [];
+  /** "Act as" clicks in the account menu: delegate switches (switch_x_account must never make one). */
+  const delegateClicks = [];
+  /** How long after its first opening in a page load the account menu flips to the delegate view (the real X: about 0.3-1.3 s). */
+  let menuFlipMs = 1000;
+  /** The account menu's events as the page saw them: opened, flipped, pressed (ms since the page loaded). */
+  const menuEvents = [];
 
   const handler = (req, res) => {
     const url = new URL(req.url, "https://x.com");
@@ -158,7 +228,7 @@ export function createFakeX() {
     const json = (status, obj) => send(status, JSON.stringify(obj), "application/json");
 
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/home" || url.pathname === "/compose/post")) {
-      return send(200, home(acct, feed));
+      return send(200, home(acct, feed, menuFlipMs));
     }
     if (req.method === "GET" && url.pathname === "/i/switch") {
       const to = url.searchParams.get("to") ?? "@alpha";
@@ -237,6 +307,11 @@ document.getElementById("grok").addEventListener("click", () => { menu.hidden = 
       const list = mails.map((m) => `<li><a href="/mail?${q}open=${m.id}">${esc(m.from)}: ${esc(m.subject)}</a></li>`).join("");
       return send(200, page(box ? "Inbox (B) - Mail" : "Inbox - Mail", `<main><h1>Inbox</h1><ul>${list}</ul>${mail ? `<article><h2>${esc(mail.subject)}</h2><p>From: ${esc(mail.from)}</p><p>${esc(mail.body)}</p></article>` : ""}</main>`));
     }
+    if (req.method === "GET" && url.pathname === "/i/delegate/switch") {
+      // Like X: a confirm dialog before acting as a delegate (nothing switches without "Switch accounts").
+      delegateClicks.push({ by: acct.handle, handle: url.searchParams.get("to") });
+      return send(200, page("Home / X", `${nav(acct, menuFlipMs)}<main><div role="dialog"><p>You are about to switch to a delegate account</p><button onclick="location.href='/home'">Cancel</button></div></main>`));
+    }
     if (req.method === "GET" && url.pathname === "/account/access") {
       return send(200, page("Your account is locked / X", `<main><h1>Your account has been locked</h1><p>Verify your identity.</p></main>`));
     }
@@ -253,7 +328,7 @@ document.getElementById("grok").addEventListener("click", () => { menu.hidden = 
       const bio = who.bio ? `<p data-testid="UserDescription">${esc(who.bio)}</p>${who.site ? `<a data-testid="UserUrl" href="${esc(who.site)}">${esc(who.site.replace(/^https?:\/\//, ""))}</a>` : ""}` : "";
       // Another account's profile has a Follow back button that names the handle (clicking it follows).
       const follow = handle === acct.handle ? "" : `<button data-testid="1-follow" aria-label="Follow back ${esc(handle)}" onclick="fetch('/api/follow',{method:'POST',body:${esc(JSON.stringify(handle))}}).then(()=>this.textContent='Following')">Follow back</button> <a href="/${profile[1]}">${esc(handle)}</a>`;
-      return send(200, page(`${handle} / X`, `${nav(acct)}<main><h1>${esc(handle)}</h1>${follow}${who.bio ? `<p>${esc(who.name)}</p>` : ""}${bio}${posts || "<p>No posts yet</p>"}</main>`));
+      return send(200, page(`${handle} / X`, `${nav(acct, menuFlipMs)}<main><h1>${esc(handle)}</h1>${follow}${who.bio ? `<p>${esc(who.name)}</p>` : ""}${bio}${posts || "<p>No posts yet</p>"}</main>`));
     }
     const status = /^\/([A-Za-z0-9_]+)\/status\/(\d+)$/.exec(url.pathname);
     if (req.method === "GET" && status) {
@@ -261,7 +336,7 @@ document.getElementById("grok").addEventListener("click", () => { menu.hidden = 
       if (!post) return send(404, page("Not found / X", "<main>Not found</main>"));
       // X shows a post under its author's handle, whatever handle the URL named.
       if (`@${status[1]}` !== post.account) return send(302, "", "text/plain", { location: `/${post.account.slice(1)}/status/${post.id}` });
-      return send(200, page(`${post.account} on X`, `${nav(acct)}<main><article data-testid="tweet"><b>${esc(post.account)}</b><p>${esc(post.text)}</p><p>${post.media.map((m) => esc(m.name)).join(", ")}</p></article></main>`));
+      return send(200, page(`${post.account} on X`, `${nav(acct, menuFlipMs)}<main><article data-testid="tweet"><b>${esc(post.account)}</b><p>${esc(post.text)}</p><p>${post.media.map((m) => esc(m.name)).join(", ")}</p></article></main>`));
     }
     if (req.method === "POST" && url.pathname === "/api/post") {
       let body = "";
@@ -280,6 +355,17 @@ document.getElementById("grok").addEventListener("click", () => { menu.hidden = 
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         follows.push({ by: acct.handle, handle: body });
+        json(200, { ok: true });
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/menu-event") {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        try {
+          menuEvents.push({ account: acct.handle, ...JSON.parse(body) });
+        } catch {}
         json(200, { ok: true });
       });
       return;
@@ -307,6 +393,10 @@ document.getElementById("grok").addEventListener("click", () => { menu.hidden = 
     /** Switches to these handles fail from now on (X stays on its account). */
     failSwitches: (handles) => handles.forEach((h) => stuck.add(h)),
     images: () => images,
+    delegateClicks: () => delegateClicks,
+    menuEvents: () => menuEvents,
+    /** Sets how soon the account menu flips to its delegate view after it opens (ms). */
+    setMenuFlipMs: (ms) => (menuFlipMs = ms),
   };
 }
 

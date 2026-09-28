@@ -13,6 +13,8 @@ import { AgentSlots } from "./agent-slots.js";
 import { ApprovalBroker } from "./approval/broker.js";
 import { approvalJev } from "./approval/jev-source.js";
 import type { GateContext } from "./approval/gate.js";
+import { Preapprovals } from "./approval/paused.js";
+import { decidePaused } from "./approval/paused-decision.js";
 import { ApiClient } from "./api-client.js";
 import { Cdp } from "./cdp.js";
 import { agentGroupIds, agentGroupOf, applyGroupLook, tabUrl } from "./chrome-tabs.js";
@@ -45,7 +47,6 @@ import { HelperLink } from "./helper-link.js";
 import { logger } from "./log.js";
 import { notify } from "./notify.js";
 import { PanelCommands } from "./panel-command.js";
-import { openTabPanel, panelTabOf, StoredPanelTabs } from "./panel-tabs.js";
 import { INDICATOR_MESSAGE, isIndicatorMessage, pageIndicators } from "./page-indicator.js";
 import { ALARM_NAME, DUE_ALARM, ensureAlarm, getRunnerId, handleStorageChange, loadSettings, migrateStoredSettings, saveSettingsPatch } from "./settings-store.js";
 import type { UiPush, UiRequest } from "./ui-protocol.js";
@@ -68,7 +69,7 @@ const hub = new UiHub(() => router.getState());
 
 const cdp = new Cdp();
 const vault = new Vault();
-// Each browser tab has its own chat (tab -> conversation); the tab's own side panel shows it.
+// Each browser tab has its own chat (tab -> conversation); the side panel shows the active tab's.
 const tabChats = new TabChats();
 const jobDismissals = new JobDismissals(chrome.storage.local);
 // Each running session acts in its own agent tab (slot); slot 0 is the first agent tab.
@@ -76,6 +77,8 @@ const jobDismissals = new JobDismissals(chrome.storage.local);
 // Every browser call of a session is timed in its conversation's trace (the Raw view).
 // Actions the automation level holds wait for the user's OK: a card in the conversation's chat (approval/broker.ts).
 // The side panel may be closed (a scheduled run): a notification says so too.
+/** Actions allowed ahead from a card a run paused for (approval/paused.ts). */
+const preapprovals = new Preapprovals();
 const approvals = new ApprovalBroker({
   note: async (sessionId, e) => {
     if (!(await sessions.note(sessionId, e))) throw new Error(`No conversation ${sessionId}`);
@@ -100,8 +103,9 @@ const slots: AgentSlots = new AgentSlots(
     jev: async (sessionId) =>
       approvalJev({ settings: await loadSettings(), brain: runner.runningSessions.find((s: SessionInfo) => s.sessionId === sessionId)?.brain, hosted: account.session(), sessionId }),
     end: (sessionId) => approvals.end(sessionId),
+    // Allow & continue on a card a run paused for: that action, once, for the run that goes on (its session or task).
+    preapproved: (sessionId, ask) => preapprovals.take([sessionId, runner.runningSessions.find((s: SessionInfo) => s.sessionId === sessionId)?.taskId], ask),
   },
-  (tabId) => panelCommands.hasPanel(tabId),
 );
 const { tab: agentTab, driver, browser } = slots.get(0);
 const db = new IdbKvDb();
@@ -261,8 +265,6 @@ async function pageOf(tabId?: number): Promise<{ tabId: number; url: string; tit
   return tab?.id === undefined ? null : { tabId: tab.id, url: tabUrl(tab), title: tab.title ?? "" };
 }
 
-// Each tab's own side panel, and the keyboard shortcut: open it with the cursor in the chat input (see panel-command.ts).
-const panelTabs = new StoredPanelTabs({ log: logger("panel") });
 // The hands-free session (which tab, which panel runs it, the tab the user looks at): every panel is told, and the
 // toolbar badges show it (see voice-session.ts).
 const DEFAULT_ACTION_TITLE = chrome.runtime.getManifest().action?.default_title ?? "BrowserTODO";
@@ -291,10 +293,10 @@ const voiceSessions = new VoiceSessions({
     load: async () => (await chrome.storage.session.get("voiceSession")).voiceSession,
     save: (value) => chrome.storage.session.set({ voiceSession: value }),
   },
-  // After a worker restart: the panel page that ran it is still open.
+  // After a worker restart: a panel page is still open in the window that ran it.
   alive: async (s) => {
     const pages = await chrome.runtime.getContexts({ contextTypes: [chrome.runtime.ContextType.SIDE_PANEL, chrome.runtime.ContextType.TAB] });
-    return pages.some((c) => URL.canParse(c.documentUrl ?? "") && new URL(c.documentUrl!).pathname === "/sidepanel.html" && panelTabOf(new URL(c.documentUrl!).search) === s.host);
+    return pages.some((c) => c.windowId === s.windowId && URL.canParse(c.documentUrl ?? "") && new URL(c.documentUrl!).pathname === "/sidepanel.html");
   },
   log: logger("voice"),
 });
@@ -304,13 +306,14 @@ void Promise.all([
 ])
   .then(([tabs, focused]) => voiceSessions.seed(tabs.flatMap((t) => (t.id === undefined ? [] : [{ tabId: t.id, windowId: t.windowId }])), focused?.id ?? null))
   .catch((err: unknown) => logger("voice")(`reading the active tabs failed: ${errorMessage(err)}`));
+// Each window's side panel, and the keyboard shortcuts: open it with the cursor in the chat input (see panel-command.ts).
 const panelCommands = new PanelCommands({
-  open: (tabId) => openTabPanel(tabId),
-  // Disabling closes the tab's panel at once (close() animates and keeps the page); it goes out before the
-  // open() that follows, in the same gesture.
-  disable: (tabId) => chrome.sidePanel.setOptions({ tabId, enabled: false }),
-  tabs: panelTabs,
-  reportsClosed: !!chrome.sidePanel?.onClosed,
+  open: (windowId) => chrome.sidePanel.open({ windowId }),
+  // Disabling the panel closes it in every window at once (close() animates and keeps the page); both calls go out
+  // before the open() calls that follow, in the same gesture.
+  closeAllInstantly: async () => {
+    await Promise.all([chrome.sidePanel.setOptions({ enabled: false }), chrome.sidePanel.setOptions({ enabled: true })]);
+  },
   // Which panel runs hands-free voice: the background's one record of it.
   voice: (session) => voiceSessions.set(session),
   log: logger(),
@@ -392,9 +395,11 @@ const runner = new Runner({
   slots,
   tabChats,
   notify,
+  // Its chat's tab is in front, in a window whose side panel is open: the panel shows that tab's job.
   watching: async (sessionId) => {
     const tabId = await tabChats.tabOf(sessionId);
-    return tabId !== null && panelCommands.hasPanel(tabId);
+    const tab = tabId === null ? undefined : await chrome.tabs.get(tabId).catch(() => undefined);
+    return !!tab?.active && panelCommands.isOpen(tab.windowId);
   },
   keepAlive: () => chrome.runtime.getPlatformInfo(),
   onStateChange: () => {
@@ -450,6 +455,23 @@ const router = new UiRouter({
   vault,
   account,
   todo: todoSource,
+  decidePaused: (sessionId, id, answer, by) =>
+    decidePaused(
+      {
+        session: (i) => sessions.get(i),
+        events: (i) => sessions.eventsOf(i),
+        note: (i, e) => sessions.note(i, e),
+        running: (i) => runner.runningSessions.some((s) => s.sessionId === i),
+        preapprovals,
+        continueSession: (i) => runner.continueSession(i),
+        runTask: (taskId) => runner.runTask(taskId),
+        todo: todoSource,
+      },
+      sessionId,
+      id,
+      answer,
+      by,
+    ),
   onTodoEdited: (before, after) => memory.taskEdited(before, after),
   tabChats,
   dismissals: jobDismissals,
@@ -544,9 +566,9 @@ async function prewarmBrain(): Promise<void> {
 function onStart(): void {
   // The stored settings' migrations run once per worker start (pauseMigrationStarted), not here again.
   void ensureAlarm();
-  // No window-wide panel: a tab without its own options has none (panel-tabs.ts). The toolbar button opens or closes
-  // a tab's own panel; in a tab without one it fires action.onClicked, which opens it there.
-  void chrome.sidePanel?.setOptions({ enabled: false }).catch(() => {});
+  // One side panel per window (the manifest's default path), on screen across tab switches; the toolbar button opens or
+  // closes it. Enabled again here: the per-tab panels of earlier versions turned the default one off.
+  void chrome.sidePanel?.setOptions({ enabled: true }).catch(() => {});
   void chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   void runner.recover().catch(() => {});
   void episodes.resume();
@@ -577,7 +599,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === "complete") controlIndicator.tabLoaded(tabId);
   if (changeInfo.groupId !== undefined) controlIndicator.refresh();
 });
-// What the user looks at, for hands-free voice (the panel running it is hidden on other tabs).
+// What the user looks at, for hands-free voice (its badges, and the panels of other windows).
 chrome.tabs.onActivated.addListener(({ tabId, windowId }) => voiceSessions.tabActivated(tabId, windowId));
 chrome.windows.onFocusChanged.addListener((windowId) => voiceSessions.windowFocused(windowId), { windowTypes: ["normal"] });
 chrome.windows.onRemoved.addListener((windowId) => voiceSessions.windowRemoved(windowId));
@@ -585,7 +607,6 @@ chrome.windows.onRemoved.addListener((windowId) => voiceSessions.windowRemoved(w
 chrome.tabs.onCreated.addListener((tab) => void slots.adopt(tab).catch(() => {}));
 // A closed tab loses its chat (the session stays in the jobs list); a turn running there stops.
 chrome.tabs.onRemoved.addListener((tabId) => {
-  panelCommands.tabRemoved(tabId);
   voiceSessions.tabRemoved(tabId);
   tabBadges.tabRemoved(tabId);
   pageIndicators.tabRemoved(tabId);
@@ -597,14 +618,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     })
     .catch(() => {});
 });
-// Before anything is awaited: sidePanel.open() needs the key press (or the click) as its user gesture.
+// Before anything is awaited: sidePanel.open() needs the key press as its user gesture.
 chrome.commands?.onCommand.addListener((command, tab) => void panelCommands.onCommand(command, tab));
-const onActionClicked = (tab: chrome.tabs.Tab) => panelCommands.onAction(tab);
-chrome.action.onClicked.addListener(onActionClicked);
-// A panel the user closed stays off in its tab (it may wake the worker: the remembered tabs are read first).
-chrome.sidePanel?.onClosed?.addListener(({ tabId }) => {
-  if (tabId !== undefined) void panelTabs.ready.then(() => panelCommands.panelClosed(tabId));
-});
 chrome.debugger.onDetach.addListener((source, reason) => cdp.handleDetach(source, String(reason)));
 chrome.runtime.onMessage.addListener((msg: UiRequest | ExtraRequest, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return false;
@@ -630,7 +645,7 @@ chrome.runtime.onConnect.addListener((port) => {
   }
 });
 
-/** Stop: that tab's run stops. Open: the chat's side panel opens (now, within the click's user gesture) and its tab comes to the front. */
+/** Stop: that tab's run stops. Open: the side panel opens (now, within the click's user gesture) and the chat's tab comes to the front. */
 function onIndicatorButton(tabId: number, type: string): void {
   if (type === INDICATOR_MESSAGE.stop) {
     const sessionId = controlIndicator.sessionOf(tabId);
@@ -638,7 +653,8 @@ function onIndicatorButton(tabId: number, type: string): void {
     return;
   }
   const target = controlIndicator.open(tabId);
-  openTabPanel(target).catch((err: unknown) => logger("indicator")(`opening the side panel of tab ${target} failed: ${errorMessage(err)}`));
+  // Synchronously, in the click's gesture: a tab without a panel of its own opens its window's panel.
+  chrome.sidePanel.open({ tabId: target }).catch((err: unknown) => logger("indicator")(`opening the side panel for tab ${target} failed: ${errorMessage(err)}`));
   if (target !== tabId) {
     void chrome.tabs
       .update(target, { active: true })
@@ -674,12 +690,9 @@ onStart();
   titles,
   scheduleDueAlarm,
   panelCommands,
-  panelTabs,
   voiceSessions,
   controlIndicator,
   pageIndicators,
-  /** The toolbar button's listener (the e2e shortcut presser points the button at the command handler instead). */
-  onActionClicked,
   /** Runs use this brain instead of the real ones (null: back to the real ones). */
   setBrainOverride: (fn: typeof brainOverride) => void (brainOverride = fn),
   /** Google sign-in uses this client ID and auth flow (a fake Google). */

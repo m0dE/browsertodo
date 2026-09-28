@@ -217,6 +217,19 @@ export class Driver {
     );
   }
 
+  /**
+   * switch_x_account's pick in X's account menu (page-x-account.ts). Not run again on the fallback when the
+   * debugger drops mid-call: a click may have happened already.
+   */
+  clickXAccountEntry(p: P<"browser.clickXAccountEntry">): Promise<WithNote<R<"browser.clickXAccountEntry">>> {
+    // Only a real press goes through a point on the screen, where the control pill must not be.
+    const around = <T>(tabId: number, call: () => Promise<T>) => (p.press ? this.withoutIndicator(tabId, "pill", call) : call());
+    return this.use(
+      (tabId) => around(tabId, () => this.viaCdp.clickXAccountEntry(tabId, p)),
+      (tabId) => this.fallback.clickXAccountEntry(tabId, p),
+    );
+  }
+
   async currentUrl(): Promise<R<"browser.currentUrl">> {
     const tabId = await this.agent.ensureTab();
     const tab = await chrome.tabs.get(tabId);

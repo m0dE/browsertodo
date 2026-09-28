@@ -30,6 +30,7 @@ const METHODS: { [M in BrowserMethod]: (t: Targets, params: BrowserMethods[M]["p
   "browser.pressKey": ({ driver }, p) => driver.pressKey(p),
   "browser.scroll": ({ driver }, p) => driver.scroll(p),
   "browser.upload": ({ driver }, p) => driver.upload(p),
+  "browser.clickXAccountEntry": ({ driver }, p) => driver.clickXAccountEntry(p),
   "browser.currentUrl": ({ driver }, p) => driver.currentUrl(p),
   "browser.openTabs": ({ driver }, p) => driver.openTabs(p),
   "browser.switchTab": ({ driver }, p) => driver.switchTab(p),

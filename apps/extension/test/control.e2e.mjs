@@ -252,7 +252,8 @@ try {
       const p = await panels();
       return p.length > before.length ? p : null;
     }, "the side panel to open");
-    assert.ok(after.some((u) => u.endsWith(`sidepanel.html?tab=${tabId}`)), JSON.stringify(after));
+    // The window's side panel (one per window; it shows the chat of the tab in front).
+    assert.ok(after.some((u) => u.endsWith("/sidepanel.html")), JSON.stringify(after));
     const idle = await waitFor(async () => {
       const x = await view();
       return x.group?.title === "BrowserTODO" && !x.overlay ? x : null;

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  elsewhereLabel,
   endsWithTab,
   listensElsewhere,
   lookingElsewhereNote,
@@ -10,8 +9,8 @@ import {
   TAB_TITLE_CHARS,
   useThisTabAnswer,
   useThisTabLine,
-  viewedTab,
   voiceKeyAction,
+  voiceOnLabel,
 } from "../../src/voice/hands-free-tab.js";
 import type { VoiceSessionView } from "../../src/voice-session.js";
 
@@ -41,41 +40,28 @@ describe("hands-free voice belongs to the tab it started in", () => {
     expect(endsWithTab(null, 2)).toBe(false);
   });
 
-  it("names the tab it listens in, cut short, or 'another tab' without a title", () => {
-    expect(elsewhereLabel("Inbox (3) - Gmail")).toBe("Voice is on in Inbox (3) - Gmail");
-    const long = elsewhereLabel("Quarterly planning   doc — Google Docs — shared with the whole team");
-    expect(long).toMatch(/^Voice is on in Quarterly planning doc — G.*…$/);
-    expect(long.length - "Voice is on in ".length).toBeLessThanOrEqual(TAB_TITLE_CHARS);
-    expect(elsewhereLabel(null)).toBe("Voice is on in another tab");
-    expect(elsewhereLabel("  ")).toBe("Voice is on in another tab");
+  it("the strip names the tab it runs for: its title cut short, else its site; on another tab 'another tab' when unknown", () => {
+    expect(voiceOnLabel({ title: "Inbox (3) - Gmail", url: "https://mail.google.com/" })).toBe("Voice on · Inbox (3) - Gmail");
+    const long = voiceOnLabel({ title: "Quarterly planning   doc — Google Docs — shared with the whole team", url: null });
+    expect(long).toMatch(/^Voice on · Quarterly planning doc — G.*…$/);
+    expect(long.length - "Voice on · ".length).toBeLessThanOrEqual(TAB_TITLE_CHARS);
+    expect(voiceOnLabel({ title: "  ", url: "https://mail.google.com/u/0/" })).toBe("Voice on · mail.google.com");
+    expect(voiceOnLabel(null)).toBe("Voice on");
+    expect(voiceOnLabel({ title: null, url: "not a url" })).toBe("Voice on");
+    expect(voiceOnLabel(null, true)).toBe("Voice on · another tab");
   });
 });
 
-const session = (s: Partial<VoiceSessionView> = {}): VoiceSessionView => ({ tabId: 1, windowId: 9, host: 1, engine: "realtime", viewing: 1, ...s });
+const session = (s: Partial<VoiceSessionView> = {}): VoiceSessionView => ({ tabId: 1, windowId: 9, panel: "p1", engine: "realtime", viewing: 1, ...s });
 
 describe("one session, known to every panel through the background", () => {
-  it("a tab's own panel learns from the background which tab the user looks at (its page is hidden on others)", () => {
-    // Tab 1's panel, shown tab 1 (its own), while the user looks at tab 2.
-    expect(viewedTab(1, session({ viewing: 2 }), 1)).toBe(2);
-    // Not known yet: the tab it shows.
-    expect(viewedTab(1, null, 1)).toBe(1);
-    expect(viewedTab(1, session({ viewing: null }), 1)).toBe(1);
-    // The panel page opened as a tab shows the active tab of its window (the user looks at that page itself).
-    expect(viewedTab(null, session({ viewing: 5 }), 2)).toBe(2);
-    // On screen, a tab's own panel is where the user looks (whatever the window focus events said).
-    expect(viewedTab(1, session({ viewing: 2 }), 1, true)).toBe(1);
-  });
-
-  it("another tab's panel shows the session (a notice), the panel of the tab it was moved to takes it over, its own stale report is nothing", () => {
-    expect(remoteSession(null, 2)).toBe("none");
-    expect(remoteSession(session(), 2)).toBe("notice");
-    // Moved to tab 2 by voice while tab 1's panel runs it: tab 2's panel takes it over.
-    expect(remoteSession(session({ tabId: 2 }), 2)).toBe("adopt");
-    // This panel's own report (it has just stopped): nothing to show.
-    expect(remoteSession(session({ host: 2 }), 2)).toBe("none");
-    // The panel page opened as a tab has no tab: it only ever shows a notice.
-    expect(remoteSession(session(), null)).toBe("notice");
-    expect(remoteSession(session({ host: null }), null)).toBe("notice");
+  it("another panel's session is a notice in this one; this panel's own report (it has just stopped) is nothing", () => {
+    expect(remoteSession(null, "p2")).toBe("none");
+    expect(remoteSession(session(), "p2")).toBe("notice");
+    expect(remoteSession(session({ tabId: 2 }), "p2")).toBe("notice");
+    expect(remoteSession(session(), "p1")).toBe("none");
+    // Not known which panel runs it (kept from an older version): another one's.
+    expect(remoteSession(session({ panel: null }), "p1")).toBe("notice");
   });
 });
 

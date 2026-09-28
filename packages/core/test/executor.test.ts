@@ -164,7 +164,7 @@ describe("createToolExecutor: plain tools", () => {
     expect((await exec.call("switch_x_account", { handle: "bob" })).text).toBe("Already on @bob.");
     const missing = await exec.call("switch_x_account", { handle: "dave" });
     expect(missing.isError).toBe(true);
-    expect(missing.text).toMatch(/step 2 failed.*@dave/);
+    expect(missing.text).toMatch(/@dave is not signed in in this browser.*Add an existing account.*task_pause/);
   });
 
   it("task_* tools call onTaskEnd", async () => {

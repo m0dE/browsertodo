@@ -4,7 +4,7 @@ import { HOSTED_AI_UNAVAILABLE, OUT_OF_CREDIT, PLAN_REQUIRED_MESSAGES, SCHEDULE_
 import { CLAUDE_CODE_GONE, HOSTED_SIGN_IN } from "../../src/engine/brain-resolver.js";
 import { errorHelp, FIXES } from "../../src/sidepanel/error-help.js";
 import { setErrorFixes } from "../../src/sidepanel/error-view.js";
-import { describeEvent, turnError, turnPicks } from "../../src/sidepanel/event-format.js";
+import { describeEvent, turnError } from "../../src/sidepanel/event-format.js";
 import { renderEvent } from "../../src/sidepanel/event-render.js";
 import { box, installMiniDom, type MiniElement } from "./mini-dom.js";
 
@@ -75,7 +75,6 @@ describe("a failed turn shows its error once", () => {
 
   it("the end card does not repeat the error its turn already showed; Continue reads Retry", () => {
     expect(turnError(failedTurn, 2)).toBe(HOSTED_AI_UNAVAILABLE);
-    expect(turnPicks(failedTurn, 2)).toBeUndefined();
     const end = describeEvent(failedTurn[2]!, { error: turnError(failedTurn, 2) });
     expect(end).toMatchObject({ kind: "end", text: "", retry: true, fixable: true });
     expect(end).not.toHaveProperty("error");

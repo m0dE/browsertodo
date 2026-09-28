@@ -1,7 +1,8 @@
 /**
  * The approval card's view model: an action that waits for the user's OK
  * (approval_request), and, once it ended (approval_resolved, or the turn
- * ended without one), how. Plus the card's keyboard shortcuts. Pure.
+ * ended without one), how; a card its run paused at can still be decided
+ * (approval/paused.ts). Plus the card's keyboard shortcuts. Pure.
  */
 import { APPROVAL_OUTCOME_TEXT, type AgentEvent, type ApprovalAnswer, type ApprovalAnsweredBy, type ApprovalOutcome } from "@browsertodo/shared";
 
@@ -23,30 +24,32 @@ export interface ApprovalView {
   outcome?: string;
   /** Answered by voice. */
   byVoice?: true;
+  /** Its run paused here (nobody was there to answer) and it can still be decided: Allow & continue, Don't. */
+  decidable?: true;
 }
 
-export function approvalView(ev: Extract<AgentEvent, { type: "approval_request" }>, ended?: { outcome: ApprovalOutcome; by?: ApprovalAnsweredBy }): ApprovalView {
+export function approvalView(ev: Extract<AgentEvent, { type: "approval_request" }>, ended?: { outcome: ApprovalOutcome; by?: ApprovalAnsweredBy }, decidable = false): ApprovalView {
   const r = ev.request;
   const v: ApprovalView = { kind: "approval", id: r.id, action: r.action, site: r.site, why: r.why, expiresAt: r.expiresAt, state: ended?.outcome ?? "pending" };
   if (r.text) v.text = r.text;
   if (ended) v.outcome = APPROVAL_OUTCOME_TEXT[ended.outcome];
   if (ended?.by === "voice") v.byVoice = true;
+  if (decidable && ended?.outcome === "paused") v.decidable = true;
   return v;
 }
 
 /**
- * How the approval request `id` ended: its approval_resolved, else "ended"
- * when its turn ended without one (the extension restarted while it waited);
- * undefined while it still waits.
+ * How the approval request `id` ended: its last approval_resolved (a card its run paused at may be decided after its
+ * turn), else "ended" when its turn ended without one (the extension restarted while it waited); undefined while it
+ * still waits.
  */
 export function approvalEnding(events: readonly AgentEvent[], id: string): { outcome: ApprovalOutcome; by?: ApprovalAnsweredBy } | undefined {
   const at = events.findIndex((e) => e.type === "approval_request" && e.request.id === id);
   if (at < 0) return undefined;
-  for (const e of events.slice(at + 1)) {
-    if (e.type === "approval_resolved" && e.id === id) return e.by ? { outcome: e.outcome, by: e.by } : { outcome: e.outcome };
-    if (e.type === "task_end") return { outcome: "ended" };
-  }
-  return undefined;
+  const after = events.slice(at + 1);
+  const last = after.filter((e): e is Extract<AgentEvent, { type: "approval_resolved" }> => e.type === "approval_resolved" && e.id === id).at(-1);
+  if (last) return last.by ? { outcome: last.outcome, by: last.by } : { outcome: last.outcome };
+  return after.some((e) => e.type === "task_end") ? { outcome: "ended" } : undefined;
 }
 
 /** The card's answers and their keys: Alt+Y allow once, Alt+T allow for this task, Alt+N deny. */
@@ -68,4 +71,10 @@ export const APPROVAL_BUTTONS: readonly { answer: ApprovalAnswer; label: string 
   { answer: "allow_once", label: "Allow once" },
   { answer: "allow_task", label: "Allow for this task" },
   { answer: "deny", label: "Deny" },
+];
+
+/** On a card its run paused at: go on with this action allowed once, or end the run as not done. */
+export const PAUSED_BUTTONS: readonly { answer: ApprovalAnswer; label: string }[] = [
+  { answer: "allow_once", label: "Allow & continue" },
+  { answer: "deny", label: "Don't" },
 ];

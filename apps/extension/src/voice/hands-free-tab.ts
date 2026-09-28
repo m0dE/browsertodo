@@ -1,23 +1,22 @@
 /**
- * The browser tab a hands-free session belongs to. Each tab has its own side
- * panel, showing that tab's chat (Chrome hides it on other tabs and keeps its
- * page running); the panel page opened as a tab follows its window's
- * active tab instead. A session stays with the tab it started in: what is
- * said goes to its chat and its answers are narrated from there, whichever
- * tab the user looks at.
+ * The browser tab a hands-free session belongs to. The side panel is one per
+ * window, on screen on every tab, and shows the active tab's job. A session
+ * runs in the panel it started in and stays with the tab it started in: what
+ * is said goes to that tab's chat and its answers are narrated from there,
+ * whichever tab the user looks at.
  *
  * One session at a time, and the background knows it (voice-session.ts: its
- * tab, the panel it runs in, and the tab the user looks at). While the user
- * looks at another tab, the panel running it says so ("Voice is on in <its
- * tab>"), and what is said carries a note naming both tabs, so the agent
- * and the narrator do not pretend to see the tab in front of the user; "use
- * this tab" (said, or the narrator's use_this_tab) moves it there. Another
- * tab's panel shows the same words with Go to tab, Use voice here (the
- * session moves: it ends where it ran, then starts in this panel, same
- * engine, one microphone) and Stop, and nothing live. A panel whose tab the
- * session was moved to by voice takes it over the same way. The voice key
+ * tab, the panel it runs in, and the tab the user looks at). The voice strip
+ * always names the session's tab ("Voice on · Inbox"). While the user looks
+ * at another tab, it offers Go to tab (that tab and its window come to the
+ * front) and Use voice here, and what is said carries a note naming both
+ * tabs, so the agent and the narrator do not pretend to see the tab in front
+ * of the user; "use this tab" (said, or the narrator's use_this_tab) moves it
+ * there. Another window's panel shows the same strip with Turn off too, and
+ * nothing live; its Use voice here moves the session there (it ends where it
+ * ran, then starts in that panel, same engine, one microphone). The voice key
  * and the mic end a session this panel runs, wherever it listens; in a panel
- * that shows another tab's session they move it here. Closing its tab ends
+ * that shows another panel's session they move it here. Closing its tab ends
  * it. Pure.
  */
 import { isRestrictedUrl } from "../restricted.js";
@@ -44,27 +43,12 @@ export function listensElsewhere(sessionTabs: SessionTabs, shown: number | null)
 }
 
 /**
- * The tab the user looks at, as a panel knows it. A tab's own panel (`homeTab`) is on screen only with its tab
- * (`visible`: then that is the tab), and hidden on others, so then it learns from the background (`view`); the
- * panel page opened as a tab shows its window's active tab (`shown`). Null: not known.
+ * What a panel that runs no session makes of the one the background reports: "notice" when another panel runs it
+ * (the strip names its tab, with Go to tab, Use voice here and Turn off), else "none" (no session, or this panel's
+ * own report of one it no longer runs: `panel` is this page's id).
  */
-export function viewedTab(homeTab: number | null, view: Pick<VoiceSessionView, "viewing"> | null, shown: number | null, visible = false): number | null {
-  if (homeTab === null) return shown;
-  if (visible) return homeTab;
-  return view?.viewing ?? shown;
-}
-
-/**
- * What a panel that runs no session makes of the one the background reports: "adopt" when it belongs to the panel's
- * own tab but runs in another panel (moved here by voice: the tab's panel takes it over), "notice" when it runs for
- * another tab (Voice is on in <tab>, Go to tab, Use voice here, Stop), else "none" (no session, or this panel's own
- * report of one it no longer runs).
- */
-export function remoteSession(view: VoiceSessionView | null, homeTab: number | null): "adopt" | "notice" | "none" {
-  if (!view) return "none";
-  if (homeTab !== null && view.host === homeTab) return "none";
-  if (homeTab !== null && view.tabId === homeTab) return "adopt";
-  return "notice";
+export function remoteSession(view: VoiceSessionView | null, panel: string): "notice" | "none" {
+  return view && view.panel !== panel ? "notice" : "none";
 }
 
 /** A closed tab ends the session when it was the one the session started in (or was moved to). */
@@ -75,11 +59,18 @@ export function endsWithTab(sessionTab: number | null, closed: number): boolean 
 /** A tab's title in the voice bar is cut to this many characters. */
 export const TAB_TITLE_CHARS = 28;
 
-/** The voice bar's words on another tab: where the session listens ("Voice is on in Inbox – Gmail"). */
-export function elsewhereLabel(title: string | null): string {
-  const t = (title ?? "").replace(/\s+/g, " ").trim();
-  const shown = !t ? "another tab" : t.length > TAB_TITLE_CHARS ? `${t.slice(0, TAB_TITLE_CHARS - 1).trimEnd()}…` : t;
-  return `Voice is on in ${shown}`;
+/** What the voice strip says first. */
+export const VOICE_ON = "Voice on";
+
+/**
+ * The voice strip's words: where the session runs, by its tab's title, else its site ("Voice on · Inbox – Gmail",
+ * "Voice on · mail.google.com"). Not known (yet): "Voice on", or, on another tab, "Voice on · another tab".
+ */
+export function voiceOnLabel(page: TabPage | null, elsewhere = false): string {
+  const title = (page?.title ?? "").replace(/\s+/g, " ").trim();
+  const name = title ? (title.length > TAB_TITLE_CHARS ? `${title.slice(0, TAB_TITLE_CHARS - 1).trimEnd()}…` : title) : hostOf(page?.url ?? null);
+  const where = name || (elsewhere ? "another tab" : "");
+  return where ? `${VOICE_ON} · ${where}` : VOICE_ON;
 }
 
 export const MOVED_NOTE = "Hands-free moved to this tab.";
@@ -91,15 +82,19 @@ export interface TabPage {
   url: string | null;
 }
 
+/** An address's host ("" when there is none, or it is no URL). */
+function hostOf(url: string | null): string {
+  try {
+    return url ? new URL(url).host : "";
+  } catch {
+    return "";
+  }
+}
+
 /** "Recipes (example.com)": the title and the site, as far as they are known. */
 function pageName(page: TabPage | null, unknown: string): string {
   const title = (page?.title ?? "").replace(/\s+/g, " ").trim();
-  let host = "";
-  try {
-    host = page?.url ? new URL(page.url).host : "";
-  } catch {
-    // Not a URL: the title alone.
-  }
+  const host = hostOf(page?.url ?? null);
   if (title && host) return `${title} (${host})`;
   return title || host || unknown;
 }
@@ -131,7 +126,7 @@ export type UseTabOutcome = { moved: TabPage } | "unknown" | "here" | "gone";
 
 /** What the narrator is told when the user asks to use the tab they look at (use_this_tab). */
 export function useThisTabAnswer(outcome: UseTabOutcome): string {
-  if (outcome === "unknown") return "It is not known which tab the user is looking at: ask them to press Use voice here in that tab's side panel.";
+  if (outcome === "unknown") return "It is not known which tab the user is looking at: ask them to press Use voice here in the side panel.";
   if (outcome === "here") return "The user is already looking at the tab you work in.";
   if (outcome === "gone") return "That tab is gone: nothing moved.";
   const restricted = isRestrictedUrl(outcome.moved.url) ? " Chrome doesn't let you see that page, so you work in other tabs from there." : "";
@@ -140,7 +135,7 @@ export function useThisTabAnswer(outcome: UseTabOutcome): string {
 
 /** What Standard says for "use this tab" (it has no narrator to word it). */
 export function useThisTabLine(outcome: UseTabOutcome): string {
-  if (outcome === "unknown") return "I can't tell which tab you're looking at. Press Use voice here in its side panel.";
+  if (outcome === "unknown") return "I can't tell which tab you're looking at. Press Use voice here in the side panel.";
   if (outcome === "here") return "I'm already working in this tab.";
   if (outcome === "gone") return "That tab is gone.";
   return `Now working in ${outcome.moved.title?.replace(/\s+/g, " ").trim() || "this tab"}.`;

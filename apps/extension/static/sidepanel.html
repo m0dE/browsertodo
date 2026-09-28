@@ -38,8 +38,8 @@
       </div>
       <!-- Shown while Settings > Permission is "Full autonomy" (autonomy-warning.ts). -->
       <p id="autonomy-warning" class="autonomy-warning" role="status" hidden>
-        <span id="autonomy-warning-text"></span>
-        <button id="autonomy-warning-change" type="button" class="link">Change</button>
+        <span><span id="autonomy-warning-text"></span> <button id="autonomy-warning-change" type="button" class="link">(change)</button></span>
+        <button id="autonomy-warning-close" type="button" class="autonomy-close" aria-label="Hide this notice" title="Hide (it comes back when Full autonomy is turned on again)">✕</button>
       </p>
     </header>
     <!-- While hands-free voice is on: a one-line status strip under the header (voice-bar.ts fills it); its controls are in the composer. -->

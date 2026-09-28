@@ -9,7 +9,8 @@ setupRunnerTests();
 
 describe("Runner: local tasks", () => {
   it("runs a due local task: crash marker first, media paths, done recorded, session stored", async () => {
-    const h = harness();
+    // Below Full autonomy, a scheduled run follows the scheduled setting (Full autonomy never asks anywhere).
+    const h = harness({ automationLevel: "ask_consequential" });
     const t = await h.store.add({ instructions: "Post hello", account: "@me", media: [{ name: "a.png", type: "image/png", dataBase64: btoa("A") }] });
     h.brain.script = async (opts) => {
       // The crash marker is persisted before the brain starts.

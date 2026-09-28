@@ -13,7 +13,6 @@ import { initHandsFree, type HandsFreeDeps } from "../../src/sidepanel/hands-fre
 import { describeEvent } from "../../src/sidepanel/event-format.js";
 import type { RealtimeSocketLike } from "../../src/voice/realtime-client.js";
 import { RealtimeEngine } from "../../src/voice/realtime-engine.js";
-import type { VoiceSessionView } from "../../src/voice-session.js";
 import { installMiniDom, MiniElement } from "../ui/mini-dom.js";
 
 class FakeOpenAi implements RealtimeSocketLike {
@@ -55,15 +54,19 @@ const REQUEST = "Forget that for now. I want you to look at Intercom and see if 
 
 const settle = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
+/** The tab the side panel's window shows. */
+let shown = 1;
+
 /** The session in tab 1 (Intercom, chat s1); `viewing`: the tab the user looks at. The chat's events as kept. */
 async function session(viewing: number) {
+  shown = 1;
   const socket = new FakeOpenAi();
   const chat: AgentEvent[] = [];
   const deps: HandsFreeDeps = {
     voice: { state: "idle", attachHandsFree: () => {}, showHandsFree: () => {}, setLevel: () => {}, showTip: () => {}, ensureMic: async () => true, shortcutLabel: null },
     composer: { draft: () => "", setDraft: () => {} },
     notify: () => {},
-    activeTab: () => 1,
+    activeTab: () => shown,
     chatOf: () => "s1",
     tabsOf: () => [1],
     // The background keeps the message as it was sent (runner deliver / lifecycle: user_message, voice).
@@ -71,7 +74,7 @@ async function session(viewing: number) {
       chat.push({ type: "user_message", text, voice: true, ...(extra?.heard?.length ? { heard: [...extra.heard] } : {}) });
       return "s1";
     }),
-    homeTab: 1,
+    panel: "p1",
     tabPage: async (id) => (id === 1 ? { title: "Intercom", url: "https://app.intercom.com/" } : { title: "Ticket", url: "https://tickets.example/" }),
     goToTab: () => {},
     onSpeaking: () => {},
@@ -110,7 +113,9 @@ async function session(viewing: number) {
   const hf = initHandsFree(deps);
   hf.toggle("button");
   await settle();
-  hf.setSession({ tabId: 1, windowId: 5, host: 1, engine: "realtime", viewing } satisfies VoiceSessionView);
+  // The user switches to tab `viewing`: the panel follows its window's active tab and looks again (sidepanel.ts setActive).
+  shown = viewing;
+  hf.refresh();
   await settle();
   return { socket, chat, deps };
 }

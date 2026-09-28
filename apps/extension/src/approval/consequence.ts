@@ -11,7 +11,7 @@
 import type { ConsequenceKind, ElementInfo } from "@browsertodo/shared";
 
 /** The browser methods the gate looks at: every one that changes something. */
-export type GateMethod = "click" | "type" | "paste" | "pressKey" | "upload" | "navigate" | "openTabs" | "closeTabs";
+export type GateMethod = "click" | "type" | "paste" | "pressKey" | "upload" | "navigate" | "openTabs" | "closeTabs" | "switchXAccount";
 
 /** A field the agent typed into on this page, and what it typed. */
 export interface TypedField {
@@ -36,6 +36,8 @@ export interface GateAction {
   paths?: string[];
   /** closeTabs: which. */
   tabs?: string[];
+  /** switchXAccount: the X account switched to. */
+  handle?: string;
   /** The page it happens on (the last page read); "" when not known. */
   page: { url: string; title: string };
   /** The X account that page is signed in as (its account switcher), when it shows one. */
@@ -205,6 +207,11 @@ export function classifyByRules(a: GateAction): Verdict {
       return { verdict: "benign", reason: "typing only fills a field" };
     case "closeTabs":
       return { verdict: "benign", reason: "closes tabs the agent opened" };
+    // switch_x_account choosing the job's own account in X's account menu (only ever a "Switch to" entry of an account
+    // signed in in this browser, never a delegate's "Act as"): it changes which account X shows, no setting, and posts
+    // nothing; what then publishes is judged by itself, naming the account it publishes as.
+    case "switchXAccount":
+      return { verdict: "benign", reason: "switches X to another of your accounts signed in in this browser; changes no setting" };
     case "upload":
       return { verdict: "consequential", kind: "upload", reason: "sends a file from your computer to the site" };
     case "navigate":

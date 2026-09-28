@@ -26,6 +26,7 @@ import { checkStateInPage, prepareTypingInPage, selectOptionInPage, setCheckedIn
 import { loadProbeInPage, waitForUsablePage, type LoadProbe } from "./page-load.js";
 import { snapshotExpression } from "./page-snapshot.js";
 import { waitInPage, type PageWait, type PageWaitArgs } from "./page-wait.js";
+import { FOUND_KEY, xAccountEntryInPage, xHandleParam, type XEntryMode, type XEntryStep } from "./page-x-account.js";
 import { isDebuggerBlocked } from "./restricted.js";
 import { sameProbe, scrollProbeExpression, scrollReport, type PageResult, type ScrollProbe } from "./scroll-probe.js";
 
@@ -171,6 +172,81 @@ export class CdpActions {
     if (!found.nodeId) throw notFound(index);
     await this.send(tabId, "DOM.setFileInputFiles", { files: paths, nodeId: found.nodeId });
     return { ok: true };
+  }
+
+  /**
+   * browser.clickXAccountEntry (page-x-account.ts): the entry clicked in the page, in the same synchronous step
+   * that finds it; with `press`, a real mouse press on that same node instead (pressXAccountEntry).
+   */
+  async clickXAccountEntry(tabId: number, p: P<"browser.clickXAccountEntry">): Promise<R<"browser.clickXAccountEntry">> {
+    const handle = xHandleParam(p.handle);
+    const step = await this.xEntryStep(tabId, handle, p.waitMs ?? 0, p.press ? "find" : "click");
+    if ("clicked" in step) return step;
+    if (!("found" in step)) throw new Error("clickXAccountEntry: unexpected answer from the page");
+    const found = await this.send<{ result: { objectId?: string } }>(tabId, "Runtime.evaluate", {
+      expression: `(() => { const k = Symbol.for(${JSON.stringify(FOUND_KEY)}); const el = window[k]; delete window[k]; return el; })()`,
+    });
+    const objectId = found.result.objectId;
+    if (!objectId) return { clicked: false, reason: "not found: X replaced the entry before the press" };
+    const { node } = await this.send<{ node: { backendNodeId: number } }>(tabId, "DOM.describeNode", { objectId });
+    await this.send(tabId, "Runtime.releaseObject", { objectId }).catch(() => undefined);
+    return this.pressXAccountEntry(tabId, handle, node.backendNodeId);
+  }
+
+  /**
+   * A trusted press on the account entry known by its node identity (backendNodeId), never by position or an
+   * element number: resolved again right before the press, so a node X replaced answers "not found" instead of
+   * a press on whatever sits there now. The page's guard ("arm") stops every mouse event aimed elsewhere during
+   * the press, so even a replacement in the last moment reaches nothing.
+   */
+  private async pressXAccountEntry(tabId: number, handle: string, backendNodeId: number): Promise<R<"browser.clickXAccountEntry">> {
+    const gone = { clicked: false as const, reason: `not found: X replaced the ${handle} entry before the press` };
+    const resolved = await this.send<{ object: { objectId?: string } }>(tabId, "DOM.resolveNode", { backendNodeId }).catch(() => null);
+    const objectId = resolved?.object.objectId;
+    if (!objectId) return gone;
+    try {
+      const at = await this.xEntryStep(tabId, handle, 0, "arm", objectId);
+      if ("clicked" in at) return at;
+      if (!("x" in at)) throw new Error("clickXAccountEntry: unexpected answer from the page");
+      const press = async () => {
+        await this.send(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y, button: "none" });
+        await this.send(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x: at.x, y: at.y, button: "left", buttons: 1, clickCount: 1 });
+        await this.send(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: at.x, y: at.y, button: "left", buttons: 0, clickCount: 1 });
+      };
+      const disarm = () => this.xEntryStep(tabId, handle, 0, "disarm").catch(() => null);
+      const pressed = await press().then(disarm, async (err: unknown) => {
+        await disarm();
+        throw err;
+      });
+      // No answer, or no guard in the page: the document it was armed in is gone, which only the entry's click can
+      // have started (the guard stops every event aimed elsewhere). The switcher, read next, says whether it switched.
+      if (!pressed || !("armed" in pressed) || !pressed.armed) return { clicked: true };
+      return pressed.hit ? { clicked: true } : gone;
+    } finally {
+      await this.send(tabId, "Runtime.releaseObject", { objectId }).catch(() => undefined);
+    }
+  }
+
+  /** One mode of xAccountEntryInPage; "arm" runs on the node `objectId` names. */
+  private async xEntryStep(tabId: number, handle: string, waitMs: number, mode: XEntryMode, objectId?: string): Promise<XEntryStep> {
+    const args = [handle, waitMs, mode].map((a) => JSON.stringify(a)).join(", ");
+    const res = objectId
+      ? await this.send<EvaluateResult<PageResult<XEntryStep>>>(tabId, "Runtime.callFunctionOn", {
+          objectId,
+          functionDeclaration: `function () { return (${xAccountEntryInPage.toString()})(${args}, this); }`,
+          returnByValue: true,
+          awaitPromise: true,
+        })
+      : await this.send<EvaluateResult<PageResult<XEntryStep>>>(tabId, "Runtime.evaluate", {
+          expression: `(${xAccountEntryInPage.toString()})(${args})`,
+          returnByValue: true,
+          awaitPromise: true,
+        });
+    if (res.exceptionDetails) throw new Error(`Page script failed: ${res.exceptionDetails.exception?.description ?? res.exceptionDetails.text ?? "unknown error"}`);
+    const out = res.result?.value;
+    if (!out) throw new Error("Page script failed (or the page was navigating); call read_page and try again");
+    if (!out.ok) throw new Error(`switch_x_account: ${out.error}`);
+    return out.value;
   }
 
   private send<T = Record<string, unknown>>(tabId: number, method: string, params?: Record<string, unknown>): Promise<T> {

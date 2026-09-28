@@ -99,11 +99,12 @@ export const LIST_CASES = [
       await p.close();
     },
   },
-  // A repeating task that ran three times is one job: its page lists the earlier runs, collapsed (date and how each
-  // ended; the newest last), above the latest run's conversation; one opens to that run's conversation. Delete asks
-  // first, then deletes the task's rows and runs.
+  // A repeating task that ran three times is one job: its page says how its runs went (each count opens the list
+  // filtered), its instructions (Edit, Edit schedule), "Earlier runs (2)" closed, then the latest run's conversation.
+  // Open, the list has the runs by day, newest first; one picked shows its conversation in the page's place ("‹ Runs"
+  // and Escape go back, on its row). Delete asks first, then deletes the task's rows and runs.
   {
-    names: ["panel-job-series", "panel-job-series-open", "panel-job-delete"],
+    names: ["panel-job-series", "panel-job-series-open", "panel-job-series-run", "panel-job-delete"],
     async run({ ctx, size, scheme, label, fail, groups, expectMenu, pick, openPanel, openJob, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "series");
       const g = await groups(p);
@@ -111,32 +112,65 @@ export const LIST_CASES = [
       const meta = await p.textContent('.job-row[data-key="task:tip1"] .job-meta');
       if (meta !== "Daily at 9:00 AM") fail(`series: row meta "${meta}"`);
       await openJob(p, "task:tip1");
-      await p.waitForSelector("#chat-log .job-runs .job-run");
+      await p.waitForSelector("#chat-log .job-runs-toggle");
+      await p.waitForFunction(() => window.__requests.some((r) => r.type === "tasks.series" && r.seriesId === "tip1"));
       const page = await p.evaluate(() => ({
         sub: document.getElementById("job-sub").textContent,
-        runs: [...document.querySelectorAll("#chat-log .job-run > summary")].map((s) => s.textContent),
-        open: document.querySelectorAll("#chat-log .job-run[open]").length,
-        heads: [...document.querySelectorAll("#chat-log .job-runs-head")].map((h) => h.textContent),
-        latest: document.querySelector("#chat-log > .ev-opening .ev-user-text")?.textContent,
+        stats: document.querySelector("#chat-log .job-stats").textContent,
+        toggle: [document.querySelector("#chat-log .job-runs-toggle").textContent, document.querySelector("#chat-log .job-runs-toggle").getAttribute("aria-expanded")],
+        rows: document.querySelectorAll("#chat-log .run-row").length,
+        instr: document.querySelector("#chat-log .job-instr-text")?.textContent,
+        edit: [...document.querySelectorAll("#chat-log .job-instr-actions button")].map((b) => b.textContent),
+        latest: document.querySelector("#chat-log .job-runs-head.latest")?.textContent,
+        opening: document.querySelector("#chat-log > .ev-opening .ev-user-text")?.textContent,
         end: document.querySelector("#chat-log > .ev-end .ev-summary")?.textContent,
       }));
       // The next run is the next 9:00 (in words inside the line: "next tomorrow 9:00 AM").
       if (!/^Daily at 9:00 AM · next (today|tomorrow) 9:00 AM$/.test(page.sub)) fail(`series: subtitle "${page.sub}"`);
-      if (page.runs.length !== 2 || !/done/.test(page.runs[0]) || !/failed/.test(page.runs[1]) || page.open !== 0) fail(`series: earlier runs ${JSON.stringify(page)}`);
-      if (page.heads[0] !== "Earlier runs · 2" || !page.heads[1]?.startsWith("Latest run · ")) fail(`series: headings ${JSON.stringify(page.heads)}`);
-      if (!page.latest?.startsWith("Post a short tip") || page.end !== "Posted: Ctrl+. opens BrowserTODO from any tab") fail(`series: latest run ${JSON.stringify(page)}`);
+      if (page.stats !== "3 runs · 2 done · 1 failed" || JSON.stringify(page.toggle) !== JSON.stringify(["Earlier runs (2)›", "false"]) || page.rows !== 0) fail(`series: closed runs ${JSON.stringify(page)}`);
+      if (!page.instr?.startsWith("Post a short tip") || page.edit.join() !== "Edit schedule,Edit") fail(`series: instructions ${JSON.stringify(page)}`);
+      if (!page.latest?.startsWith("Latest run · ") || !page.opening?.startsWith("Post a short tip") || page.end !== "Posted: Ctrl+. opens BrowserTODO from any tab") fail(`series: latest run ${JSON.stringify(page)}`);
       await expectMenu(p, ["Run now", "Pause", "Edit schedule", "Raw", "Delete"], "series");
       await p.evaluate(() => (document.getElementById("chat-log").scrollTop = 0));
       await checkLayout(p, `series ${label}`);
       await shoot(p, "panel-job-series", size, scheme);
-      // The failed run opens to its conversation, loaded then.
-      await p.click("#chat-log .job-run:nth-child(2) > summary");
-      await p.waitForSelector("#chat-log .job-run[open] .run-log .ev-end");
-      const opened = await p.evaluate(() => ({ text: document.querySelector("#chat-log .job-run[open] .run-log").textContent, loads: window.__requests.filter((r) => r.type === "sessions.events").map((r) => r.sessionId) }));
-      if (!opened.text.includes("X asked to confirm the login") || !opened.loads.includes("r-tip2")) fail(`series: opened run ${JSON.stringify(opened)}`);
+
+      // "1 failed" opens the list on the failed runs; All shows both, newest first, under their days.
+      await p.click('#chat-log .job-stats button[data-filter="failed"]');
+      await p.waitForSelector('#chat-log .run-filter[data-filter="failed"][aria-pressed="true"]');
+      const failedOnly = await p.evaluate(() => ({ keys: [...document.querySelectorAll("#chat-log .run-row")].map((r) => r.dataset.key), focus: document.activeElement?.dataset.filter }));
+      if (failedOnly.keys.join() !== "r-tip2" || failedOnly.focus !== "failed") fail(`series: failed filter ${JSON.stringify(failedOnly)}`);
+      await p.click('#chat-log .run-filter[data-filter="all"]');
+      const open = await p.evaluate(() => ({
+        expanded: document.querySelector("#chat-log .job-runs-toggle").getAttribute("aria-expanded"),
+        days: [...document.querySelectorAll("#chat-log .run-day-head")].map((d) => d.textContent),
+        rows: [...document.querySelectorAll("#chat-log .run-row")].map((r) => [r.dataset.key, r.querySelector(".run-line").textContent, r.getAttribute("aria-label")]),
+      }));
+      // Each run on its own day ("Yesterday", or its date when that was longer ago).
+      if (open.expanded !== "true" || open.days.length !== 2 || !open.days[0] || open.days[0] === open.days[1]) fail(`series: days ${JSON.stringify(open)}`);
+      if (JSON.stringify(open.rows.map(([k, l]) => [k, l])) !== JSON.stringify([["r-tip2", "X asked to confirm the login"], ["r-tip1", "Posted: Ctrl+, talks to it"]]) || !/^\S.* \d+:\d\d [AP]M, Failed, X asked to confirm the login$/.test(open.rows[0][2])) fail(`series: rows ${JSON.stringify(open.rows)}`);
       await p.evaluate(() => (document.getElementById("chat-log").scrollTop = 0));
       await checkLayout(p, `series open ${label}`);
       await shoot(p, "panel-job-series-open", size, scheme);
+
+      // The failed run: its conversation in the page's place, loaded then; Escape goes back to its row.
+      await p.click('#chat-log .run-row[data-key="r-tip2"]');
+      await p.waitForSelector("#chat-log .job-run-bar");
+      await p.waitForFunction(() => document.querySelector("#chat-log")?.textContent.includes("X asked to confirm the login") && document.querySelector("#chat-log > .ev-end"));
+      const run = await p.evaluate(() => ({
+        bar: document.querySelector("#chat-log .job-run-bar").textContent,
+        focus: document.activeElement?.classList.contains("job-run-back"),
+        runs: !!document.querySelector("#chat-log .job-runs, #chat-log .job-instr"),
+        loads: window.__requests.filter((r) => r.type === "sessions.events").map((r) => r.sessionId),
+      }));
+      if (!/Runs.*Failed$/.test(run.bar) || !run.focus || run.runs || !run.loads.includes("r-tip2")) fail(`series: a run picked ${JSON.stringify(run)}`);
+      await checkLayout(p, `series run ${label}`);
+      await shoot(p, "panel-job-series-run", size, scheme);
+      await p.keyboard.press("Escape");
+      await p.waitForSelector("#chat-log .job-runs-panel");
+      const back = await p.evaluate(() => ({ key: document.activeElement?.dataset.key, list: !document.getElementById("view-job").hidden, end: document.querySelector("#chat-log > .ev-end .ev-summary")?.textContent }));
+      if (back.key !== "r-tip2" || !back.list || back.end !== "Posted: Ctrl+. opens BrowserTODO from any tab") fail(`series: back from a run ${JSON.stringify(back)}`);
+
       // Delete: asked first in the menu (Keep goes back), then every row and run of it goes, and the list shows again.
       await pick(p, "Delete");
       await p.waitForSelector("#job-menu-pop .menu-note");
@@ -147,6 +181,175 @@ export const LIST_CASES = [
       const gone = await p.evaluate(() => ({ tasks: window.__requests.filter((r) => r.type === "tasks.delete").map((r) => r.id), runs: window.__requests.filter((r) => r.type === "session.delete").map((r) => r.sessionId) }));
       if (gone.tasks.sort().join() !== "tip1,tip2,tip3" || gone.runs.sort().join() !== "r-tip1,r-tip2,r-tip3") fail(`series: deleted ${JSON.stringify(gone)}`);
       reportErrors(p, `series ${label}`);
+      await p.close();
+    },
+  },
+  // The same job after 300 runs (the account's; this browser keeps the last three conversations): the page opens
+  // with the counts known so far, the list shows 50 runs at a time (never all), 7 failed in a row for one reason are
+  // one row that opens to them, filters, Show more (older rows from tasks.series as needed), and a run known only by
+  // its task row says what it did.
+  {
+    names: ["panel-job-series-long", "panel-job-series-long-fold", "panel-job-series-long-failed", "panel-job-series-row-run"],
+    async run({ ctx, size, scheme, label, fail, openPanel, openJob, shoot, checkLayout, reportErrors }) {
+      const p = await openPanel(ctx, "series-long");
+      await openJob(p, "task:tip1");
+      await p.waitForFunction(() => /\+ runs/.test(document.querySelector("#chat-log .job-stats")?.textContent ?? ""));
+      const closed = await p.evaluate(() => ({
+        stats: document.querySelector("#chat-log .job-stats").textContent,
+        toggle: document.querySelector("#chat-log .job-runs-toggle").textContent,
+        cut: document.querySelector("#chat-log .job-instr-text").dataset.cut,
+        more: document.querySelector("#chat-log .job-instr-more")?.textContent,
+        series: window.__requests.filter((r) => r.type === "tasks.series").map((r) => r.cursor ?? null),
+      }));
+      // The list's 100 rows and the first page of the series (200): 200 runs known, more to come.
+      if (!/^200\+ runs · \d+ done · \d+ failed$/.test(closed.stats) || closed.toggle !== "Earlier runs (199+)›" || JSON.stringify(closed.series) !== "[null]") fail(`long: closed ${JSON.stringify(closed)}`);
+      if (closed.cut !== "true" || closed.more !== "Show all") fail(`long: instructions not cut ${JSON.stringify(closed)}`);
+      await p.click("#chat-log .job-instr-more");
+      if ((await p.getAttribute("#chat-log .job-instr-text", "data-cut")) !== "false" || (await p.getAttribute("#chat-log .job-instr-more", "aria-expanded")) !== "true") fail("long: Show all did not show the instructions");
+      await p.click("#chat-log .job-instr-more");
+      await p.evaluate(() => (document.getElementById("chat-log").scrollTop = 0));
+      await checkLayout(p, `long ${label}`);
+      await shoot(p, "panel-job-series-long", size, scheme);
+
+      // Open: fast, and only the first page is in the page.
+      const ms = await p.evaluate(() => {
+        const t0 = performance.now();
+        document.querySelector("#chat-log .job-runs-toggle").click();
+        return performance.now() - t0;
+      });
+      const page = await p.evaluate(() => ({
+        runs: document.querySelectorAll("#chat-log .run-row[data-key]").length,
+        folds: [...document.querySelectorAll("#chat-log .run-fold-head")].map((f) => [f.querySelector(".run-count").textContent, f.querySelector(".run-line").textContent, f.getAttribute("aria-expanded")]),
+        more: document.querySelector("#chat-log .run-more")?.textContent,
+        stuck: getComputedStyle(document.querySelector("#chat-log .run-day-head")).position,
+      }));
+      if (ms > 250) fail(`long: opening the list took ${Math.round(ms)} ms`);
+      if (page.runs !== 50 || page.more !== "Show more" || page.stuck !== "sticky") fail(`long: first page ${JSON.stringify(page)}`);
+      if (JSON.stringify(page.folds) !== JSON.stringify([["7 runs", "I couldn't switch X to @getbnty: the account menu did not list it", "false"]])) fail(`long: folds ${JSON.stringify(page.folds)}`);
+      // The fold opens to its 7 runs (by keyboard).
+      await p.focus("#chat-log .run-fold-head");
+      await p.keyboard.press("Enter");
+      const fold = await p.evaluate(() => ({ expanded: document.querySelector("#chat-log .run-fold-head").getAttribute("aria-expanded"), shown: [...document.querySelectorAll("#chat-log .run-fold-list:not([hidden]) .run-row")].length }));
+      if (fold.expanded !== "true" || fold.shown !== 7) fail(`long: fold ${JSON.stringify(fold)}`);
+      await p.evaluate(() => document.querySelector("#chat-log .run-fold-head").scrollIntoView({ block: "center" }));
+      await checkLayout(p, `long fold ${label}`);
+      await shoot(p, "panel-job-series-long-fold", size, scheme);
+
+      // Failed: only failed runs; Show more adds 50, loading older rows once the known ones run out.
+      await p.click('#chat-log .run-filter[data-filter="failed"]');
+      const failed = await p.evaluate(() => [...document.querySelectorAll("#chat-log .run-list > li > .run-row, #chat-log .run-fold-list .run-row")].every((r) => r.querySelector(".job-icon").dataset.state === "failed"));
+      if (!failed) fail("long: Failed shows other runs");
+      await p.evaluate(() => (document.getElementById("chat-log").scrollTop = 0));
+      await checkLayout(p, `long failed ${label}`);
+      await shoot(p, "panel-job-series-long-failed", size, scheme);
+      await p.click('#chat-log .run-filter[data-filter="all"]');
+      await p.click("#chat-log .run-more");
+      await p.waitForFunction(() => document.querySelectorAll("#chat-log .run-row[data-key]").length === 100);
+      for (let i = 0; i < 3; i++) {
+        await p.click("#chat-log .run-more");
+        await p.waitForFunction((n) => document.querySelectorAll("#chat-log .run-row[data-key]").length === n, 150 + 50 * i);
+      }
+      const all = await p.evaluate(() => ({ series: window.__requests.filter((r) => r.type === "tasks.series").map((r) => r.cursor ?? null), stats: document.querySelector("#chat-log .job-stats").textContent, toggle: document.querySelector("#chat-log .job-runs-toggle").textContent, more: document.querySelector("#chat-log .run-more")?.textContent ?? null }));
+      if (all.series.length !== 2 || all.series[1] === null || !/^300 runs · /.test(all.stats) || all.toggle !== "Earlier runs (299)›" || all.more !== "Show 49 more") fail(`long: after Show more ${JSON.stringify(all)}`);
+
+      // A run known only by its task row: what it did, and where.
+      await p.click('#chat-log .run-row[data-key="task:h40"]');
+      await p.waitForSelector("#chat-log .job-run-gone");
+      const gone = await p.evaluate(() => ({ said: document.querySelector("#chat-log .job-run-said")?.textContent, url: document.querySelector("#chat-log .job-run-url")?.getAttribute("href"), note: document.querySelector("#chat-log .job-run-note")?.textContent }));
+      if (!gone.said?.startsWith("Posted: ") || !gone.url?.startsWith("https://x.com/browsertodo/status/") || !/isn't kept in this browser/.test(gone.note ?? "")) fail(`long: a run known by its row ${JSON.stringify(gone)}`);
+      await checkLayout(p, `long row run ${label}`);
+      await shoot(p, "panel-job-series-row-run", size, scheme);
+      await p.click("#chat-log .job-run-back");
+      await p.waitForFunction(() => document.activeElement?.dataset.key === "task:h40");
+      reportErrors(p, `long ${label}`);
+      await p.close();
+    },
+  },
+  // The instructions of a scheduled job, edited in place: Edit opens a box (Escape cancels, nothing sent); an empty
+  // text says why it cannot be saved; Ctrl+Enter saves the waiting row's instructions as the user's own, the page shows
+  // them with "Saved"; Edit schedule opens the schedule sheet.
+  {
+    names: ["panel-job-instructions-edit", "panel-job-instructions-saved"],
+    async run({ ctx, size, scheme, label, fail, openPanel, openJob, shoot, checkLayout, reportErrors }) {
+      const p = await openPanel(ctx, "series");
+      await openJob(p, "task:tip1");
+      await p.waitForSelector("#chat-log .job-instr-edit");
+      await p.click("#chat-log .job-instr-edit");
+      await p.waitForSelector("#chat-log textarea.job-instr-box");
+      if (!(await p.evaluate(() => document.activeElement?.classList.contains("job-instr-box") && document.activeElement.value.startsWith("Post a short tip")))) fail("instructions: the box did not take the focus with the text");
+      await p.keyboard.press("Escape");
+      const cancelled = await p.evaluate(() => ({ box: !!document.querySelector("#chat-log textarea.job-instr-box"), focus: document.activeElement?.classList.contains("job-instr-edit"), page: !document.getElementById("view-job").hidden }));
+      if (cancelled.box || !cancelled.focus || !cancelled.page) fail(`instructions: Escape ${JSON.stringify(cancelled)}`);
+      await p.click("#chat-log .job-instr-edit");
+      await p.fill("#chat-log textarea.job-instr-box", "   ");
+      await p.click('#chat-log .job-instr-editor button:has-text("Save")');
+      if ((await p.textContent("#chat-log .job-instr-msg")) !== "Write what the job should do.") fail("instructions: an empty text was not refused");
+      const NEW = "Post a short tip about one keyboard shortcut on X from @browsertodo.\nOne shortcut per post, never one posted in the last two weeks.";
+      await p.fill("#chat-log textarea.job-instr-box", NEW);
+      await p.evaluate(() => (document.getElementById("chat-log").scrollTop = 0));
+      await checkLayout(p, `instructions edit ${label}`);
+      await shoot(p, "panel-job-instructions-edit", size, scheme);
+      await p.keyboard.press("Control+Enter");
+      await p.waitForFunction((t) => document.querySelector("#chat-log .job-instr-text")?.textContent === t, NEW);
+      const saved = await p.evaluate(() => ({ req: window.__requests.filter((r) => r.type === "tasks.update"), msg: document.querySelector("#chat-log .job-instr-saved")?.textContent, focus: document.activeElement?.classList.contains("job-instr-edit") }));
+      if (JSON.stringify(saved.req) !== JSON.stringify([{ type: "tasks.update", id: "tip3", patch: { instructions: NEW, agentAuthored: false } }]) || saved.msg !== "Saved. The next run uses them." || !saved.focus) fail(`instructions: saved ${JSON.stringify(saved)}`);
+      await checkLayout(p, `instructions saved ${label}`);
+      await shoot(p, "panel-job-instructions-saved", size, scheme);
+      await p.click('#chat-log .job-instr-actions button:has-text("Edit schedule")');
+      await p.waitForSelector("dialog.schedule-sheet[open]");
+      reportErrors(p, `instructions ${label}`);
+      await p.close();
+    },
+  },
+  // A scheduled run that paused because nobody was there to approve its Post: its page shows the card alone (no
+  // "Pausing:" line, no "needs you" end, no Jev lines: those are for Raw) with Allow & continue and Don't (Alt+Y,
+  // Alt+N); its long instructions open the thread as a compact "Scheduled run" bubble (Show all). Alt+Y decides it.
+  {
+    names: ["panel-approval-paused", "panel-approval-paused-allowed"],
+    async run({ ctx, size, scheme, label, fail, openPanel, openJob, shoot, checkLayout, reportErrors }) {
+      const p = await openPanel(ctx, "approval-paused");
+      await openJob(p, "task:t-post");
+      await p.waitForSelector('#chat-log .ev-approval[data-decidable="true"]');
+      const page = await p.evaluate(() => {
+        const card = document.querySelector("#chat-log .ev-approval");
+        const text = document.querySelector("#chat-log > .ev-opening .ev-user-text");
+        return {
+          cards: document.querySelectorAll("#chat-log .ev-approval").length,
+          head: card.querySelector(".appr-head").textContent,
+          action: card.querySelector(".appr-action").textContent,
+          buttons: [...card.querySelectorAll("button")].map((b) => [b.textContent, b.title]),
+          note: card.querySelector(".appr-note")?.textContent,
+          ends: document.querySelectorAll("#chat-log .ev-end").length,
+          pausing: [...document.querySelectorAll("#chat-log .ev-status")].filter((s) => /Pausing:|element pick/.test(s.textContent)).length,
+          jev: document.querySelectorAll("#chat-log .ev-jev").length,
+          refusals: [...document.querySelectorAll("#chat-log > *")].filter((e) => !e.closest(".ev-approval") && /did not approve/.test(e.textContent)).length,
+          cut: text?.dataset.cut,
+          lines: Math.round(text.getBoundingClientRect().height / parseFloat(getComputedStyle(text).lineHeight)),
+          more: document.querySelector("#chat-log > .ev-opening .ev-more")?.textContent,
+        };
+      });
+      if (page.cards !== 1 || page.head !== "Paused for your OK" || page.action !== 'Click "Post" as @browsertodo on x.com · publishes') fail(`paused: card ${JSON.stringify(page)}`);
+      if (JSON.stringify(page.buttons) !== JSON.stringify([["Allow & continue", "Allow & continue (Alt+Y)"], ["Don't", "Don't (Alt+N)"]]) || !page.note?.startsWith("The run stopped here")) fail(`paused: answers ${JSON.stringify(page)}`);
+      if (page.ends || page.pausing || page.jev || page.refusals) fail(`paused: repeats the card ${JSON.stringify(page)}`);
+      if (page.cut !== "true" || page.lines !== 1 || page.more !== "Show all") fail(`paused: the scheduled run's bubble ${JSON.stringify(page)}`);
+      // Show all opens the instructions in place (not the details sheet).
+      await p.click("#chat-log > .ev-opening .ev-more");
+      const shown = await p.evaluate(() => ({ cut: document.querySelector("#chat-log > .ev-opening .ev-user-text").dataset.cut, sheet: !!document.querySelector("dialog[open]") }));
+      if (shown.cut !== "false" || shown.sheet) fail(`paused: Show all ${JSON.stringify(shown)}`);
+      await p.click("#chat-log > .ev-opening .ev-more");
+      await checkLayout(p, `paused ${label}`);
+      await shoot(p, "panel-approval-paused", size, scheme);
+      // Alt+Y, from the message box: Allow & continue.
+      await p.focus("#now-text");
+      await p.keyboard.press("Alt+KeyY");
+      await p.waitForSelector("#chat-log .ev-approval[data-state=allowed]");
+      const sent = await p.evaluate(() => window.__requests.filter((r) => r.type === "approval.answer"));
+      if (sent.length !== 1 || sent[0].sessionId !== "s-paused" || sent[0].id !== "ap-p" || sent[0].answer !== "allow_once") fail(`paused: Alt+Y sent ${JSON.stringify(sent)}`);
+      const after = await p.evaluate(() => ({ head: document.querySelector("#chat-log .ev-approval .appr-head").textContent, buttons: document.querySelectorAll("#chat-log .ev-approval button").length }));
+      if (after.head !== "Allowed once" || after.buttons) fail(`paused: after Allow ${JSON.stringify(after)}`);
+      await checkLayout(p, `paused allowed ${label}`);
+      await shoot(p, "panel-approval-paused-allowed", size, scheme);
+      reportErrors(p, `paused ${label}`);
       await p.close();
     },
   },

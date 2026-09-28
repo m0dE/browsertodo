@@ -266,7 +266,10 @@ export type UiRequest =
   | { type: "memory.clear" }
   /** The answer to "Add this computer's memory to <account>?" (UiState.memoryQuestion): add it, or keep it separate. */
   | { type: "memory.syncChoice"; add: boolean }
-  /** The user's answer on an approval card (or by voice): the waiting action runs or is refused. */
+  /**
+   * The user's answer on an approval card (or by voice): the waiting action runs or is refused. On a card its run
+   * paused for: allow goes on with that action allowed once, deny ends the run as not done (paused-decision.ts).
+   */
   | { type: "approval.answer"; sessionId: string; id: string; answer: ApprovalAnswer; by?: ApprovalAnsweredBy }
   /** Switch to a browser tab (another tab's chat): activates it and focuses its window. */
   | { type: "tab.focus"; tabId: number }
@@ -296,6 +299,8 @@ export type UiRequest =
   | { type: "tasks.pause"; id: string }
   /** A paused job waits for its time again (a repeating one whose time went by: its next time). */
   | { type: "tasks.resume"; id: string }
+  /** A page of one series' rows (a repeating job's runs), newest first; cursor: the nextCursor of the page before. */
+  | { type: "tasks.series"; seriesId: string; cursor?: string }
   /** Google sign-in (opens Google's window), then the account's state. */
   | { type: "account.signIn" }
   | { type: "account.signOut" }
@@ -383,7 +388,7 @@ export interface UiResults {
   "memory.clear": { removed: number };
   /** Whether memory syncs now. */
   "memory.syncChoice": { sync: MemorySyncStatus };
-  /** ok false: the request no longer waits (answered, timed out, its turn ended). */
+  /** ok false: the request no longer waits (answered, timed out, its turn ended, or its paused run was decided or went on). */
   "approval.answer": { ok: boolean };
   "tab.focus": { ok: boolean };
   "agent.show": { ok: boolean };
@@ -400,6 +405,8 @@ export interface UiResults {
   "tasks.cancel": { task: LocalTask };
   "tasks.pause": { task: LocalTask };
   "tasks.resume": { task: LocalTask };
+  /** nextCursor null: the last page. */
+  "tasks.series": { tasks: LocalTask[]; nextCursor: string | null };
   "account.signIn": UiState;
   "account.signOut": UiState;
   "account.refresh": UiState;
@@ -461,11 +468,13 @@ export type UiPush =
    * and the job the page showed before the shortcut recreated the panel.
    */
   | { type: "panel.focus"; draft?: string; job?: string }
+  /** A window's side panel the shortcut recreated from another window: the text its box had and the job it showed, without the focus. */
+  | { type: "panel.restore"; draft?: string; job?: string }
   /** The voice shortcut: hands-free voice on or off (as the mic button). */
   | { type: "panel.voice" }
   /** The hands-free session (null: none is on), and the tab the user looks at: when it changes, and when a panel connects. */
   | { type: "voice.session"; session: VoiceSessionView | null }
-  /** To the panel running the hands-free session: end it (Stop, or Use voice here, in another tab's panel). */
+  /** To the panel running the hands-free session: end it (Stop, or Use voice here, in another panel). */
   | { type: "voice.stop" };
 
 /** Typed helper for UI pages. */

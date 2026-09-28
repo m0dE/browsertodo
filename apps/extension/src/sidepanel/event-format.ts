@@ -1,5 +1,6 @@
-/** Pure view models for agent events in a job's conversation (and its earlier runs). */
-import { describeSchedule, localTimeZone, picksText, SCREEN_HELP_TEXT, type AgentEvent, type AttachmentRef, type Chip, type ElementPicks, type SessionInfo, type TaskSource, type TodoChange } from "@browsertodo/shared";
+/** Pure view models for agent events in a job's conversation. */
+import { describeSchedule, localTimeZone, SCREEN_HELP_TEXT, type AgentEvent, type AttachmentRef, type Chip, type SessionInfo, type TaskSource, type TodoChange } from "@browsertodo/shared";
+import { repeatsPausedCard } from "../approval/paused.js";
 import { clip, isLongSummary, toolArgsSummary } from "../text.js";
 import { speakable } from "../voice/spoken-line.js";
 import { errorHelp, type ErrorHelp } from "./error-help.js";
@@ -8,8 +9,7 @@ import { approvalView, type ApprovalView } from "./approval-view.js";
 import { memoryNoteView, type MemoryNoteView } from "./memory-note.js";
 
 export type EventView =
-  /** picks: the end-of-turn "Jev chose ..." line, shown in the end card instead of on its own. */
-  | { kind: "status"; text: string; picks?: true }
+  | { kind: "status"; text: string }
   /** Claude's text (Markdown). id: the streamed block it completes. */
   | { kind: "text"; text: string; id?: string }
   | { kind: "tool"; id: string; name: string; args: string }
@@ -23,16 +23,12 @@ export type EventView =
   | { kind: "user"; text: string; screen?: true; voice?: true; heard?: string[]; attachments?: AttachmentRef[] }
   /** A line hands-free voice said aloud. echo: it repeats the start of the text written above it (shown compact). */
   | { kind: "spoken"; text: string; echo?: true }
-  /**
-   * picks: who picked the turn's elements ("Jev chose 9 of 11 element picks ...").
-   * long: the text is an answer (several lines or long), shown as a message above the outcome line.
-   */
+  /** long: the text is an answer (several lines or long), shown as a message above the outcome line. */
   | {
       kind: "end";
       chip: Chip;
       text: string;
       url?: string;
-      picks?: string;
       long?: true;
       /** The turn failed on an error no card of its own showed yet: shown as that card (in place of `text`). */
       error?: ErrorHelp;
@@ -60,24 +56,14 @@ function turnBefore(events: readonly AgentEvent[], endIndex: number): AgentEvent
   return events.slice(start, endIndex);
 }
 
-/**
- * The element picks of the turn that `events[endIndex]` (a task_end) closes:
- * the status line with picks since the previous task_end.
- */
-export function turnPicks(events: readonly AgentEvent[], endIndex: number): ElementPicks | undefined {
-  const picked = turnBefore(events, endIndex).reverse().find((e) => e.type === "status" && !!e.picks);
-  return picked?.type === "status" ? picked.picks : undefined;
-}
-
 /** The last error the turn that `events[endIndex]` closes already showed as a card of its own. */
 export function turnError(events: readonly AgentEvent[], endIndex: number): string | undefined {
   const err = turnBefore(events, endIndex).reverse().find((e) => e.type === "error");
   return err?.type === "error" ? err.text : undefined;
 }
 
-/** What a task_end's view needs from the rest of its turn (see turnPicks and turnError), and a spoken line's (spokenEchoes). */
+/** What a task_end's view needs from the rest of its turn (see turnError), and a spoken line's (spokenEchoes). */
 export interface TurnContext {
-  picks?: ElementPicks | undefined;
   /** An error the turn already showed as its own card. */
   error?: string | undefined;
   /** A spoken line repeats what is written above it. */
@@ -86,6 +72,8 @@ export interface TurnContext {
   undone?: boolean;
   /** An approval_request: how it ended (approvalEnding); absent while it waits. */
   approval?: Parameters<typeof approvalView>[1];
+  /** An approval_request its run paused at, still to be decided (Allow & continue, Don't: approval/paused.ts). */
+  decidable?: boolean;
   /** A memory change: the user undid it since (a memory_undone of the same change follows it). */
   memoryUndone?: boolean;
 }
@@ -133,7 +121,6 @@ function describeEnd(ev: Extract<AgentEvent, { type: "task_end" }>, turn: TurnCo
     chip: outcomeChip(ev.outcome),
     text,
     ...(ev.url ? { url: ev.url } : {}),
-    ...(turn.picks ? { picks: picksText(turn.picks) } : {}),
     ...(isLongSummary(text) ? { long: true as const } : {}),
     ...(error ? { error } : {}),
     ...((shown ?? error)?.retry ? { retry: true as const } : {}),
@@ -168,7 +155,7 @@ export function scheduledView(
 export function describeEvent(ev: AgentEvent, turn: TurnContext = {}): EventView {
   switch (ev.type) {
     case "status":
-      return ev.picks ? { kind: "status", text: ev.text, picks: true } : { kind: "status", text: ev.text };
+      return { kind: "status", text: ev.text };
     case "assistant_text":
       return ev.id ? { kind: "text", text: ev.text.trim(), id: ev.id } : { kind: "text", text: ev.text.trim() };
     case "assistant_text_delta":
@@ -194,10 +181,15 @@ export function describeEvent(ev: AgentEvent, turn: TurnContext = {}): EventView
       return {
         kind: "jev",
         // Say plainly who made the decision: Jev did it, or Jev was unsure and Claude takes over.
-        label: ev.executed ? `Jev: ${ev.operation}${target} · ${ev.confidence.toFixed(2)}` : `Jev unsure (${ev.confidence.toFixed(2)}) · Claude decides`,
+        // Jev sure but its pick did not run (not approved, refused, or it failed) is not "unsure".
+        label: ev.executed
+          ? `Jev: ${ev.operation}${target} · ${ev.confidence.toFixed(2)}`
+          : ev.notRun
+            ? `Jev: ${ev.operation}${target} · ${ev.confidence.toFixed(2)} · ${ev.notRun === "not_approved" ? "not approved" : ev.notRun}`
+            : `Jev unsure (${ev.confidence.toFixed(2)}) · Claude decides`,
         ms: ev.ms,
         executed: ev.executed,
-        title: `Jev (a faster helper for simple clicks and typing): ${ev.goal}${ev.executed ? "" : " (not confident, left to Claude)"}`,
+        title: `Jev (a faster helper for simple clicks and typing): ${ev.goal}${ev.executed ? "" : ev.notRun === "not_approved" ? " (not approved)" : ev.notRun ? ` (${ev.notRun})` : " (not confident, left to Claude)"}`,
       };
     }
     case "user_message": {
@@ -225,7 +217,7 @@ export function describeEvent(ev: AgentEvent, turn: TurnContext = {}): EventView
       // It changes its task_changed card (see turn.undone); nothing of its own.
       return { kind: "status", text: "" };
     case "approval_request":
-      return approvalView(ev, turn.approval);
+      return approvalView(ev, turn.approval, !!turn.decidable);
     case "approval_resolved":
       // It changes its approval card (see turn.approval); nothing of its own.
       return { kind: "status", text: "" };
@@ -300,6 +292,18 @@ const BRAIN_START = /^(?:Claude Code started(?: \([^()]*\))?|(?:Claude API|Brows
 /** A brain's start line: the chat's brain chip says the same, so the chat leaves it out. */
 export function isBrainStartLine(text: string): boolean {
   return BRAIN_START.test(text.trim());
+}
+
+/**
+ * What the chat leaves to the Raw view: a brain's start line (the brain chip says it), Jev's element picks and the
+ * turn's count of them (nothing to act on), and what only repeats the card a run paused at (its "Pausing: ..." line
+ * and its end: the card says it, with its answers).
+ */
+export function hiddenInChat(events: readonly AgentEvent[], index: number): boolean {
+  const e = events[index]!;
+  if (e.type === "jev") return true;
+  if (e.type === "status" && (e.picks || isBrainStartLine(e.text))) return true;
+  return repeatsPausedCard(events, index);
 }
 
 /** The user's turn was an empty message in Chat: look at the page (SCREEN_HELP_TEXT). */

@@ -109,19 +109,11 @@ describe("AgentSlots: a run acts in the tab it belongs to", () => {
     expect(chrome.tabs.createCalls).toEqual([{ windowId, index: 3, active: false, url: "about:blank" }]);
   });
 
-  it("the replacement of the tab the user is looking at opens in front, unless that tab shows its own side panel", async () => {
+  it("the replacement of the tab the user is looking at opens in front (the side panel follows it there)", async () => {
     const newTab = (await chrome.tabs.create({ windowId, url: "chrome://newtab/", active: true })).id;
     chrome.tabs.createCalls.length = 0;
     await new AgentSlots(new Cdp(), vault).take(0, "S").prepare({ mode: "current-tab", tabId: newTab });
     expect(chrome.tabs.createCalls.at(-1)?.active).toBe(true);
-
-    await chrome.tabs.update(newTab, { active: true });
-    const panelTabs = new Set([newTab]);
-    const slots = new AgentSlots(new Cdp(), vault, undefined, undefined, undefined, (t) => panelTabs.has(t));
-    await slots.take(1, "T").prepare({ mode: "current-tab", tabId: newTab });
-    // The user stays with the panel (where the chat goes on): the agent works in a tab in the background.
-    expect(chrome.tabs.createCalls.at(-1)?.active).toBe(false);
-    expect((await chrome.tabs.get(newTab)).active).toBe(true);
   });
 
   it("an origin tab that is gone falls back to the tab the user is looking at", async () => {

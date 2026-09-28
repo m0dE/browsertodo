@@ -322,8 +322,8 @@ export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult
       Object.assign(timing, { jevMs: ms, picker: "jev", confidence: d.confidence, operation: d.operation });
       const target = d.index === null ? undefined : snap.elements.find((e) => e.index === d.index);
       const conf = `${d.operation}, confidence ${d.confidence.toFixed(2)}`;
-      const jevEvent = (executed: boolean, operation = d.operation) =>
-        emit({ type: "jev", goal: step.goal, operation, index: d.index, confidence: d.confidence, executed, ms });
+      const jevEvent = (executed: boolean, operation = d.operation, notRun?: "not_approved" | "refused" | "failed") =>
+        emit({ type: "jev", goal: step.goal, operation, index: d.index, confidence: d.confidence, executed, ms, ...(notRun ? { notRun } : {}) });
 
       if (d.operation === "blocked" || d.confidence < ctx.jevThreshold) {
         jevEvent(false);
@@ -343,7 +343,8 @@ export async function runAct(steps: Step[], ctx: ActContext): Promise<ToolResult
           try {
             done = await perform(target.index, op === "type" ? step : { ...step, text: undefined });
           } catch (e) {
-            jevEvent(false, op);
+            // Jev was sure: its pick was not approved, refused, or failed; never "unsure".
+            jevEvent(false, op, isApprovalRefusal(errorMessage(e)) ? "not_approved" : e instanceof RefusedActionError ? "refused" : "failed");
             return couldNotUse(target.index, e, d);
           }
           jevEvent(true, op);

@@ -63,6 +63,8 @@ export function describeForJev(a: GateAction): string {
       return `open ${(a.urls ?? []).join(", ")}`;
     case "closeTabs":
       return `close the agent's tabs ${(a.tabs ?? []).join(", ")}`;
+    case "switchXAccount":
+      return `switch X to the signed-in account ${a.handle ?? ""} in its account menu`;
   }
 }
 

@@ -54,7 +54,7 @@ const voiceBundle = (
  */
 async function cdpPage(devtoolsPort, urlSuffix) {
   const targets = await (await fetch(`http://127.0.0.1:${devtoolsPort}/json/list`)).json();
-  // By path: a tab's side panel is sidepanel.html?tab=<id>.
+  // By path (the opener is the panel page with #opener).
   const target = targets.find((t) => URL.canParse(t.url) && new URL(t.url).pathname.endsWith(urlSuffix) && t.type !== "service_worker" && !t.url.includes("#opener"));
   if (!target) return null;
   const ws = new WebSocket(target.webSocketDebuggerUrl);
@@ -282,10 +282,7 @@ const { step, finish } = createSuite("voice");
       await panel.send("Page.addScriptToEvaluateOnNewDocument", { source: HANDS_FREE_STUBS });
       await panel.send("Page.reload", {});
       await waitFor(() => panel.evaluate(() => document.querySelector("#now-actions .voice-mic")?.dataset.state === "idle"), "the panel on Plus (the mic unlocked)", { timeout: 15_000 });
-      // The user is on the panel's tab (the microphone page opened earlier is in front): else the bar says voice is on in
-      // another tab (hands-free-tabs.e2e.mjs).
-      const panelTab = await panel.evaluate(() => Number(new URLSearchParams(location.search).get("tab")));
-      await sw.evaluate((t) => chrome.tabs.update(t, { active: true }), panelTab);
+      // The window's panel acts in the active tab (the opener page): the session runs for it, and the user looks at it.
       // The voice shortcut, as the background delivers it to the panel (panel-command.ts).
       await panel.evaluate(() => window.__pushToPanel({ type: "panel.voice" }));
       await waitFor(() => panel.evaluate(() => window.__phases.includes("listening")), "hands-free listening", { timeout: 10_000 });
@@ -294,9 +291,10 @@ const { step, finish } = createSuite("voice");
       const bar = await panel.evaluate(() => {
         const b = document.getElementById("voice-bar");
         const mic = document.querySelector("#now-actions .voice-mic");
-        return { shown: !b.hidden, label: b.querySelector(".vb-label").textContent, title: b.querySelector(".vb-status").textContent, tab: Number(b.dataset.tabs.split(",")[0]), buttons: [...b.querySelectorAll("button")].filter((x) => x.offsetParent).length, stop: mic.getAttribute("aria-label") };
+        return { shown: !b.hidden, label: b.querySelector(".vb-label").textContent, active: b.querySelector(".vb-links").hidden === false, title: b.querySelector(".vb-status").textContent, tab: Number(b.dataset.tabs.split(",")[0]), buttons: [...b.querySelectorAll("button")].filter((x) => x.offsetParent).length, stop: mic.getAttribute("aria-label") };
       });
-      assert.ok(bar.shown && bar.label === "Voice on" && /^(Listening|Hearing you)$/.test(bar.title) && bar.buttons === 0 && /^End voice/.test(bar.stop), `voice strip ${JSON.stringify(bar)}`);
+      // It names the tab it runs for (the opener page's title, else its site); no Go to tab: the user looks at that tab.
+      assert.ok(bar.shown && /^Voice on · [^ ]/.test(bar.label) && /^(Listening|Hearing you)$/.test(bar.title) && bar.buttons === 0 && !bar.active && /^End voice/.test(bar.stop), `voice strip ${JSON.stringify(bar)}`);
       const badgeOf = (tabId) => sw.evaluate(async (t) => chrome.action.getBadgeText({ tabId: t }), tabId);
       assert.equal(await waitFor(async () => (await badgeOf(bar.tab)) || null, "the voice badge on the session's tab"), "MIC");
       assert.equal(await sw.evaluate(async () => chrome.action.getBadgeText({})), "", "the badge is only on the session's tab");

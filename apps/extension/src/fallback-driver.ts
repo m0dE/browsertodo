@@ -29,6 +29,7 @@ import {
 import { foreignExtensionInPage, loadProbeInPage, waitForUsablePage, type LoadProbe } from "./page-load.js";
 import { snapshotPage } from "./page-snapshot.js";
 import { waitInPage, type PageWait, type PageWaitArgs } from "./page-wait.js";
+import { xAccountEntryInPage, xHandleParam, type XEntryStep } from "./page-x-account.js";
 import { scrollProbeInPage, scrollReport, type PageResult, type ScrollProbe } from "./scroll-probe.js";
 
 /**
@@ -168,6 +169,21 @@ export class FallbackDriver {
     await this.sleep(SCROLL_SETTLE_MS);
     if (!r || !Array.isArray(r.before?.entries) || !Array.isArray(r.after?.entries)) return { ok: true };
     return { ok: true, ...scrollReport(direction, r.before, r.after, index !== undefined) };
+  }
+
+  /**
+   * browser.clickXAccountEntry (page-x-account.ts): found and clicked in one synchronous step in the page. A real
+   * press needs the debugger, which this tab does not have: then nothing is clicked.
+   */
+  async clickXAccountEntry(tabId: number, p: P<"browser.clickXAccountEntry">): Promise<R<"browser.clickXAccountEntry">> {
+    const handle = xHandleParam(p.handle);
+    if (p.press) return { clicked: false, reason: "a real mouse press needs Chrome's debugger, which this page blocks" };
+    const [res] = await chrome.scripting.executeScript({ target: { tabId }, func: xAccountEntryInPage, args: [handle, p.waitMs ?? 0, "click", null] });
+    const out = res?.result as PageResult<XEntryStep> | undefined;
+    if (!out) throw new Error("Page script failed (or the page was navigating); call read_page and try again");
+    if (!out.ok) throw new Error(`switch_x_account: ${out.error}`);
+    if (!("clicked" in out.value)) throw new Error("clickXAccountEntry: unexpected answer from the page");
+    return out.value;
   }
 
   async upload(): Promise<R<"browser.upload">> {

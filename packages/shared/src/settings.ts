@@ -92,6 +92,8 @@ export const ExtensionSettings = z.object({
   showControlOverlay: z.boolean().default(true),
   /** How much the chat agent does without asking (automation.ts); enforced before each browser action. */
   automationLevel: AutomationLevel.default(DEFAULT_AUTOMATION_LEVEL),
+  /** The side panel's "Permission: Full autonomy" line was closed; cleared when full autonomy is turned off (it shows again when turned on). */
+  autonomyWarningClosed: z.boolean().default(false),
   /** The same for scheduled runs of the TODO list (automation.ts). */
   scheduledAutomation: ScheduledAutomation.default(DEFAULT_SCHEDULED_AUTOMATION),
   /** Memory is paused: the agent is given none and saves none (Settings > Memory). What is kept stays. */

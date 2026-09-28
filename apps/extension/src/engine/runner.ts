@@ -230,6 +230,7 @@ export class Runner {
       level: effectiveLevel(settings, a ?? { scheduled: false }),
       instructions: a?.instructions ?? a?.session.instructions ?? a?.session.title ?? "",
       account: a?.account ?? a?.session.account ?? null,
+      ...(a?.scheduled && a.agentAuthored ? { agentAuthored: true } : {}),
       ...(a?.turnEndsAt ? { endsAt: a.turnEndsAt } : {}),
     };
     if (!a) return base;

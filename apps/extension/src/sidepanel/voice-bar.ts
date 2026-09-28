@@ -2,11 +2,11 @@
  * The voice strip: one slim line in the live colour at the top of the side
  * panel, under the tabs, while a hands-free session is on (hands-free.ts
  * shows it; voice/voice-bar-view.ts decides what it says). It only tells:
- * "Voice on" and the state word, a small meter of the microphone's level,
- * and the time on; its tooltip names the engine and what to do. It has no
- * controls (they are in the composer row, voice-input.ts), except on
- * another tab: Go to tab and Use voice here, and in a panel that runs no
- * session, Turn off.
+ * "Voice on · <the session's tab>" and the state word, a small meter of the
+ * microphone's level, and the time on; its tooltip names the engine and what
+ * to do. It stays on every tab (the panel does). It has no controls (they
+ * are in the composer row, voice-input.ts), except on another tab: Go to tab
+ * and Use voice here, and in a panel that runs no session, Turn off.
  *
  * The strip is a labelled region; a polite live line inside it says the state
  * when it changes (the ticking time and "Hearing you" are left out of it).
@@ -18,7 +18,7 @@ import type { VoiceBarView } from "../voice/voice-bar-view.js";
 export interface VoiceBarActions {
   goToTab(): void;
   useThisTab(): void;
-  /** Ends the session another tab's panel runs. */
+  /** Ends the session another panel runs. */
   turnOff(): void;
 }
 

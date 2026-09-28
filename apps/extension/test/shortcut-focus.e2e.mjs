@@ -4,8 +4,8 @@
 //
 // Owner's report: "a lot of the time when the extension is already open, when I press ctrl+. it doesn't focus the
 // input field." Chrome gives a side panel the keyboard focus only when it creates the panel's page, so with the
-// focus in the page the shortcut recreates the tab's panel (see panel-command.ts; each tab has its own); the chat and
-// the text in the box must survive that, and other tabs' panels are left as they are.
+// focus in the page the shortcut recreates the window's panel (see panel-command.ts: Chrome can only close every
+// window's panel at once, so each is reopened); the chat and the text in the box must survive that, in every window.
 //
 // The shortcut is pressed through shortcutPresser: the command handler in a real user gesture of the service
 // worker (CDP Extensions.triggerAction -> action.onClicked, dispatched like chrome.commands.onCommand), since
@@ -203,7 +203,7 @@ try {
     return `focused ${ms} ms after the handler`;
   });
 
-  await step("another window's tab has its own panel, left as it is when this tab's panel is recreated", async () => {
+  await step("another window's panel is recreated with it (Chrome closes every window's panel at once): its text comes back, and window 1 keeps the focus", async () => {
     const web2 = await context.newPage();
     await web2.goto(WEB2);
     const { id: tab2 } = await tabOf(WEB2);
@@ -216,12 +216,15 @@ try {
     await userClicksIntoPage();
     assert.equal(await press(WEB), "reopened");
     const { ms } = await inputHasRealFocus("window 1's input to have the real keyboard focus");
-    const other = await panelOf(w2);
-    assert.equal(other.mark, "window 2 page", "window 2's panel page was not recreated");
-    assert.equal(other.draft, "window 2 draft");
+    const other = await waitFor(async () => {
+      const p = await panelOf(w2);
+      return p?.mark === null && p.draft === "window 2 draft" ? p : null;
+    }, "window 2's new panel page with its text back", { timeout: 3000 });
+    // Chrome keeps a focus per window (the new page is focused within window 2): the keyboard stays in window 1's input.
+    await inputHasRealFocus("window 1's input to keep the real keyboard focus");
     const contexts = await sw.evaluate(async () => (await chrome.runtime.getContexts({ contextTypes: ["SIDE_PANEL"] })).length);
-    assert.equal(contexts, 2, "each tab has its panel");
-    return `window 1 focused ${ms} ms after the handler; window 2's page kept, its box ${JSON.stringify(other.draft)}`;
+    assert.equal(contexts, 2, "each window has its panel");
+    return `window 1 focused ${ms} ms after the handler; window 2's page recreated, its box ${JSON.stringify(other.draft)}`;
   });
 } finally {
   await ext.close();

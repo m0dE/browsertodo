@@ -623,6 +623,47 @@ export function scenario(kind) {
     state.tabChats = { "1": "s-appr" };
     sessions.unshift(conv);
   }
+  if (kind === "approval-paused") {
+    // A daily scheduled post ran with nobody watching: its Post click needed the user's OK, so the run paused there.
+    // Its long instructions open the thread; Jev picked for it; the run said why it paused. The page shows the card
+    // alone (Allow & continue, Don't); the rest is for the Raw view.
+    state.running = null;
+    tasksSource = "account";
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const instructions = [
+      "Post one short update about BrowserTODO on X from @browsertodo.",
+      "Product, features and vision only; never pricing.",
+      "Keep it under 200 characters.",
+      "Check the last two weeks of posts first and never repeat one.",
+      "Link the docs page of the feature it is about.",
+      "No hashtags, no emoji.",
+      "If X asks to confirm the login, stop and tell me.",
+      "Reply to nobody.",
+    ].join("\n");
+    const post = "Scheduled jobs now keep a history of every run: open a job to see how each one went, filter the failed ones, and edit what the next run does. https://browsertodo.example.com/docs/jobs";
+    const action = 'Click "Post" as @browsertodo';
+    const reason = `Needs your OK to: ${action} (publishes) — open to allow`;
+    tasks.splice(0, 0, task("t-post", "paused", instructions, { account: "browsertodo", seriesId: "t-post", repeat: { cron: "0 9 * * *", tz: zone }, attempts: 1, pauseReason: reason, retryAfter: iso(14), updatedAt: iso(-1) }));
+    const conv = {
+      sessionId: "s-paused", source: "cloud", taskId: "t-post", seriesId: "t-post", title: "Post one short update about BrowserTODO on X from @browsertodo.",
+      instructions, account: "browsertodo", brain: "browsertodo", jev: true, model: "claude-sonnet-5", startedAt: iso(-4), firstStartedAt: iso(-4), endedAt: iso(-1), outcome: "paused", reason,
+    };
+    const pev = (minutes, e) => ({ ...e, ts: iso(minutes), sessionId: "s-paused" });
+    eventsBySession["s-paused"] = [
+      pev(-4, { type: "status", text: "BrowserTODO AI (claude-sonnet-5) with Jev" }),
+      pev(-3, { type: "assistant_text", text: "Checked the last two weeks of posts. Writing about run history." }),
+      pev(-2, { type: "tool_call", id: "1", name: "act", args: { steps: [{ goal: "type the post", text: post }, { goal: "click Post" }] } }),
+      pev(-2, { type: "jev", goal: "type the post", operation: "type", index: 7, confidence: 0.97, executed: true, ms: 120 }),
+      pev(-2, { type: "jev", goal: "click Post", operation: "click", index: 8, confidence: 1, executed: false, ms: 95 }),
+      pev(-1, { type: "approval_request", request: { id: "ap-p", action, site: "x.com", why: "publishes", kind: "publish", text: post, expiresAt: iso(-1) } }),
+      pev(-1, { type: "approval_resolved", id: "ap-p", outcome: "paused" }),
+      pev(-1, { type: "status", text: `Pausing: ${reason}` }),
+      pev(-1, { type: "tool_result", id: "1", name: "act", text: "Not done: the user did not approve this action.", isError: true }),
+      pev(-1, { type: "status", text: "Jev chose 1 of 2 element picks (clicks and typing); Claude chose 1", picks: { jev: 1, claude: 1 } }),
+      pev(-1, { type: "task_end", outcome: "paused", reason }),
+    ];
+    sessions.unshift(conv);
+  }
   if (kind === "details") {
     // The running task has long instructions with links, files and an account; a one-off chat has a multi-line message.
     const text = [
@@ -693,7 +734,9 @@ export function scenario(kind) {
     sessions.splice(0, sessions.length);
     tasks.splice(0, tasks.length);
   }
-  if (kind === "series") {
+  /** series-long: every row of the series as the account has it (tasks.series pages through them). */
+  let seriesRows;
+  if (kind === "series" || kind === "series-long") {
     // A repeating task that ran three times (the last one failed), waiting for tomorrow's run: one job, its runs inside.
     state.running = null;
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -730,6 +773,28 @@ export function scenario(kind) {
           : rev(r.sessionId, m, { type: "task_end", outcome: "failed", reason: r.reason }),
       ];
     }
+    if (kind === "series-long") {
+      // The same job after 300 runs, 3 a day, in the account: this browser keeps the conversations of the last three;
+      // the rest are known by their task rows (the list has the newest 100 of them; tasks.series pages through all).
+      // Most were done; 7 in a row failed for the same reason, a few others failed. Its instructions are long.
+      tasksSource = "account";
+      const LONG = `${TIP}.
+Keep it under 200 characters, one shortcut per post.
+Never repeat a shortcut posted in the last two weeks.
+End with a link to the docs page for that shortcut.
+No hashtags, no emoji.`;
+      tasks[0] = { ...tasks[0], instructions: LONG };
+      const tips = ["Ctrl+. opens the panel", "Ctrl+, talks to it", "Esc goes back", "Alt+Y allows", "Tab takes a suggestion", "Delete dismisses a job"];
+      const older = Array.from({ length: 297 }, (_, i) => {
+        const minutes = nine - 2 * day - (i + 1) * 8 * 60 + 3;
+        const n = i + 4;
+        if (i >= 20 && i < 27) return row(`h${n}`, "failed", minutes, { attempts: 1, failReason: "I couldn't switch X to @getbnty: the account menu did not list it" });
+        if (i % 23 === 5) return row(`h${n}`, "failed", minutes, { attempts: 3, failReason: "X asked to confirm the login" });
+        return row(`h${n}`, "done", minutes, { attempts: 1, resultSummary: `Posted: ${tips[i % tips.length]} (#${n})`, resultUrl: `https://x.com/browsertodo/status/18390000000000${String(n).padStart(5, "0")}` });
+      });
+      seriesRows = [...tasks.slice(0, 3), ...older];
+      tasks.splice(3, 0, ...older.slice(0, 100));
+    }
   }
   // Nothing runs in tab 1 when the default run is not running.
   if (state.running?.sessionId !== "s-live") delete state.runningTabs["s-live"];
@@ -739,5 +804,5 @@ export function scenario(kind) {
   // Log In in the stub signs in as a subscriber (the TODO tab then shows the list).
   // The Raw view: a two-turn voice conversation with its timing trace (raw-scenario.mjs).
   const traces = kind === "raw" ? { [rawSessionId]: rawScenario({ state, sessions, eventsBySession }) } : {};
-  return { state, tasks, tasksSource, tasksLocked, signInPlan: PLUS, keys, events, sessions, eventsBySession, traces, shortcut, voiceShortcut, pastEvents: events.slice(0, 6).map((e) => ({ ...e, sessionId: "s-2" })) };
+  return { state, tasks, seriesRows, tasksSource, tasksLocked, signInPlan: PLUS, keys, events, sessions, eventsBySession, traces, shortcut, voiceShortcut, pastEvents: events.slice(0, 6).map((e) => ({ ...e, sessionId: "s-2" })) };
 }

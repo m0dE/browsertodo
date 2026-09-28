@@ -56,6 +56,12 @@ export type AgentEvent =
       confidence: number;
       executed: boolean;
       ms: number;
+      /**
+       * Jev was sure but its pick did not run: the user did not approve it (the approval gate), a safety check refused
+       * it (RefusedActionError), or it failed. Absent
+       * with executed false: Jev was not sure enough (or blocked), and the model picks instead.
+       */
+      notRun?: "not_approved" | "refused" | "failed";
     }
   /**
    * A message the human sent in the conversation (voice: it was spoken, in hands-free voice). heard: with Realtime

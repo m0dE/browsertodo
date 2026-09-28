@@ -227,7 +227,7 @@ const NEEDS_OK = 'Needs your OK to: Click "Post" (publishes) — open to allow';
 
 describe("Runner: a scheduled run whose Post click needs approval", () => {
   function scheduled(opts: { watching?: boolean } = {}) {
-    const h = harness({ scheduledAutomation: "full_within_task" });
+    const h = harness({ automationLevel: "ask_consequential", scheduledAutomation: "full_within_task" });
     const g = gatedSlot(h, jevVeto);
     h.deps.slots = g.pool;
     if (opts.watching !== undefined) h.deps.watching = async () => opts.watching!;
@@ -279,7 +279,7 @@ describe("Runner: a scheduled run whose Post click needs approval", () => {
 
 describe("Runner: the trace's own task (a post on X as an account)", () => {
   it("posts on its own: the task asks for that post on that site, so Jev's no does not pause it", async () => {
-    const h = harness({ scheduledAutomation: "full_within_task" });
+    const h = harness({ automationLevel: "ask_consequential", scheduledAutomation: "full_within_task" });
     const g = gatedSlot(h, jevVeto);
     h.deps.slots = g.pool;
     h.runner = new Runner(h.deps);
@@ -294,7 +294,7 @@ describe("Runner: the trace's own task (a post on X as an account)", () => {
   });
 
   it("the same words written by the agent (a page may have put them there) pause for the user's OK; after Trust they post", async () => {
-    const h = harness({ scheduledAutomation: "full_within_task" });
+    const h = harness({ automationLevel: "ask_consequential", scheduledAutomation: "full_within_task" });
     const g = gatedSlot(h, jevVeto);
     h.deps.slots = g.pool;
     h.runner = new Runner(h.deps);

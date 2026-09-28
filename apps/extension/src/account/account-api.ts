@@ -111,10 +111,17 @@ export class AccountApi {
     return out;
   }
 
-  /** The rows of one task series (a repeating task's runs and its waiting one), newest first: one page. */
+  /** The rows of one task series (a repeating task's runs and its waiting one), newest first: the first page. */
   async listSeries(seriesId: string): Promise<Task[]> {
+    return (await this.seriesPage(seriesId)).tasks;
+  }
+
+  /** A page of one task series' rows, newest first; `cursor`: the page after the one that gave it (nextCursor null: the last). */
+  async seriesPage(seriesId: string, cursor?: string): Promise<{ tasks: Task[]; nextCursor: string | null }> {
     const q = new URLSearchParams({ limit: String(TASK_PAGE_SIZE), series: seriesId });
-    return (await this.http.json(TaskListPage, "GET", `/v1/tasks?${q}`)).tasks;
+    if (cursor) q.set("cursor", cursor);
+    const { tasks, nextCursor } = await this.http.json(TaskListPage, "GET", `/v1/tasks?${q}`);
+    return { tasks, nextCursor };
   }
 
   createTask(input: CreateTaskInput): Promise<Task> {

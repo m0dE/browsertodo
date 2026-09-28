@@ -64,6 +64,14 @@ export interface TodoSource {
   resume(id: string): Promise<LocalTask>;
   /** Pauses the waiting row of a series (see LocalStore.holdSeries); null: none waits. */
   holdSeries(seriesId: string, reason: string): Promise<LocalTask | null>;
+  /** A page of one series' rows (a repeating job's runs), newest first; `cursor`: the page after the one that gave it. */
+  seriesPage(seriesId: string, cursor?: string): Promise<SeriesPage>;
+}
+
+/** A page of a series' rows; nextCursor null: the last page. */
+export interface SeriesPage {
+  tasks: LocalTask[];
+  nextCursor: string | null;
 }
 
 /** An account task in the TODO row shape. Files are known by id only (the list does not carry their names). */
@@ -150,6 +158,11 @@ export class AccountTodo implements TodoSource {
     const waiting = (await this.api.listSeries(seriesId)).find((t) => t.status === "pending" || (t.status === "paused" && !isOnHold(t)));
     return waiting ? this.pause(waiting.id, reason) : null;
   }
+
+  async seriesPage(seriesId: string, cursor?: string): Promise<SeriesPage> {
+    const page = await this.api.seriesPage(seriesId, cursor);
+    return { tasks: page.tasks.map(asLocal), nextCursor: page.nextCursor };
+  }
 }
 
 /**
@@ -199,5 +212,11 @@ export class LocalTodo implements TodoSource {
 
   holdSeries(seriesId: string, reason: string): Promise<LocalTask | null> {
     return this.store.holdSeries(seriesId, reason);
+  }
+
+  /** This browser keeps every row of a series: one page. */
+  async seriesPage(seriesId: string): Promise<SeriesPage> {
+    const rows = (await this.store.list()).filter((t) => (t.seriesId ?? t.id) === seriesId);
+    return { tasks: rows.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0)), nextCursor: null };
   }
 }

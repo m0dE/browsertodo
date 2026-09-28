@@ -45,7 +45,7 @@ export const HANDS_FREE = {
 export type HandsFreePhase = "off" | "listening" | "sending" | "working" | "speaking";
 
 /** Why a session ended. */
-/** remote: the background asked (Stop, or Use voice here, in another tab's panel). */
+/** remote: the background asked (Stop, or Use voice here, in another panel). */
 export type EndReason = "shortcut" | "button" | "voice" | "escape" | "silence" | "narrator" | "error" | "remote";
 
 export interface HandsFreeState {

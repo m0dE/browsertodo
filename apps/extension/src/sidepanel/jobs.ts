@@ -180,8 +180,8 @@ function currentTask(rows: readonly JobTask[]): JobTask {
   return rows[0]!;
 }
 
-/** Where a conversation is, when its task (if any) does not say. */
-function sessionState(s: SessionInfo, running: boolean, awaiting: boolean): { state: JobState; reason: string } {
+/** Where a conversation is, when its task (if any) does not say (also each run of a job's runs list, job-runs.ts). */
+export function sessionState(s: SessionInfo, running: boolean, awaiting: boolean): { state: JobState; reason: string } {
   if (running) return awaiting ? { state: "needs", reason: APPROVAL_REASON } : { state: "running", reason: "" };
   // Not running and never ended: its worker stopped under it.
   if (!s.endedAt) return { state: "stopped", reason: "" };

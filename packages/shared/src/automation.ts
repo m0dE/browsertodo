@@ -53,7 +53,7 @@ export const AUTOMATION_LEVELS: readonly AutomationChoice<AutomationLevel>[] = [
   {
     id: "full",
     label: `${FULL_AUTONOMY_NAME} (dangerous)`,
-    detail: "Never asks. The agent can post, send, pay and delete on its own, and a web page that tricks it can make it do so.",
+    detail: "Never asks, in chats and scheduled jobs. The agent can post, send, pay and delete on its own, and a web page that tricks it can make it do so.",
     dangerous: true,
   },
 ];
@@ -97,6 +97,7 @@ export const APPROVAL_GATED_METHODS = [
   "browser.paste",
   "browser.pressKey",
   "browser.upload",
+  "browser.clickXAccountEntry",
   "browser.navigate",
   "browser.openTabs",
   "browser.closeTabs",
@@ -181,18 +182,19 @@ export function isApprovalRefusal(text: string): boolean {
   return text.includes(APPROVAL_REFUSAL_PREFIX);
 }
 
-/** The level a run is held to: chat runs by automationLevel, scheduled ones by scheduledAutomation. */
+/** The level a run is held to: chat runs by automationLevel, scheduled ones by scheduledAutomation (unless full). */
 export type EffectiveLevel = AutomationLevel | "full_within_task";
 
 /**
- * A scheduled run of a task the agent wrote (Task.agentAuthored) is held like ask_consequential: its instructions
- * are not the user's words, so they do not stand for the user's OK.
+ * Full autonomy never asks, in chats and scheduled jobs alike (the user chose it for everything). Otherwise a
+ * scheduled run follows scheduledAutomation, and a run of a task the agent wrote (Task.agentAuthored) is held like
+ * ask_consequential: its instructions are not the user's words, so they do not stand for the user's OK.
  */
 export function effectiveLevel(
   s: { automationLevel: AutomationLevel; scheduledAutomation: ScheduledAutomation },
   run: { scheduled: boolean; agentAuthored?: boolean },
 ): EffectiveLevel {
-  if (!run.scheduled) return s.automationLevel;
+  if (!run.scheduled || s.automationLevel === "full") return s.automationLevel;
   return run.agentAuthored ? "ask_consequential" : s.scheduledAutomation;
 }
 

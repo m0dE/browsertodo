@@ -1,22 +1,29 @@
 /**
  * A job's page: its header ("‹" back to the list, the title, one line of where it is, and "⋯" with what can be
- * done with it now: job-actions.ts) over its conversation (chat.ts). A task that ran more than once has its earlier
- * runs above the latest, one collapsed section each (the date and how it ended) that opens to that run's
- * conversation; a task that never ran shows its request and when it will. Under the header, while the job's agent tab
- * is not the one the user looks at: that tab, with View to watch the agent there.
+ * done with it now: job-actions.ts) over its conversation (chat.ts). Under the header, while the job's agent tab is
+ * not the one the user looks at: that tab, with View to watch the agent there.
+ *
+ * A task's page puts above its latest run's conversation: how many runs it had and how they went (each count opens
+ * the runs list filtered), its instructions with Edit and Edit schedule while it is scheduled (job-instructions.ts),
+ * and "Earlier runs (N)", which opens to its runs a page at a time (job-runs-view.ts). A run picked there shows its
+ * conversation in the page's place ("‹ Runs" goes back to the list). A task that never ran shows its request and
+ * when it will run.
+ *
+ * Its runs are its conversations in this browser and its series' task rows: those tasks.list has, and the rest loaded
+ * from tasks.series a page at a time as the list needs them (the account lists a series in pages).
  */
-import { chipHint, MAX_CHAT_TITLE_CHARS, type SessionInfo } from "@browsertodo/shared";
+import { MAX_CHAT_TITLE_CHARS } from "@browsertodo/shared";
 import { uiRequest } from "../ui-protocol.js";
 import { $, h } from "../ui/dom.js";
-import { renderPastRun, type ChatView } from "./chat.js";
-import { outcomeChip } from "./format.js";
+import type { ChatView } from "./chat.js";
 import { jobActions, type JobAction, type JobActionId } from "./job-actions.js";
 import type { JobData } from "./job-data.js";
-import { jobSubtitle, type Job } from "./jobs.js";
+import { initInstructions } from "./job-instructions.js";
+import { stateIcon } from "./job-list.js";
+import { runItems, type RunItem } from "./job-runs.js";
+import { initRunsView } from "./job-runs-view.js";
+import { jobSubtitle, seriesOf, STATE_LABELS, type Job, type JobTask } from "./jobs.js";
 import { formatWhen } from "./task-details.js";
-
-/** Earlier runs listed at first (the newest of them); "Show N earlier runs" lists the rest. */
-export const EARLIER_RUNS_SHOWN = 10;
 
 export interface JobPageDeps {
   data: JobData;
@@ -31,7 +38,6 @@ export interface JobPageDeps {
   openSchedule(job: Job, trigger: HTMLElement): void;
   /** The details sheet of a task that never ran (its request, its schedule). */
   onTaskDetails(job: Job, trigger: HTMLElement): void;
-  onSessionDetails(session: SessionInfo, trigger: HTMLElement): void;
   onBack(): void;
   /** The job was deleted (the list shows again). */
   onDeleted(): void;
@@ -47,11 +53,11 @@ export interface TabInfo {
 export interface JobPage {
   /** Shows job `key`: its header and its conversation. */
   show(key: string): void;
-  /** The data changed: the header, the menu and the earlier runs follow. */
+  /** The data changed: the header, the menu and the runs follow. */
   render(): void;
   /** The job shown (null: not known yet, e.g. a chat that just started). */
   job(): Job | null;
-  /** The conversation the page shows (the chat, or the task's newest run); null: none. */
+  /** The conversation the page shows (the chat, the task's newest run, or the run picked in its runs); null: none. */
   sessionId(): string | null;
   /** Its title as the header shows it. */
   title(): string;
@@ -87,16 +93,104 @@ export function initJobPage(deps: JobPageDeps): JobPage {
   const agentRow = $("job-agent-tab");
   const said = $("job-agent-tab-said");
   let key: string | null = null;
-  /** What the earlier runs block was built from (rebuilt only when that changes, so open sections stay open). */
-  let beforeOf = "";
   let renaming = false;
+  /** The run picked in the runs list, shown in the page's place (null: the page as it is). */
+  let viewing: RunItem | null = null;
+  /** What shows above a picked run's conversation ("‹ Runs", its time and how it went). */
+  let viewingBar: HTMLElement | null = null;
 
   const current = (): Job | null => (key ? data.job(key) : null);
   const sessionId = (): string | null => {
+    if (viewing) return viewing.session?.sessionId ?? null;
     const job = current();
     if (job) return job.session?.sessionId ?? null;
     return key?.startsWith("chat:") ? key.slice("chat:".length) : null;
   };
+
+  const runs = initRunsView({ onOpen: openRun, onNeedOlder: () => void loadSeries() });
+  const instructions = initInstructions({
+    // The user's own words now (a task the agent wrote is theirs once they edit it).
+    save: async (task, text) => {
+      await uiRequest({ type: "tasks.update", id: task.id, patch: { instructions: text, agentAuthored: false } });
+      await data.loadTasks();
+    },
+    editSchedule: (trigger) => {
+      const job = current();
+      if (job) deps.openSchedule(job, trigger);
+    },
+  });
+  const latestHead = h("h2.job-runs-head.latest");
+  /** A task's page above its conversation: its counts, its instructions, its earlier runs. */
+  const top = h("div.job-top", null, runs.stats, instructions.el, runs.list, latestHead);
+
+  /**
+   * The job's series' task rows loaded from tasks.series (tasks.list may not have a long series' older ones): the
+   * first page when its page shows, the next ones as the runs list needs them. `failed`: a page did not load (no
+   * other is asked for automatically while the page shows the job).
+   */
+  let series: { id: string; rows: JobTask[]; cursor: string | null; loaded: boolean; loading: boolean; failed: boolean } | null = null;
+
+  async function loadSeries(): Promise<void> {
+    const s = series;
+    if (!s || s.loading || s.failed || (s.loaded && s.cursor === null)) return;
+    s.loading = true;
+    try {
+      const page = await uiRequest({ type: "tasks.series", seriesId: s.id, ...(s.cursor ? { cursor: s.cursor } : {}) });
+      if (series !== s) return;
+      s.rows.push(...page.tasks);
+      s.cursor = page.nextCursor;
+      s.loaded = true;
+    } catch (err) {
+      s.failed = true;
+      deps.showError(err);
+    } finally {
+      s.loading = false;
+    }
+    render();
+  }
+
+  /** Every run of a task's job, from its conversations here and its series' rows known so far. */
+  function runsOf(job: Job): { items: RunItem[]; loadedUntil: string | null } {
+    const id = seriesOf(job.task ?? { id: job.key.slice("task:".length) });
+    if (series?.id !== id) {
+      series = { id, rows: [], cursor: null, loaded: false, loading: false, failed: false };
+      void loadSeries();
+    }
+    // The list's copy of a row is the newest.
+    const rows = new Map(series.rows.map((t) => [t.id, t]));
+    for (const t of job.tasks) rows.set(t.id, t);
+    const items = runItems({ sessions: job.runs, rows: [...rows.values()], running: new Set(job.running && job.session ? [job.session.sessionId] : []) });
+    const older = series.loaded && series.cursor !== null && !series.failed;
+    const loadedUntil = older ? series.rows.reduce((min, t) => (t.updatedAt < min ? t.updatedAt : min), series.rows[0]?.updatedAt ?? "") : null;
+    return { items, loadedUntil };
+  }
+
+  function openRun(item: RunItem): void {
+    viewing = item;
+    viewingBar = null;
+    render(true);
+    document.querySelector<HTMLElement>("#chat-log .job-run-back")?.focus();
+  }
+
+  /** Back from a run to the runs list, on that run's row. */
+  function closeRun(): void {
+    const was = viewing;
+    if (!was) return;
+    viewing = null;
+    viewingBar = null;
+    render(true);
+    runs.focusRun(was.key);
+  }
+
+  // Escape on a run picked in the runs list goes back to the list (not to the jobs list).
+  for (const el of [$("view-job"), $("job-head")]) {
+    el.addEventListener("keydown", (e) => {
+      const t = e.target as HTMLElement;
+      if (e.key !== "Escape" || !viewing || e.defaultPrevented || t.closest("input, textarea, details[open], dialog")) return;
+      e.preventDefault();
+      closeRun();
+    });
+  }
 
   $("job-back").addEventListener("click", () => deps.onBack());
 
@@ -320,83 +414,75 @@ export function initJobPage(deps: JobPageDeps): JobPage {
     }
   }
 
-  /** One earlier run: its date and how it ended; opened, its conversation (loaded then). */
-  function earlierRun(run: SessionInfo): HTMLElement {
-    const chip = outcomeChip(run.endedAt ? (run.outcome ?? "stopped") : "stopped");
-    const body = h("div.job-run-body");
-    const section = h(
-      "details.job-run",
-      { "data-session": run.sessionId },
+  /** A task that never ran: its request as the page's opening bubble (it opens the task's details), and "Not run yet". */
+  function introOf(job: Job, task: JobTask): HTMLElement {
+    const bubble = h("div.ev-user.ev-first", { role: "button", tabindex: "0", title: "Show the full task and its details" }, h("span.ev-origin", null, "Scheduled"), h("span.ev-user-text", null, task.instructions));
+    const open = () => deps.onTaskDetails(job, bubble);
+    bubble.addEventListener("click", open);
+    bubble.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        open();
+      }
+    });
+    return h("div.job-intro", null, h("div.ev-opening", null, bubble, h("div.ev-when", null, "Not run yet")));
+  }
+
+  /**
+   * Above a run picked in the runs list: "‹ Runs", when it ran and how it went. A run known only by its task row (its
+   * conversation is not in this browser) also says how it ended, and where.
+   */
+  function runBar(item: RunItem): HTMLElement {
+    const back = h("button.job-run-back", { type: "button", title: "Back to the runs (Esc)" }, h("span", { "aria-hidden": "true" }, "‹ "), "Runs");
+    back.addEventListener("click", closeRun);
+    const state = STATE_LABELS[item.state];
+    const bar = h(
+      "div.job-run-bar",
+      { "data-key": item.key },
+      back,
+      h("h2.job-run-title", null, formatWhen(item.at)),
+      h("span.job-run-state", { "data-state": item.state }, h("span.job-icon", { "data-state": item.state, "aria-hidden": "true" }, stateIcon(item.state)), state),
+    );
+    if (item.session) return bar;
+    const t = item.task!;
+    const said = (t.resultSummary ?? t.failReason ?? t.pauseReason ?? "").trim();
+    return h(
+      "div.job-run-view",
+      { "data-key": item.key },
+      bar,
       h(
-        "summary",
+        "div.job-run-gone",
         null,
-        h("span.run-when", null, formatWhen(run.firstStartedAt ?? run.startedAt)),
-        h("span.chip", { "data-tone": chip.tone, title: chipHint(chip.label) || chip.label }, chip.label),
-        run.summary ? h("span.run-line", null, run.summary) : null,
-      ),
-      body,
-    );
-    section.addEventListener("toggle", () => {
-      if (!section.open || body.dataset.loaded) return;
-      body.dataset.loaded = "1";
-      body.replaceChildren(h("p.empty", null, "Loading…"));
-      uiRequest({ type: "sessions.events", sessionId: run.sessionId }).then(
-        (r) => body.replaceChildren(renderPastRun(r.session, r.events, deps.onSessionDetails)),
-        (err: unknown) => {
-          delete body.dataset.loaded;
-          body.replaceChildren(h("p.empty", null, `Couldn't load this run: ${err instanceof Error ? err.message : String(err)}`));
-        },
-      );
-    });
-    return section;
-  }
-
-  /** Above the conversation: a task's earlier runs, or (never run) its request and when it runs. */
-  function renderBefore(job: Job | null): void {
-    if (!job || job.kind !== "task") {
-      beforeOf = "";
-      return chat.setBefore(null);
-    }
-    const shown = job.session?.sessionId ?? null;
-    const earlier = job.runs.filter((r) => r.sessionId !== shown);
-    const sig = shown ? `${job.key}|${shown}|${earlier.map((r) => `${r.sessionId}:${r.outcome ?? ""}`).join()}` : `${job.key}|intro|${job.task?.instructions ?? ""}`;
-    if (sig === beforeOf) return;
-    beforeOf = sig;
-    if (!shown && job.task) {
-      const task = job.task;
-      const bubble = h("div.ev-user.ev-first", { role: "button", tabindex: "0", title: "Show the full task and its details" }, h("span.ev-origin", null, "Scheduled"), h("span.ev-user-text", null, task.instructions));
-      const open = () => deps.onTaskDetails(job, bubble);
-      bubble.addEventListener("click", open);
-      bubble.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          open();
-        }
-      });
-      return chat.setBefore(h("div.job-intro", null, h("div.ev-opening", null, bubble, h("div.ev-when", null, "Not run yet"))));
-    }
-    if (!earlier.length) return chat.setBefore(null);
-    const newestFirst = [...earlier].reverse();
-    const list = h("div.job-runs-list", null, ...newestFirst.slice(0, EARLIER_RUNS_SHOWN).reverse().map(earlierRun));
-    const hidden = newestFirst.slice(EARLIER_RUNS_SHOWN);
-    const more = hidden.length ? h("button.link.job-runs-more", { type: "button" }, `Show ${hidden.length} earlier run${hidden.length === 1 ? "" : "s"}`) : null;
-    more?.addEventListener("click", () => {
-      list.prepend(...[...hidden].reverse().map(earlierRun));
-      more.remove();
-    });
-    chat.setBefore(
-      h(
-        "section.job-runs",
-        { "aria-label": "Earlier runs" },
-        h("h2.job-runs-head", null, `Earlier runs · ${earlier.length}`),
-        more,
-        list,
-        h("h2.job-runs-head.latest", null, `Latest run · ${formatWhen(job.session!.firstStartedAt ?? job.session!.startedAt)}`),
+        said ? h("p.job-run-said", null, said) : null,
+        t.resultUrl ? h("a.job-run-url", { href: t.resultUrl, target: "_blank", rel: "noopener noreferrer" }, t.resultUrl) : null,
+        h("p.job-run-note", null, "Its conversation isn't kept in this browser: it ran in another one, or long ago."),
       ),
     );
   }
 
-  function render(): void {
+  /** Above the conversation: a task's counts, instructions and earlier runs; or the bar over a run picked there. */
+  function renderTop(job: Job | null): void {
+    if (!job || job.kind !== "task") return chat.setBefore(null);
+    if (viewing) {
+      if (viewingBar?.dataset.key !== viewing.key) viewingBar = runBar(viewing);
+      return chat.setBefore(viewingBar);
+    }
+    const { items, loadedUntil } = runsOf(job);
+    const latest = job.session;
+    runs.update({ items, latestKey: latest?.sessionId ?? null, loadedUntil });
+    // Its instructions while it is scheduled (a task that never ran: its request as the opening bubble).
+    const task = job.task;
+    if (task && (job.scheduled || !latest)) {
+      instructions.update({ task, canSchedule: jobActions(job, data.source).some((a) => a.id === "schedule"), ...(latest ? {} : { intro: introOf(job, task) }) });
+    } else instructions.reset();
+    latestHead.hidden = !latest || !runs.list.childElementCount;
+    latestHead.textContent = latest ? `Latest run · ${formatWhen(latest.firstStartedAt ?? latest.startedAt)}` : "";
+    // A task that ran once and is not scheduled has nothing above its conversation.
+    chat.setBefore(runs.stats.hasChildNodes() || runs.list.hasChildNodes() || instructions.el.hasChildNodes() ? top : null);
+  }
+
+  /** `top`: the conversation shows at its top (a run picked, or back from one to the list), not at its end. */
+  function render(top = false): void {
     if (!key) return;
     const job = current();
     const shown = chat.shown();
@@ -405,22 +491,26 @@ export function initJobPage(deps: JobPageDeps): JobPage {
     sub.textContent = job ? jobSubtitle(job) : "";
     menu.hidden = !!job && jobActions(job, data.source).length === 0;
     renderAgentTab(job);
-    renderBefore(job);
-    chat.show(sessionId());
+    renderTop(job);
+    chat.show(sessionId(), { top });
   }
 
   return {
     show(next) {
       if (next !== key) {
         key = next;
-        beforeOf = "";
+        viewing = null;
+        viewingBar = null;
+        series = null;
+        runs.reset();
+        instructions.reset();
         menu.open = false;
         chat.setRaw(false);
         chat.setBefore(null);
       }
       render();
     },
-    render,
+    render: () => render(),
     job: current,
     sessionId,
     title: () => titleEl.textContent ?? "",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentTabToView, chatInTab, followChat, isBound, ownChatOfTab, tabOfSession } from "../../src/sidepanel/tab-chat.js";
+import { agentTabToView, chatInTab, isBound, ownChatOfTab, tabOfSession } from "../../src/sidepanel/tab-chat.js";
 
 const state = {
   tabChats: { "1": "A", "2": "B" },
@@ -28,30 +28,6 @@ describe("chatInTab: the job a panel following the active tab shows", () => {
     expect(chatInTab(3, state)).toBeNull();
     expect(chatInTab(3, state, { pending: { tab: 3, sessionId: "N" } })).toBe("N");
     expect(chatInTab(null, state)).toBeNull();
-  });
-});
-
-describe("followChat: a tab's own panel keeps its conversation when the agent moves it", () => {
-  it("the chat shown went on in the new tab its agent works in (the panel's tab shows a chrome:// page): that tab", () => {
-    // Tab 3 (chrome://newtab) started N; the run works in new tab 8 and the chat now belongs there.
-    expect(followChat(3, "N", { tabChats: { "8": "N" }, runningTabs: { N: [8] } })).toBe(8);
-    // A quick turn is over by the time the state shows the move: the chat last sent to from here is still followed.
-    expect(followChat(3, "N", { tabChats: { "8": "N" }, runningTabs: {} }, { tab: 3, sessionId: "N" })).toBe(8);
-    // Sent from another tab, or another chat: not this panel's doing.
-    expect(followChat(3, "N", { tabChats: { "8": "N" }, runningTabs: {} }, { tab: 5, sessionId: "N" })).toBe(3);
-    expect(followChat(3, "N", { tabChats: { "8": "N" }, runningTabs: {} }, { tab: 3, sessionId: "M" })).toBe(3);
-  });
-
-  it("otherwise the tab stays", () => {
-    // Still bound here.
-    expect(followChat(3, "N", { tabChats: { "3": "N" }, runningTabs: { N: [3] } })).toBe(3);
-    // The tab has a chat again (another one bound to it): it shows that one.
-    expect(followChat(3, "N", { tabChats: { "3": "M", "8": "N" }, runningTabs: { N: [8] } })).toBe(3);
-    // The user moved it to another tab (History's "open here" there): not the agent's doing.
-    expect(followChat(3, "N", { tabChats: { "4": "N" }, runningTabs: {} })).toBe(3);
-    // Nothing shown, or the chat is bound nowhere.
-    expect(followChat(3, null, { tabChats: { "8": "N" }, runningTabs: { N: [8] } })).toBe(3);
-    expect(followChat(3, "N", { runningTabs: { N: [8] } })).toBe(3);
   });
 });
 

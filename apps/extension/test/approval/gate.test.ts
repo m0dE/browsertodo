@@ -281,18 +281,62 @@ describe("ApprovalGate for scheduled runs (full_within_task)", () => {
     expect(like.asked[0]).toMatchObject({ action: 'Click "Post"', why: "publishes; the task does not ask for this" });
   });
 
+  it("switch_x_account's pick of the job's account in X's menu is within the job: it runs; only ask_all asks, naming the account", async () => {
+    // It only ever clicks a "Switch to" entry of an account signed in in this browser (never a delegate's "Act as"):
+    // no setting changes and nothing is published. What then publishes is judged on its own, as that account.
+    for (const level of ["full_within_task", "ask_consequential"] as const) {
+      const t = setup({ level, instructions: "Summarize my timeline" });
+      await t.call("browser.clickXAccountEntry", { handle: "@bob", waitMs: 3000 });
+      expect(t.asked).toEqual([]);
+      expect(t.methods()).toEqual(["browser.clickXAccountEntry"]);
+    }
+    const all = setup({ level: "ask_all" });
+    await all.call("browser.clickXAccountEntry", { handle: "@bob" });
+    expect(all.asked).toEqual([expect.objectContaining({ action: "Switch X to @bob" })]);
+    // The page read before the switch is another account's (X reloads): a click after it is not judged on that read.
+    const judged = setup({ level: "ask_consequential" });
+    await judged.call("browser.readPage", {});
+    await judged.call("browser.clickXAccountEntry", { handle: "@bob" });
+    await judged.call("browser.click", { index: 8 });
+    expect(judged.asked[0]).toMatchObject({ action: "Click an element" });
+  });
+
   it("effectiveLevel: chat runs follow the chat level, scheduled ones the scheduled setting", () => {
-    const s = { automationLevel: "ask_all" as const, scheduledAutomation: "full_within_task" as const };
-    expect(effectiveLevel(s, { scheduled: false })).toBe("ask_all");
-    expect(effectiveLevel(s, { scheduled: true })).toBe("full_within_task");
+    for (const chat of ["ask_all", "ask_consequential"] as const) {
+      for (const scheduled of ["full_within_task", "ask_consequential"] as const) {
+        const s = { automationLevel: chat, scheduledAutomation: scheduled };
+        expect(effectiveLevel(s, { scheduled: false })).toBe(chat);
+        expect(effectiveLevel(s, { scheduled: true })).toBe(scheduled);
+      }
+    }
   });
 
   it("effectiveLevel: a scheduled task the agent wrote is held like ask_consequential until the user trusts it", () => {
-    const s = { automationLevel: "full" as const, scheduledAutomation: "full_within_task" as const };
+    const s = { automationLevel: "ask_consequential" as const, scheduledAutomation: "full_within_task" as const };
     expect(effectiveLevel(s, { scheduled: true, agentAuthored: true })).toBe("ask_consequential");
     expect(effectiveLevel(s, { scheduled: true, agentAuthored: false })).toBe("full_within_task");
-    // A chat is the user's own request: the chat level.
-    expect(effectiveLevel(s, { scheduled: false, agentAuthored: true })).toBe("full");
+  });
+
+  it("effectiveLevel: Full autonomy never asks, in chats and scheduled jobs alike (agent-written ones too: no Trust needed)", () => {
+    for (const scheduledAutomation of ["full_within_task", "ask_consequential"] as const) {
+      const s = { automationLevel: "full" as const, scheduledAutomation };
+      expect(effectiveLevel(s, { scheduled: false })).toBe("full");
+      expect(effectiveLevel(s, { scheduled: true })).toBe("full");
+      expect(effectiveLevel(s, { scheduled: true, agentAuthored: true })).toBe("full");
+    }
+  });
+
+  it("a job the agent wrote says so on its card, and how to let it run (Trust), not 'the task does not ask for this'", async () => {
+    const b = fakeBrowser();
+    const asked: Omit<ApprovalRequest, "id" | "expiresAt">[] = [];
+    const gate = new ApprovalGate(b.browser, () => "s1", {
+      context: async () => ({ level: "ask_consequential", instructions: "Post 'Hello world' on X", account: "@acme", agentAuthored: true }),
+      request: async (_s, ask) => (asked.push(ask), "allow_once"),
+      jev: () => null,
+    });
+    await postFlow(gate.browser.call);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.why).toBe("publishes; the agent wrote this job, so it asks until you press Trust on the job");
   });
 });
 

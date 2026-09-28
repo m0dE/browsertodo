@@ -1,8 +1,8 @@
 /**
  * A job's conversation, live (every turn of it in one thread: the user's messages as bubbles, starting with the
- * prompt or task that opened it, the agent's text, tool calls, results and Jev decisions, and what hands-free voice
+ * prompt or task that opened it, the agent's text, tool calls and results (Jev's picks are for Raw), and what hands-free voice
  * said aloud, shown playing while it is said; with Realtime voice the user's own words take the place of the request
- * the narrator sent for them), on the job's page (job-page.ts), which also puts the job's earlier runs above it
+ * the narrator sent for them), on the job's page (job-page.ts), which also puts the job's runs and instructions above it
  * (setBefore) and opens Raw (the conversation with its timings, raw-view.ts) in place of the log. Which conversation
  * that is comes from sidepanel.ts.
  */
@@ -12,18 +12,8 @@ import { uiRequest } from "../ui-protocol.js";
 import { $, h } from "../ui/dom.js";
 import { errorHelp } from "./error-help.js";
 import { renderErrorHelp } from "./error-view.js";
-import {
-  describeEvent,
-  isBrainStartLine,
-  isNearBottom,
-  openingTurn,
-  sameWords,
-  scheduledView,
-  spokenEchoes,
-  turnError,
-  turnPicks,
-  type TurnContext,
-} from "./event-format.js";
+import { pausedRequest } from "../approval/paused.js";
+import { describeEvent, hiddenInChat, isNearBottom, openingTurn, sameWords, scheduledView, spokenEchoes, turnError, type TurnContext } from "./event-format.js";
 import {
   placeEvent,
   pruneContinue,
@@ -50,11 +40,14 @@ export interface ChatView {
   setRunning(sessions: readonly SessionInfo[]): void;
   onEvent(ev: StampedAgentEvent): void;
   onSession(session: SessionInfo): void;
-  /** Show this conversation; null: none (the list is shown, or a job that never ran). */
-  show(sessionId: string | null): void;
+  /**
+   * Show this conversation; null: none (the list is shown, or a job that never ran). It shows at its end, or with
+   * `top` at its top (what goes above it in view: a run picked in a job's runs, and back from it to the list).
+   */
+  show(sessionId: string | null, opts?: { top?: boolean }): void;
   /** The conversation shown, or null. */
   shown(): SessionInfo | null;
-  /** What goes above the conversation, in the same scroll (a job's earlier runs; a task that never ran); null: nothing. */
+  /** What goes above the conversation, in the same scroll (a task's runs and instructions; a task that never ran); null: nothing. */
   setBefore(el: HTMLElement | null): void;
   /** Raw (the conversation with its timings) in place of the log, or the log again. */
   setRaw(on: boolean): void;
@@ -86,7 +79,7 @@ const eventKey = (e: StampedAgentEvent) => JSON.stringify(e);
 /** Recent events of conversations not on screen, kept for when one is shown: at most this many. */
 const MAX_BUFFERED_EVENTS = 300;
 
-/** How the buttons in a conversation's events act (none: a past run, read only). */
+/** How the buttons in a conversation's events act. */
 interface EventHandlers {
   onContinue?: (sessionId: string) => void;
   scheduled?: ScheduledCardActions;
@@ -96,17 +89,19 @@ interface EventHandlers {
 
 /**
  * The element of events[i] with its view (for placing it in the log), or null when it shows nothing of its own.
- * `session`: the conversation, when known (a cloud run cannot be continued from here).
+ * `session`: the conversation, when known (a cloud run cannot be continued from here); `running`: it runs now (a card
+ * its run paused at is decided only once it stopped).
  */
 function eventNode(
   events: readonly StampedAgentEvent[],
   i: number,
   session: SessionInfo | null,
   on: EventHandlers,
+  running = false,
 ): { el: HTMLElement; view: ReturnType<typeof describeEvent> } | null {
   const e = events[i]!;
-  // The brain chip under the first message already says which brain started.
-  if (e.type === "status" && isBrainStartLine(e.text)) return null;
+  // What the Raw view keeps for itself (hiddenInChat).
+  if (hiddenInChat(events, i)) return null;
   // An undo changes its task's card (see markUndone); it shows nothing of its own.
   if (e.type === "task_unscheduled" || e.type === "task_change_undone") return null;
   // An approval's ending changes its card (see refreshApprovals).
@@ -122,7 +117,7 @@ function eventNode(
   const memoryUndone = (changeId: string) => events.some((x) => x.type === "memory_undone" && x.changeId === changeId);
   const turn: TurnContext =
     e.type === "task_end"
-      ? { picks: turnPicks(events, i), error: turnError(events, i) }
+      ? { error: turnError(events, i) }
       : e.type === "spoken"
         ? { echo: spokenEchoes(events, i) }
         : e.type === "task_scheduled"
@@ -130,7 +125,7 @@ function eventNode(
           : e.type === "task_changed"
             ? { undone: changeUndone(e.changeId) }
             : e.type === "approval_request"
-              ? { approval: approvalEnding(events, e.request.id) }
+              ? { approval: approvalEnding(events, e.request.id), decidable: !running && pausedRequest(events, e.request.id) !== null }
               : e.type === "memory"
                 ? { memoryUndone: memoryUndone(e.changeId) }
                 : {};
@@ -139,22 +134,11 @@ function eventNode(
   return { el, view };
 }
 
-/** A past run as it ended (a job's earlier run): its first message, the brain, and every event, without buttons. */
-export function renderPastRun(s: SessionInfo, events: readonly StampedAgentEvent[], onDetails?: (s: SessionInfo, trigger: HTMLElement) => void): HTMLElement {
-  const box = h("div.log.run-log");
-  box.append(renderOpening(openingTurn(s, events), (trigger) => onDetails?.(s, trigger)), renderSessionHead(s));
-  events.forEach((_, i) => {
-    const node = eventNode(events, i, s, {});
-    if (node) placeEvent(box, node.el, node.view);
-  });
-  return box;
-}
-
 export function initChat(opts: ChatOptions = {}): ChatView {
   const log = $("chat-log");
   const rawHost = $("chat-raw");
   const raw = initRawView(rawHost, { voiceEnv: () => opts.voiceEnv?.(), onBack: () => setRaw(false) });
-  /** Above the conversation: a job's earlier runs, or a task that never ran. */
+  /** Above the conversation: a task's runs and instructions, or a task that never ran. */
   let before: HTMLElement | null = null;
 
   /** Raw in place of the log (true), or the log (false). */
@@ -170,6 +154,8 @@ export function initChat(opts: ChatOptions = {}): ChatView {
 
   /** The id of the conversation shown (set at once), and its info once known. */
   let shownId: string | null = null;
+  /** The conversation shown was asked for at its top (show's `top`): drawing it leaves the scroll where it is. */
+  let atTop = false;
   let current: SessionInfo | null = null;
   let events: StampedAgentEvent[] = [];
   let backfilling = false;
@@ -219,13 +205,23 @@ export function initChat(opts: ChatOptions = {}): ChatView {
   };
   bindApprovalKeys(log);
 
-  /** Approval cards still waiting show how they ended once that is known (answered, timed out, or the turn ended). */
+  /** The conversation shown runs now. */
+  const isRunning = () => !!current && runningList.some((s) => s.sessionId === current!.sessionId);
+
+  /**
+   * Approval cards follow how they ended once that is known (answered, timed out, the turn ended, or its run paused
+   * there: then it can be decided until it is, or the run goes on).
+   */
   function refreshApprovals(): void {
-    for (const card of log.querySelectorAll<HTMLElement>(".ev-approval[data-state=pending]")) {
+    const running = isRunning();
+    for (const card of log.querySelectorAll<HTMLElement>(".ev-approval")) {
       const id = card.dataset.approvalId ?? "";
       const ev = events.find((e) => e.type === "approval_request" && e.request.id === id);
       const ending = approvalEnding(events, id);
-      if (ev?.type === "approval_request" && ending) card.replaceWith(renderApproval(approvalView(ev, ending)));
+      if (ev?.type !== "approval_request" || !ending) continue;
+      const v = approvalView(ev, ending, !running && pausedRequest(events, id) !== null);
+      if (card.dataset.outcome === v.state && (card.dataset.decidable === "true") === !!v.decidable) continue;
+      card.replaceWith(renderApproval(v, v.decidable ? approvalActions : undefined));
     }
   }
 
@@ -251,7 +247,7 @@ export function initChat(opts: ChatOptions = {}): ChatView {
   };
 
   function renderOne(ev: StampedAgentEvent, i: number): void {
-    const node = eventNode(events, i, current, handlers);
+    const node = eventNode(events, i, current, handlers, isRunning());
     if (!node) return;
     if (ev.type === "spoken") placeKept(node.el, ev.text);
     else placeEvent(log, node.el, node.view);
@@ -341,25 +337,32 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     return true;
   }
 
+  /** The log drawn again under what goes above it, which stays in place (so the focus in it stays too). */
+  function resetLog(...nodes: Node[]): void {
+    if (before && log.firstChild === before) {
+      while (before.nextSibling) before.nextSibling.remove();
+      log.append(...nodes);
+    } else log.replaceChildren(...(before ? [before] : []), ...nodes);
+  }
+
   function renderLog(): void {
-    const top = before ? [before] : [];
     if (!shownId) {
-      log.replaceChildren(...top);
+      resetLog();
       return;
     }
     if (!current) {
-      log.replaceChildren(...top, h("p.empty", null, "Loading…"));
+      resetLog(h("p.empty", null, "Loading…"));
       return;
     }
     lives = [];
-    log.replaceChildren(...top, renderOpeningOf(current), renderSessionHead(current));
+    resetLog(renderOpeningOf(current), renderSessionHead(current));
     events.forEach((ev, i) => renderOne(ev, i));
     liveEls.clear();
     showSpeaking();
     if (!events.length && !live.of(current.sessionId).some(([, t]) => t.trim())) log.append(h("p.empty", null, "Waiting for the agent…"));
     pruneContinue(log);
     paintLive();
-    log.scrollTop = log.scrollHeight;
+    if (!atTop) log.scrollTop = log.scrollHeight;
   }
 
   function refreshHead(s: SessionInfo): void {
@@ -435,7 +438,8 @@ export function initChat(opts: ChatOptions = {}): ChatView {
       markMemoryUndone(ev.changeId);
       return;
     }
-    if (ev.type === "task_end") refreshApprovals();
+    // A turn's end, or a new message: a card its run paused at can be decided, or not any more.
+    if (ev.type === "task_end" || ev.type === "user_message") refreshApprovals();
     const follow = isNearBottom(log);
     log.querySelector(":scope > p.empty")?.remove();
     // The final text of a streamed block takes the place of its live text.
@@ -459,9 +463,10 @@ export function initChat(opts: ChatOptions = {}): ChatView {
     },
     { passive: true },
   );
-  // (Also when its content grows after rendering, e.g. once fonts load: every top-level entry is watched.)
+  // (Also when its content grows after rendering, e.g. once fonts load: every top-level entry is watched.) What goes
+  // above the conversation growing while the user works in it (a job's runs list opened) leaves the scroll alone.
   const stick = new ResizeObserver(() => {
-    if (pinned) log.scrollTop = log.scrollHeight;
+    if (pinned && !before?.contains(document.activeElement)) log.scrollTop = log.scrollHeight;
   });
   stick.observe(log);
   new MutationObserver((records) => {
@@ -503,8 +508,14 @@ export function initChat(opts: ChatOptions = {}): ChatView {
       if (s.endedAt) log.scrollTop = log.scrollHeight;
       opts.onFocus?.(current);
     },
-    show(sessionId) {
+    show(sessionId, opts = {}) {
       if (sessionId === shownId) return;
+      // At its top: the log is not held at its end while this conversation is shown (until the reader scrolls there).
+      atTop = !!opts.top;
+      if (atTop) {
+        pinned = false;
+        log.scrollTop = 0;
+      }
       // Raw shows one conversation: another one on screen goes back to its chat.
       if (raw.shown !== null) setRaw(false);
       // Events of the conversation that was shown stay available if it comes back.

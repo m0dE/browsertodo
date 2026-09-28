@@ -6,10 +6,11 @@
  * control is at the bottom, by the box: the mic ends voice, Mute, Interrupt
  * while a line is said, and the task's own Stop.
  *
- * On another tab the strip names the tab the session listens in, with Go to
- * tab and Use voice here; in another tab's panel (remoteBarView) the same,
- * with nothing live and Turn off (that panel has no session controls: its
- * mic moves the session there, it does not end it).
+ * The strip always names the tab the session runs for ("Voice on · Inbox",
+ * voiceOnLabel). On another tab it adds Go to tab and Use voice here; in
+ * another window's panel (remoteBarView) the same, with nothing live and
+ * Turn off (that panel has no session controls: its mic moves the session
+ * there, it does not end it).
  *
  * Muted (Mute, or MUTE_KEY): the state word says so while it would listen,
  * no meter, and the strip in grey (voice.css). Mute shows once the session
@@ -21,7 +22,9 @@
  */
 import type { VoiceEngineId } from "@browsertodo/shared";
 import type { HandsFreePhase } from "./hands-free.js";
-import { elsewhereLabel } from "./hands-free-tab.js";
+import { VOICE_ON, voiceOnLabel, type TabPage } from "./hands-free-tab.js";
+
+export { VOICE_ON };
 
 /** A session's phase as the strip knows it: the state machine's, or still starting (microphone, connection). */
 export type VoiceBarPhase = Exclude<HandsFreePhase, "off"> | "starting";
@@ -40,13 +43,15 @@ export interface VoiceBarInput {
   engine: VoiceEngineId | null;
   /** How long the session has been on. */
   elapsedMs: number;
-  /** The session listens in another tab than the one shown: that tab's title (null: not known). */
-  elsewhere: { title: string | null } | null;
+  /** The tab the session runs for, as far as known (its title and address). */
+  where: TabPage | null;
+  /** The session listens in another tab than the one shown. */
+  elsewhere: boolean;
 }
 
 export interface VoiceBarView {
   state: VoiceBarState;
-  /** "Voice on", or where it is on ("Voice is on in Inbox"). */
+  /** "Voice on" and where ("Voice on · Inbox"). */
   label: string;
   /** The state word after it ("Listening"; on another tab only "Muted", or ""). */
   status: string;
@@ -58,7 +63,7 @@ export interface VoiceBarView {
   meter: boolean;
   /** For screen readers (polite): changes only with the state, not with the voice going on and off. */
   announce: string;
-  /** Go to tab and Use voice here (another tab's session); turnOff: Turn off too, where no mic here ends it. */
+  /** Go to tab and Use voice here (the session runs for another tab); turnOff: Turn off too, where no mic here ends it. */
   links: { turnOff: boolean } | null;
   /** The microphone is muted (the strip goes grey). */
   muted: boolean;
@@ -90,9 +95,6 @@ export function elapsedText(ms: number): string {
   const m = Math.floor((s % 3600) / 60);
   return h ? `${h}:${two(m)}:${two(s % 60)}` : `${m}:${two(s % 60)}`;
 }
-
-/** What the strip says first. */
-export const VOICE_ON = "Voice on";
 
 const STATUS: Record<Exclude<VoiceBarState, "elsewhere">, string> = {
   starting: "Starting…",
@@ -144,7 +146,7 @@ export function voiceBarView(input: VoiceBarInput): VoiceBarView {
   const { muted } = input;
   const mute = input.phase === "starting" ? null : muteButton(muted);
   if (state === "elsewhere") {
-    const label = elsewhereLabel(input.elsewhere?.title ?? null);
+    const label = voiceOnLabel(input.where, true);
     return {
       state,
       label,
@@ -165,7 +167,7 @@ export function voiceBarView(input: VoiceBarInput): VoiceBarView {
   const hint = !muted ? HINTS[state] : state === "muted" && input.phase === "working" ? MUTED_WORKING_HINT : (MUTED_HINTS[state] ?? HINTS[state]);
   return {
     state,
-    label: VOICE_ON,
+    label: voiceOnLabel(input.where),
     status,
     time: state === "starting" ? null : time,
     hint: state === "starting" ? hint : `${engineName(input.engine)} · ${hint}`,
@@ -178,15 +180,15 @@ export function voiceBarView(input: VoiceBarInput): VoiceBarView {
   };
 }
 
-/** The strip's tooltip in another tab's panel: the session runs elsewhere, this panel does not listen. */
-export const NOT_HERE_TEXT = "Not listening in this tab";
+/** The strip's tooltip in another window's panel: the session runs in the panel there, this one does not listen. */
+export const NOT_HERE_TEXT = "Listening in another window";
 
 /**
- * The strip in a panel that runs no session while one runs for another tab (its panel reports it through the
- * background): where, with Go to tab, Use voice here and Turn off; nothing live, no time.
+ * The strip in a panel that runs no session while another panel runs one (it reports it through the background):
+ * where, with Go to tab, Use voice here and Turn off; nothing live, no time.
  */
-export function remoteBarView(input: { title: string | null; engine: VoiceEngineId | null; muted?: boolean }): VoiceBarView {
-  const label = elsewhereLabel(input.title);
+export function remoteBarView(input: { where: TabPage | null; engine: VoiceEngineId | null; muted?: boolean }): VoiceBarView {
+  const label = voiceOnLabel(input.where, true);
   const muted = input.muted ?? false;
   return {
     state: "elsewhere",

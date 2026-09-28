@@ -405,7 +405,7 @@ describe("the side panel's hands-free session on Realtime", () => {
       chatOf: () => null,
       tabsOf: () => [],
       send: vi.fn(() => new Promise<string>((r) => (finishSend = r))),
-      homeTab: 1,
+      panel: "p1",
       tabPage: async () => ({ title: "Inbox", url: "https://mail.example.com/" }),
       goToTab: () => {},
       onSpeaking: () => {},
@@ -691,7 +691,8 @@ describe("the side panel's hands-free session on Realtime", () => {
       await vi.advanceTimersByTimeAsync(0);
       // Reported when it starts, and again with its engine once that is open.
       expect([bar.dataset.state, played, active, t.hf.tab]).toEqual(["listening", ["start"], [[true, 1, null], [true, 1, "realtime"]], 1]);
-      expect(bar.textContent).toContain("Voice onListening");
+      // It names the tab it runs for (tab 1, "Inbox"), here too.
+      expect(bar.textContent).toContain("Voice on · InboxListening");
       expect(bar.textContent).toContain("0:00");
       expect(bar.title).toMatch(/^Realtime voice · /);
       t.engines[0]!.events.level(0.9);

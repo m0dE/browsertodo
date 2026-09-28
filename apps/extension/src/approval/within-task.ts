@@ -7,7 +7,8 @@
  *
  * - yes: the instructions use a verb of the action's family ("post", "tweet",
  *   "reply" for a Post click) as a whole word (or its -ing form), do not
- *   forbid it ("don't post"), and name the action's site (its domain, its
+ *   forbid the action itself ("don't post it"; "don't post links" is a rule about
+ *   the content, not a ban), and name the action's site (its domain, its
  *   name "Namecheap", or X for a task that acts as an X account);
  * - no: no such verb, a forbidden one, or the task names other sites only;
  * - unsure: the verb is there but the task says nowhere where (judge.ts asks Jev).
@@ -87,27 +88,52 @@ function proseWords(text: string): string[] {
   return text.toLowerCase().replace(/[’']/g, "").split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 }
 
-/** The instructions' words without addresses and handles: "booking.com", "ada@example.com", "@likeme" ask for nothing. */
-function verbWords(instructions: string): string[] {
-  return proseWords(
-    instructions
-      .replace(/\S+@\S+/g, " ")
-      .replace(/https?:\/\/\S+/gi, " ")
-      .replace(DOMAIN, " ")
-      .replace(/@\w+/g, " "),
-  );
+/**
+ * The instructions' words without addresses and handles ("booking.com", "ada@example.com", "@likeme" ask for
+ * nothing), each with the number of its clause (punctuation and line breaks end one).
+ */
+function verbWords(instructions: string): { word: string; clause: number }[] {
+  const text = instructions
+    .replace(/\S+@\S+/g, " ")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(DOMAIN, " ")
+    .replace(/@\w+/g, " ");
+  return text.split(/[.,;:!?()\n\r]+/).flatMap((clause, n) => proseWords(clause).map((word) => ({ word, clause: n })));
 }
 
-/** Where the family's verbs occur in the instructions: asked (not negated) and forbidden (negated). */
+/**
+ * What a negated verb is followed by, when it bans the action itself rather than what is posted or sent: nothing
+ * ("do not post."), a word for the thing the task makes ("don't post it", "don't publish the draft"), a word of
+ * time, place or manner ("never post on weekends", "don't reply yet"), or any determiner. A content word after it
+ * is a rule about the content ("Don't post contract addresses", "never post links"): the task can still ask for
+ * the action elsewhere.
+ */
+const BANS_THE_ACTION = new Set([
+  ...["it", "them", "this", "that", "these", "those", "anything", "something", "everything", "any", "anyone", "anybody", "anymore", "yet"],
+  ...["the", "a", "an", "my", "your", "our", "his", "her", "their", "its", "one", "more", "again", "now", "today", "until", "before", "after"],
+  ...["unless", "without", "or", "nor", "and", "but", "on", "to", "at", "in", "from", "for", "with", "as", "about", "of", "anywhere", "here"],
+  ...["there", "if", "when", "while", "so", "then", "other", "else", "publicly", "online", "back", "out", "up"],
+]);
+
+/**
+ * Where the family's verbs occur in the instructions: asked (not negated) and forbidden (negated, and banning the
+ * action itself; see BANS_THE_ACTION). A negated verb with a content word after it neither asks nor forbids.
+ */
 function mentions(instructions: string, family: TaskFamily): { asked: boolean; forbidden: boolean } {
   const tokens = verbWords(instructions);
+  const words = tokens.map((t) => t.word);
   let asked = false;
   let forbidden = false;
-  for (let i = 0; i < tokens.length; i++) {
-    if (!FAMILY_FORMS[family].some((form) => form.every((w, k) => tokens[i + k] === w))) continue;
-    const before = tokens.slice(Math.max(0, i - NEGATION_REACH), i).join(" ");
-    if (NEGATIONS.some((n) => ` ${before} `.includes(` ${n} `))) forbidden = true;
-    else asked = true;
+  for (let i = 0; i < words.length; i++) {
+    const form = FAMILY_FORMS[family].find((f) => f.every((w, k) => words[i + k] === w));
+    if (!form) continue;
+    const before = words.slice(Math.max(0, i - NEGATION_REACH), i).join(" ");
+    if (!NEGATIONS.some((n) => ` ${before} `.includes(` ${n} `))) {
+      asked = true;
+      continue;
+    }
+    const next = tokens[i + form.length];
+    if (!next || next.clause !== tokens[i]!.clause || BANS_THE_ACTION.has(next.word)) forbidden = true;
   }
   return { asked, forbidden };
 }

@@ -94,6 +94,22 @@ describe("AccountTodo (the signed-in TODO list)", () => {
     ]);
   });
 
+  it("seriesPage lists one series a page at a time (the cursor of the page before), rows in the row shape", async () => {
+    const t = setup();
+    t.api.on("GET /v1/tasks", (c) =>
+      c.path.includes("cursor=t2")
+        ? { body: { tasks: [task("t1", { status: "done", seriesId: "s1" })], nextCursor: null } }
+        : { body: { tasks: [task("t3", { status: "pending", seriesId: "s1", schedule: { at: null, repeat: { cron: "0 9 * * *", tz: "UTC" } } }), task("t2", { status: "failed", seriesId: "s1" })], nextCursor: "t2" } },
+    );
+    const first = await t.todo.seriesPage("s1");
+    expect(first.tasks.map((x) => x.id)).toEqual(["t3", "t2"]);
+    expect(first.tasks[0]).toMatchObject({ repeat: { cron: "0 9 * * *", tz: "UTC" } });
+    expect(first.tasks[0]).not.toHaveProperty("schedule");
+    expect(first.nextCursor).toBe("t2");
+    expect(await t.todo.seriesPage("s1", "t2")).toMatchObject({ tasks: [{ id: "t1" }], nextCursor: null });
+    expect(t.api.calls.map((c) => c.path)).toEqual(["/v1/tasks?limit=200&series=s1", "/v1/tasks?limit=200&series=s1&cursor=t2"]);
+  });
+
   it("update, retry, cancel and delete call the task routes", async () => {
     const t = setup();
     t.api.on("PATCH /v1/tasks/t1", (c) => ({ body: task("t1", c.body as object) }));

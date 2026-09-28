@@ -1,40 +1,40 @@
 /**
- * The side panels of the tabs (see panel-tabs.ts: each tab has its own) and
- * the keyboard shortcuts (the manifest's "commands", see shortcut.ts).
- * OPEN_CHAT_COMMAND opens the side panel of the tab the key was pressed in
- * and puts the cursor in the chat input; when that tab's panel is already
- * open, it switches it to Chat and focuses the input. VOICE_COMMAND does the
- * same and then starts a hands-free session there (sidepanel/hands-free.ts),
- * as the mic button does; pressed while a panel of the window is listening,
- * it reaches that panel, which ends the session. The panel decides: without
- * a plan that includes voice it points at the locked mic button and says
- * why. A listening panel is never recreated: stopping needs no keyboard
- * focus.
+ * The side panel of each window and the keyboard shortcuts (the manifest's
+ * "commands", see shortcut.ts). The panel is the manifest's default one: a
+ * window's panel, once opened, stays on screen across tab switches, and what
+ * it shows follows the active tab (sidepanel/sidepanel.ts).
  *
- * Chrome counts a command (and a toolbar click) as a user gesture, which
- * sidePanel.open() needs, but only while the listener runs: open() is called
- * before anything is awaited. The side panels report their tab, window and
- * where the keyboard focus is over the UI port (PanelMessage), so the
- * decision needs no await either. A panel that the shortcut opened is told
- * to focus when it says hello (its ready handshake), not after some delay.
+ * OPEN_CHAT_COMMAND opens the window's side panel and puts the cursor in the
+ * chat input; when the panel is already open, it focuses the input.
+ * VOICE_COMMAND does the same and then starts a hands-free session there
+ * (sidepanel/hands-free.ts), as the mic button does; pressed while a panel of
+ * the window is listening, it reaches that panel, which ends the session. The
+ * panel decides: without a plan that includes voice it points at the locked
+ * mic button and says why.
  *
- * Chrome moves the keyboard focus into a side panel only when it creates
- * the panel's page. So when the focus is outside the tab's panel, the
- * shortcut disables the tab's panel (which closes it at once, without the
- * close animation) and opens it again, all within the gesture; the new page
- * is told to focus and gets back the text its box had (the chat itself comes
- * from the background). Other tabs' panels are not touched.
+ * Chrome counts a command as a user gesture, which sidePanel.open() needs,
+ * but only while the listener runs: open() is called before anything is
+ * awaited. The panels report their window, whether they are the side panel
+ * or the panel page opened as a tab, and where the keyboard focus is over the
+ * UI port (PanelMessage), so the decision needs no await either. A panel the
+ * shortcut opened is told to focus when it says hello (its ready handshake),
+ * not after some delay.
  *
- * A panel the user closes is disabled for its tab: the tab has no panel
- * until it is opened there again (toolbar button or shortcut).
- * chrome.sidePanel.onClosed says so (Chrome 142+); on older Chrome its
- * page's port closing does (Chrome keeps a hidden tab's page, so the port
- * stays while the user is on another tab). A page the shortcut is
- * recreating does not count.
+ * Chrome moves the keyboard focus into a side panel only when it creates the
+ * panel's page: open() on an open panel, close() then open(), or a tab's own
+ * options leave the focus in the web page (or turn the panel into a per-tab
+ * one). Disabling the default panel and enabling it again closes every
+ * window's panel at once, without the close animation; so when the focus is
+ * outside the panel, the shortcut does that and opens every window's panel
+ * again, all within the gesture. Each new page is told to focus (the window
+ * the key was pressed in) or not, and gets back the text its box had and the
+ * job it showed (the chat itself comes from the background). A listening
+ * panel is never recreated, in any window: the session would end. The
+ * shortcut then only moves the panel's focus to its input.
  *
- * Which panel runs the hands-free session (its tab, window and engine) goes
- * to the voice dep (voice-session.ts), which tells every panel and sets the
- * toolbar badges; it ends when the panel stops listening or closes. Stop
+ * Which panel runs the hands-free session (its tab, window, panel and engine)
+ * goes to the voice dep (voice-session.ts), which tells every panel and sets
+ * the toolbar badges; it ends when the panel stops listening or closes. Stop
  * and Use voice here in another panel reach the panel running it
  * (panel.voiceStop -> voice.stop): one session, one microphone.
  *
@@ -44,17 +44,16 @@
  */
 
 import type { VoiceEngineId } from "@browsertodo/shared";
-import type { PanelTabSet } from "./panel-tabs.js";
 import { OPEN_CHAT_COMMAND, VOICE_COMMAND } from "./shortcut.js";
 import type { VoiceSessionInfo } from "./voice-session.js";
 
 /** Panel -> background on the UI port. */
 export type PanelMessage =
-  /** tabId: the tab the panel belongs to (absent: the panel page opened as a tab, which follows its window's active tab). */
-  | { type: "panel.hello"; windowId: number; tabId?: number }
+  /** panel: the page's own id (hands-free sessions name the panel running them); asTab: the panel page opened as a tab, not the side panel. */
+  | { type: "panel.hello"; windowId: number; panel: string; asTab?: true }
   /** Hands-free voice started or stopped listening in the panel; tabId: the tab its session belongs to; engine: the one it runs on; muted: its microphone is muted. */
   | { type: "panel.listening"; listening: boolean; tabId?: number; engine?: VoiceEngineId; muted?: boolean }
-  /** End the hands-free session, whichever panel runs it (Stop, or Use voice here, in another tab's panel). */
+  /** End the hands-free session, whichever panel runs it (Stop, or Use voice here, in another panel). */
   | { type: "panel.voiceStop" }
   /**
    * The panel's page got or lost the keyboard focus, or showed another view; `draft`: the text in its box then, `job`:
@@ -70,20 +69,13 @@ export interface PanelPort {
 }
 
 export interface PanelCommandDeps {
-  /** Enables the tab's panel and opens it (openTabPanel). Called synchronously in the command listener. */
-  open(tabId: number): Promise<void>;
+  /** chrome.sidePanel.open({ windowId }). Called synchronously in the command listener. */
+  open(windowId: number): Promise<void>;
   /**
-   * Disables the tab's panel, which closes it at once (no close animation):
-   * the next open() creates its page anew. Also how a closed panel stays off.
+   * Closes every window's side panel at once, without the close animation, so that the next open() creates the
+   * panel's page anew. Called synchronously in the command listener, right before the open() calls.
    */
-  disable(tabId: number): Promise<void>;
-  /** The tabs with an open panel, remembered across service worker restarts. */
-  tabs?: PanelTabSet;
-  /**
-   * Chrome reports closed panels (chrome.sidePanel.onClosed, Chrome 142+, calls panelClosed): a page's port
-   * closing is then not taken for one (it also closes when the page reloads).
-   */
-  reportsClosed?: boolean;
+  closeAllInstantly(): Promise<void>;
   /** The hands-free session changed: the one the panels run now (null: none). */
   voice?(session: VoiceSessionInfo | null): void;
   log?(message: string): void;
@@ -93,8 +85,10 @@ export type CommandOutcome = "opened" | "reopened" | "focused" | "voice" | "igno
 
 interface PanelInfo {
   windowId: number | null;
-  /** The tab the panel belongs to (null: a panel page opened as a tab). */
-  tabId: number | null;
+  /** The page's own id (null: it has not said hello). */
+  id: string | null;
+  /** The panel page opened as a tab (it is no side panel: reopening the side panels leaves it alone). */
+  asTab: boolean;
   /** Voice input is listening (or starting to). */
   listening: boolean;
   /** The tab its session belongs to. */
@@ -119,17 +113,17 @@ interface Restore {
   job: string | null;
 }
 
-type Tab = { id?: number; windowId?: number } | null | undefined;
+type Tab = { windowId?: number } | null | undefined;
 
 const NOTHING: Restore = { draft: "", job: null };
 
 export class PanelCommands {
   private readonly panels = new Map<PanelPort, PanelInfo>();
   /**
-   * Tabs whose panel a shortcut is opening -> the text to put back in its box, and whether to start listening:
-   * when it says hello, it is told to focus (and to start voice input).
+   * Windows whose side panel a shortcut is opening -> the text to put back in its box, the job it showed, and what
+   * its new page is told when it says hello: to take the focus (the window the key was pressed in), and to listen.
    */
-  private readonly opening = new Map<number, Restore & { voice: boolean }>();
+  private readonly opening = new Map<number, Restore & { focus: boolean; voice: boolean }>();
   /** The session last reported to the voice dep (JSON). */
   private reported = "null";
   private reports = 0;
@@ -138,26 +132,23 @@ export class PanelCommands {
 
   /** A side panel's UI port (after UiHub.attach accepted it). */
   attach(port: PanelPort): void {
-    const info: PanelInfo = { windowId: null, tabId: null, listening: false, voiceTab: null, engine: null, muted: false, since: 0, focused: false, draft: "", job: null };
+    const info: PanelInfo = { windowId: null, id: null, asTab: false, listening: false, voiceTab: null, engine: null, muted: false, since: 0, focused: false, draft: "", job: null };
     this.panels.set(port, info);
     port.onDisconnect.addListener(() => {
       this.panels.delete(port);
       this.setVoiceTab(info, null);
-      // Chrome keeps a hidden tab's panel page: its port closes only when the panel closes (or its tab does).
-      if (!this.deps.reportsClosed && info.tabId !== null && !this.panelsOfTab(info.tabId).length) this.panelClosed(info.tabId);
     });
     port.onMessage.addListener((raw) => {
       const msg = raw as Partial<PanelMessage> | null;
       if (msg?.type === "panel.hello" && typeof msg.windowId === "number") {
         info.windowId = msg.windowId;
-        if (typeof msg.tabId === "number") info.tabId = msg.tabId;
+        info.id = typeof msg.panel === "string" && msg.panel ? msg.panel : null;
+        info.asTab = msg.asTab === true;
         this.reportVoice();
-        if (typeof msg.tabId !== "number") return;
-        this.deps.tabs?.add(msg.tabId);
-        const pending = this.opening.get(msg.tabId);
+        const pending = info.asTab ? undefined : this.opening.get(msg.windowId);
         if (!pending) return;
-        this.opening.delete(msg.tabId);
-        this.focus(port, pending, pending.voice);
+        this.opening.delete(msg.windowId);
+        this.restore(port, pending, pending.focus, pending.voice);
       } else if (msg?.type === "panel.listening" && typeof msg.listening === "boolean") {
         if (msg.listening && !info.listening) info.since = ++this.reports;
         info.listening = msg.listening;
@@ -174,14 +165,9 @@ export class PanelCommands {
     });
   }
 
-  /** The window has an open panel page (it said hello). */
+  /** The window has an open panel page (it said hello): its side panel, or the panel page opened as a tab. */
   isOpen(windowId: number): boolean {
     return this.panelsOfWindow(windowId).length > 0;
-  }
-
-  /** The tab has its own side panel open (its page said hello, or it did before the service worker restarted). */
-  hasPanel(tabId: number): boolean {
-    return this.panelsOfTab(tabId).length > 0 || !!this.deps.tabs?.has(tabId);
   }
 
   /** A panel of the window is listening (the voice shortcut then goes to it, and hands-free ends). */
@@ -204,60 +190,31 @@ export class PanelCommands {
       for (const [port] of listening) this.post(port, { type: "panel.voice" });
       return "voice";
     }
-    // The focus is in a panel page of the window already (a hidden tab's panel has none): it moves it to the input.
+    // The focus is in a panel page of the window already: it moves it to the input.
     const focused = inWindow.filter(([, p]) => p.focused);
     if (focused.length) {
-      for (const [port] of focused) this.focus(port, NOTHING, voice);
+      for (const [port] of focused) this.restore(port, NOTHING, true, voice);
       return voice ? "voice" : "focused";
     }
-    const tabId = tab?.id;
-    if (tabId === undefined || tabId < 0) return "ignored";
-    const own = this.panelsOfTab(tabId);
-    // No page of its own yet, or none said hello since the worker restarted (open() leaves an open one as it is).
-    if (!own.length) {
-      this.openFocused(tabId, NOTHING, voice);
+    const side = inWindow.filter(([, p]) => !p.asTab);
+    // No side panel in the window, or none said hello since the worker restarted (open() leaves an open one as it is).
+    if (!side.length) {
+      this.openFocused(windowId, { ...NOTHING, focus: true, voice });
       return "opened";
     }
-    // Listening (so this is open-chat): never recreated, the voice session would end. Chat and the box it gets.
-    if (own.some(([, p]) => p.listening)) {
-      for (const [port] of own) this.focus(port, NOTHING, false);
-      return "focused";
+    // Recreating closes every window's panel: a listening one would end its session. The input gets the cursor as far
+    // as Chrome lets a page move it.
+    if ([...this.panels.values()].some((p) => p.listening)) {
+      for (const [port] of side) this.restore(port, NOTHING, true, voice);
+      return voice ? "voice" : "focused";
     }
-    // The focus is in the web page: only a newly created panel page gets it (see the top of this file), with the
-    // text in its box and the job it showed.
-    const restore: Restore = { draft: own.find(([, p]) => p.draft)?.[1].draft ?? "", job: own.find(([, p]) => p.job)?.[1].job ?? null };
-    this.opening.set(tabId, { ...restore, voice });
-    this.deps.disable(tabId).catch((err: unknown) => this.log(`closing the side panel failed: ${String(err)}`));
-    this.openFocused(tabId, restore, voice);
+    // The focus is in the web page: only a newly created panel page gets it (see the top of this file). Every
+    // window's side panel is recreated, each with the text in its box and the job it showed.
+    const others = this.restoresByWindow();
+    this.deps.closeAllInstantly().catch((err: unknown) => this.log(`closing the side panels failed: ${String(err)}`));
+    this.openFocused(windowId, { ...(others.get(windowId) ?? NOTHING), focus: true, voice });
+    for (const [other, restore] of others) if (other !== windowId) this.openFocused(other, { ...restore, focus: false, voice: false });
     return "reopened";
-  }
-
-  /**
-   * The toolbar button was clicked in a tab without its own panel (with one, Chrome opens or closes it itself:
-   * openPanelOnActionClick). Synchronous, like onCommand.
-   */
-  onAction(tab?: Tab): void {
-    const tabId = tab?.id;
-    if (tabId === undefined || tabId < 0) return;
-    this.deps.open(tabId).catch((err: unknown) => this.log(`opening the side panel failed: ${String(err)}`));
-  }
-
-  /**
-   * The tab's panel closed (its page's port, or chrome.sidePanel.onClosed): it stays off for the tab until opened
-   * there again. Not while the shortcut recreates it.
-   */
-  panelClosed(tabId: number): void {
-    if (this.opening.has(tabId)) return;
-    this.deps.tabs?.delete(tabId);
-    this.deps.disable(tabId).catch(() => {
-      // The tab is closing too: nothing to disable.
-    });
-  }
-
-  /** The tab closed (chrome.tabs.onRemoved): its panel is gone with it. */
-  tabRemoved(tabId: number): void {
-    this.opening.delete(tabId);
-    this.deps.tabs?.delete(tabId);
   }
 
   /** The hands-free session the panels run now: the panel that started listening last (null: none). */
@@ -265,7 +222,7 @@ export class PanelCommands {
     let latest: PanelInfo | null = null;
     for (const p of this.panels.values()) if (p.voiceTab !== null && (!latest || p.since > latest.since)) latest = p;
     if (!latest || latest.voiceTab === null) return null;
-    return { tabId: latest.voiceTab, windowId: latest.windowId, host: latest.tabId, engine: latest.engine, ...(latest.muted ? { muted: true as const } : {}) };
+    return { tabId: latest.voiceTab, windowId: latest.windowId, panel: latest.id, engine: latest.engine, ...(latest.muted ? { muted: true as const } : {}) };
   }
 
   /** The panel's session is now in `tab` (null: none). */
@@ -296,29 +253,39 @@ export class PanelCommands {
     }
   }
 
-  /** Tells a panel to put the cursor in its box (the draft back in it, on the job it showed), then to start listening. */
-  private focus(port: PanelPort, { draft, job }: Restore, voice: boolean): void {
-    this.post(port, { type: "panel.focus", ...(draft ? { draft } : {}), ...(job ? { job } : {}) });
+  /**
+   * A panel gets back the draft and the job it showed; `focus`: the cursor goes in its box (panel.focus), then
+   * `voice`: it starts listening. A panel reopened in another window only gets its things back (panel.restore).
+   */
+  private restore(port: PanelPort, { draft, job }: Restore, focus: boolean, voice: boolean): void {
+    const back = { ...(draft ? { draft } : {}), ...(job ? { job } : {}) };
+    if (focus) this.post(port, { type: "panel.focus", ...back });
+    else if (draft || job) this.post(port, { type: "panel.restore", ...back });
     if (voice) this.post(port, { type: "panel.voice" });
   }
 
-  /** Opens the tab's panel; when it says hello it takes the focus, with what it had back (and listens). */
-  private openFocused(tabId: number, restore: Restore, voice: boolean): void {
-    this.opening.set(tabId, { ...restore, voice });
-    this.deps.tabs?.add(tabId);
-    this.deps.open(tabId).catch((err: unknown) => {
+  /** Opens the window's side panel; when it says hello it gets what `opening` says. */
+  private openFocused(windowId: number, opening: Restore & { focus: boolean; voice: boolean }): void {
+    this.opening.set(windowId, opening);
+    this.deps.open(windowId).catch((err: unknown) => {
       // Nothing opens, so no hello will consume it.
-      this.opening.delete(tabId);
+      this.opening.delete(windowId);
       this.log(`opening the side panel failed: ${String(err)}`);
     });
   }
 
-  private panelsOfWindow(windowId: number): [PanelPort, PanelInfo][] {
-    return [...this.panels].filter(([, p]) => p.windowId === windowId);
+  /** Each window with a side panel -> the text in its box and the job it showed. */
+  private restoresByWindow(): Map<number, Restore> {
+    const out = new Map<number, Restore>();
+    for (const p of this.panels.values()) {
+      if (p.windowId === null || p.asTab || out.has(p.windowId)) continue;
+      out.set(p.windowId, { draft: p.draft, job: p.job });
+    }
+    return out;
   }
 
-  private panelsOfTab(tabId: number): [PanelPort, PanelInfo][] {
-    return [...this.panels].filter(([, p]) => p.tabId === tabId);
+  private panelsOfWindow(windowId: number): [PanelPort, PanelInfo][] {
+    return [...this.panels].filter(([, p]) => p.windowId === windowId);
   }
 
   private post(port: PanelPort, msg: unknown): void {

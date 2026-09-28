@@ -36,7 +36,10 @@ export const POST_URL_POLL = { intervalMs: 1000, timeoutMs: 5000 };
 
 export function extractPostText(instructions: string): string {
   const i = instructions.indexOf("Post:");
-  return (i >= 0 ? instructions.slice(i + "Post:".length) : instructions).trim();
+  const rest = i >= 0 ? instructions.slice(i + "Post:".length) : instructions;
+  // A continued conversation quotes its first request between "<<<" and ">>>" lines: the post ends with the quote.
+  const end = rest.search(/\n>>>(\n|$)/);
+  return (end >= 0 ? rest.slice(0, end) : rest).trim();
 }
 
 export function extractStartUrl(instructions: string): string | null {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { elapsedText, HEARING, isMuteKey, MUTE_KEY, NOT_HERE_TEXT, remoteBarView, VoiceActivity, voiceBarView, type VoiceBarInput } from "../../src/voice/voice-bar-view.js";
 
-const base: VoiceBarInput = { phase: "listening", hearing: false, muted: false, engine: "realtime", elapsedMs: 42_000, elsewhere: null };
+const base: VoiceBarInput = { phase: "listening", hearing: false, muted: false, engine: "realtime", elapsedMs: 42_000, where: null, elsewhere: false };
 const view = (patch: Partial<VoiceBarInput>) => voiceBarView({ ...base, ...patch });
 
 describe("the voice strip: it only tells", () => {
@@ -19,6 +19,12 @@ describe("the voice strip: it only tells", () => {
     ]);
     // No links on its own tab: the controls are in the composer.
     expect(view({}).links).toBeNull();
+  });
+
+  it("names the tab it runs for, on that tab too ('Voice on · Inbox'); the announcement stays short", () => {
+    const v = view({ where: { title: "Inbox (3) - Gmail", url: "https://mail.google.com/" } });
+    expect([v.label, v.status, v.announce]).toEqual(["Voice on · Inbox (3) - Gmail", "Listening", "Voice on: Listening"]);
+    expect(view({ where: { title: null, url: "https://mail.google.com/u/0/" } }).label).toBe("Voice on · mail.google.com");
   });
 
   it("a voice on the microphone reads 'Hearing you' while listening or working, but is announced as the state it is in", () => {
@@ -40,26 +46,26 @@ describe("the voice strip: it only tells", () => {
   });
 
   it("on another tab it names the tab it listens in, with Go to tab and Use voice here (the mic here ends it: no Turn off)", () => {
-    const v = view({ phase: "speaking", elsewhere: { title: "Inbox (3) - Gmail" } });
-    expect(v).toMatchObject({ state: "elsewhere", label: "Voice is on in Inbox (3) - Gmail", status: "", time: "0:42", links: { turnOff: false }, interrupt: false, announce: "Voice is on in Inbox (3) - Gmail" });
-    expect(view({ elsewhere: { title: null } }).label).toBe("Voice is on in another tab");
+    const v = view({ phase: "speaking", where: { title: "Inbox (3) - Gmail", url: null }, elsewhere: true });
+    expect(v).toMatchObject({ state: "elsewhere", label: "Voice on · Inbox (3) - Gmail", status: "", time: "0:42", links: { turnOff: false }, interrupt: false, announce: "Voice on · Inbox (3) - Gmail" });
+    expect(view({ elsewhere: true }).label).toBe("Voice on · another tab");
   });
 
-  it("in another tab's panel: where voice is on, Go to tab, Use voice here and Turn off, nothing live", () => {
-    expect(remoteBarView({ title: "Shop A", engine: "standard" })).toEqual({
+  it("in another window's panel: where voice is on, Go to tab, Use voice here and Turn off, nothing live", () => {
+    expect(remoteBarView({ where: { title: "Shop A", url: null }, engine: "standard" })).toEqual({
       state: "elsewhere",
-      label: "Voice is on in Shop A",
+      label: "Voice on · Shop A",
       status: "",
       time: null,
       hint: `Standard voice · ${NOT_HERE_TEXT}`,
       meter: false,
-      announce: "Voice is on in Shop A",
+      announce: "Voice on · Shop A",
       links: { turnOff: true },
       muted: false,
       mute: null,
       interrupt: false,
     });
-    expect(remoteBarView({ title: null, engine: null })).toMatchObject({ label: "Voice is on in another tab", hint: `Voice · ${NOT_HERE_TEXT}` });
+    expect(remoteBarView({ where: null, engine: null })).toMatchObject({ label: "Voice on · another tab", hint: `Voice · ${NOT_HERE_TEXT}` });
   });
 
   it("formats the time on", () => {
@@ -91,12 +97,12 @@ describe("the voice strip and the composer's Mute: muted", () => {
   });
 
   it("on another tab: says it is muted, Mute still in the composer", () => {
-    expect(view({ muted: true, elsewhere: { title: "Shop A" } })).toMatchObject({ state: "elsewhere", status: "Muted", meter: false, muted: true, mute: UNMUTE });
-    expect(view({ elsewhere: { title: "Shop A" } }).mute).toEqual(MUTE);
+    expect(view({ muted: true, elsewhere: true })).toMatchObject({ state: "elsewhere", status: "Muted", meter: false, muted: true, mute: UNMUTE });
+    expect(view({ elsewhere: true }).mute).toEqual(MUTE);
   });
 
-  it("in another tab's panel: says it is muted; no Mute there (that panel runs the microphone)", () => {
-    expect(remoteBarView({ title: "Shop A", engine: "realtime", muted: true })).toMatchObject({ status: "Muted", muted: true, mute: null });
+  it("in another window's panel: says it is muted; no Mute there (the panel running it has the microphone)", () => {
+    expect(remoteBarView({ where: { title: "Shop A", url: null }, engine: "realtime", muted: true })).toMatchObject({ status: "Muted", muted: true, mute: null });
   });
 
   it("Alt+M by the key's position (Alt on a Mac types µ), nothing else", () => {

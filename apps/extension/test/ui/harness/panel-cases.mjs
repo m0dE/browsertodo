@@ -570,9 +570,11 @@ export const PANEL_CASES = [
       const box = await p.evaluate(() => {
         const b = document.querySelector("#chat-log .ev-first").getBoundingClientRect();
         const log = document.getElementById("chat-log").getBoundingClientRect();
-        return { tall: b.height > 200, inside: b.left >= log.left && b.right <= log.right + 0.5 };
+        // A long message shows its first lines, with Show all for the rest.
+        const text = document.querySelector("#chat-log .ev-first .ev-user-text");
+        return { cut: text.dataset.cut === "true" && document.querySelector("#chat-log .ev-first .ev-more")?.textContent === "Show all", short: b.height < 260, inside: b.left >= log.left && b.right <= log.right + 0.5 };
       });
-      if (!box.tall || !box.inside) fail(`long prompt bubble ${JSON.stringify(box)}`);
+      if (!box.cut || !box.short || !box.inside) fail(`long prompt bubble ${JSON.stringify(box)}`);
       await checkLayout(p, `first-files ${label}`);
       await p.evaluate(() => (document.getElementById("chat-log").scrollTop = 0));
       await shoot(p, "panel-first-files", size, scheme);
@@ -586,9 +588,9 @@ export const PANEL_CASES = [
       await p.waitForFunction(() => !document.querySelector("dialog.sheet"));
       if (!(await p.evaluate(() => document.activeElement?.classList.contains("ev-first")))) fail("Esc did not return focus to the first message");
       // Selecting text in the bubble (to copy it) does not open the sheet.
-      // (The text, below the files strip.)
+      // (The text, below the files strip: along its first line.)
       const b = await p.locator("#chat-log .ev-first .ev-user-text").boundingBox();
-      const y = b.y + b.height / 2;
+      const y = b.y + 10;
       await p.mouse.move(b.x + 14, y);
       await p.mouse.down();
       await p.mouse.move(b.x + b.width - 14, y, { steps: 5 });
@@ -624,9 +626,8 @@ export const PANEL_CASES = [
       const view = await p.evaluate(() => ({
         bubbles: [...document.querySelectorAll("#chat-log .ev-user")].map((b) => b.textContent),
         ends: document.querySelectorAll("#chat-log .ev-end").length,
-        // Each end card says who picked its turn's elements; the picks status line itself is not shown on its own.
-        picks: [...document.querySelectorAll("#chat-log .ev-end .ev-picks")].map((e) => e.textContent),
-        loosePicks: [...document.querySelectorAll("#chat-log > .ev-status")].filter((e) => !e.hidden && /element pick/.test(e.textContent)).length,
+        // Who picked the turn's elements (Jev or Claude) is for the Raw view: nowhere in the chat.
+        picks: [...document.querySelectorAll("#chat-log *")].filter((e) => !e.children.length && /element pick/.test(e.textContent)).length,
         heads: document.querySelectorAll("#chat-log .ev-head").length,
         // The second bubble opens the second turn: right after the first turn's end card.
         order: [...document.querySelectorAll("#chat-log > *")].map((e) => e.className).join(" ").includes("ev-end ev-user"),
@@ -643,8 +644,7 @@ export const PANEL_CASES = [
       if (!first.when?.endsWith(hm)) fail(`first message time "${first.when}", want ${hm}`);
       // The brain shows once: the chip under the prompt; the brain's own start line is not repeated.
       if (first.head !== "Claude Code · claude-sonnet-5 · Jev on" || view.heads !== 1 || first.startLines !== 0) fail(`brain shown more than once ${JSON.stringify({ first, heads: view.heads })}`);
-      const wantPicks = ["Jev chose 2 of 2 element picks (clicks and typing)", "Jev chose 0 of 1 element pick (clicks and typing); Claude chose 1"];
-      if (JSON.stringify(view.picks) !== JSON.stringify(wantPicks) || view.loosePicks !== 0) fail(`end card picks ${JSON.stringify(view)}`);
+      if (view.picks !== 0) fail(`Jev's picks in the chat ${JSON.stringify(view)}`);
       // An ended chat: schedule its request, Raw, Rename, Delete (the agent has no tab now).
       await expectMenu(p, ["Schedule", "Raw", "Rename", "Delete"], "ended conversation");
       await expectComposer(CHAT, "not in conversation mode");
@@ -887,14 +887,23 @@ export const PANEL_CASES = [
           const r = el.getBoundingClientRect();
           return { shown: !el.hidden && r.height > 0, text: el.textContent.replace(/\s+/g, " ").trim(), title: el.title, oneLine: r.height < 40, inside: r.right <= innerWidth + 0.5 };
         });
-        if (!w.shown || w.text !== "Permission: Full autonomy Change" || !/^Never asks\. The agent can post, send, pay and delete/.test(w.title) || !w.oneLine || !w.inside) fail(`autonomy warning ${JSON.stringify(w)}`);
+        if (!w.shown || w.text !== "Permission: Full autonomy (change) ✕" || !/^Never asks, in chats and scheduled jobs\. The agent can post, send, pay and delete/.test(w.title) || !w.oneLine || !w.inside) fail(`autonomy warning ${JSON.stringify(w)}`);
         await checkLayout(p, `autonomy ${label}`);
         await shoot(p, "panel-autonomy-full", size, scheme);
         await p.click("#autonomy-warning-change");
         await p.waitForFunction(() => [...(window.__created ?? []), ...(window.__opened ?? [])].some((u) => u.endsWith("options.html#permission")));
-        // Back to asking: the warning goes with the next state.
-        await p.evaluate(() => { const st = window.__data.state; window.__push({ type: "state", state: { ...st, rev: (st.rev ?? 0) + 1, settings: { ...st.settings, automationLevel: "ask_consequential" } } }); });
+        // ✕ hides it; it stays hidden while full autonomy stays on.
+        const setLevel = (level) => p.evaluate((l) => { const st = window.__data.state; window.__push({ type: "state", state: { ...st, rev: (st.rev ?? 0) + 1, settings: { ...st.settings, automationLevel: l } } }); }, level);
+        await p.click("#autonomy-warning-close");
         await p.waitForSelector("#autonomy-warning", { state: "hidden" });
+        await setLevel("full");
+        await p.waitForTimeout(100);
+        if (await p.isVisible("#autonomy-warning")) fail("the closed autonomy warning came back while full autonomy stayed on");
+        // Off, then on again: it shows again.
+        await setLevel("ask_consequential");
+        await p.waitForSelector("#autonomy-warning", { state: "hidden" });
+        await setLevel("full");
+        await p.waitForSelector("#autonomy-warning", { state: "visible" });
         reportErrors(p, `autonomy ${label}`);
         await p.close();
       }
@@ -1237,10 +1246,10 @@ export const PANEL_CASES = [
       await p.close();
     },
   },
-  // A chat per tab (the panel page as a tab, following its window's active tab): tab 1's own job shows while it is
-  // active, tab 2 (no chat) shows the list; a job started in tab 2 is tab 2's.
+  // A chat per tab (the window's panel, following its active tab): tab 1's own job shows while it is active, tab 2 (no
+  // chat) shows the list; a job started in tab 2 is tab 2's.
   {
-    names: ["panel-tabs-a", "panel-tabs-b", "panel-tabs-b-started"],
+    names: ["panel-follow-a", "panel-follow-b", "panel-follow-b-started"],
     async run({ ctx, size, scheme, label, fail, groups, expectMenu, firstMessage, waitFirst, openPanel, shoot, checkLayout, reportErrors }) {
       const p = await openPanel(ctx, "tabs", "#chat-log .ev-tool");
       const view = () =>
@@ -1254,7 +1263,7 @@ export const PANEL_CASES = [
       if (!a.title?.startsWith("Summarize this pull request") || a.list || !a.stop) fail(`tab A ${JSON.stringify(a)}`);
       await expectMenu(p, ["Pause", "Schedule", "Raw", "Rename"], "tab A");
       await checkLayout(p, `tabs-a ${label}`);
-      await shoot(p, "panel-tabs-a", size, scheme);
+      await shoot(p, "panel-follow-a", size, scheme);
       // The user switches to tab 2: it has no chat, so the list, with tab 1's job under Running.
       await p.evaluate(() => window.__activateTab(2));
       await p.waitForSelector("#view-list:not([hidden])");
@@ -1262,7 +1271,7 @@ export const PANEL_CASES = [
       const run = (await groups(p)).find(([g]) => g === "Running")?.[1];
       if (b.title !== null || b.stop || b.placeholder !== "Start a new job…" || !run?.includes("chat:s-live")) fail(`tab B ${JSON.stringify({ ...b, run })}`);
       await checkLayout(p, `tabs-b ${label}`);
-      await shoot(p, "panel-tabs-b", size, scheme);
+      await shoot(p, "panel-follow-b", size, scheme);
       // A task typed in tab 2 starts there, and its job opens.
       await p.click("#now-text");
       await p.keyboard.insertText("Translate this page's intro to French");
@@ -1275,7 +1284,7 @@ export const PANEL_CASES = [
       const fresh = await firstMessage(p);
       if (!fresh.first || fresh.text !== "Translate this page's intro to French" || fresh.origin !== null || !/^\d\d:\d\d$/.test(fresh.when ?? "") || fresh.header) fail(`fresh chat's first message ${JSON.stringify(fresh)}`);
       await checkLayout(p, `tabs-b-started ${label}`);
-      await shoot(p, "panel-tabs-b-started", size, scheme);
+      await shoot(p, "panel-follow-b-started", size, scheme);
       // Back to tab 1: its job shows again.
       await p.evaluate(() => window.__activateTab(1));
       await waitFirst(p, "Summarize this pull request");
@@ -1796,7 +1805,8 @@ export const PANEL_CASES = [
       }
     },
   },
-  // The voice strip (voice-bar.ts) while the fake microphone hears a voice: one line, "Voice on" and "Hearing you", the
+  // The voice strip (voice-bar.ts) while the fake microphone hears a voice: one line, "Voice on · <its tab>" (the tab's
+  // name cut short when narrow) and "Hearing you", the
   // time on, a small meter, no buttons; the controls in the composer row (the mic, filled in the live colour, ends voice;
   // Mute next to it); the box glowing with "Listening… just talk"; the background told the tab (its toolbar badge) and,
   // when the mic ends it by keyboard, that it ended (the badge goes). With reduced motion nothing pulses.
@@ -1841,7 +1851,7 @@ export const PANEL_CASES = [
           };
         });
         const want2 = (ok, what) => ok || fail(`${name} ${label}: ${what} ${JSON.stringify(look)}`);
-        want2(look.label === "Voice on" && look.status === "Hearing you" && look.live === "Voice on: Listening", "state word / announcement");
+        want2(look.label === "Voice on · Inbox (1) - ada.lovelace@ex…" && look.status === "Hearing you" && look.live === "Voice on: Listening", "state word / announcement");
         want2(/^0:0\d$/.test(look.time), "time on");
         want2(look.hint === "Standard voice · Just talk · say “stop” to end", "tooltip");
         want2(look.region[0] === "region" && look.region[1] === "Voice status", "strip region");
@@ -2231,29 +2241,28 @@ export const PANEL_CASES = [
         await p.close();
       }
 
-      // Tab 1's own side panel (as Chrome opens it: sidepanel.html?tab=1). The session belongs to tab 1; the background
-      // says which tab the user looks at (voice.session): on another tab the bar says where it listens (Go to tab, Use
-      // voice here), and what is said there goes to tab 1's chat with a note naming both tabs; closing its tab ends it.
-      // Then another tab's session seen from this panel: the notice, nothing live; Use voice here waits for it to end.
+      // The window's side panel, started on tab 1: the session belongs to tab 1. The panel stays on screen on every tab
+      // and follows the active tab (__activateTab): on another tab the bar still names tab 1 (Go to tab, Use voice
+      // here), and what is said there goes to tab 1's chat with a note naming both tabs; closing its tab ends it. Then
+      // another panel's session (another window's) seen from this one: the notice, nothing live; Use voice here waits
+      // for it to end.
       if (want("panel-handsfree-elsewhere", size, scheme)) {
-        const p = await openPanel(ctx, "voice-chat", "#chat-log .ev-end", { search: "?tab=1", edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
-        // As in Chrome, tab 1's panel is on screen only while the user looks at tab 1.
-        await p.evaluate(() => Object.defineProperty(document, "visibilityState", { configurable: true, get: () => (window.__hidden ? "hidden" : "visible") }));
+        const p = await openPanel(ctx, "voice-chat", "#chat-log .ev-end", { edit: (d) => (d.state.settings.voiceEngine = "standard"), init: [installVoiceFakes] });
+        const own = await p.evaluate(() => window.__portSent.find((m) => m.type === "panel.hello")?.panel);
+        if (!own) fail("the panel's hello names no panel id");
+        /** The user switches to tab `tab`. */
+        const look = (tab) => p.evaluate((t) => window.__activateTab(t), tab);
+        /** The background's word on the session (`panel`: the page running it; default this one). */
         const session = (s) =>
-          p.evaluate(
-            (v) => {
-              window.__hidden = !!v && v.viewing !== 1;
-              window.__push({ type: "voice.session", session: v });
-              document.dispatchEvent(new Event("visibilitychange"));
-            },
-            s === null ? null : { tabId: 1, windowId: 1, host: 1, engine: "standard", viewing: 1, ...s },
-          );
+          p.evaluate((v) => window.__push({ type: "voice.session", session: v }), s === null ? null : { tabId: 1, windowId: 1, panel: own, engine: "standard", viewing: 1, ...s });
         const lastListening = () => p.evaluate(() => window.__portSent.filter((m) => m.type === "panel.listening").at(-1));
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
         const reported = await lastListening();
         if (reported.listening !== true || reported.tabId !== 1 || reported.engine !== "standard") fail(`session reported ${JSON.stringify(reported)}`);
         await session({ viewing: 1 });
+        const here = await p.evaluate(() => document.querySelector("#voice-bar .vb-label").textContent);
+        if (here !== "Voice on · Inbox (1) - ada.lovelace@ex…") fail(`the bar on its own tab names it: "${here}"`);
         // A tab its chat lives in is the session's own: the plain bar there. Here the chat moved to the tab its
         // task works in (as a run started from an extension page does), and the user looks at that tab.
         const home = await p.evaluate(() => window.__data.state);
@@ -2261,13 +2270,14 @@ export const PANEL_CASES = [
           const st = window.__data.state;
           window.__push({ type: "state", state: { ...st, tabChats: { 3: "s-voice" }, runningTabs: { "s-voice": [3] } } });
         });
-        await session({ viewing: 3 });
+        await look(3);
         await p.waitForTimeout(100);
         if (await p.evaluate(() => document.getElementById("voice-bar").dataset.state === "elsewhere")) fail("the tab the chat moved to counts as another tab");
         await p.evaluate((st) => window.__push({ type: "state", state: st }), home);
-        // The user switches to tab 2 (this panel would be hidden there): it knows.
-        await session({ viewing: 2 });
-        await p.waitForFunction(() => document.querySelector("#voice-bar[data-state=elsewhere] .vb-label")?.textContent.startsWith("Voice is on in Inbox (1)"));
+        await look(1);
+        // The user switches to tab 2 (the panel stays on screen): the bar still names tab 1.
+        await look(2);
+        await p.waitForFunction(() => document.querySelector("#voice-bar[data-state=elsewhere] .vb-label")?.textContent.startsWith("Voice on · Inbox (1)"));
         const away = await p.evaluate(() => ({
           label: document.querySelector("#voice-bar .vb-label").textContent,
           off: !!document.querySelector("#voice-bar .vb-off").offsetParent,
@@ -2277,7 +2287,7 @@ export const PANEL_CASES = [
           orb: !document.querySelector(".voice-orb").hidden,
           live: document.body.classList.contains("voice-live"),
         }));
-        if (away.label !== "Voice is on in Inbox (1) - ada.lovelace@ex…" || !away.go || !away.use || away.off || !away.mute || away.orb || away.live) fail(`bar on another tab ${JSON.stringify(away)}`);
+        if (away.label !== "Voice on · Inbox (1) - ada.lovelace@ex…" || !away.go || !away.use || away.off || !away.mute || away.orb || away.live) fail(`bar on another tab ${JSON.stringify(away)}`);
         await checkLayout(p, `handsfree-elsewhere ${label}`);
         await shoot(p, "panel-handsfree-elsewhere", size, scheme);
         // Said while tab 2 is in front: it goes to tab 1's chat as said, with the note naming both tabs as its context
@@ -2288,13 +2298,12 @@ export const PANEL_CASES = [
         if (req.sessionId !== "s-voice" || req.tabId !== undefined || req.voice !== true || !/^Open Gmail/.test(req.text) || req.text.includes("looking at another tab") || req.context !== note)
           fail(`said on another tab, sent ${JSON.stringify(req)}`);
         if ((await p.inputValue("#now-text")) !== "") fail(`the box got "${await p.inputValue("#now-text")}" while the user looked at another tab`);
-        // Go to tab asks for the session's tab; back there, the plain bar.
+        // Go to tab asks for the session's tab (the stub then makes it the active tab); back there, the plain bar.
         await p.click("#voice-bar .vb-go");
         if (!(await p.evaluate(() => window.__requests.some((r) => r.type === "tab.focus" && r.tabId === 1)))) fail("Go to tab did not ask for tab 1");
-        await session({ viewing: 1 });
         await p.waitForFunction(() => document.getElementById("voice-bar").dataset.state !== "elsewhere");
         // Use voice here (on another tab) moves the session there, and says so.
-        await session({ viewing: 2 });
+        await look(2);
         await p.waitForSelector("#voice-bar[data-state=elsewhere]");
         await p.click("#voice-bar .vb-use");
         await p.waitForFunction(() => !document.querySelector("#voice-bar").hidden && document.getElementById("voice-bar").dataset.state !== "elsewhere");
@@ -2313,16 +2322,17 @@ export const PANEL_CASES = [
         // The voice key while the user looks at another tab ends it (it never moves it).
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await waitPhase(p, "listening");
-        await session({ viewing: 4 });
+        await look(4);
         await p.waitForSelector("#voice-bar[data-state=elsewhere]");
         await p.evaluate(() => window.__push({ type: "panel.voice" }));
         await p.waitForFunction(() => document.querySelector("#voice-bar").hidden);
         if ((await p.getAttribute("#now-actions .voice-mic", "data-state")) !== "idle") fail("the voice key on another tab did not end hands-free");
         await session(null);
 
-        // Another tab's session (tab 5's panel runs it): this panel shows where, with nothing live.
-        await session({ tabId: 5, host: 5, viewing: 1 });
-        await p.waitForFunction(() => document.querySelector("#voice-bar[data-state=elsewhere] .vb-label")?.textContent === "Voice is on in Tab 5");
+        // Another panel's session (another window's panel runs it, for tab 5): this panel shows where, with nothing live.
+        await look(1);
+        await session({ tabId: 5, panel: "another-window", viewing: 1 });
+        await p.waitForFunction(() => document.querySelector("#voice-bar[data-state=elsewhere] .vb-label")?.textContent === "Voice on · Tab 5");
         const remote = await p.evaluate(() => ({
           detail: document.getElementById("voice-bar").title,
           meter: !!document.querySelector("#voice-bar .vb-meter").offsetParent,
@@ -2333,7 +2343,7 @@ export const PANEL_CASES = [
           live: document.body.classList.contains("voice-live"),
           placeholder: document.getElementById("now-text").placeholder,
         }));
-        if (remote.detail !== "Standard voice · Not listening in this tab" || remote.meter || !remote.go || !remote.use || !remote.stop || remote.mic !== "idle" || remote.live || /Listening/i.test(remote.placeholder))
+        if (remote.detail !== "Standard voice · Listening in another window" || remote.meter || !remote.go || !remote.use || !remote.stop || remote.mic !== "idle" || remote.live || /Listening/i.test(remote.placeholder))
           fail(`another tab's session ${JSON.stringify(remote)}`);
         await checkLayout(p, `handsfree-remote ${label}`);
         await shoot(p, "panel-handsfree-remote", size, scheme);

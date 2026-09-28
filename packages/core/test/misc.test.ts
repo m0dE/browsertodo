@@ -6,7 +6,7 @@ import { mapStrings, MIN_SECRET_CHARS, REDACTED, SecretRedactor } from "../src/r
 import { SCREEN_HELP_TEXT } from "@browsertodo/shared";
 import { agentError, buildFollowUpMessage, buildSystemPrompt, buildTaskPrompt, classifyFailure, createJev, ENDED_WITHOUT_RESULT, EXITED_WITHOUT_RESULT, formatSnapshot, timeLimitReached, toolCallLimitExceeded, verifyXPost } from "../src/index.js";
 import { buildJevQuestions, buildJevState, jevFromClient, type JevClientLike } from "../src/jev.js";
-import { mentionsHandle, MENU_POLL, switchXAccount } from "../src/x-account.js";
+import { mentionsHandle, MENU_WAIT_MS, switchXAccount } from "../src/x-account.js";
 import type { BrowserCaller } from "../src/types.js";
 import { parseSnapshotText } from "../src/page-format.js";
 import { FakeX } from "./fake-x.js";
@@ -204,25 +204,14 @@ describe("switchXAccount", () => {
     expect(r.text).toMatch(/step 1 failed.*SideNav_AccountSwitcher_Button/);
   });
 
-  it("waits for the account menu to render after opening it", async () => {
+  it("lets the page wait for the account menu to show its accounts, and reads nothing in between", async () => {
     const x = new FakeX({ account: "alice" });
-    const inner = x.caller();
-    let slowReads = 0;
-    const waits: number[] = [];
-    const browser: BrowserCaller = {
-      call: async (method, params) => {
-        const r = await inner.call(method, params);
-        // The menu takes two reads to show its entries.
-        if (method === "browser.click" && x.menuOpen) slowReads = 2;
-        if (method !== "browser.readPage" || slowReads === 0) return r;
-        slowReads--;
-        const page = r as PageSnapshot;
-        return { ...page, elements: page.elements.filter((e) => e.testId !== "UserCell") } as never;
-      },
-    };
-    const r = await switchXAccount(browser, "bob", { sleep: async (ms) => void waits.push(ms) });
+    const r = await switchXAccount(x.caller(), "bob", { sleep: noSleep });
     expect(r.text).toMatch(/Switched to @bob/);
-    expect(waits.slice(0, 2)).toEqual([MENU_POLL.intervalMs, MENU_POLL.intervalMs]);
+    const methods = x.calls.map((c) => c.method);
+    const pick = methods.indexOf("browser.clickXAccountEntry");
+    expect(methods[pick - 1]).toBe("browser.click");
+    expect(x.calls[pick]!.params).toEqual({ handle: "@bob", waitMs: MENU_WAIT_MS });
   });
 });
 

@@ -1,9 +1,10 @@
 /**
- * Hands-free voice with a side panel per tab (the owner's report: voice started in one tab looked live in every
- * other, and the narrator answered questions about a tab it could not see). The panel running the session learns
- * from the background which tab the user looks at: the bar says where it listens, messages and the narrator get a
- * note naming both tabs, and "use this tab" moves it. Another tab's panel shows where voice is on, nothing live, and
- * Use voice here ends it where it runs before starting it there (one microphone).
+ * Hands-free voice across tabs (the owner's report: voice started in one tab looked live in every other, and the
+ * narrator answered questions about a tab it could not see). The side panel is the window's and stays on screen on
+ * every tab; the panel running the session follows its window's active tab: the bar always names the session's tab,
+ * on another tab with Go to tab and Use voice here, messages and the narrator get a note naming both tabs, and "use
+ * this tab" moves it. Another window's panel shows where voice is on, nothing live, and Use voice here ends it where
+ * it runs before starting it there (one microphone).
  */
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { ExtensionSettings, VoiceEngineId, VoiceEnginesResponse } from "@browsertodo/shared";
@@ -76,8 +77,12 @@ function find(el: MiniElement, cls: string): MiniElement | null {
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
-/** The side panel of tab `homeTab` (it shows that tab). */
-function panel(homeTab: number, opts: { engine?: VoiceEngineId; begin?: (n: number) => Promise<void> } = {}) {
+/**
+ * A window's side panel, showing tab `shownTab` (its window's active tab); `id`: the page's id ("p1" runs the
+ * session in these tests, "p2" is another window's panel). show(tab): the user switches tabs in its window.
+ */
+function panel(shownTab: number, opts: { id?: string; engine?: VoiceEngineId; begin?: (n: number) => Promise<void> } = {}) {
+  let shown = shownTab;
   const engines: FakeEngine[] = [];
   const looks: (HandsFreeLook | null)[] = [];
   const reports: [boolean, number | null, VoiceEngineId | null][] = [];
@@ -89,8 +94,8 @@ function panel(homeTab: number, opts: { engine?: VoiceEngineId; begin?: (n: numb
     voice: { state: "idle", attachHandsFree: () => {}, showHandsFree: (l) => void looks.push(l), setLevel: () => {}, showTip: () => {}, ensureMic: async () => true, shortcutLabel: null },
     composer: { draft: () => "", setDraft: () => {} },
     notify: () => {},
-    activeTab: () => homeTab,
-    homeTab,
+    activeTab: () => shown,
+    panel: opts.id ?? "p1",
     chatOf: () => null,
     tabsOf: () => [],
     send: vi.fn(async () => "s-voice"),
@@ -124,11 +129,16 @@ function panel(homeTab: number, opts: { engine?: VoiceEngineId; begin?: (n: numb
   };
   const hf = initHandsFree(deps);
   const button = (cls: string) => find(bar, cls)!;
-  return { hf, deps, engines, looks, reports, mutedReports, sounds, bar, button };
+  /** The user switches to `tab`: the panel follows its window's active tab and looks again (sidepanel.ts setActive). */
+  const show = (tab: number) => {
+    shown = tab;
+    hf.refresh();
+  };
+  return { hf, deps, engines, looks, reports, mutedReports, sounds, bar, button, show };
 }
 
-/** What the background says: the session runs in tab 1's panel, for tab 1, and the user looks at `viewing`. */
-const inTab1 = (viewing: number, s: Partial<VoiceSessionView> = {}): VoiceSessionView => ({ tabId: 1, windowId: 5, host: 1, engine: "realtime", viewing, ...s });
+/** What the background says: panel p1 runs the session, for tab 1, and the user looks at `viewing`. */
+const inTab1 = (viewing: number, s: Partial<VoiceSessionView> = {}): VoiceSessionView => ({ tabId: 1, windowId: 5, panel: "p1", engine: "realtime", viewing, ...s });
 
 describe("hands-free voice in the panel that runs it, while the user looks at another tab", () => {
   beforeAll(installMiniDom);
@@ -144,8 +154,8 @@ describe("hands-free voice in the panel that runs it, while the user looks at an
     expect(rt.notes).toEqual([]);
     expect(t.bar.dataset.state).toBe("listening");
 
-    // The user switches to tab 2 (tab 1's panel is hidden now).
-    t.hf.setSession(inTab1(2));
+    // The user switches to tab 2 (the panel stays on screen, and follows).
+    t.show(2);
     await settle();
     expect(t.bar.dataset.state).toBe("elsewhere");
     expect(rt.notes).toEqual(["The user is looking at another tab: Recipes (recipes.example). You work in Inbox (mail.example.com)."]);
@@ -163,7 +173,7 @@ describe("hands-free voice in the panel that runs it, while the user looks at an
     );
 
     // Back on tab 1: the narrator hears so; messages go as said.
-    t.hf.setSession(inTab1(1));
+    t.show(1);
     await settle();
     expect(rt.notes.at(-1)).toBe(lookingHomeNote(PAGES[1]!));
     rt.events.forward("Reply to Sarah");
@@ -177,11 +187,10 @@ describe("hands-free voice in the panel that runs it, while the user looks at an
     t.hf.toggle("button");
     await settle();
     const rt = t.engines[0]!;
-    t.hf.setSession(inTab1(1));
     expect(await rt.events.useThisTab()).toBe("The user is already looking at the tab you work in.");
-    t.hf.setSession(inTab1(3));
+    t.show(3);
     expect(await rt.events.useThisTab()).toBe("That tab is gone: nothing moved.");
-    t.hf.setSession(inTab1(2));
+    t.show(2);
     await settle();
     expect(await rt.events.useThisTab()).toBe("Moved: you now work in Recipes (recipes.example); what the user says goes to that tab's chat.");
     expect(t.reports.at(-1)).toEqual([true, 2, "realtime"]);
@@ -199,7 +208,7 @@ describe("hands-free voice in the panel that runs it, while the user looks at an
     await settle();
     const std = t.engines[0]!;
     expect(std.id).toBe("standard");
-    t.hf.setSession(inTab1(2, { engine: "standard" }));
+    t.show(2);
     std.events.heard("Use this tab.", true);
     await settle();
     await settle();
@@ -208,7 +217,7 @@ describe("hands-free voice in the panel that runs it, while the user looks at an
     expect(std.spoken).toEqual(["Now working in Recipes."]);
   });
 
-  it("the background asks it to stop (Stop or Use voice here in another tab's panel): it ends and says so", async () => {
+  it("the background asks it to stop (Stop or Use voice here in another panel): it ends and says so", async () => {
     const t = panel(1);
     t.hf.toggle("button");
     await settle();
@@ -219,16 +228,16 @@ describe("hands-free voice in the panel that runs it, while the user looks at an
   });
 });
 
-describe("hands-free voice seen from another tab's panel", () => {
+describe("hands-free voice seen from another window's panel", () => {
   beforeAll(installMiniDom);
 
   it("says where voice is on, with Go to tab, Use voice here and Turn off, and nothing live", async () => {
-    const t = panel(2);
+    const t = panel(2, { id: "p2" });
     t.hf.setSession(inTab1(2));
     await settle();
     expect(t.bar.hidden).toBe(false);
     expect(t.bar.dataset.state).toBe("elsewhere");
-    expect(find(t.bar, "vb-label")!.textContent).toBe("Voice is on in Inbox");
+    expect(find(t.bar, "vb-label")!.textContent).toBe("Voice on · Inbox");
     expect(find(t.bar, "vb-links")!.hidden).toBe(false);
     expect(find(t.bar, "vb-off")!.hidden).toBe(false);
     expect(find(t.bar, "vb-meter")!.hidden).toBe(true);
@@ -249,7 +258,7 @@ describe("hands-free voice seen from another tab's panel", () => {
   });
 
   it("Use voice here: ends it where it runs, then (once it ended) starts here on the same engine; never two at once", async () => {
-    const t = panel(2);
+    const t = panel(2, { id: "p2" });
     t.hf.setSession(inTab1(2, { engine: "standard" }));
     t.button("vb-use").click();
     expect(t.deps.stopRemote).toHaveBeenCalledTimes(1);
@@ -273,22 +282,21 @@ describe("hands-free voice seen from another tab's panel", () => {
   });
 
   it("the mic in that panel moves the session here too (it does not start a second one)", async () => {
-    const t = panel(2);
+    const t = panel(2, { id: "p2" });
     t.hf.setSession(inTab1(2));
     t.hf.toggle("button");
     expect(t.deps.stopRemote).toHaveBeenCalledTimes(1);
     expect(t.engines).toEqual([]);
   });
 
-  it("moved to this panel's tab by voice (the other panel still runs it): this panel takes it over", async () => {
-    const t = panel(2);
-    t.hf.setSession(inTab1(2, { tabId: 2 }));
-    expect(t.deps.stopRemote).toHaveBeenCalledTimes(1);
+  it("its own report of a session it no longer runs is no other panel's session: no strip, and the mic starts one", async () => {
+    const t = panel(1);
+    t.hf.setSession(inTab1(1));
     expect(t.bar.hidden).toBe(true);
-    t.hf.setSession(null);
+    t.hf.toggle("button");
     await settle();
-    expect(t.engines.map((e) => [e.id, e.takeover])).toEqual([["realtime", true]]);
-    expect(t.hf.tab).toBe(2);
+    expect(t.deps.stopRemote).not.toHaveBeenCalled();
+    expect(t.engines).toHaveLength(1);
   });
 });
 
@@ -359,7 +367,7 @@ describe("hands-free voice muted", () => {
     await settle();
     const rt = t.engines[0]!;
     t.hf.toggleMute();
-    t.hf.setSession(inTab1(2, { muted: true }));
+    t.show(2);
     await settle();
     expect(t.bar.dataset.state).toBe("elsewhere");
     expect(find(t.bar, "vb-status")!.textContent).toBe("Muted");
@@ -372,11 +380,11 @@ describe("hands-free voice muted", () => {
     expect(t.mutedReports.at(-1)).toBe(true);
   });
 
-  it("Use voice here in another tab's panel: the session starts there muted, as it was", async () => {
-    const t = panel(2);
+  it("Use voice here in another window's panel: the session starts there muted, as it was", async () => {
+    const t = panel(2, { id: "p2" });
     t.hf.setSession(inTab1(2, { muted: true }));
     expect(find(t.bar, "vb-status")!.textContent).toBe("Muted");
-    expect(t.bar.title).toBe("Realtime voice · Not listening in this tab");
+    expect(t.bar.title).toBe("Realtime voice · Listening in another window");
     // The mic and Mute stay as they are when voice is off here.
     expect(t.looks.every((l) => l === null)).toBe(true);
     t.button("vb-use").click();

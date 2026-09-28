@@ -79,19 +79,16 @@ export class AgentSlots implements SlotPool {
     private readonly onBrowserCall?: (sessionId: string, call: Parameters<BrowserCallTrace>[0]) => void,
     /** Approvals before actions (the automation level). Absent: nothing waits. */
     private readonly approvals?: SlotApprovals,
-    /** Tabs with their own side panel open: a run never takes the user away from one. */
-    private readonly showsPanel?: (tabId: number) => boolean,
   ) {}
 
   /** Slot n, created on first use. Slot 0 is the first agent tab. */
   get(index: number): Slot {
     const existing = this.slots.get(index);
     if (existing) return existing;
-    const { isChatTab, showsPanel } = this;
+    const { isChatTab } = this;
     const tab = new AgentTab(index, {
       isTaken: (tabId) => this.takenByOther(index, tabId),
       ...(isChatTab ? { isChatTab } : {}),
-      ...(showsPanel ? { showsPanel } : {}),
     });
     const driver = new Driver(this.cdp, tab, { knownTabs: () => this.allTabIds() });
     const cdp = this.cdp;

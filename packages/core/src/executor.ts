@@ -146,7 +146,7 @@ export function createToolExecutor(opts: ToolExecutorOptions): ToolExecutor {
   let page: PageSnapshot | null = null;
   const follow = (method: BrowserMethod, params: unknown, result: unknown) => {
     if (method === "browser.readPage") page = (params as { tab?: string }).tab ? null : (result as PageSnapshot);
-    else if (method === "browser.navigate" || method === "browser.switchTab" || method === "browser.openTabs" || method === "browser.closeTabs") page = null;
+    else if (method === "browser.navigate" || method === "browser.switchTab" || method === "browser.openTabs" || method === "browser.closeTabs" || method === "browser.clickXAccountEntry") page = null;
   };
   /** Throws the refusal of a click or key that would publish on X while it is signed in as another account than the task's. */
   const checkXAccount = async (account: string, action: Parameters<typeof wrongXAccountRefusal>[1]) => {

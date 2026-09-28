@@ -8,7 +8,7 @@ import {
   sameWords,
   scheduledView,
   spokenEchoes,
-  turnPicks,
+  hiddenInChat,
   wordForWord,
 } from "../../src/sidepanel/event-format.js";
 import { shortUrl, toolArgsSummary } from "../../src/text.js";
@@ -65,26 +65,33 @@ describe("describeEvent", () => {
     });
     expect(describeEvent({ type: "task_end", outcome: "failed", reason: "no" })).toMatchObject({ text: "no", chip: { tone: "bad" } });
   });
-  it("the end card shows who picked the turn's elements; the picks status line itself is folded into it", () => {
+  it("the chat leaves Jev's picks, their count and a brain's start line to the Raw view; other lines show", () => {
     const events: AgentEvent[] = [
-      { type: "status", text: "Jev chose 1 of 1 element pick (clicks and typing)", picks: { jev: 1, claude: 0 } },
-      { type: "task_end", outcome: "done", summary: "first" },
-      { type: "user_message", text: "again" },
+      { type: "status", text: "Claude Code started (claude-sonnet-5)" },
+      { type: "jev", goal: "click Post", operation: "click", index: 7, confidence: 0.93, executed: true, ms: 182 },
       { type: "status", text: "Jev chose 9 of 11 element picks (clicks and typing); Claude chose 2", picks: { jev: 9, claude: 2 } },
       { type: "status", text: "Post verified" },
-      { type: "task_end", outcome: "done", summary: "second" },
-      { type: "user_message", text: "no Jev this time" },
-      { type: "task_end", outcome: "done", summary: "third" },
+      { type: "task_end", outcome: "done", summary: "Posted" },
     ];
-    expect(turnPicks(events, 1)).toEqual({ jev: 1, claude: 0 });
-    expect(turnPicks(events, 5)).toEqual({ jev: 9, claude: 2 });
-    expect(turnPicks(events, 7)).toBeUndefined();
-    expect(describeEvent(events[5]!, { picks: turnPicks(events, 5) })).toMatchObject({
-      kind: "end",
-      picks: "Jev chose 9 of 11 element picks (clicks and typing); Claude chose 2",
-    });
-    expect(describeEvent(events[7]!, {})).not.toHaveProperty("picks");
-    expect(describeEvent(events[3]!)).toEqual({ kind: "status", text: events[3]!.type === "status" ? events[3]!.text : "", picks: true });
+    expect(events.map((_, i) => hiddenInChat(events, i))).toEqual([true, true, true, false, false]);
+    expect(describeEvent(events[4]!, {})).not.toHaveProperty("picks");
+  });
+
+  it("a run paused for an approval shows its card alone: its pause line and its end are left to the Raw view", () => {
+    const REASON = 'Needs your OK to: Click "Post" as @acme (publishes) — open to allow';
+    const request = { id: "a1", action: 'Click "Post" as @acme', site: "x.com", why: "publishes", kind: "publish" as const, expiresAt: "2026-09-28T09:00:00.000Z" };
+    const events: AgentEvent[] = [
+      { type: "approval_request", request },
+      { type: "approval_resolved", id: "a1", outcome: "paused" },
+      { type: "status", text: `Pausing: ${REASON}` },
+      { type: "tool_result", id: "1", name: "act", text: "Not done: the user did not approve this action. Nobody is there to approve it now.", isError: true },
+      { type: "task_end", outcome: "paused", reason: REASON },
+      { type: "user_message", text: "Why did you stop?" },
+      { type: "tool_result", id: "2", name: "click", text: "Not done: the user did not approve this action. The user denied it.", isError: true },
+      { type: "status", text: "Pausing: The site asked for a code" },
+      { type: "task_end", outcome: "paused", reason: "The site asked for a code" },
+    ];
+    expect(events.map((_, i) => hiddenInChat(events, i))).toEqual([false, false, true, true, true, false, false, false, false]);
   });
   it("other kinds", () => {
     expect(describeEvent({ type: "assistant_text", text: "  hi \n" })).toEqual({ kind: "text", text: "hi" });

@@ -34,12 +34,11 @@ export interface MemoryNoteActions {
 export function renderEvent(v: EventView, onContinue?: () => void, scheduled?: ScheduledCardActions, approval?: ApprovalCardActions, memory?: MemoryNoteActions): HTMLElement {
   switch (v.kind) {
     case "status":
-      // The end-of-turn picks line is shown in the end card.
-      return v.picks ? h("div.ev-status", { hidden: true }, v.text) : h("div.ev-status", null, v.text);
+      return h("div.ev-status", null, v.text);
     case "text":
       return renderText(v.text, v.id);
     case "tool":
-      // Every tool call is Claude's decision; Jev's own decisions show as Jev lines below it.
+      // Every tool call is Claude's decision (Jev's own picks are in the Raw view).
       return h("div.ev-tool", { title: `Claude chose: ${v.name} ${v.args}` }, h("b", null, v.name), v.args ? ` ${v.args}` : "");
     case "result": {
       const cls = v.isError ? "err" : "";
@@ -68,8 +67,8 @@ export function renderEvent(v: EventView, onContinue?: () => void, scheduled?: S
     case "user": {
       if (v.screen) return renderScreenHelp(v.text);
       const files = renderSentFiles(v.attachments);
-      if (!v.voice) return files ? h("div.ev-user", null, files, h("span.ev-user-text", null, v.text)) : h("div.ev-user", null, v.text);
-      const bubble = h("div.ev-user.voice", { title: "Sent by voice" }, files, voiceMark(), h("span.ev-user-text", null, v.text));
+      if (!v.voice) return h("div.ev-user", null, files, ...userText(v.text));
+      const bubble = h("div.ev-user.voice", { title: "Sent by voice" }, files, voiceMark(), ...userText(v.text));
       return v.heard ? h("div.ev-said", null, bubble, renderWordForWord(v.heard)) : bubble;
     }
     case "spoken":
@@ -89,9 +88,6 @@ export function renderEvent(v: EventView, onContinue?: () => void, scheduled?: S
           v.text && !v.long ? h("span.ev-summary", { title: v.text }, v.text) : null,
         ),
         v.url ? h("a", { href: v.url, target: "_blank", rel: "noopener" }, v.url) : null,
-        v.picks
-          ? h("div.ev-picks", { title: "Who chose the element for each click and typing step: Jev (the fast picker), or Claude when Jev was unsure" }, v.picks)
-          : null,
         onContinue
           ? h(
               "div.ev-actions",
@@ -326,7 +322,8 @@ export function renderOpening(v: OpeningView, onDetails: (trigger: HTMLElement) 
         v.origin ? h("span.ev-origin", null, v.origin) : null,
         renderSentFiles(v.attachments),
         v.voice ? voiceMark() : null,
-        h("span.ev-user-text", null, v.text),
+        // A scheduled run's instructions are its job's (shown on the job's page): its first line, the rest on Show all.
+        ...userText(v.text, v.origin ? { lines: 1, cut: v.text.trim().includes("\n") || v.text.length > SCHEDULED_CHARS } : {}),
         v.files ? h("span.ev-files", { title: "Files sent with this message" }, svgIcon(12, CLIP_ICON), plural(v.files, "file")) : null,
       );
   bubble.classList.add("ev-first");
@@ -345,6 +342,36 @@ export function renderOpening(v: OpeningView, onDetails: (trigger: HTMLElement) 
   });
   const started = new Date(v.at);
   return h("div.ev-opening", null, bubble, v.heard ? renderWordForWord(v.heard) : null, h("time.ev-when", { datetime: v.at, title: `Started ${started.toLocaleString()}` }, v.when));
+}
+
+/** A message longer than this (lines, or characters) shows its first CUT_LINES lines, with Show all for the rest. */
+const LONG_LINES = 6;
+const LONG_CHARS = 600;
+const CUT_LINES = 4;
+/** A scheduled run's instructions longer than this (or on more than one line) show their first line. */
+const SCHEDULED_CHARS = 120;
+
+/**
+ * A message's text in its bubble: a long one cut to its first `lines` lines, with Show all (and Show less) that do not
+ * open the bubble's details.
+ */
+function userText(text: string, opts: { lines?: number; cut?: boolean } = {}): HTMLElement[] {
+  const cut = opts.cut ?? (text.split(/\r?\n/).length > LONG_LINES || text.length > LONG_CHARS);
+  const body = h("span.ev-user-text", null, text);
+  if (!cut) return [body];
+  body.dataset.cut = "true";
+  body.style.setProperty("--lines", String(opts.lines ?? CUT_LINES));
+  const more = h("button.link.ev-more", { type: "button", "aria-expanded": "false" }, "Show all");
+  more.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = body.dataset.cut === "true";
+    body.dataset.cut = String(!open);
+    more.textContent = open ? "Show less" : "Show all";
+    more.setAttribute("aria-expanded", String(open));
+  });
+  // Enter and Space on it are its own, not the bubble's (which opens the details).
+  more.addEventListener("keydown", (e) => e.stopPropagation());
+  return [body, more];
 }
 
 const CLIP_ICON =

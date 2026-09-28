@@ -99,6 +99,9 @@ class RealishX {
             e.onClick?.();
             return { ok: true } as never;
           }
+          case "browser.clickXAccountEntry":
+            // Like the page function: this menu has no "Switch to" entry, only delegates' "Act as" cells.
+            return { clicked: false, reason: this.menuOpen ? 'the account menu shows only delegate accounts ("Act as")' : "the account menu is not open" } as never;
           default:
             throw new Error(`Unknown method: ${method}`);
         }

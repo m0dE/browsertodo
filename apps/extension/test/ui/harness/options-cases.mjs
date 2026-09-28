@@ -260,6 +260,7 @@ export const OPTION_CASES = [
     ["scheduled tasks do what they say", () => p.isChecked("input[name=scheduledAutomation][value=full_within_task]")],
     ["schedule under it", async () => (await shown(p, "#schedule-group #f-intervalMinutes")) && (await p.inputValue("#f-intervalMinutes")) === "15" && (await p.inputValue("#f-maxParallelTasks")) === "2"],
     ["no warning", async () => !(await shown(p, "#automation-warning"))],
+    ["scheduled choices in effect (no note)", async () => !(await shown(p, "#scheduled-automation-note")) && (await p.locator("input[name=scheduledAutomation]:disabled").count()) === 0],
     ["the section is in view", () => p.evaluate(() => { const r = document.getElementById("automation-group").getBoundingClientRect(); return r.top >= 0 && r.top < innerHeight; })],
   ]],
   ["options-permission-full", "ok", "#permission", (d) => (d.state.settings.automationLevel = "full"), (p) => [
@@ -269,6 +270,13 @@ export const OPTION_CASES = [
       const row = document.querySelector('.opt[data-automation="full"]');
       return getComputedStyle(row).boxShadow.includes("inset") && row.hasAttribute("data-dangerous");
     })],
+    // Full autonomy covers scheduled jobs: their choice is greyed out and says why.
+    ["scheduled choices greyed out", async () =>
+      (await p.locator("input[name=scheduledAutomation]").count()) === 2 && (await p.locator("input[name=scheduledAutomation]:disabled").count()) === 2 &&
+      (await p.evaluate(() => Number(getComputedStyle(document.querySelector("#scheduled-automation .opt")).opacity) < 1))],
+    ["scheduled note says full autonomy covers them", async () =>
+      (await shown(p, "#scheduled-automation-note")) && (await p.textContent("#scheduled-automation-note")) === "Full autonomy is on, so scheduled jobs never ask either. These choices apply when Full autonomy is off."],
+    ["full autonomy's detail names scheduled jobs", async () => /^Never asks, in chats and scheduled jobs\./.test(await p.textContent('.opt[data-automation="full"] .opt-detail'))],
   ]],
   ["options-tasks", "ok", "#tasks", () => {}, (p) => [
     // Both shortcuts, as Chrome assigned them, each with Change.

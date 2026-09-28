@@ -75,11 +75,23 @@ export function loadEnv(dirs: string[], processEnv: Record<string, string | unde
   return merged;
 }
 
-/** apps/helper, whether running from src/ (tests) or dist/ (bundled). */
+/** The folder this module runs from: apps/helper/src (tests) or the bundle's build folder (dist/, or BROWSERTODO_HELPER_DIST's, e.g. dist-dev/). */
+function moduleDir(): string {
+  return dirname(fileURLToPath(import.meta.url));
+}
+
+function runningFromSrc(): boolean {
+  return basename(moduleDir()) === "src";
+}
+
+/** apps/helper: the parent of src/ or of the build folder, whatever the build folder is named. */
 export function helperRoot(): string {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const name = basename(here);
-  return name === "src" || name === "dist" ? dirname(here) : here;
+  return dirname(moduleDir());
+}
+
+/** The built mcp-server.js: beside the running bundle (the build writes every entry into one folder); from src/, dist/'s. */
+function mcpServerPath(): string {
+  return join(runningFromSrc() ? join(helperRoot(), "dist") : moduleDir(), "mcp-server.js");
 }
 
 export function repoRoot(): string {
@@ -114,7 +126,7 @@ export function loadConfig(
     runsDir: join(baseDir, "runs"),
     hostDir: join(baseDir, "host"),
     helperFilePath: join(baseDir, "helper.json"),
-    mcpServerPath: join(root, "dist", "mcp-server.js"),
+    mcpServerPath: mcpServerPath(),
     typesafeApiKey: key ? key : null,
     brain: env[ENV.brain] === "scripted" ? "scripted" : "claude",
     model: env[ENV.model]?.trim() || DEFAULT_CLAUDE_MODEL,

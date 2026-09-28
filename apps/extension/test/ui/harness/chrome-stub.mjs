@@ -207,7 +207,20 @@ export function installChromeStub(data) {
       data.tasks = [task, ...data.tasks];
       return { task };
     },
-    "tasks.update": (req) => ({ task: { ...data.tasks.find((t) => t.id === req.id), ...req.patch } }),
+    // New instructions are kept, as the list would have them (a schedule change is only answered: the stub does not work
+    // out the next time the way the store does).
+    "tasks.update": (req) => {
+      const { instructions, agentAuthored } = req.patch;
+      if (instructions !== undefined) data.tasks = data.tasks.map((t) => (t.id === req.id ? { ...t, instructions, ...(agentAuthored === undefined ? {} : { agentAuthored }) } : t));
+      return { task: { ...data.tasks.find((t) => t.id === req.id), ...req.patch } };
+    },
+    // A series a page (of 200) at a time, newest first: data.seriesRows (all its rows, as the account has them), else its rows in the list.
+    "tasks.series": (req) => {
+      const rows = data.seriesRows ?? data.tasks.filter((t) => (t.seriesId ?? t.id) === req.seriesId);
+      const from = req.cursor ? rows.findIndex((t) => t.id === req.cursor) + 1 : 0;
+      const page = rows.slice(from, from + 200);
+      return { tasks: page, nextCursor: from + 200 < rows.length ? page.at(-1).id : null };
+    },
     // Run on a row: the task runs now (a new session for it, bound to nothing).
     "tasks.run": (req) => ({ sessionId: `s-run-${req.id}` }),
     "tasks.delete": (req) => {
@@ -366,8 +379,6 @@ export function installChromeStub(data) {
       onUpdated: noEvent,
     },
     windows: { getCurrent: async () => ({ id: 1 }), update: async () => ({}), onFocusChanged: noEvent },
-    // A tab's own panel (sidepanel.html?tab=N) opens another tab's panel on Go to tab (panel-tabs.ts openTabPanel).
-    sidePanel: { setOptions: async () => {}, open: async () => {} },
   };
 }
 

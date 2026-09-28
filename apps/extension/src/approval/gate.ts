@@ -61,6 +61,8 @@ export interface GateContext {
   instructions?: string;
   /** Scheduled runs: the account the task acts as (an X handle names X as its site). */
   account?: string | null;
+  /** Scheduled runs: the agent wrote the task's instructions (Task.agentAuthored), so its actions wait until the user trusts it. */
+  agentAuthored?: boolean;
   /** When the turn's time limit ends it (epoch ms): an approval waits at most until shortly before. */
   endsAt?: number;
   /**
@@ -85,6 +87,11 @@ export interface GateDeps {
   jev?(sessionId: string): SystemOneLike | null | Promise<SystemOneLike | null>;
   /** Adds a row to the session's timing trace (the Raw view): how each consequential action was judged. */
   trace?(sessionId: string, row: TraceEvent): void;
+  /**
+   * Whether the user allowed this exact action ahead for this session's run (Allow & continue on the card its run
+   * paused at: paused.ts); used up when true. It only stands for the card: every other check still runs.
+   */
+  preapproved?(sessionId: string, ask: Omit<ApprovalRequest, "id" | "expiresAt">): boolean;
   now?(): number;
 }
 
@@ -101,6 +108,7 @@ export const GATED_METHODS: Record<ApprovalGatedMethod, GateMethod> = {
   "browser.navigate": "navigate",
   "browser.openTabs": "openTabs",
   "browser.closeTabs": "closeTabs",
+  "browser.clickXAccountEntry": "switchXAccount",
 };
 
 /** Typed fields remembered per page (a long form keeps its last ones). */
@@ -108,6 +116,8 @@ const MAX_TYPED = 8;
 /** The text an approval card shows at most. */
 const MAX_CARD_TEXT = 2000;
 const ASK_ALL_WHY = `You asked to approve every action (Settings > ${PERMISSION_TITLE})`;
+/** Why an action of a job the agent wrote waits (effectiveLevel holds it like ask_consequential until Trust). */
+export const AGENT_AUTHORED_WHY = "the agent wrote this job, so it asks until you press Trust on the job";
 
 export class ApprovalGate {
   /** The session the slot serves now: "allow for this task" and what was typed belong to it. */
@@ -173,7 +183,14 @@ export class ApprovalGate {
     if (ctx.stopped?.()) throw new Error(stoppedText(describeAction(action)));
     if (ctx.level === "full" || this.allowAll) return ctx;
     const ask = await this.why(sessionId, ctx, action);
-    if (ask) await this.ask(sessionId, ctx, approvalAsk(action, ask.why, ask.kind));
+    if (!ask) return ctx;
+    const request = approvalAsk(action, ask.why, ask.kind);
+    if (this.deps.preapproved?.(sessionId, request)) {
+      const t = this.deps.now?.() ?? Date.now();
+      this.deps.trace?.(sessionId, { t, ms: 0, cat: "approval", name: "approval.preapproved", src: "engine", data: { action: request.action, site: request.site } });
+      return ctx;
+    }
+    await this.ask(sessionId, ctx, request);
     return ctx;
   }
 
@@ -226,7 +243,10 @@ export class ApprovalGate {
     if (!j.consequential) return null;
     const what = j.kind ? CONSEQUENCE_TEXT[j.kind] : "may publish, send, pay or delete (it could not be told apart)";
     const judged: Record<string, TraceValue> = { action: describeAction(action), level: ctx.level, kind: j.kind ?? null, by: j.by, reason: j.reason };
-    let wait: { why: string; kind?: ConsequenceKind } | null = { why: what, ...(j.kind ? { kind: j.kind } : {}) };
+    if (ctx.agentAuthored) judged.agentAuthored = true;
+    // A job the agent wrote waits because of who wrote it, whatever it asks for: the card says so, and how to let it run.
+    const why = ctx.agentAuthored && ctx.level === "ask_consequential" ? `${what}; ${AGENT_AUTHORED_WHY}` : what;
+    let wait: { why: string; kind?: ConsequenceKind } | null = { why, ...(j.kind ? { kind: j.kind } : {}) };
     if (ctx.level === "full_within_task") {
       const w = await judgeWithinTask(j.kind, action, { instructions: ctx.instructions ?? "", account: ctx.account ?? null }, { jev, pageText });
       // Both verdicts: what the rules said and, when they were unsure, Jev's answer are plain in the Raw view.
@@ -255,6 +275,7 @@ export class ApprovalGate {
     if (Array.isArray(p.urls)) action.urls = p.urls.filter((u): u is string => typeof u === "string");
     if (Array.isArray(p.paths)) action.paths = p.paths.filter((u): u is string => typeof u === "string");
     if (Array.isArray(p.tabs)) action.tabs = p.tabs.filter((u): u is string => typeof u === "string");
+    if (typeof p.handle === "string") action.handle = p.handle;
     return action;
   }
 
@@ -279,6 +300,7 @@ export class ApprovalGate {
         return;
       }
       case "browser.navigate":
+      case "browser.clickXAccountEntry":
         this.page = null;
         this.typed = [];
         return;
@@ -359,6 +381,8 @@ export function describeAction(a: GateAction): string {
       return (a.urls?.length ?? 0) === 1 ? `Open ${shortUrl(a.urls![0]!)} in a new tab` : `Open ${a.urls?.length ?? 0} tabs`;
     case "closeTabs":
       return `Close tab${(a.tabs?.length ?? 0) === 1 ? "" : "s"} ${(a.tabs ?? []).join(", ")}`;
+    case "switchXAccount":
+      return `Switch X to ${a.handle ?? "another account"}`;
   }
 }
 

@@ -3,9 +3,9 @@
  * truth for which tab it belongs to, which side panel runs it, its engine,
  * and which tab the user is looking at (the active tab of the last focused
  * normal window). Every side panel gets it (VoiceSessionView, pushed on the
- * UI port when it changes and when a panel connects): the panel running it
- * learns that the user looks at another tab (its own page is hidden then),
- * and the other tabs' panels say where voice is on instead of looking live.
+ * UI port when it changes and when a panel connects): the other windows'
+ * panels say where voice is on instead of looking live (the panel running
+ * it follows its own window's active tab).
  *
  * PanelCommands says which panel runs a session (their panel.listening
  * reports); Chrome's tab and window events say what the user looks at. It
@@ -16,11 +16,12 @@
  * The toolbar badge: "MIC" in the live colour on the session's tab, and a
  * grey "MIC" on the tab the user is looking at when that is another one
  * (its tooltip says voice is on in another tab); muted, both say "MUTE" in
- * grey instead (the microphone is off, the session goes on): Chrome cannot open a panel
- * there by itself, so the button is where it shows, and a click opens that
- * tab's panel, which offers Go to tab and Use voice here. Badges are per
- * tab; Chrome clears a tab's badge when the tab loads a page, so it is set
- * again then (tabLoading).
+ * grey instead (the microphone is off, the session goes on). An open side
+ * panel's voice strip says the same with the tab's name; the grey badge is
+ * for a window whose panel is closed, or another window: a click opens the
+ * panel there, whose strip offers Go to tab and Use voice here. Badges are
+ * per tab; Chrome clears a tab's badge when the tab loads a page, so it is
+ * set again then (tabLoading).
  */
 import { errorMessage, type VoiceEngineId } from "@browsertodo/shared";
 
@@ -30,8 +31,8 @@ export interface VoiceSessionInfo {
   tabId: number;
   /** The window of the panel running it (null: not known yet). */
   windowId: number | null;
-  /** The tab whose side panel runs it (null: the panel page opened as a tab). */
-  host: number | null;
+  /** The id of the panel page running it (null: not known), so that page knows the session is its own. */
+  panel: string | null;
   /** The engine it runs on (null: still choosing). */
   engine: VoiceEngineId | null;
   /** The user muted the microphone (absent: not muted). */
@@ -200,7 +201,7 @@ export class VoiceSessions {
     }
     const kept = got?.session;
     if (!this.reported && kept && typeof kept.tabId === "number" && (await (this.deps.alive?.(kept) ?? Promise.resolve(true))) && !this.reported) {
-      this.session = { tabId: kept.tabId, windowId: kept.windowId ?? null, host: kept.host ?? null, engine: kept.engine ?? null, ...(kept.muted === true ? { muted: true } : {}) };
+      this.session = { tabId: kept.tabId, windowId: kept.windowId ?? null, panel: typeof kept.panel === "string" ? kept.panel : null, engine: kept.engine ?? null, ...(kept.muted === true ? { muted: true } : {}) };
     }
     this.loaded = true;
     this.update();

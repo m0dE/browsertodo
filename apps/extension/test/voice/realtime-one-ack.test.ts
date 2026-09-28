@@ -10,7 +10,6 @@ import { initHandsFree, type HandsFreeDeps } from "../../src/sidepanel/hands-fre
 import type { RealtimeSocketLike } from "../../src/voice/realtime-client.js";
 import { RealtimeEngine } from "../../src/voice/realtime-engine.js";
 import type { AudioSource } from "../../src/voice/dictation.js";
-import type { VoiceSessionView } from "../../src/voice-session.js";
 import { installMiniDom, MiniElement } from "../ui/mini-dom.js";
 
 /** What the model does in a reply we asked for (response.create): by default it says a line. */
@@ -83,15 +82,16 @@ const stamped = (ev: Record<string, unknown>): StampedAgentEvent => ({ ...ev, se
 /** The panel's session on tab 1, whose chat (s-old) ended earlier: what is said goes to it. */
 async function panel() {
   const socket = new FakeOpenAi();
+  shown = 1;
   const deps: HandsFreeDeps = {
     voice: { state: "idle", attachHandsFree: () => {}, showHandsFree: () => {}, setLevel: () => {}, showTip: () => {}, ensureMic: async () => true, shortcutLabel: null },
     composer: { draft: () => "", setDraft: () => {} },
     notify: () => {},
-    activeTab: () => 1,
+    activeTab: () => shown,
     chatOf: () => "s-old",
     tabsOf: () => [1],
     send: vi.fn(async () => "s-old"),
-    homeTab: 1,
+    panel: "p1",
     tabPage: async (id) => (id === 1 ? { title: "Intercom", url: "https://app.intercom.com/" } : { title: "Recipes", url: "https://recipes.example/" }),
     goToTab: () => {},
     onSpeaking: () => {},
@@ -163,7 +163,14 @@ async function agentTurn(hf: Awaited<ReturnType<typeof panel>>["hf"]): Promise<v
   await settle(50);
 }
 
-const view = (viewing: number): VoiceSessionView => ({ tabId: 1, windowId: 5, host: 1, engine: "realtime", viewing });
+/** The tab the side panel's window shows (the session runs for tab 1). */
+let shown = 1;
+
+/** The user switches to tab `tab`: the panel follows its window's active tab and looks again (sidepanel.ts setActive). */
+function lookAt(hf: Awaited<ReturnType<typeof panel>>["hf"], tab: number): void {
+  shown = tab;
+  hf.refresh();
+}
 
 describe("one utterance that resumes an ended chat: one acknowledgement", () => {
   beforeAll(installMiniDom);
@@ -182,13 +189,13 @@ describe("one utterance that resumes an ended chat: one acknowledgement", () => 
   for (const viewing of [1, 2]) {
     it(`the user looking at tab ${viewing} and switching during the turn: the notes are silent, still one acknowledgement`, async () => {
       const t = await panel();
-      t.hf.setSession(view(viewing));
+      lookAt(t.hf, viewing);
       await settle();
       utterance(t.socket);
       await settle();
-      t.hf.setSession(view(viewing === 1 ? 2 : 1));
+      lookAt(t.hf, viewing === 1 ? 2 : 1);
       await agentTurn(t.hf);
-      t.hf.setSession(view(viewing));
+      lookAt(t.hf, viewing);
       await settle(50);
       expect(t.deps.send).toHaveBeenCalledTimes(1);
       expect(t.socket.creates()).toHaveLength(1);

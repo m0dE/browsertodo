@@ -2,7 +2,7 @@
 // shared contracts, core) is bundled so dist/ runs with plain `node`.
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const root = dirname(fileURLToPath(import.meta.url));
 
@@ -12,7 +12,8 @@ await build({
     "mcp-server": join(root, "src/mcp-server.ts"),
     install: join(root, "src/install.ts"),
   },
-  outdir: join(root, "dist"),
+  // BROWSERTODO_HELPER_DIST: build elsewhere (e.g. apps/helper/dist-dev for e2e), leaving dist/ (the installed helper runs it) alone.
+  outdir: process.env.BROWSERTODO_HELPER_DIST ? resolve(process.env.BROWSERTODO_HELPER_DIST) : join(root, "dist"),
   bundle: true,
   platform: "node",
   format: "esm",

@@ -133,6 +133,8 @@ input[aria-invalid="true"] { border-color: var(--bad); }
 .opt:has(input:checked) .opt-text b { color: var(--accent); }
 .opt:has(input:disabled) .opt-head { cursor: default; }
 .opt:has(input:disabled:not(:checked)) .opt-text b { color: var(--muted); }
+/* Full autonomy on: the scheduled choice does not apply (automation-view.ts SCHEDULED_UNDER_FULL_NOTE). */
+#scheduled-automation .opt:has(input:disabled) { opacity: 0.55; }
 .opt-aside { padding: 0 12px 10px 37px; }
 .opt-aside .row { gap: 8px; }
 

@@ -84,6 +84,8 @@ export interface UiRouterDeps {
   traceEnv?(): Promise<TraceEnv>;
   /** Approval requests waiting for the user (approval/broker.ts). Absent: nothing waits, and answers are refused. */
   approvals?: { answer(sessionId: string, id: string, answer: ApprovalAnswer, by?: ApprovalAnsweredBy): boolean; waitingSessions(): string[] };
+  /** The answer on a card its run paused for (approval/paused-decision.ts); false when there is none to decide. */
+  decidePaused?(sessionId: string, id: string, answer: ApprovalAnswer, by: ApprovalAnsweredBy): Promise<boolean>;
   /**
    * The user's OK for a TODO task the agent changes or cancels (engine/schedule-task.ts), at the session's
    * automation level (AgentSlots.confirm); throws the refusal. Absent: nothing waits.
@@ -319,7 +321,8 @@ export class UiRouter {
         const answer = ApprovalAnswer.safeParse(msg.answer);
         if (!sessionId || !id || !answer.success) throw new Error("sessionId, id and answer are required");
         const by = msg.by === "voice" || msg.by === "keyboard" ? msg.by : "card";
-        const ok = d.approvals?.answer(sessionId, id, answer.data, by) ?? false;
+        // A card still waiting, else one its run paused for (decided afterwards: Allow & continue, Don't).
+        const ok = (d.approvals?.answer(sessionId, id, answer.data, by) ?? false) || ((await d.decidePaused?.(sessionId, id, answer.data, by)) ?? false);
         return { ok } satisfies UiResults["approval.answer"];
       }
       case "run.due":
@@ -364,6 +367,8 @@ export class UiRouter {
         return { task: await (await this.todo()).pause(msg.id) } satisfies UiResults["tasks.pause"];
       case "tasks.resume":
         return { task: await (await this.todo()).resume(msg.id) } satisfies UiResults["tasks.resume"];
+      case "tasks.series":
+        return (await (await this.todo()).seriesPage(msg.seriesId, msg.cursor)) satisfies UiResults["tasks.series"];
       case "account.signIn":
         await this.account().signIn();
         return this.getState();

@@ -26,6 +26,8 @@ describe("ScriptedBrain helpers", () => {
   it("extracts the post text and the start URL", () => {
     expect(extractPostText("Go to the site. Post: hi there ")).toBe("hi there");
     expect(extractPostText("just this")).toBe("just this");
+    // A continued conversation quotes the first request: the post is the quoted one, not what follows it.
+    expect(extractPostText("--- Continuing a conversation ---\n<<<\nPost on X. Post: hi there\n>>>\nWhat was done so far:\n- typed")).toBe("hi there");
     expect(extractStartUrl("Open http://localhost:8787/compose. Post: see https://ex.com")).toBe("http://localhost:8787/compose");
     expect(extractStartUrl("Post: see https://ex.com")).toBeNull();
     expect(extractStartUrl("no url")).toBeNull();

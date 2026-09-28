@@ -132,10 +132,10 @@ try {
     // Playwright makes every page it drives look focused, so the panel page in its (background) tab would tell
     // the background it has the focus: from here it has the real focus state, like the side panel.
     await (await context.newCDPSession(panel)).send("Emulation.setFocusEmulationEnabled", { enabled: false });
-    // A trusted click in an extension page is a user gesture, like the key press. The panel is the sign-up tab's own.
+    // A trusted click in an extension page is a user gesture, like the key press. The panel is the window's.
     await signup.bringToFront();
     await bt((t) => chrome.tabs.update(t, { active: true }), signupTab);
-    await openSidePanel(sw, panel, windowId, { tabId: signupTab });
+    await openSidePanel(sw, panel, windowId);
     // The click focused the panel page in its (background) tab: in front and back again, so its blur tells the background.
     await panel.bringToFront();
     await signup.bringToFront();

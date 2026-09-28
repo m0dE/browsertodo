@@ -149,25 +149,69 @@ button.job-toggle[aria-disabled="true"] { opacity: 0.5; cursor: progress; }
 .job-tab-name { font-weight: 500; color: var(--text); }
 .job-tab-host:not(:empty)::before { content: " · "; }
 button.job-tab-view { flex: none; padding: 3px 12px; font-size: var(--text-sm); font-weight: 500; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: var(--surface); }
-.log .job-runs { display: flex; flex-direction: column; gap: 2px; }
-.job-runs-head { font-size: var(--text-sm); font-weight: 600; color: var(--muted); padding: 0 2px 2px; }
-.job-runs-head.latest { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
-.job-runs-more { align-self: flex-start; font-size: var(--text-sm); margin: 0 2px 4px; }
-.job-runs-list { display: flex; flex-direction: column; }
-.job-run > summary {
-  list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; min-width: 0;
-  padding: 5px 6px; margin: 0 -6px; border-radius: var(--radius-sm); font-size: var(--text-sm);
+/* Above a task's conversation (job-page.ts): its counts, its instructions, its earlier runs, then "Latest run". */
+.log .job-top { display: flex; flex-direction: column; gap: 10px; }
+.job-top > :empty, .job-top > [hidden] { display: none; }
+.job-stats { margin: 0; font-size: var(--text-sm); color: var(--faint); }
+.job-stats button.link { font-size: inherit; font-weight: 500; color: var(--text); }
+.job-stats button.link[data-filter="failed"] { color: var(--bad); }
+.job-stats button.link[data-filter="needs"] { color: var(--warn); }
+.job-runs-head { font-size: var(--text-sm); font-weight: 600; color: var(--muted); padding: 0 2px 2px; margin: 0; }
+.job-runs-head.latest { padding-top: 10px; border-top: 1px solid var(--border); }
+/* The instructions of a scheduled task: the first lines (Show all), Edit and Edit schedule; Edit opens a box in place. */
+.job-instr { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.job-instr.intro { padding: 0; border: 0; background: none; }
+.job-instr-head { display: flex; align-items: center; gap: 6px; min-height: 26px; }
+.job-instr-title { flex: 1; margin: 0; font-size: var(--text-sm); font-weight: 600; color: var(--muted); }
+.job-instr-actions { display: flex; align-items: center; gap: 6px; }
+.job-instr-actions .msg { order: -1; }
+.job-instr-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-md); line-height: 1.5; color: var(--text); }
+.job-instr-text[data-cut="true"] { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.job-instr-more { align-self: flex-start; font-size: var(--text-sm); }
+.job-instr-editor { display: flex; flex-direction: column; gap: 6px; }
+textarea.job-instr-box { width: 100%; min-height: 76px; max-height: 50vh; resize: none; overflow: auto; font-size: var(--text-md); line-height: 1.5; }
+.job-instr-editor-row { display: flex; align-items: center; gap: 6px; }
+.job-instr-editor-row .msg { flex: 1; min-width: 0; }
+.job-instr-editor-row .msg:empty + button { margin-left: auto; }
+/* Earlier runs: one row that opens to filters and the runs by day (the day sticks while its runs scroll). */
+.log .job-runs { display: flex; flex-direction: column; gap: 6px; }
+.job-runs-toggle {
+  display: flex; align-items: center; justify-content: flex-start; gap: 6px; width: calc(100% + 16px); margin: 0 -8px; padding: 6px 8px; min-height: 32px;
+  border: 0; border-radius: var(--radius-sm); background: none; text-align: left; font-size: var(--text-sm); font-weight: 600; color: var(--muted);
 }
-.job-run > summary::-webkit-details-marker { display: none; }
-.job-run > summary::before { content: "›"; flex: none; width: 8px; color: var(--faint); transition: transform 0.12s; }
-.job-run[open] > summary::before { transform: rotate(90deg); }
-.job-run > summary:hover { background: var(--hover); }
-.job-run .run-when { flex: none; color: var(--text); font-variant-numeric: tabular-nums; }
-.job-run .chip { flex: none; }
-.job-run .run-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
-.job-run-body { padding: 6px 0 10px 14px; border-left: 1px solid var(--border); margin-left: 3px; }
-.job-run-body > .run-log { padding: 0; }
-@media (prefers-reduced-motion: reduce) { .job-run > summary::before { transition: none; } }
+.job-runs-toggle:hover { background: var(--hover); }
+.run-chevron { flex: none; color: var(--faint); transition: transform 0.12s; }
+[aria-expanded="true"] > .run-chevron { transform: rotate(90deg); }
+.job-runs-panel { display: flex; flex-direction: column; gap: 6px; }
+.run-filters { display: flex; flex-wrap: wrap; gap: 4px; }
+.run-filter { padding: 2px 10px; border-radius: var(--radius-pill); font-size: var(--text-sm); font-weight: 400; color: var(--muted); background: none; }
+.run-filter[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 40%, transparent); font-weight: 500; }
+.run-day-head { position: sticky; top: -12px; z-index: var(--z-sticky); margin: 0; padding: 6px 0 2px; background: var(--bg); font-size: var(--text-xs); font-weight: 600; color: var(--faint); }
+.run-list, .run-fold-list { list-style: none; margin: 0; padding: 0; }
+.run-fold-list { margin: 0 0 4px 7px; padding-left: 10px; border-left: 1px solid var(--border); }
+.run-row {
+  display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: calc(100% + 12px); min-height: 32px; margin: 0 -6px; padding: 5px 6px;
+  border: 0; border-radius: var(--radius-sm); background: none; text-align: left; font-size: var(--text-sm); font-weight: 400; white-space: nowrap;
+}
+.run-row:hover { background: var(--hover); }
+.run-row:focus-visible { outline-offset: -1px; }
+.run-row .job-icon { flex: none; width: 16px; }
+.run-when { flex: none; color: var(--text); font-variant-numeric: tabular-nums; }
+.run-count { flex: none; padding: 0 6px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--muted) 14%, transparent); color: var(--muted); font-size: var(--text-xs); }
+.run-line { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.run-more.show-more { align-self: flex-start; margin: 2px 0 0; }
+.run-none.empty { margin: 4px 0; text-align: left; }
+/* A run picked in the list, in the page's place: "‹ Runs", when, how it went (and, known only by its task row, what it said). */
+.log .job-run-bar { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.job-run-back { flex: none; padding: 3px 10px; font-size: var(--text-sm); }
+.job-run-title { flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); font-weight: 600; color: var(--text); }
+.job-run-state { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-sm); color: var(--muted); }
+.log .job-run-view { display: flex; flex-direction: column; gap: 10px; }
+.job-run-gone { display: flex; flex-direction: column; gap: 6px; }
+.job-run-said { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-md); line-height: 1.5; color: var(--text); }
+.job-run-url { overflow-wrap: anywhere; font-size: var(--text-sm); }
+.job-run-note { margin: 0; font-size: var(--text-sm); color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { .run-chevron { transition: none; } }
 .log .job-intro { display: flex; flex-direction: column; }
 
 .card { border-radius: var(--radius); padding: 10px; gap: 8px; }
@@ -327,6 +371,9 @@ button[aria-disabled="true"]:hover { border-color: var(--border); }
    details, with the time it started under it. */
 .log .ev-opening { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
 .log .ev-opening > .ev-user { margin-top: 0; }
+/* A long message: its first lines (--lines), with Show all. */
+.log .ev-user-text[data-cut="true"] { display: -webkit-box; -webkit-line-clamp: var(--lines, 4); -webkit-box-orient: vertical; overflow: hidden; }
+.log .ev-user .ev-more { display: block; margin-top: 2px; font-size: var(--text-sm); }
 .log .ev-first { cursor: pointer; }
 .log .ev-first:not(.screen):hover { background: color-mix(in srgb, var(--accent) 8%, var(--accent-soft)); }
 .log .ev-first.screen:hover { color: var(--text); }
@@ -448,7 +495,6 @@ button[aria-disabled="true"]:hover { border-color: var(--border); }
 .log .ev-outcome .chip { flex: none; }
 .log .ev-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log .ev-end > a { font-size: var(--text-sm); overflow-wrap: anywhere; }
-.log .ev-end .ev-picks { color: var(--faint); font-size: 11.5px; }
 .log .ev-actions { display: flex; gap: 6px; margin-top: 2px; }
 /* Continue waits until nothing runs. */
 .log.busy .ev-actions { display: none; }
@@ -884,4 +930,9 @@ body:has(.voice-orb:not([hidden])) .composer { z-index: var(--z-above-veil); }
 }
 .autonomy-warning[hidden] { display: none; }
 .autonomy-warning > span { flex: 1; min-width: 0; }
-.autonomy-warning .link { flex: none; color: var(--bad); font-weight: 600; font-size: inherit; }
+.autonomy-warning .link { color: var(--bad); font-weight: 600; font-size: inherit; padding: 0; }
+.autonomy-close {
+  flex: none; align-self: center; border: 0; background: none; color: var(--bad); cursor: pointer;
+  font-size: inherit; line-height: 1; padding: 2px 4px; border-radius: 4px; opacity: 0.8;
+}
+.autonomy-close:hover { opacity: 1; background: color-mix(in srgb, var(--bad) 12%, transparent); }

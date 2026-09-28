@@ -4,9 +4,14 @@
  * The composer at the bottom starts a new job from the list and goes on with the job shown on its page. Wires the
  * header (header.ts), the push port to the background (port.ts) and hands-free voice.
  *
- * Each browser tab has its own panel (panel-tabs.ts; the page opened as a tab follows its window's active tab
- * instead) and its own chat (tab-chat.ts): opening a job binds it to the panel's tab, a new job started there is
- * bound to it, and a panel shows the job its tab's chat became.
+ * One panel per window (the manifest's side panel; also the page opened as a tab): it stays on screen across tab
+ * switches, and what it shows follows the window's active tab. Each browser tab has its own chat (tab-chat.ts):
+ * opening a job binds it to the active tab, a new job started from the composer is bound to it, and the panel shows
+ * the job its tab's chat became.
+ *
+ * Switching tabs: a tab with a job (its own chat, or a run working there) shows that job. A tab without one shows
+ * the list when the job on screen was the tab's that was left (it belongs there, and the box would go on with it);
+ * a job the user opened that belongs to no tab stays (the "Working in … · View" row says where it runs).
  */
 import { errorMessage, FILES_WHILE_RUNNING, type SessionInfo, type VoiceEngineId, type VoiceEnginesResponse } from "@browsertodo/shared";
 import { SIGN_IN_NOT_SET_UP } from "../account/google-auth.js";
@@ -30,8 +35,7 @@ import { openSettings } from "./open-settings.js";
 import { initAutonomyWarning } from "./autonomy-warning.js";
 import { connectBackground } from "./port.js";
 import type { PanelMessage } from "../panel-command.js";
-import { agentTabToView, chatInTab, followChat, isBound, ownChatOfTab, tabOfSession } from "./tab-chat.js";
-import { openTabPanel, panelTabOf } from "../panel-tabs.js";
+import { agentTabToView, chatInTab, isBound, ownChatOfTab, tabOfSession } from "./tab-chat.js";
 import { openScheduleSheet } from "./schedule-sheet.js";
 import { OPEN_CHAT_COMMAND, openShortcutSettings, readShortcut, VOICE_COMMAND } from "../shortcut.js";
 import { voiceAllowed } from "../account/types.js";
@@ -58,19 +62,14 @@ forgetOldTabs(localStorage);
 if (location.hash) history.replaceState(null, "", location.pathname + location.search);
 
 let state: UiState | null = null;
-/** The tab this side panel belongs to (null: the panel page opened as a tab). */
-const ownTab = panelTabOf(location.search);
-/**
- * The browser window this panel is in, and the tab it acts in: the panel's own tab (or where the agent moved the
- * chat it showed, see followChat), else the active tab of the window.
- */
+/** This page's own id: the background names the panel running a hands-free session by it. */
+const panelId = crypto.randomUUID();
+/** The browser window this panel is in, and the tab it acts in: the active tab of the window. */
 let windowId: number | null = null;
-let activeTab: number | null = ownTab;
+let activeTab: number | null = null;
 /** A conversation just started from a tab, until the state shows it bound there. */
 let pending: { tab: number; sessionId: string } | null = null;
-/** The conversation last sent to from the panel's tab (kept once bound: its turn may move it, see followChat). */
-let sent: { tab: number; sessionId: string } | null = null;
-/** The panel tab's own chat as last seen (undefined: no state yet); when it becomes another one, its job shows. */
+/** The active tab's own chat as last seen (undefined: no state yet); when it becomes another one, its job shows. */
 let ownSeen: string | null | undefined;
 
 const nav = new JobNav(storedView(sessionStorage));
@@ -89,11 +88,11 @@ function showJob(key: string): void {
   nav.open(key, nav.view.kind === "list" ? list.place(null) : undefined);
 }
 
-/** Back to the list, as it was left. */
-function back(): void {
+/** Back to the list, as it was left; `focus`: the search box gets the cursor unless a row does (the user went back). */
+function back(focus = true): void {
   const place = nav.back();
   list.show(place);
-  if (!place.focusKey) $<HTMLInputElement>("job-search").focus({ preventScroll: true });
+  if (focus && !place.focusKey) $<HTMLInputElement>("job-search").focus({ preventScroll: true });
 }
 
 /** A row was picked: its page. Its conversation is bound to this tab, unless it is running in another one. */
@@ -121,35 +120,34 @@ function startedHere(sessionId: string): void {
     if (isNew && before && before !== sessionId && !state?.runningSessions.some((r) => r.sessionId === before)) {
       void uiRequest({ type: "run.newChat", sessionId: before }).catch((err: unknown) => console.warn(`[browsertodo] closing chat ${before} failed: ${errorMessage(err)}`));
     }
-    pending = sent = { tab: activeTab, sessionId };
+    pending = { tab: activeTab, sessionId };
   }
   ownSeen = sessionId;
   showJob(keyOfSession(sessionId));
 }
 
 /**
- * The panel acts in tab `tab` from now on (the page opened as a tab: the user switched tabs; a tab's own panel: its
- * chat's tab closed). The panel shows the job of that tab (its own, or a run working there), or the list when it
- * has none. `quiet`: the first look at the tabs, when the panel opens (on the list).
+ * The window's active tab is `tab` now (the user switched tabs): the panel acts there. A tab with a job shows it; a
+ * tab without one shows the list if the job on screen was the tab's that was left, else what the user opened stays
+ * (see the top of this file). `quiet`: the first look at the tabs, when the panel opens (on the list).
  */
 function setActive(tab: number | null, quiet = false): void {
   if (tab === activeTab) return;
+  const left = activeTab;
   activeTab = tab;
+  const s = state ?? {};
   if (state) ownSeen = ownChatOfTab(tab, state, { pending });
-  const shown = chatInTab(tab, state ?? {}, { pending });
+  const shown = chatInTab(tab, s, { pending });
   if (!quiet) {
+    const onJob = nav.view.kind === "job" ? page.sessionId() : null;
     if (shown) showJob(keyOfSession(shown));
-    else if (nav.view.kind === "job") back();
+    else if (onJob && onJob === chatInTab(left, s, { pending })) back(false);
   }
   handsFree.refresh();
 }
 
-/**
- * Shows another browser tab. From a tab's own panel, that tab's panel opens too (it shows that tab's chat): called
- * synchronously in the user's click, since open() needs the gesture.
- */
+/** Shows another browser tab, and its window (the panel there shows that tab's job). */
 async function goToTab(tabId: number): Promise<boolean> {
-  if (ownTab !== null) void openTabPanel(tabId).catch((err: unknown) => console.warn(`[browsertodo] opening the panel of tab ${tabId} failed: ${errorMessage(err)}`));
   return (await uiRequest({ type: "tab.focus", tabId })).ok;
 }
 
@@ -251,8 +249,7 @@ const handsFree = initHandsFree({
   composer,
   notify: ({ key, ...tip }) => composer.notices.show({ key: key ?? VOICE_NOTICE, ...tip }),
   activeTab: () => activeTab,
-  homeTab: ownTab,
-  visible: () => document.visibilityState === "visible",
+  panel: panelId,
   chatOf: voiceChatOfTab,
   tabsOf: (sessionId) => {
     const home = state ? tabOfSession(sessionId, state) : null;
@@ -412,8 +409,7 @@ const list = initJobList(listView, {
 const page = initJobPage({
   data,
   chat,
-  // A tab's own panel shows only with its tab: that is the tab the user sees, wherever the panel's chat went on.
-  agentTab: (sessionId) => (state ? agentTabToView(sessionId, ownTab ?? activeTab, state) : null),
+  agentTab: (sessionId) => (state ? agentTabToView(sessionId, activeTab, state) : null),
   tabInfo: async (tabId) => {
     const t = await chrome.tabs.get(tabId).catch(() => null);
     return t ? { title: t.title ?? "", url: t.url || t.pendingUrl || "", ...(t.favIconUrl ? { favIconUrl: t.favIconUrl } : {}) } : null;
@@ -431,7 +427,6 @@ const page = initJobPage({
       },
     }),
   onTaskDetails: (job, trigger) => job.task && void showDetails({ task: job.task, listSource: data.source }, trigger),
-  onSessionDetails: runDetails,
   onBack: back,
   onDeleted: back,
   showError: (err) => composer.showError(err),
@@ -494,7 +489,7 @@ async function signIn(): Promise<void> {
 
 const header = initHeader({ onState: (s) => applyState(s), onBilling: billing, onSignIn: () => void signIn() });
 // While the agent may act without asking, the panel says so (Settings > Permission).
-const autonomyWarning = initAutonomyWarning();
+const autonomyWarning = initAutonomyWarning((patch) => uiRequest({ type: "settings.save", settings: patch }).then(applyState, () => undefined));
 const say = (text: string) => composer.notices.show({ key: ACCOUNT_NOTICE, level: "info", text });
 const migrate = initMigrateOffer({ onState: (s) => applyState(s), onMoved: say });
 const memoryAsk = initMemoryAsk({ onState: (s) => applyState(s), onAnswered: say });
@@ -516,32 +511,19 @@ function errorFixes(s: UiState): ErrorFixes {
 }
 closeMenusOnOutsideClick("details.menu");
 
-/** A tab's own panel: its window (the tab may be dragged to another one); the chat it follows goes back when that tab closes. */
-async function trackOwnTab(tab: number): Promise<void> {
-  const refresh = async () => {
-    try {
-      windowId = (await chrome.tabs.get(tab)).windowId;
-    } catch {
-      // The tab is closing, and its panel with it.
-      return;
-    }
-    hello();
-  };
-  chrome.tabs.onRemoved.addListener((tabId) => {
-    handsFree.tabClosed(tabId);
-    if (tabId === activeTab) setActive(tab);
-  });
-  chrome.tabs.onAttached.addListener((tabId) => tabId === tab && void refresh());
-  await refresh();
-}
+/**
+ * The panel page opened as a tab, not the side panel (the shortcut recreates side panels only). Null until known:
+ * chrome.tabs.getCurrent() names a tab only in a tab.
+ */
+let asTab: boolean | null = null;
 
-/** The panel page opened as a tab: follows the active tab of its window. */
+/** Follows the active tab of the panel's window. */
 async function trackTabs(): Promise<void> {
-  // The job page's row of the agent's tab follows the page the agent is on.
+  // The job page's row of the agent's tab follows the page the agent is on; the voice strip names its tab as it is now.
   chrome.tabs.onUpdated.addListener((tabId, change) => {
     if (change.title !== undefined || change.url !== undefined || change.favIconUrl !== undefined) page.tabUpdated(tabId);
+    if (change.title !== undefined || change.url !== undefined) handsFree.tabUpdated(tabId);
   });
-  if (ownTab !== null) return trackOwnTab(ownTab);
   let first = true;
   const refresh = async () => {
     try {
@@ -553,7 +535,9 @@ async function trackTabs(): Promise<void> {
     }
   };
   try {
-    windowId = (await chrome.windows.getCurrent()).id ?? null;
+    const [current, tab] = await Promise.all([chrome.windows.getCurrent(), chrome.tabs.getCurrent()]);
+    windowId = current.id ?? null;
+    asTab = tab !== undefined;
   } catch {
     windowId = null;
   }
@@ -593,14 +577,6 @@ function applyState(s: UiState): void {
   const a = was?.account;
   const b = s.account;
   if (was && (a?.signedIn !== b?.signedIn || a?.user?.email !== b?.user?.email || a?.plan?.id !== b?.plan?.id)) void data.loadTasks();
-  // The agent moved this panel's chat to the tab it works in: the panel goes on acting there.
-  if (ownTab !== null && activeTab !== null) {
-    const followed = followChat(activeTab, nav.view.kind === "job" ? page.sessionId() : null, s, sent);
-    if (followed !== activeTab) {
-      activeTab = followed;
-      handsFree.refresh();
-    }
-  }
   if (pending && isBound(pending.sessionId, s)) pending = null;
   // The tab's own chat became another one (voice, the API, the agent): its job shows. When the panel opens it shows
   // the list, unless the tab's own chat is working right now (then that job).
@@ -633,10 +609,12 @@ function onPush(msg: UiPush): void {
       void data.loadTasks();
       break;
     case "panel.focus":
+    case "panel.restore":
       // The keyboard shortcut: the cursor in the box, in the view shown (a panel it recreated gets the text its box
-      // had, and the job it showed).
+      // had, and the job it showed; one it recreated in another window only those).
       if (msg.draft && !composer.draft()) composer.setDraft(msg.draft);
       if (msg.job && nav.view.kind === "list") showJob(msg.job);
+      if (msg.type === "panel.restore") break;
       window.focus();
       composer.focus();
       break;
@@ -646,7 +624,7 @@ function onPush(msg: UiPush): void {
       else voicePending = true;
       break;
     case "voice.session":
-      // Where hands-free voice is on, and the tab the user looks at (this panel's tab may be hidden).
+      // Where hands-free voice is on (this panel, or another window's), and the tab the user looks at.
       handsFree.setSession(msg.session);
       break;
     case "voice.stop":
@@ -655,10 +633,10 @@ function onPush(msg: UiPush): void {
   }
 }
 
-/** Tells the background which tab and window this panel is in (the keyboard shortcut acts on the tab's panel). */
+/** Tells the background which window this panel is in (the keyboard shortcut acts on the window's panel), and which page it is. */
 function hello(): void {
   if (windowId === null) return;
-  port.send({ type: "panel.hello", windowId, ...(ownTab === null ? {} : { tabId: ownTab }) });
+  port.send({ type: "panel.hello", windowId, panel: panelId, ...(asTab ? { asTab: true as const } : {}) });
   reportDocumentFocus();
   // A background that restarted meanwhile learns it again (the voice shortcut stops a listening panel).
   if (handsFree.active && listeningReport.listening) port.send(listeningReport);
@@ -670,8 +648,6 @@ function reportDocumentFocus(): void {
   port.send({ type: "panel.document", focused: document.hasFocus(), draft: composer.draft(), ...(job ? { job } : {}) });
 }
 window.addEventListener("focus", reportDocumentFocus);
-// A tab's own panel shows only with its tab: on screen, the user looks at that tab (hands-free voice).
-document.addEventListener("visibilitychange", () => handsFree.refresh());
 window.addEventListener("blur", reportDocumentFocus);
 
 /** The keyboard shortcuts as Chrome assigned them (null: none is set), for the list's hint and the mic's tooltip. */

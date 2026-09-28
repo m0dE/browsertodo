@@ -314,7 +314,11 @@ function eventRow(e: StampedAgentEvent, t: number, span: TraceEvent | undefined,
       return {
         ...base,
         t: t - e.ms,
-        label: e.executed ? `Jev: ${e.operation}${target} · ${e.confidence.toFixed(2)}` : `Jev unsure (${e.confidence.toFixed(2)})`,
+        label: e.executed
+          ? `Jev: ${e.operation}${target} · ${e.confidence.toFixed(2)}`
+          : e.notRun
+            ? `Jev: ${e.operation}${target} · ${e.confidence.toFixed(2)} · ${e.notRun === "not_approved" ? "not approved" : e.notRun}`
+            : `Jev unsure (${e.confidence.toFixed(2)})`,
         detail: clip(e.goal, 160),
         ms: e.ms,
         slow: e.ms >= SLOW_MS.jev,

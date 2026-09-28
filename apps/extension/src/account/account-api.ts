@@ -133,6 +133,16 @@ export class AccountApi {
     return this.http.json(Task, "POST", `/v1/tasks/${encodeURIComponent(id)}/retry`);
   }
 
+  /** Keeps a waiting task from running until resumeTask (reason: what it shows; default "Paused by you"). */
+  pauseTask(id: string, reason?: string): Promise<Task> {
+    return this.http.json(Task, "POST", `/v1/tasks/${encodeURIComponent(id)}/pause`, reason ? { reason } : {});
+  }
+
+  /** A paused task waits for its time again (a repeating one whose time went by: its next time). */
+  resumeTask(id: string): Promise<Task> {
+    return this.http.json(Task, "POST", `/v1/tasks/${encodeURIComponent(id)}/resume`);
+  }
+
   cancelTask(id: string): Promise<Task> {
     return this.http.json(Task, "POST", `/v1/tasks/${encodeURIComponent(id)}/cancel`);
   }

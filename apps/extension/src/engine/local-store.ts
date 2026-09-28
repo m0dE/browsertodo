@@ -3,7 +3,7 @@
  * IndexedDB. Works with no cloud at all. The rules (input checks, repeats,
  * how a run changes a task) are in local-task-rules.ts.
  */
-import { isDueNow, MAX_MEDIA_PER_TASK, settleSchedule, type RepeatSchedule, type TaskRunResult } from "@browsertodo/shared";
+import { isDueNow, isOnHold, MAX_MEDIA_PER_TASK, PAUSED_BY_USER, resumedNotBefore, settleSchedule, type RepeatSchedule, type TaskRunResult } from "@browsertodo/shared";
 import { base64ToBytes } from "../base64.js";
 import { Listeners } from "../listeners.js";
 import type { LocalMediaInfo, TaskPatch, UiMediaUpload } from "../ui-protocol.js";
@@ -202,6 +202,34 @@ export class LocalStore {
         updatedAt: this.now().toISOString(),
       };
     });
+  }
+
+  /** Keeps a waiting task (pending, or paused for the user) from running until resume(); reason: what it shows. */
+  async pause(id: string, reason = PAUSED_BY_USER): Promise<StoredLocalTask> {
+    return this.updateOne(id, (t) => {
+      if (t.status !== "pending" && t.status !== "paused") throw new Error(`The task is ${t.status}: only a waiting task can be paused`);
+      return { ...t, status: "paused", pauseReason: reason, retryAfter: null, updatedAt: this.now().toISOString() };
+    });
+  }
+
+  /** A paused task waits for its time again (a repeating one whose time went by: its rule's next time). */
+  async resume(id: string): Promise<StoredLocalTask> {
+    return this.updateOne(id, (t) => {
+      if (t.status !== "paused") throw new Error(`The task is ${t.status}: only a paused task can be resumed`);
+      const notBefore = resumedNotBefore(t.notBefore, t.repeat, this.now());
+      return { ...t, status: "pending", notBefore, pauseReason: null, retryAfter: null, updatedAt: this.now().toISOString() };
+    });
+  }
+
+  /**
+   * Pauses the waiting row of a series (its next run, or its retry), so none of its runs start until the user
+   * resumes it. Returns that row, or null when the series has none waiting (or it is on hold already).
+   */
+  async holdSeries(seriesId: string, reason: string): Promise<StoredLocalTask | null> {
+    const waiting = (await this.read())
+      .filter((t) => (t.seriesId ?? t.id) === seriesId && (t.status === "pending" || (t.status === "paused" && !isOnHold(t))))
+      .sort((a, b) => byCreated(b, a))[0];
+    return waiting ? this.pause(waiting.id, reason) : null;
   }
 
   /** Pending tasks whose notBefore and retryAfter have passed (isDueNow), oldest first. */

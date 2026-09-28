@@ -37,11 +37,11 @@ describe("a chat's menu", () => {
 
 describe("a task's menu", () => {
   it("waiting: Run now, Edit schedule, Delete (this browser) or Cancel too (the account's queue)", () => {
-    expect(labels({ tasks: [task("pending")] })).toEqual(["Run now", "Edit schedule", "Delete"]);
-    expect(labels({ tasks: [task("pending")] }, "account")).toEqual(["Run now", "Edit schedule", "Cancel", "Delete"]);
+    expect(labels({ tasks: [task("pending")] })).toEqual(["Run now", "Pause", "Edit schedule", "Delete"]);
+    expect(labels({ tasks: [task("pending")] }, "account")).toEqual(["Run now", "Pause", "Edit schedule", "Cancel", "Delete"]);
   });
   it("written by the agent: Trust while it waits", () => {
-    expect(labels({ tasks: [task("pending", { agentAuthored: true })] })).toEqual(["Run now", "Edit schedule", "Trust", "Delete"]);
+    expect(labels({ tasks: [task("pending", { agentAuthored: true })] })).toEqual(["Run now", "Pause", "Edit schedule", "Trust", "Delete"]);
     expect(labels({ tasks: [task("done", { agentAuthored: true })] })).not.toContain("Trust");
   });
   it("paused with a run here: Resume goes on from it; Raw shows it", () => {
@@ -49,6 +49,20 @@ describe("a task's menu", () => {
     expect(labels({ tasks: [task("paused")], sessions: [run] })).toEqual(["Run now", "Resume", "Edit schedule", "Raw", "Rename", "Delete"]);
     // The account's queue runs it again by itself.
     expect(labels({ tasks: [task("paused")] }, "account")).toEqual(["Run now", "Resume", "Edit schedule", "Cancel", "Delete"]);
+  });
+  it("paused by the user, or after its runs kept failing: Resume puts it back on its schedule; no Run now", () => {
+    const menu = (reason: string, source: "local" | "account" = "local") => jobActions(buildJobs({ sessions: [], running: [], tasks: [task("paused", { pauseReason: reason })] }, NOW)[0]!, source);
+    expect(menu("Paused by you").map((a) => a.label)).toEqual(["Resume", "Edit schedule", "Delete"]);
+    expect(menu("Paused by you")[0]).toMatchObject({ id: "release", title: "Put it back on its schedule" });
+    expect(menu("Paused after 3 failed runs in a row. Last: boom", "account").map((a) => [a.id, a.label])).toEqual([
+      ["release", "Resume"],
+      ["schedule", "Edit schedule"],
+      ["cancel", "Cancel"],
+      ["delete", "Delete"],
+    ]);
+    // Waiting for its time: Pause keeps it (and its repeats) from running.
+    const waiting = jobActions(buildJobs({ sessions: [], running: [], tasks: [task("pending")] }, NOW)[0]!, "local");
+    expect(waiting.find((a) => a.id === "hold")).toMatchObject({ label: "Pause", title: "Keep it from running, with its repeats, until you resume it" });
   });
   it("running here: Pause, Raw; running elsewhere in the account's queue: nothing to do but wait", () => {
     const run = live(session("r", { source: "local", taskId: "t" }));

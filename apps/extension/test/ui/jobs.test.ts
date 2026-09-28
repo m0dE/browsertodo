@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { chipHint, taskChip, USER_STOP_REASON, type SessionInfo } from "@browsertodo/shared";
-import { APPROVAL_REASON, STALE_NEEDS_MS, buildJobs, distinctTitle, groupJobs, jobKeyOf, jobRow, jobSubtitle, type JobInputs, type JobTask } from "../../src/sidepanel/jobs.js";
+import { chipHint, taskChip, USER_STOP_REASON, whenText, type SessionInfo } from "@browsertodo/shared";
+import { APPROVAL_REASON, STALE_NEEDS_MS, UPCOMING_ON_HOME, buildJobs, distinctTitle, groupJobs, jobKeyOf, jobRow, jobSubtitle, scheduleRow, viewLayout, type JobInputs, type JobTask } from "../../src/sidepanel/jobs.js";
 
 const NOW = Date.parse("2026-09-27T12:00:00Z");
 const at = (min: number) => new Date(NOW + min * 60_000).toISOString();
@@ -319,5 +319,99 @@ describe("chip hints", () => {
     }
     expect(chipHint("retry")).not.toBe("");
     expect(chipHint("scheduled")).not.toBe("");
+  });
+});
+
+describe("jobs: the two views (Home and Scheduled)", () => {
+  const upcoming = (n: number) => Array.from({ length: n }, (_, i) => task(`u${i}`, { notBefore: at(60 * (n - i)), instructions: `Upcoming ${i}` }));
+  const view = (v: "home" | "scheduled", input: Partial<JobInputs>, query = "") => {
+    const l = viewLayout(v, jobs(input), query);
+    return { groups: l.groups.map((g) => [g.label, g.jobs.map((j) => j.key)]), hidden: l.upcomingHidden, count: l.scheduledCount };
+  };
+
+  it("Home: Upcoming is cut to its soonest 3; the rest are in Scheduled (All scheduled (N))", () => {
+    const home = view("home", { tasks: upcoming(5), sessions: [session("c", -5)] });
+    expect(home.groups).toEqual([
+      ["Upcoming", ["task:u4", "task:u3", "task:u2"]],
+      ["Recent", ["chat:c"]],
+    ]);
+    expect(home.hidden).toBe(2);
+    expect(home.count).toBe(5);
+    // Three or fewer: nothing is left out.
+    expect(view("home", { tasks: upcoming(3) }).hidden).toBe(0);
+    expect(UPCOMING_ON_HOME).toBe(3);
+  });
+
+  it("Home with a search shows every upcoming match; the search filters the view shown", () => {
+    const tasks = upcoming(5);
+    expect(view("home", { tasks }, "upcoming").groups).toEqual([["Upcoming", ["task:u4", "task:u3", "task:u2", "task:u1", "task:u0"]]]);
+    expect(view("home", { tasks }, "upcoming").hidden).toBe(0);
+    expect(view("scheduled", { tasks }, "upcoming 1").groups).toEqual([["Next runs", ["task:u1"]]]);
+    expect(view("scheduled", { tasks, sessions: [session("c", -5, { title: "Upcoming 1 chat" })] }, "chat").groups).toEqual([]);
+  });
+
+  it("Scheduled: every job with a schedule, one row per series, soonest first (running, then needing you, then by time), paused last", () => {
+    const run = session("r", -1, { source: "local", taskId: "rep-now", seriesId: "rep", endedAt: undefined, outcome: undefined });
+    const tasks = [
+      task("later", { notBefore: at(600), repeat: DAILY }),
+      task("sooner", { notBefore: at(30) }),
+      task("due", { notBefore: at(-5) }),
+      // A repeating job running now (its series' row runs), and its earlier done run: one row.
+      task("rep-old", { status: "done", repeat: DAILY, seriesId: "rep", createdAt: at(-3000) }),
+      task("rep-now", { status: "running", repeat: DAILY, seriesId: "rep", createdAt: at(-100) }),
+      task("held-b", { status: "paused", pauseReason: "Paused by you", instructions: "B held" }),
+      task("held-a", { status: "paused", pauseReason: "Paused after 3 failed runs in a row. Last: boom", instructions: "A held", repeat: DAILY }),
+      task("login", { status: "paused", pauseReason: "Log in to X", instructions: "Task login" }),
+      // Not scheduled: over, or a one-off running.
+      task("over", { status: "done" }),
+      task("once-running", { status: "running" }),
+    ];
+    expect(view("scheduled", { tasks, sessions: [run], running: [run] }).groups).toEqual([
+      // Running first, then one that needs the user, then by time (a due one's time has passed).
+      ["Next runs", ["task:rep", "task:login", "task:due", "task:sooner", "task:later"]],
+      ["Paused", ["task:held-a", "task:held-b"]],
+    ]);
+  });
+
+  it("paused by the user: only in Scheduled (not on Home); paused after failures: Needs you on Home and paused in Scheduled", () => {
+    const tasks = [
+      task("mine", { status: "paused", pauseReason: "Paused by you", repeat: DAILY }),
+      task("failing", { status: "paused", pauseReason: "Paused after 3 failed runs in a row. Last: boom", repeat: DAILY }),
+    ];
+    const j = byKey({ tasks });
+    expect(j.get("task:mine")).toMatchObject({ state: "paused", group: "paused", held: true, scheduled: true, reason: "" });
+    expect(j.get("task:failing")).toMatchObject({ state: "needs", group: "needs", held: true, reason: "Paused after 3 failed runs in a row. Last: boom" });
+    expect(view("home", { tasks }).groups).toEqual([["Needs you", ["task:failing"]]]);
+    expect(view("scheduled", { tasks }).groups).toEqual([["Paused", ["task:failing", "task:mine"]]]);
+    expect(jobSubtitle(j.get("task:mine")!, NOW)).toBe("Paused · Daily at 9:00 AM");
+    // A paused one that comes back by itself (a retry time) is not on hold.
+    expect(byKey({ tasks: [task("later", { status: "paused", pauseReason: "Paused by you", retryAfter: at(10) })] }).get("task:later")).toMatchObject({ state: "needs", held: false });
+  });
+
+  it("a Scheduled row: its schedule under the title, its next run on the right, and Pause or Resume", () => {
+    const j = byKey({
+      tasks: [
+        task("daily", { notBefore: at(21 * 60), repeat: DAILY, instructions: "Post the tip" }),
+        task("once", { notBefore: at(30), instructions: "Call back" }),
+        task("mine", { status: "paused", pauseReason: "Paused by you", repeat: DAILY, instructions: "Mine" }),
+        task("failing", { status: "paused", pauseReason: "Paused after 3 failed runs in a row. Last: boom", instructions: "Failing" }),
+        task("login", { status: "paused", pauseReason: "Log in to X", instructions: "Login" }),
+      ],
+    });
+    // Times read in this computer's zone (whenText).
+    const tomorrow9 = whenText(at(21 * 60), NOW);
+    const soon = whenText(at(30), NOW).replace(/^Today /, "");
+    expect(scheduleRow(j.get("task:daily")!, NOW)).toEqual({
+      title: "Post the tip",
+      meta: "Daily at 9:00 AM",
+      when: tomorrow9,
+      label: `Post the tip, Scheduled, Daily at 9:00 AM, next ${tomorrow9.replace(/^(Today|Tomorrow)/, (w) => w.toLowerCase())}`,
+      toggle: "pause",
+    });
+    expect(scheduleRow(j.get("task:once")!, NOW)).toMatchObject({ meta: "Once", when: soon, toggle: "pause" });
+    expect(scheduleRow(j.get("task:mine")!, NOW)).toMatchObject({ meta: "Daily at 9:00 AM", when: "Paused", toggle: "resume", label: "Mine, Paused, Daily at 9:00 AM" });
+    expect(scheduleRow(j.get("task:failing")!, NOW)).toMatchObject({ meta: "Once · Paused after 3 failed runs in a row. Last: boom", when: "Paused", toggle: "resume" });
+    // Needs the user for something else: neither (Resume on its page goes on from its run).
+    expect(scheduleRow(j.get("task:login")!, NOW)).toMatchObject({ meta: "Once · Log in to X", when: "Needs you", toggle: null });
   });
 });

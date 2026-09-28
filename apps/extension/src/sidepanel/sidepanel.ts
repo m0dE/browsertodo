@@ -21,7 +21,7 @@ import { initHeader } from "./header.js";
 import { JobData } from "./job-data.js";
 import { Dismisser, dismissalOf, undoText } from "./job-dismiss.js";
 import { initJobList } from "./job-list.js";
-import { forgetOldTabs, JobNav, viewAnnouncement } from "./job-nav.js";
+import { forgetOldTabs, JobNav, storedView, storeView, viewAnnouncement } from "./job-nav.js";
 import { initJobPage } from "./job-page.js";
 import { chatKey, seriesOf, taskKey, type Job } from "./jobs.js";
 import { initMemoryAsk } from "./memory-ask.js";
@@ -73,7 +73,7 @@ let sent: { tab: number; sessionId: string } | null = null;
 /** The panel tab's own chat as last seen (undefined: no state yet); when it becomes another one, its job shows. */
 let ownSeen: string | null | undefined;
 
-const nav = new JobNav();
+const nav = new JobNav(storedView(sessionStorage));
 const data = new JobData(uiRequest, (err) => console.warn(`[browsertodo] jobs not loaded: ${errorMessage(err)}`));
 const listView = $("view-list");
 const jobView = $("view-job");
@@ -397,6 +397,16 @@ const list = initJobList(listView, {
   onOpen: openJob,
   canDismiss: (job) => dismissalOf(job, data.source) !== null,
   onDismiss: (jobs) => dismisser.dismiss(jobs.map((j) => dismissalOf(j, data.source)).filter((d) => d !== null)),
+  onToggle: async (job, to) => {
+    if (!job.task) return;
+    try {
+      await uiRequest({ type: to === "pause" ? "tasks.pause" : "tasks.resume", id: job.task.id });
+      await data.loadTasks();
+    } catch (err) {
+      composer.showError(err);
+    }
+  },
+  onView: (view) => storeView(sessionStorage, view),
   onShortcuts: () => void openShortcutSettings(),
 });
 const page = initJobPage({
@@ -456,6 +466,7 @@ for (const el of [jobView, $("job-head")]) {
 }
 
 data.onChange(() => {
+  header.setList({ lockedWaiting: data.lockedWaiting });
   // A chat shown before its session was listed may turn out to be a task's run: its job is the task's.
   const key = nav.jobKey;
   if (key?.startsWith("chat:") && !data.job(key)) {

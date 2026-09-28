@@ -184,6 +184,11 @@ export function initJobPage(deps: JobPageDeps): JobPage {
             await data.loadTasks();
           } else if (s) deps.continueNow(s.sessionId);
           break;
+        case "hold":
+        case "release":
+          if (t) await uiRequest({ type: id === "hold" ? "tasks.pause" : "tasks.resume", id: t.id });
+          await data.loadTasks();
+          break;
         case "schedule":
           deps.openSchedule(job, menu.querySelector("summary")!);
           break;

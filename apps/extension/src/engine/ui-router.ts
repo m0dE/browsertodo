@@ -25,7 +25,7 @@ import { isMemoryRequest, type MemoryService } from "../memory/service.js";
 /** The runner as the router uses it. */
 export type RouterRunner = Pick<
   Runner,
-  "running" | "runningSessions" | "state" | "runDue" | "runTask" | "runAdhoc" | "continueSession" | "message" | "newChat" | "stop" | "say" | "pauseSchedule" | "resumeSchedule"
+  "running" | "runningSessions" | "state" | "runDue" | "runTask" | "runAdhoc" | "continueSession" | "message" | "newChat" | "stop" | "say"
 >;
 
 export type RouterVault = Pick<Vault, "unlock" | "lock" | "list" | "set" | "delete" | "reset">;
@@ -57,6 +57,8 @@ export interface UiRouterDeps {
   };
   brainStatus(settings: ExtensionSettings): BrainStatus;
   nextRunAt(): Promise<string | undefined>;
+  /** The old pause of every scheduled run, while it is not converted into paused jobs (pause-migration.ts). Absent: none. */
+  pauseMigration?: { pending(): Promise<string | null>; retry(): Promise<void> };
   testClaude(settings: ExtensionSettings): Promise<TestResult>;
   /** Tests the Jev that `brain` (the settings resolved) would use. */
   testJev(settings: ExtensionSettings, brain: BrainStatus): Promise<TestResult>;
@@ -146,7 +148,6 @@ export class UiRouter {
       brain: d.brainStatus(settings),
       running: d.runner.running,
       runningSessions: d.runner.runningSessions,
-      paused: settings.paused,
       openConversations: d.openConversations(),
     };
     if (account) state.account = account;
@@ -160,7 +161,8 @@ export class UiRouter {
     if (memoryQuestion) state.memoryQuestion = memoryQuestion;
     const memoryBackfill = d.memoryBackfill ? await d.memoryBackfill().catch(() => null) : null;
     if (memoryBackfill) state.memoryBackfill = memoryBackfill;
-    if (settings.paused && rs.pausedReason) state.pausedReason = rs.pausedReason;
+    const pauseMigration = d.pauseMigration ? await d.pauseMigration.pending().catch(() => null) : null;
+    if (pauseMigration) state.pauseMigration = pauseMigration;
     if (rs.lastRunAt) state.lastRunAt = rs.lastRunAt;
     if (rs.lastError) state.lastError = rs.lastError;
     if (next) state.nextRunAt = next;
@@ -333,11 +335,8 @@ export class UiRouter {
         return { ok: await d.showAgent(optId(msg.sessionId)) } satisfies UiResults["agent.show"];
       case "run.say":
         return { ok: await d.runner.say(String(msg.text ?? ""), optId(msg.sessionId)) } satisfies UiResults["run.say"];
-      case "schedule.pause":
-        await d.runner.pauseSchedule();
-        return this.getState();
-      case "schedule.resume":
-        await d.runner.resumeSchedule();
+      case "pause.migrate":
+        await d.pauseMigration?.retry();
         return this.getState();
       case "tasks.list": {
         const todo = await this.todo();
@@ -361,6 +360,10 @@ export class UiRouter {
         return { task: await (await this.todo()).retry(msg.id) } satisfies UiResults["tasks.retry"];
       case "tasks.cancel":
         return { task: await (await this.todo()).cancel(msg.id) } satisfies UiResults["tasks.cancel"];
+      case "tasks.pause":
+        return { task: await (await this.todo()).pause(msg.id) } satisfies UiResults["tasks.pause"];
+      case "tasks.resume":
+        return { task: await (await this.todo()).resume(msg.id) } satisfies UiResults["tasks.resume"];
       case "account.signIn":
         await this.account().signIn();
         return this.getState();

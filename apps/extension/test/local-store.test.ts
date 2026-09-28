@@ -279,3 +279,51 @@ describe("task series (seriesId)", () => {
     expect((await store.list()).map((t) => t.seriesId)).toEqual(["a", "a"]);
   });
 });
+
+describe("pausing a job (pause, resume, holdSeries)", () => {
+  it("pause keeps a waiting task from running (not due, no wake-up) until resume puts it back at its time", async () => {
+    const t = await store.add({ instructions: "later", notBefore: local(2026, 9, 24, 12, 0).toISOString() });
+    const paused = await store.pause(t.id);
+    expect(paused).toMatchObject({ status: "paused", pauseReason: "Paused by you", retryAfter: null });
+    now = local(2026, 9, 24, 13, 0);
+    expect(await store.due()).toEqual([]);
+    expect(await store.nextWakeAt()).toBeNull();
+    // A one-off whose time went by while paused: due as soon as it is resumed.
+    expect(await store.resume(t.id)).toMatchObject({ status: "pending", pauseReason: null, notBefore: local(2026, 9, 24, 12, 0).toISOString() });
+    expect((await store.due()).map((x) => x.id)).toEqual([t.id]);
+  });
+
+  it("a repeating task resumed after its time went by runs at its next time, not at once", async () => {
+    const t = await store.add({ instructions: "tip", repeat: daily("09:00") });
+    expect(t.notBefore).toBe(local(2026, 9, 25, 9, 0).toISOString());
+    await store.pause(t.id);
+    now = local(2026, 9, 27, 10, 0);
+    expect((await store.resume(t.id)).notBefore).toBe(local(2026, 9, 28, 9, 0).toISOString());
+    expect(await store.due()).toEqual([]);
+  });
+
+  it("refuses to pause a running or finished task, and to resume one that is not paused", async () => {
+    const t = await store.add({ instructions: "x" });
+    await expect(store.resume(t.id)).rejects.toThrow(/only a paused task can be resumed/);
+    await store.markStarted(t.id);
+    await expect(store.pause(t.id)).rejects.toThrow(/only a waiting task can be paused/);
+    await store.finish(t.id, { outcome: "done" }, { retryAfterMinutes: 10 });
+    await expect(store.pause(t.id)).rejects.toThrow(/only a waiting task can be paused/);
+  });
+
+  it("holdSeries pauses the series' waiting run (its next repeat or its retry) with the reason; null when none waits", async () => {
+    const t = await store.add({ instructions: "tip", notBefore: now.toISOString(), repeat: daily("09:00") });
+    await store.markStarted(t.id);
+    const { next } = await store.finish(t.id, { outcome: "failed", reason: "boom" }, { retryAfterMinutes: 10 });
+    const held = await store.holdSeries(t.id, "Paused after 3 failed runs in a row. Last: boom");
+    expect(held).toMatchObject({ id: next!.id, status: "paused", pauseReason: "Paused after 3 failed runs in a row. Last: boom" });
+    // On hold already: nothing more to hold.
+    expect(await store.holdSeries(t.id, "again")).toBeNull();
+    expect(await store.holdSeries("no-such-series", "x")).toBeNull();
+    // A retry waiting for its time is held too.
+    const r = await store.add({ instructions: "retry me" });
+    await store.markStarted(r.id);
+    await store.finish(r.id, { outcome: "retry", reason: "network" }, { retryAfterMinutes: 10 });
+    expect(await store.holdSeries(r.id, "held")).toMatchObject({ id: r.id, status: "paused", retryAfter: null, pauseReason: "held" });
+  });
+});

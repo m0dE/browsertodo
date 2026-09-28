@@ -7,6 +7,11 @@
  * what they need: Needs you (an approval or the user's answer waits, a task paused), Running, Upcoming (a task
  * waiting for its time; "scheduled" in the code), Recent (the rest, newest first).
  *
+ * Two views (JobView): Home has those groups, Upcoming cut to its soonest UPCOMING_ON_HOME; Scheduled has every job
+ * with a schedule (one row per series: waiting, running a repeat, or paused), soonest first, the paused ones last. A
+ * job the user paused (state "paused": its task on hold with PAUSED_BY_USER) is only in Scheduled; one paused because
+ * its runs kept failing needs the user (Needs you) and is among Scheduled's paused ones too.
+ *
  * The user clears the list (UiState.dismissals): a need they dismissed goes to Recent ("Dismissed"), and a job they
  * put away leaves the list until it does something again (search still finds it). A need nobody answered for
  * STALE_NEEDS_MS goes to Recent by itself ("Waited for you"), except one that cannot move on without the user: an
@@ -15,6 +20,8 @@
  */
 import {
   formatRelative,
+  isOnHold,
+  PAUSED_BY_USER,
   repeatLabel,
   taskNextTime,
   USER_STOP_REASON,
@@ -26,10 +33,17 @@ import {
 import type { JobDismissal, LocalMediaInfo } from "../ui-protocol.js";
 import { firstLine } from "./format.js";
 
-export type JobGroupId = "needs" | "running" | "scheduled" | "recent";
+/** Home's groups (needs, running, scheduled = Upcoming, recent), and the Scheduled view's (active, paused). */
+export type JobGroupId = "needs" | "running" | "scheduled" | "recent" | "active" | "paused";
+
+/** The list's two views: Home (what needs you, runs, comes next and ran), and every scheduled job. */
+export type JobView = "home" | "scheduled";
+
+/** Home's Upcoming shows this many (the soonest); the Scheduled view shows them all. */
+export const UPCOMING_ON_HOME = 3;
 
 /** Where a job is: what its row's icon and its page's subtitle say. */
-export type JobState = "needs" | "running" | "due" | "scheduled" | "retry" | "done" | "failed" | "stopped" | "cancelled" | "dismissed" | "lapsed";
+export type JobState = "needs" | "running" | "due" | "scheduled" | "retry" | "paused" | "done" | "failed" | "stopped" | "cancelled" | "dismissed" | "lapsed";
 
 /** A need nobody answered for this long goes to Recent by itself (see the top of this file). */
 export const STALE_NEEDS_MS = 24 * 60 * 60 * 1000;
@@ -67,6 +81,10 @@ export interface Job {
   needs: string | null;
   /** The user put it away: not in the list (search finds it). */
   archived: boolean;
+  /** Its task is on hold (paused by the user, or after its runs kept failing): only Resume puts it back on its schedule. */
+  held: boolean;
+  /** It has a schedule (it waits to run, runs a repeat, or is paused): a row of the Scheduled view. */
+  scheduled: boolean;
 }
 
 export interface JobInputs {
@@ -86,6 +104,8 @@ export const GROUP_LABELS: Record<JobGroupId, string> = {
   running: "Running",
   scheduled: "Upcoming",
   recent: "Recent",
+  active: "Next runs",
+  paused: "Paused",
 };
 const GROUP_ORDER: readonly JobGroupId[] = ["needs", "running", "scheduled", "recent"];
 
@@ -95,6 +115,7 @@ export const STATE_LABELS: Record<JobState, string> = {
   due: "Due now",
   scheduled: "Scheduled",
   retry: "Retrying",
+  paused: "Paused",
   done: "Done",
   failed: "Failed",
   stopped: "Stopped",
@@ -109,6 +130,7 @@ const GROUP_OF: Record<JobState, JobGroupId> = {
   due: "scheduled",
   scheduled: "scheduled",
   retry: "scheduled",
+  paused: "paused",
   done: "recent",
   failed: "recent",
   stopped: "recent",
@@ -182,6 +204,8 @@ function taskState(t: JobTask, now: number): { state: JobState; reason: string }
     case "running":
       return { state: "running", reason: "" };
     case "paused":
+      // Paused by the user: it waits for them to resume it, it does not need them.
+      if (t.pauseReason === PAUSED_BY_USER && !t.retryAfter) return { state: "paused", reason: "" };
       return { state: "needs", reason: t.pauseReason ?? "" };
     case "pending": {
       if (t.retryAfter && Date.parse(t.retryAfter) > now) return { state: "retry", reason: t.failReason ?? "" };
@@ -286,6 +310,8 @@ export function buildJobs(input: JobInputs, now = Date.now()): Job[] {
       site: siteOf(session?.url),
       needs: state === "needs" ? needs : null,
       archived: GROUP_OF[state] === "recent" && !!dismissal?.archivedAt && at <= dismissal.archivedAt,
+      held: !!task && isOnHold(task),
+      scheduled: !!task && (task.status === "pending" || task.status === "paused" || (task.status === "running" && !!task.repeat)),
     });
   }
   return jobs;
@@ -323,6 +349,79 @@ export function groupJobs(jobs: readonly Job[], query = ""): JobGroup[] {
     label: GROUP_LABELS[id],
     jobs: shown.filter((j) => j.group === id).sort(id === "scheduled" ? bySoonest : byLatest),
   })).filter((g) => g.jobs.length > 0);
+}
+
+/** A view's groups, and what Home's Upcoming leaves to the Scheduled view. */
+export interface ViewLayout {
+  groups: JobGroup[];
+  /** Home: the upcoming jobs its Upcoming leaves out (0: it shows them all). */
+  upcomingHidden: number;
+  /** The Scheduled view's rows for this search ("All scheduled (N)"). */
+  scheduledCount: number;
+}
+
+/**
+ * What a view shows for a search. Home: groupJobs, Upcoming cut to its soonest UPCOMING_ON_HOME while nothing is
+ * searched (a search shows every match). Scheduled: scheduledGroups.
+ */
+export function viewLayout(view: JobView, jobs: readonly Job[], query = ""): ViewLayout {
+  const scheduled = scheduledGroups(jobs, query);
+  const scheduledCount = scheduled.reduce((n, g) => n + g.jobs.length, 0);
+  if (view === "scheduled") return { groups: scheduled, upcomingHidden: 0, scheduledCount };
+  const cut = searchWords(query).length === 0;
+  let upcomingHidden = 0;
+  const groups = groupJobs(jobs, query).map((g) => {
+    if (g.id !== "scheduled" || !cut || g.jobs.length <= UPCOMING_ON_HOME) return g;
+    upcomingHidden = g.jobs.length - UPCOMING_ON_HOME;
+    return { ...g, jobs: g.jobs.slice(0, UPCOMING_ON_HOME) };
+  });
+  return { groups, upcomingHidden, scheduledCount };
+}
+
+/** When a scheduled job comes next, for sorting: running now first, then those that need the user (no time), then by time (a due one: its passed time). */
+function nextKey(job: Job): number {
+  if (job.running) return -Infinity;
+  return job.next ? Date.parse(job.next) : Number.MIN_SAFE_INTEGER;
+}
+
+/**
+ * The Scheduled view: every job with a schedule (one row per series) matching the search, soonest first ("Next
+ * runs"), then the paused ones ("Paused", by title). A schedule is never put away, so dismissed jobs are listed too.
+ */
+export function scheduledGroups(jobs: readonly Job[], query = ""): JobGroup[] {
+  const words = searchWords(query);
+  const all = jobs.filter((j) => j.scheduled && jobMatches(j, words));
+  const active = all.filter((j) => !j.held).sort((a, b) => nextKey(a) - nextKey(b) || a.title.localeCompare(b.title));
+  const paused = all.filter((j) => j.held).sort((a, b) => a.title.localeCompare(b.title));
+  const groups: JobGroup[] = [
+    { id: "active", label: GROUP_LABELS.active, jobs: active },
+    { id: "paused", label: GROUP_LABELS.paused, jobs: paused },
+  ];
+  return groups.filter((g) => g.jobs.length > 0);
+}
+
+/** A row of the Scheduled view, in words, with its Pause or Resume. */
+export interface ScheduleRow extends JobRow {
+  /** pause: it waits for its time; resume: it is on hold; null: neither now (it runs, or it needs the user). */
+  toggle: "pause" | "resume" | null;
+}
+
+/** Under the title its schedule ("Daily at 9:00 AM"; a one-off: "Once"), on the right when it runs next ("Paused" while on hold). */
+export function scheduleRow(job: Job, now = Date.now()): ScheduleRow {
+  const rule = repeatLabel(job.repeat) || "Once";
+  const when = job.held
+    ? STATE_LABELS.paused
+    : job.running
+      ? "now"
+      : job.group === "scheduled"
+        ? line(nextWords(job, now).replace(/^(retries )?today /, "$1"))
+        : STATE_LABELS[job.state];
+  // A pause that needs the user says why (its runs kept failing, a login, ...).
+  const why = job.state === "needs" || isLeftNeed(job) ? job.reason : "";
+  const toggle = job.held ? "resume" : !job.running && job.task?.status === "pending" ? "pause" : null;
+  const next = job.held || job.running || job.group !== "scheduled" ? "" : nextWords(job, now) === "due now" ? "due now" : `next ${nextWords(job, now)}`;
+  const label = [job.title, job.held ? STATE_LABELS.paused : STATE_LABELS[job.state], rule, next, why].filter(Boolean).join(", ");
+  return { title: job.title, when, meta: line(rule, why), label, toggle };
 }
 
 /** A row of the list, in words. */
@@ -380,6 +479,8 @@ export function jobSubtitle(job: Job, now = Date.now()): string {
       return line(STATE_LABELS.needs, job.reason);
     case "running":
       return line(STATE_LABELS.running, rule);
+    case "paused":
+      return line(STATE_LABELS.paused, rule || "once");
     default:
       return line(STATE_LABELS[job.state], isLeftNeed(job) && job.reason, formatRelative(job.at, now), rule);
   }

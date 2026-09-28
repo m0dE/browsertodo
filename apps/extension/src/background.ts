@@ -8,6 +8,7 @@ import { errorMessage, type ExtensionSettings, type SessionInfo, type TodoToolNa
 import { AccountService, browserTimeZone, type AccountServiceDeps } from "./account/account.js";
 import type { AccountTaskList } from "./account/account-api.js";
 import { AccountTodo, LocalTodo, type TodoSource } from "./account/todo-source.js";
+import { PauseMigration } from "./engine/pause-migration.js";
 import { AgentSlots } from "./agent-slots.js";
 import { ApprovalBroker } from "./approval/broker.js";
 import { approvalJev } from "./approval/jev-source.js";
@@ -46,7 +47,7 @@ import { notify } from "./notify.js";
 import { PanelCommands } from "./panel-command.js";
 import { openTabPanel, panelTabOf, StoredPanelTabs } from "./panel-tabs.js";
 import { INDICATOR_MESSAGE, isIndicatorMessage, pageIndicators } from "./page-indicator.js";
-import { ALARM_NAME, DUE_ALARM, ensureAlarm, getRunnerId, handleStorageChange, loadSettings, migrateStoredSettings, saveSettings, saveSettingsPatch } from "./settings-store.js";
+import { ALARM_NAME, DUE_ALARM, ensureAlarm, getRunnerId, handleStorageChange, loadSettings, migrateStoredSettings, saveSettingsPatch } from "./settings-store.js";
 import type { UiPush, UiRequest } from "./ui-protocol.js";
 import { VOICE_BADGES, VoiceSessions } from "./voice-session.js";
 import { TabBadges, type BadgeLook } from "./tab-badges.js";
@@ -342,12 +343,42 @@ const titles = new ChatTitler({
   log: logger("titles"),
 });
 
+/** The account's TODO list, or null when signed out. */
+async function accountTodo(): Promise<AccountTodo | null> {
+  const source = await todoSource();
+  return source instanceof AccountTodo ? source : null;
+}
+
+// The old pause of every scheduled run becomes paused jobs (pause-migration.ts); nothing scheduled starts before it ran.
+const pauseMigration = new PauseMigration({
+  storage: () => chrome.storage.local,
+  local: new LocalTodo(localStore),
+  account: accountTodo,
+  log: logger("pause-migration"),
+  changed: () => hub.pushState(),
+});
+// After the stored settings' own migration (both rewrite them), at every service worker start.
+const pauseMigrationStarted = migrateStoredSettings()
+  .catch((err: unknown) => logger("settings")(`migration failed: ${errorMessage(err)}`))
+  .then(() => pauseMigration.start())
+  .catch((err: unknown) => logger("pause-migration")(`failed: ${errorMessage(err)}`));
+
 const runner = new Runner({
   loadSettings,
-  saveSettings,
   getRunnerId,
   createApi,
   accountApi: () => account.runnerApi(),
+  accountQueueHold: async () => {
+    await pauseMigrationStarted;
+    if (await pauseMigration.pending()) await pauseMigration.retry();
+    return pauseMigration.pending();
+  },
+  outOfCredit: () => account.brainAccount().outOfCredit,
+  holdSeries: async (_source, seriesId, reason) => {
+    const todo = await accountTodo();
+    if (!todo) throw new Error("not signed in to the account these tasks belong to");
+    return !!(await todo.holdSeries(seriesId, reason));
+  },
   localStore,
   sessions,
   pageOf,
@@ -375,8 +406,6 @@ const runner = new Runner({
 cdp.onUserCancel = () => runner.onDebuggerCanceled();
 
 async function nextRunAt(): Promise<string | undefined> {
-  const settings = await loadSettings();
-  if (settings.paused) return undefined;
   const times = (await Promise.all([chrome.alarms.get(ALARM_NAME), chrome.alarms.get(DUE_ALARM)]))
     .map((a) => a?.scheduledTime)
     .filter((t): t is number => typeof t === "number");
@@ -414,6 +443,7 @@ const router = new UiRouter({
   helper,
   brainStatus,
   nextRunAt,
+  pauseMigration,
   testClaude: (s) => testClaude(s),
   testJev: (s, brain) => testJev(s, brain, { core, hosted: account.session() }),
   testCloud: (s) => testCloud(s, (x) => createApi(x).check()),
@@ -512,8 +542,7 @@ async function prewarmBrain(): Promise<void> {
 }
 
 function onStart(): void {
-  // An install saved with an earlier default account server moves to its current address (also on update).
-  void migrateStoredSettings().catch((err: unknown) => logger("settings")(`migration failed: ${errorMessage(err)}`));
+  // The stored settings' migrations run once per worker start (pauseMigrationStarted), not here again.
   void ensureAlarm();
   // No window-wide panel: a tab without its own options has none (panel-tabs.ts). The toolbar button opens or closes
   // a tab's own panel; in a tab without one it fires action.onClicked, which opens it there.
@@ -529,7 +558,7 @@ chrome.runtime.onStartup.addListener(() => onStart());
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (episodes.onAlarm(alarm.name)) return;
   if (alarm.name === DUE_ALARM && accountNextDue !== null && accountNextDue <= Date.now()) accountNextDue = null;
-  if (alarm.name === ALARM_NAME || alarm.name === DUE_ALARM) void runner.runDue("alarm");
+  if (alarm.name === ALARM_NAME || alarm.name === DUE_ALARM) void pauseMigrationStarted.then(() => runner.runDue("alarm"));
 });
 chrome.storage.onChanged.addListener((changes, area) => {
   void handleStorageChange(changes, area);

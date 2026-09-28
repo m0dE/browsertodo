@@ -248,6 +248,16 @@ export function settleSchedule(
   return { notBefore, repeat: rule };
 }
 
+/**
+ * When a paused task runs once resumed: a repeating one whose time went by while it was paused at its rule's next
+ * time after `now` (the runs it missed are skipped, not made up at once); otherwise at its own time (a one-off whose
+ * time went by: now).
+ */
+export function resumedNotBefore(notBefore: string | null, repeat: RepeatSchedule | null | undefined, now: Date): string | null {
+  if (!repeat || !notBefore || Date.parse(notBefore) > now.getTime()) return notBefore;
+  return nextRun(repeat, now)?.toISOString() ?? notBefore;
+}
+
 /** A schedule that cannot be used (the API answers 400 with its message). */
 export class ScheduleError extends Error {}
 

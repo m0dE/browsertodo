@@ -65,6 +65,17 @@ function memoryTodo(opts: { failAdd?: Error } = {}) {
       tasks.set(id, t);
       return t;
     },
+    pause: async (id, reason) => {
+      const t = { ...tasks.get(id)!, status: "paused" as const, pauseReason: reason ?? "Paused by you" };
+      tasks.set(id, t);
+      return t;
+    },
+    resume: async (id) => {
+      const t = { ...tasks.get(id)!, status: "pending" as const, pauseReason: null };
+      tasks.set(id, t);
+      return t;
+    },
+    holdSeries: async () => null,
   };
   /** A task the user made in the TODO tab (not in this chat). */
   const own = (task: Partial<LocalTask> & { id: string; instructions: string }) => {

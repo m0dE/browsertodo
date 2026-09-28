@@ -18,6 +18,27 @@ export interface Chip {
 
 type Timing = { status: TaskStatus; notBefore?: string | null; retryAfter?: string | null };
 
+/** The pause reason of a job the user paused (Pause on its row or in its menu): it waits until they resume it. */
+export const PAUSED_BY_USER = "Paused by you";
+/** Starts the pause reason of a job paused because its runs kept failing (failureHoldReason). */
+export const FAILURE_HOLD_PREFIX = "Paused after ";
+
+/** Why a job was paused after `failures` failed runs in a row, the last one for `last`. */
+export function failureHoldReason(failures: number, last: string): string {
+  return `${FAILURE_HOLD_PREFIX}${failures} failed runs in a row. Last: ${last}`;
+}
+
+/**
+ * The task is on hold: paused, with no time to come back by itself, by the user or after repeated failures. Only
+ * resuming it (tasks.resume) puts it back on its schedule; a pause that needs the user for something else (a login,
+ * an approval) is not a hold.
+ */
+export function isOnHold(task: { status: TaskStatus; retryAfter?: string | null; pauseReason?: string | null }): boolean {
+  if (task.status !== "paused" || task.retryAfter) return false;
+  const reason = task.pauseReason ?? "";
+  return reason === PAUSED_BY_USER || reason.startsWith(FAILURE_HOLD_PREFIX);
+}
+
 /** When a pending task becomes due (the later of notBefore and retryAfter). */
 export function taskNextTime(task: Timing): string | null {
   if (task.status !== "pending") return null;
@@ -26,7 +47,8 @@ export function taskNextTime(task: Timing): string | null {
   return times.reduce((a, b) => (Date.parse(a) >= Date.parse(b) ? a : b));
 }
 
-export function taskChip(task: Timing, now = Date.now()): Chip {
+export function taskChip(task: Timing & { pauseReason?: string | null }, now = Date.now()): Chip {
+  if (task.status === "paused" && task.pauseReason === PAUSED_BY_USER && !task.retryAfter) return { label: "paused", tone: "muted" };
   switch (task.status) {
     case "pending": {
       if (task.retryAfter && Date.parse(task.retryAfter) > now) return { label: "retry", tone: "warn" };
@@ -57,6 +79,7 @@ const CHIP_HINTS: Record<string, string> = {
   failed: "Did not work and will not be tried again by itself; the reason is shown",
   "needs you": "The agent stopped because it needs you (a login, a code, a choice); the reason is shown",
   cancelled: "Cancelled; it will not run",
+  paused: "Paused by you; it does not run until you resume it",
 };
 
 export function chipHint(label: string): string {

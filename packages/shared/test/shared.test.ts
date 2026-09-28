@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   MAX_SPOKEN_CHARS,
+  isOnHold,
+  taskChip,
+  chipHint,
+  PAUSED_BY_USER,
+  failureHoldReason,
+  resumedNotBefore,
   ACCOUNT_API_BASE,
   BatchCreateInput,
   CreateTaskInput,
@@ -358,5 +364,31 @@ describe("plan descriptions", () => {
     expect(planIncludesText(PLAN_CATALOG.free)).toBe("");
     expect(planIncludesText(PLAN_CATALOG.plus)).toBe("Includes TODO list, voice input and API access");
     expect(planIncludesText({ todo: true, voice: false, apiKeys: false })).toBe("Includes TODO list");
+  });
+});
+
+describe("pausing a job (task-view, schedule)", () => {
+  it("a task is on hold when paused by the user or after its runs kept failing, with no time to come back by itself", () => {
+    expect(isOnHold({ status: "paused", pauseReason: PAUSED_BY_USER, retryAfter: null })).toBe(true);
+    expect(isOnHold({ status: "paused", pauseReason: failureHoldReason(3, "boom"), retryAfter: null })).toBe(true);
+    expect(failureHoldReason(3, "boom")).toBe("Paused after 3 failed runs in a row. Last: boom");
+    expect(isOnHold({ status: "paused", pauseReason: "Log in to X", retryAfter: null })).toBe(false);
+    expect(isOnHold({ status: "paused", pauseReason: PAUSED_BY_USER, retryAfter: "2026-09-28T10:00:00Z" })).toBe(false);
+    expect(isOnHold({ status: "pending", pauseReason: PAUSED_BY_USER })).toBe(false);
+  });
+
+  it("its chip says paused, not needs you", () => {
+    expect(taskChip({ status: "paused", pauseReason: PAUSED_BY_USER, retryAfter: null })).toEqual({ label: "paused", tone: "muted" });
+    expect(taskChip({ status: "paused", pauseReason: "Log in" })).toEqual({ label: "needs you", tone: "warn" });
+    expect(chipHint("paused")).toMatch(/until you resume it/);
+  });
+
+  it("resumedNotBefore: a repeating task whose time went by runs at its next time; otherwise its own time", () => {
+    const rule = { cron: "0 9 * * *", tz: "UTC" };
+    const now = new Date("2026-09-28T12:00:00Z");
+    expect(resumedNotBefore("2026-09-25T09:00:00.000Z", rule, now)).toBe("2026-09-29T09:00:00.000Z");
+    expect(resumedNotBefore("2026-09-30T09:00:00.000Z", rule, now)).toBe("2026-09-30T09:00:00.000Z");
+    expect(resumedNotBefore("2026-09-25T09:00:00.000Z", null, now)).toBe("2026-09-25T09:00:00.000Z");
+    expect(resumedNotBefore(null, null, now)).toBeNull();
   });
 });

@@ -87,6 +87,40 @@ try {
     return `${tasks.length} task(s), due alarm at ${new Date(due.scheduledTime).toISOString()}`;
   });
 
+  await step("a job is paused on its own and resumed at its time; nothing pauses every run", async () => {
+    const at = new Date(Date.now() + 2 * 3600_000).toISOString();
+    const { task } = await ui({ type: "tasks.add", instructions: "smoke pause", notBefore: at });
+    const { task: paused } = await ui({ type: "tasks.pause", id: task.id });
+    assert.equal(paused.status, "paused");
+    assert.equal(paused.pauseReason, "Paused by you");
+    const { task: resumed } = await ui({ type: "tasks.resume", id: task.id });
+    assert.deepEqual([resumed.status, resumed.notBefore], ["pending", at]);
+    const state = await ui({ type: "state.get" });
+    assert.equal("paused" in state, false, "the state has no pause of every run");
+    assert.equal("paused" in (await sw.evaluate(() => chrome.storage.local.get("settings"))).settings, false, "the settings have no pause of every run");
+    const old = await sw.evaluate((m) => globalThis.__browsertodo.router.handle(m), { type: "schedule.pause" });
+    assert.equal(old.ok, false, "schedule.pause is gone");
+    await ui({ type: "tasks.delete", id: task.id });
+    return "pause / resume / no global pause";
+  });
+
+  await step("the side panel: Home | Scheduled beside the search; the scheduled view lists the waiting task with Pause", async () => {
+    const panel = await context.newPage();
+    await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+    await panel.waitForSelector("#view-list:not([hidden]) #job-groups > *", { state: "attached", timeout: 20_000 });
+    const tabs = await panel.evaluate(() => [...document.querySelectorAll("#job-views [role=tab]")].map((t) => [t.textContent, t.getAttribute("aria-selected")]));
+    assert.deepEqual(tabs, [["Home", "true"], ["Scheduled", "false"]]);
+    assert.equal(await panel.locator("#acct-pause").count(), 0, "no Pause scheduled runs in the account menu");
+    await panel.click("#view-scheduled");
+    await panel.waitForSelector('#job-groups .job-row:has-text("smoke task")', { timeout: 20_000 });
+    const toggle = await panel.textContent('li:has(.job-row:has-text("smoke task")) .job-toggle');
+    assert.equal(toggle, "Pause");
+    const stored = await panel.evaluate(() => sessionStorage.getItem("browsertodo.jobs.view"));
+    assert.equal(stored, "scheduled");
+    await panel.close();
+    return "views ok";
+  });
+
   await step("run.due with no brain records lastError and does not run", async () => {
     // Claude API mode without a key: no brain, whatever helper is installed on this machine.
     await ui({ type: "settings.save", settings: { brain: "claude-api" } });

@@ -96,7 +96,7 @@ export const PANEL_CASES = [
         brand: document.getElementById("brand").textContent,
         acct: !!document.querySelector("#list-head #acct"),
         jobHead: document.getElementById("job-head").hidden,
-        old: !!document.querySelector("[role=tablist], #tab-chat, #tab-todo, #tab-history, .chat-bar, #chat-new"),
+        old: !!document.querySelector("[role=tablist]:not(#job-views), #tab-chat, #tab-todo, #tab-history, .chat-bar, #chat-new"),
         search: document.getElementById("job-search").placeholder,
         status: document.getElementById("status").hidden,
       }));
@@ -1396,6 +1396,10 @@ export const PANEL_CASES = [
       const locked = await keys();
       // Only chats and runs whose tasks the list does not have: no waiting task of the account.
       if (locked.some((k) => ["task:t1", "task:t3", "task:t4", "task:t5"].includes(k)) || !locked.includes("chat:s-3")) fail(`locked list ${JSON.stringify(locked)}`);
+      // The account-wide condition, once, with its fix: the kept jobs that wait cannot run on this plan.
+      await p.waitForSelector("#status:not([hidden])");
+      const strip = await p.evaluate(() => ({ text: document.getElementById("status-text").textContent, action: document.getElementById("status-action").textContent, kind: document.getElementById("status-action").dataset.action }));
+      if (strip.text !== "4 scheduled jobs won't run on your plan" || strip.action !== "Choose a plan" || strip.kind !== "plans") fail(`locked strip ${JSON.stringify(strip)}`);
       await checkLayout(p, `todo-locked ${label}`);
       await shoot(p, "panel-todo-locked", size, scheme);
       // The account menu says what Free lacks.
@@ -1536,7 +1540,7 @@ export const PANEL_CASES = [
       await p.close();
     },
   },
-  // Warning states: no AI set up, runs paused. The strip under the header says so with its fix, over the list and a job.
+  // Warning states: no AI set up; the old pause of every run not converted yet. The strip under the header says so with its fix, over the list and a job.
   {
     names: ["panel-nobrain", "panel-model-menu-nojev"],
     async run({ ctx, size, scheme, label, fail, want, openPanel, shoot, checkLayout, reportErrors }) {
@@ -1559,18 +1563,20 @@ export const PANEL_CASES = [
     },
   },
   {
-    names: ["panel-paused"],
+    names: ["panel-pause-migration"],
     async run({ ctx, size, scheme, label, fail, openPanel, openJob, shoot, checkLayout, reportErrors }) {
-      const p = await openPanel(ctx, "paused");
-      const st = await p.evaluate(() => ({ text: document.getElementById("status-text").textContent, action: document.getElementById("status-action").textContent }));
-      if (!st.text.startsWith("Runs paused: 3 tasks failed") || st.action !== "Resume") fail(`paused strip ${JSON.stringify(st)}`);
-      await checkLayout(p, `paused ${label}`);
-      await shoot(p, "panel-paused", size, scheme);
+      const p = await openPanel(ctx, "pause-migration");
+      const st = await p.evaluate(() => ({ text: document.getElementById("status-text").textContent, title: document.getElementById("status-text").title, action: document.getElementById("status-action").textContent }));
+      if (st.text !== "Your account's jobs wait until each is paused" || !st.title.endsWith("Not done yet: HTTP 404: not found") || st.action !== "Retry") fail(`pause-migration strip ${JSON.stringify(st)}`);
+      // Nothing pauses every run from the account menu any more.
+      if (await p.locator("#acct-pause").count()) fail("the account menu still pauses every scheduled run");
+      await checkLayout(p, `pause-migration ${label}`);
+      await shoot(p, "panel-pause-migration", size, scheme);
       await openJob(p, "task:t6");
-      if (!(await p.isVisible("#status-action"))) fail("the paused strip is gone on a job's page");
+      if (!(await p.isVisible("#status-action"))) fail("the strip is gone on a job's page");
       await p.click("#status-action");
-      await p.waitForFunction(() => window.__requests.some((r) => r.type === "schedule.resume"));
-      reportErrors(p, `paused ${label}`);
+      await p.waitForFunction(() => window.__requests.some((r) => r.type === "pause.migrate"));
+      reportErrors(p, `pause-migration ${label}`);
       await p.close();
     },
   },

@@ -125,7 +125,7 @@ export const LIST_CASES = [
       if (page.runs.length !== 2 || !/done/.test(page.runs[0]) || !/failed/.test(page.runs[1]) || page.open !== 0) fail(`series: earlier runs ${JSON.stringify(page)}`);
       if (page.heads[0] !== "Earlier runs · 2" || !page.heads[1]?.startsWith("Latest run · ")) fail(`series: headings ${JSON.stringify(page.heads)}`);
       if (!page.latest?.startsWith("Post a short tip") || page.end !== "Posted: Ctrl+. opens BrowserTODO from any tab") fail(`series: latest run ${JSON.stringify(page)}`);
-      await expectMenu(p, ["Run now", "Edit schedule", "Raw", "Delete"], "series");
+      await expectMenu(p, ["Run now", "Pause", "Edit schedule", "Raw", "Delete"], "series");
       await p.evaluate(() => (document.getElementById("chat-log").scrollTop = 0));
       await checkLayout(p, `series ${label}`);
       await shoot(p, "panel-job-series", size, scheme);
@@ -212,6 +212,95 @@ export const LIST_CASES = [
       await p.fill("#job-search", "chrome web store");
       await p.waitForFunction(() => !!document.querySelector('.job-row[data-key="chat:s-r2"]'));
       reportErrors(p, `dismiss ${label}`);
+      await p.close();
+    },
+  },
+  // The two views: Home (Needs you, Running, Upcoming cut to its soonest 3 with "All scheduled (N) →", Recent) and
+  // Scheduled (every scheduled job, soonest first, paused last, each with Pause or Resume), switched by a segmented
+  // control beside the search (a tablist: Left and Right); the search filters the view shown; the panel keeps the view.
+  {
+    names: ["panel-home", "panel-scheduled", "panel-scheduled-search"],
+    async run({ ctx, size, scheme, label, fail, groups, openPanel, openJob, backToList, shoot, checkLayout, reportErrors }) {
+      const p = await openPanel(ctx, "views");
+      const bar = await p.evaluate(() => {
+        const tabs = [...document.querySelectorAll("#job-views [role=tab]")];
+        const search = document.getElementById("job-search").getBoundingClientRect();
+        const seg = document.getElementById("job-views").getBoundingClientRect();
+        return {
+          role: document.getElementById("job-views").getAttribute("role"),
+          tabs: tabs.map((t) => [t.textContent, t.getAttribute("aria-selected"), t.tabIndex]),
+          panel: document.getElementById("job-groups").getAttribute("aria-labelledby"),
+          searchWidth: Math.round(search.width),
+          sameLine: Math.abs((search.top + search.bottom) / 2 - (seg.top + seg.bottom) / 2) <= 2,
+        };
+      });
+      if (bar.role !== "tablist" || JSON.stringify(bar.tabs) !== JSON.stringify([["Home", "true", 0], ["Scheduled", "false", -1]]) || bar.panel !== "view-home") fail(`views: the switch ${JSON.stringify(bar)}`);
+      if (!bar.sameLine || bar.searchWidth < (size.w <= 360 ? 150 : 250)) fail(`views: the bar ${JSON.stringify(bar)}`);
+
+      // Home: every group; Upcoming its soonest 3 and the way to the rest; the job paused by the user is not here, the
+      // one paused after failures needs the user.
+      const home = await groups(p);
+      const names = home.map(([n]) => n).join();
+      const upcoming = home.find(([n]) => n === "Upcoming")?.[1] ?? [];
+      const needs = home.find(([n]) => n === "Needs you")?.[1] ?? [];
+      if (names !== "Needs you,Running,Upcoming,Recent" || upcoming.length !== 3 || !needs.includes("task:t11") || home.some(([, keys]) => keys.includes("task:t10"))) fail(`views: Home ${JSON.stringify(home)}`);
+      const all = await p.evaluate(() => ({ text: document.querySelector(".all-scheduled")?.textContent, count: document.querySelector("#group-scheduled .count")?.textContent }));
+      if (all.text !== "All scheduled (8) →" || all.count !== "5") fail(`views: Upcoming's way to the rest ${JSON.stringify(all)}`);
+      await checkLayout(p, `home ${label}`);
+      await shoot(p, "panel-home", size, scheme);
+
+      // "All scheduled": the Scheduled view, its tab selected; soonest first, the paused ones last with Resume.
+      await p.click(".all-scheduled");
+      await p.waitForSelector('#view-scheduled[aria-selected="true"]');
+      const sched = await groups(p);
+      const next = sched.find(([n]) => n === "Next runs")?.[1] ?? [];
+      if (JSON.stringify(sched.map(([n]) => n)) !== JSON.stringify(["Next runs", "Paused"]) || next.length !== 6 || next.includes("task:t2") || JSON.stringify(sched[1][1]) !== JSON.stringify(["task:t11", "task:t10"])) fail(`views: Scheduled ${JSON.stringify(sched)}`);
+      const rows = await p.evaluate(() =>
+        [...document.querySelectorAll("#job-groups li")].map((li) => ({
+          key: li.querySelector(".job-row").dataset.key,
+          meta: li.querySelector(".job-meta")?.textContent ?? "",
+          when: li.querySelector(".job-when").textContent,
+          toggle: li.querySelector(".job-toggle")?.textContent ?? null,
+          toggleName: li.querySelector(".job-toggle")?.getAttribute("aria-label") ?? null,
+        })),
+      );
+      const row = (k) => rows.find((r) => r.key === k);
+      if (row("task:t10")?.toggle !== "Resume" || row("task:t10")?.when !== "Paused" || row("task:t1")?.toggle !== "Pause" || !/^Daily at /.test(row("task:t1")?.meta ?? "") || row("task:t9")?.meta !== "Once" || row("task:t5")?.toggle !== null) fail(`views: Scheduled rows ${JSON.stringify(rows)}`);
+      if (!/^Once · Paused after 3 failed runs/.test(row("task:t11")?.meta ?? "") && !/Paused after 3 failed runs/.test(row("task:t11")?.meta ?? "")) fail(`views: failing row ${JSON.stringify(row("task:t11"))}`);
+      if (!row("task:t1")?.toggleName?.startsWith("Pause ")) fail(`views: toggle name ${JSON.stringify(row("task:t1"))}`);
+      await checkLayout(p, `scheduled ${label}`);
+      await shoot(p, "panel-scheduled", size, scheme);
+
+      // Pause on a row: the job moves to the paused ones, with Resume.
+      await p.click('li:has(.job-row[data-key="task:t1"]) .job-toggle');
+      await p.waitForFunction(() => window.__requests.some((r) => r.type === "tasks.pause" && r.id === "t1"));
+      await p.waitForFunction(() => document.querySelector('#group-paused')?.closest("section")?.querySelector('.job-row[data-key="task:t1"]'));
+      if ((await p.textContent('li:has(.job-row[data-key="task:t1"]) .job-toggle')) !== "Resume") fail("views: a paused row offers no Resume");
+      await p.click('li:has(.job-row[data-key="task:t1"]) .job-toggle');
+      await p.waitForFunction(() => window.__requests.some((r) => r.type === "tasks.resume" && r.id === "t1"));
+
+      // The keyboard: Left and Right move between the views, which show at once.
+      await p.focus("#view-scheduled");
+      await p.keyboard.press("ArrowLeft");
+      const left = await p.evaluate(() => ({ focus: document.activeElement?.id, home: document.getElementById("view-home").getAttribute("aria-selected") }));
+      await p.keyboard.press("ArrowRight");
+      const right = await p.evaluate(() => ({ focus: document.activeElement?.id, sched: document.getElementById("view-scheduled").getAttribute("aria-selected") }));
+      if (left.focus !== "view-home" || left.home !== "true" || right.focus !== "view-scheduled" || right.sched !== "true") fail(`views: arrows ${JSON.stringify({ left, right })}`);
+
+      // The search filters the view shown.
+      await p.fill("#job-search", "tip");
+      const found = await groups(p);
+      if (JSON.stringify(found) !== JSON.stringify([["Paused", ["task:t10"]]])) fail(`views: search "tip" in Scheduled ${JSON.stringify(found)}`);
+      await checkLayout(p, `scheduled search ${label}`);
+      await shoot(p, "panel-scheduled-search", size, scheme);
+      await p.fill("#job-search", "");
+
+      // The panel keeps the view: back from a job, and in its session storage.
+      await openJob(p, "task:t9");
+      await backToList(p);
+      const kept = await p.evaluate(() => ({ sel: document.getElementById("view-scheduled").getAttribute("aria-selected"), stored: sessionStorage.getItem("browsertodo.jobs.view") }));
+      if (kept.sel !== "true" || kept.stored !== "scheduled") fail(`views: kept ${JSON.stringify(kept)}`);
+      reportErrors(p, `views ${label}`);
       await p.close();
     },
   },

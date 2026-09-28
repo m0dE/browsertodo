@@ -3,6 +3,7 @@ import {
   formatCents,
   hostedModel,
   OUT_OF_CREDIT,
+  plural,
   type BrainKind,
   type Chip,
   type Tone,
@@ -24,8 +25,11 @@ export interface StatusLine {
   text: string;
   /** The reason as the brains put it, when `text` is its plain-words version (the tooltip). */
   title?: string;
-  /** The banner's button, when it has one: the fix of what is wrong (error-help.ts), or resuming paused runs. */
-  action?: ErrorFix | "resume";
+  /**
+   * The banner's button, when it has one: the fix of what is wrong (error-help.ts), or trying again to pause the
+   * account's jobs for the old pause of every scheduled run (UiState.pauseMigration).
+   */
+  action?: ErrorFix | "retry-pause";
 }
 
 /**
@@ -46,12 +50,29 @@ function problemLine(tone: Tone, reason: string): StatusLine {
   return line;
 }
 
-/** The slim line at the top of the side panel. */
-export function statusLine(state: UiState): StatusLine {
+/** What the jobs list knows that the status line shows. */
+export interface ListFacts {
+  /** The account's list is locked (the plan does not include it): its jobs that wait to run and cannot. */
+  lockedWaiting: number;
+}
+
+/**
+ * The slim line at the top of the side panel: what stops jobs from running for the whole account (no usage credit,
+ * a plan without the TODO list, no AI), once, with its fix. Nothing is paused for it: jobs run again when it is fixed.
+ */
+export function statusLine(state: UiState, list: ListFacts = { lockedWaiting: 0 }): StatusLine {
   if (outOfCredit(state)) return problemLine("warn", OUT_OF_CREDIT);
   if (!state.brain.effective) return problemLine("bad", state.brain.note || NO_AI);
-  if (state.paused) {
-    return { tone: "warn", text: `Runs paused${state.pausedReason ? `: ${state.pausedReason}` : ""}`, action: "resume" };
+  if (state.account?.signedIn && list.lockedWaiting > 0) {
+    return { tone: "warn", text: `${plural(list.lockedWaiting, "scheduled job")} won't run on your plan`, title: "Your plan doesn't include the TODO list; the jobs are kept and run again when you subscribe.", action: FIXES.plans };
+  }
+  if (state.pauseMigration) {
+    return {
+      tone: "warn",
+      text: "Your account's jobs wait until each is paused",
+      title: `Scheduled runs were paused for everything before; now each job is paused on its own. Not done yet: ${state.pauseMigration}`,
+      action: "retry-pause",
+    };
   }
   return { tone: "ok", text: brainLabel(state.brain.effective, state.brain.jevActive) };
 }

@@ -76,6 +76,24 @@ describe("AccountTodo (the signed-in TODO list)", () => {
     expect(t.api.calls[1]!.body).toEqual({ instructions: "daily", schedule: { repeat: { cron: "0 9 * * *\n30 18 * * *", tz: "Europe/Berlin" } } });
   });
 
+  it("pause and resume call their routes; holdSeries pauses the series' waiting row with the reason", async () => {
+    const t = setup();
+    t.api.on("POST /v1/tasks/t1/pause", (c) => ({ body: task("t1", { status: "paused", pauseReason: (c.body as { reason?: string }).reason ?? "Paused by you" }) }));
+    t.api.on("POST /v1/tasks/t1/resume", { body: task("t1") });
+    t.api.on("GET /v1/tasks", {
+      body: { tasks: [task("t2", { status: "paused", pauseReason: "Paused by you" }), task("t1", { status: "pending" }), task("t0", { status: "failed" })], nextCursor: null },
+    });
+    expect(await t.todo.pause("t1")).toMatchObject({ status: "paused", pauseReason: "Paused by you" });
+    expect(await t.todo.resume("t1")).toMatchObject({ status: "pending" });
+    expect(await t.todo.holdSeries("s1", "Paused after 3 failed runs in a row. Last: boom")).toMatchObject({ id: "t1", pauseReason: "Paused after 3 failed runs in a row. Last: boom" });
+    expect(t.api.calls.map((c) => [c.method, c.path, c.body])).toEqual([
+      ["POST", "/v1/tasks/t1/pause", {}],
+      ["POST", "/v1/tasks/t1/resume", undefined],
+      ["GET", "/v1/tasks?limit=200&series=s1", undefined],
+      ["POST", "/v1/tasks/t1/pause", { reason: "Paused after 3 failed runs in a row. Last: boom" }],
+    ]);
+  });
+
   it("update, retry, cancel and delete call the task routes", async () => {
     const t = setup();
     t.api.on("PATCH /v1/tasks/t1", (c) => ({ body: task("t1", c.body as object) }));

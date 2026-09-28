@@ -4,7 +4,7 @@
  */
 import type { Job } from "./jobs.js";
 
-export type JobActionId = "run" | "pause" | "resume" | "schedule" | "trust" | "raw" | "rename" | "cancel" | "delete";
+export type JobActionId = "run" | "pause" | "resume" | "hold" | "release" | "schedule" | "trust" | "raw" | "rename" | "cancel" | "delete";
 
 export interface JobAction {
   id: JobActionId;
@@ -20,6 +20,11 @@ export const RAW_TITLE = "The whole conversation with how long each step took (t
 /** Trust: on a task the agent wrote (Task.agentAuthored). */
 export const TRUST_TITLE = "The agent wrote this task. Trust it to do what it says without asking you, like a task you wrote";
 
+/** Pause on a job that waits: its tooltip (also the Scheduled view's Pause). */
+export const HOLD_TITLE = "Keep it from running, with its repeats, until you resume it";
+/** Resume on a paused job. */
+export const RELEASE_TITLE = "Put it back on its schedule";
+
 /** A task that waits (pending or paused) can still be changed. */
 const waits = (job: Job) => job.task?.status === "pending" || job.task?.status === "paused";
 
@@ -31,11 +36,15 @@ export function jobActions(job: Job, source: "local" | "account"): JobAction[] {
   const t = job.task;
   const s = job.session;
   const out: JobAction[] = [];
-  if (t && !job.running && (t.status === "pending" || t.status === "paused" || t.status === "failed")) {
+  // On hold, it runs again only once resumed (Run now would end the pause with its run).
+  if (t && !job.running && !job.held && (t.status === "pending" || t.status === "paused" || t.status === "failed")) {
     out.push({ id: "run", label: "Run now", title: t.status === "pending" ? "Run it now instead of waiting for its time" : "Run it again now, from the start" });
   }
   if (job.running) out.push({ id: "pause", label: "Pause", title: "Stop the agent here; the job waits for you (Resume goes on)" });
-  if (!job.running && job.state === "needs" && canResume(job, source)) {
+  if (job.held) out.push({ id: "release", label: "Resume", title: RELEASE_TITLE });
+  // A job that waits for its time can be paused (one that needs the user has Resume for that instead).
+  else if (t && !job.running && t.status === "pending") out.push({ id: "hold", label: "Pause", title: HOLD_TITLE });
+  if (!job.running && !job.held && job.state === "needs" && canResume(job, source)) {
     out.push({ id: "resume", label: "Resume", title: source === "account" && t ? "Put it back in the queue to run now" : "Pick up where it stopped" });
   }
   if (t && waits(job)) out.push({ id: "schedule", label: "Edit schedule", title: "Change when it runs: one time, or on a repeat" });

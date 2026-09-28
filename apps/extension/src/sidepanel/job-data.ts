@@ -29,6 +29,8 @@ export class JobData {
   source: "local" | "account" = "local";
   /** The account's plan does not include the TODO list (its tasks are not shown). */
   locked = false;
+  /** Locked: how many of its kept tasks wait to run (and cannot until the user subscribes); the header says so. */
+  lockedWaiting = 0;
   /** Both lists were loaded once. */
   loaded = false;
   private sessionsLoaded = false;
@@ -96,6 +98,7 @@ export class JobData {
       if (ticket !== this.taskTicket) return;
       this.source = res.source ?? "local";
       this.locked = res.locked;
+      this.lockedWaiting = res.locked ? res.tasks.filter((t) => t.status === "pending" || t.status === "paused").length : 0;
       // A rule stored before rules became cron ({ dailyAt }) reads as the same rule.
       this.tasks = res.locked ? [] : res.tasks.map((t) => ({ ...t, repeat: readStoredRepeat(t.repeat, localTimeZone()) }));
       this.tasksLoaded = true;

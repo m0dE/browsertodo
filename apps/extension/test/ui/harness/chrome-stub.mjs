@@ -155,8 +155,18 @@ export function installChromeStub(data) {
       return { ok: true };
     },
     "agent.show": () => ({ ok: true }),
-    "schedule.pause": () => ({ ...data.state, paused: true }),
-    "schedule.resume": () => ({ ...data.state, paused: false }),
+    "pause.migrate": () => data.state,
+    // A job paused or resumed: the list is told its tasks changed (as the background does).
+    "tasks.pause": (req) => {
+      data.tasks = data.tasks.map((t) => (t.id === req.id ? { ...t, status: "paused", pauseReason: "Paused by you", retryAfter: null } : t));
+      setTimeout(() => window.__push({ type: "tasks.changed" }), 0);
+      return { task: data.tasks.find((t) => t.id === req.id) };
+    },
+    "tasks.resume": (req) => {
+      data.tasks = data.tasks.map((t) => (t.id === req.id ? { ...t, status: "pending", pauseReason: null } : t));
+      setTimeout(() => window.__push({ type: "tasks.changed" }), 0);
+      return { task: data.tasks.find((t) => t.id === req.id) };
+    },
     "tasks.list": () => ({ tasks: data.tasks, locked: !!data.tasksLocked, ...(data.tasksSource ? { source: data.tasksSource } : {}) }),
     "tasks.cancel": (req) => ({ task: { ...data.tasks.find((t) => t.id === req.id), status: "cancelled" } }),
     "account.signIn": () => {

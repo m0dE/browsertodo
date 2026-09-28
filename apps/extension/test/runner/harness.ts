@@ -208,10 +208,6 @@ export function harness(overrides: Partial<ExtensionSettings> = {}): Harness {
   let sid = 0;
   h.deps = {
     loadSettings: async () => ({ ...h.settings }),
-    saveSettings: async (patch) => {
-      h.settings = { ...h.settings, ...patch };
-      return h.settings;
-    },
     getRunnerId: async () => "runner-1",
     createApi: () => ({
       claim: async () => h.claims.shift() ?? null,

@@ -50,7 +50,7 @@ export const ExtensionSettings = z.object({
   cloudEnabled: z.boolean().default(false),
   apiBase: z.string().default(""),
   runnerKey: z.string().default(""),
-  /** Pause scheduled runs after this many failed tasks in a row. 0 disables. */
+  /** Pause a scheduled job (the rest of its repeats) after this many of its runs failed in a row. 0 never pauses. */
   maxConsecutiveFailures: z.number().int().min(0).max(100).default(3),
   /** Minutes before a task that hit a temporary problem is retried. */
   retryAfterMinutes: z.number().int().min(1).max(24 * 60).default(10),
@@ -68,8 +68,6 @@ export const ExtensionSettings = z.object({
   maxParallelTasks: z.number().int().min(1).max(4).default(2),
   jevEnabled: z.boolean().default(true),
   jevThreshold: z.number().min(0).max(1).default(0.8),
-  /** When true, scheduled runs are skipped. */
-  paused: z.boolean().default(false),
   /** Minutes before a paused task can be claimed again. */
   pauseRetryMinutes: z.number().int().min(1).max(24 * 60).default(15),
   /**

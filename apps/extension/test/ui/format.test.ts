@@ -25,7 +25,6 @@ function state(over: Partial<UiState> = {}, brain: Partial<UiState["brain"]> = {
     brain: { effective: "claude-code", helper: null, hasApiKey: false, jevActive: false, ...brain },
     running: null,
     runningSessions: [],
-    paused: false,
     openConversations: [],
     ...over,
   };
@@ -45,12 +44,26 @@ describe("statusLine", () => {
     // A reason it does not know: still a way to fix it.
     expect(statusLine(state({}, { effective: null, note: "Something odd" }))).toMatchObject({ text: "Something went wrong", title: "Something odd", action: FIXES.setUpAi });
   });
-  it("offers resume when paused", () => {
-    const s = statusLine(state({ paused: true, pausedReason: "3 failures in a row" }));
-    expect(s).toEqual({ tone: "warn", text: "Runs paused: 3 failures in a row", action: "resume" });
+  it("says once when a plan without the TODO list keeps scheduled jobs from running, with Choose a plan", () => {
+    const account = { signedIn: true, user: { id: "u", email: "a@b.c" } } as unknown as UiState["account"];
+    expect(statusLine(state({ account }), { lockedWaiting: 3 })).toEqual({
+      tone: "warn",
+      text: "3 scheduled jobs won't run on your plan",
+      title: "Your plan doesn't include the TODO list; the jobs are kept and run again when you subscribe.",
+      action: FIXES.plans,
+    });
+    expect(statusLine(state({ account }), { lockedWaiting: 1 }).text).toBe("1 scheduled job won't run on your plan");
+    // Nothing waits (or signed out): nothing to say.
+    expect(statusLine(state({ account }), { lockedWaiting: 0 }).tone).toBe("ok");
+    expect(statusLine(state(), { lockedWaiting: 2 }).tone).toBe("ok");
+    // No AI at all comes first.
+    expect(statusLine(state({ account }, { effective: null }), { lockedWaiting: 3 }).action).toEqual(FIXES.setUpAi);
   });
-  it("prefers the no-brain warning over paused", () => {
-    expect(statusLine(state({ paused: true }, { effective: null })).action).toEqual(FIXES.setUpAi);
+  it("offers Retry while the old pause of every run is not converted into paused jobs", () => {
+    const s = statusLine(state({ pauseMigration: "HTTP 404" }));
+    expect(s).toMatchObject({ tone: "warn", text: "Your account's jobs wait until each is paused", action: "retry-pause" });
+    expect(s.title).toMatch(/Not done yet: HTTP 404$/);
+    expect(statusLine(state({ pauseMigration: "x" }, { effective: null })).action).toEqual(FIXES.setUpAi);
   });
 });
 

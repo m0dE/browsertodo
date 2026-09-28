@@ -85,6 +85,8 @@ export function createChecks({ browser, base, only, shots }) {
   async function openJob(page, key) {
     if (!(await page.isVisible("#view-list"))) await backToList(page);
     const row = page.locator(`.job-row[data-key="${key}"]`);
+    // A scheduled job Home's Upcoming leaves out (it shows the soonest 3) is in the Scheduled view.
+    if (!(await row.count()) && !(await page.locator("#job-search").inputValue())) await page.click("#view-scheduled");
     await row.click();
     await page.waitForSelector("#view-job:not([hidden])");
   }
@@ -121,6 +123,10 @@ export function createChecks({ browser, base, only, shots }) {
       };
       one("#list-head", "list header");
       one("#job-head", "job header");
+      // The view switch and the search share one line; the search stays wide enough to type in.
+      one("#view-list:not([hidden]) .list-bar", "list bar");
+      const search = document.querySelector("#view-list:not([hidden]) #job-search");
+      if (search && search.offsetParent && search.getBoundingClientRect().width < 96) out.push(`search field only ${Math.round(search.getBoundingClientRect().width)}px wide`);
       // Rows are one tight line (a quiet second line at most), nothing spilling sideways.
       for (const row of document.querySelectorAll("#view-list:not([hidden]) .job-row")) {
         const r = row.getBoundingClientRect();

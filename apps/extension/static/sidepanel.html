@@ -30,7 +30,7 @@
           <div id="job-menu-pop" class="menu-pop" role="menu" aria-label="Job actions"></div>
         </details>
       </div>
-      <!-- Only while something is wrong (no AI, out of credit, runs paused), with the button that fixes it (header.ts). -->
+      <!-- Only while something stops jobs for the whole account (no AI, out of credit, a plan without TODO), with the button that fixes it (header.ts). -->
       <div id="status" class="status" data-tone="muted" role="status" hidden>
         <span class="dot" aria-hidden="true"></span>
         <span id="status-text" class="status-text">Connecting…</span>
@@ -50,9 +50,16 @@
     <main>
       <!-- The jobs list (job-list.ts): every chat, task and run, by what it needs. -->
       <section id="view-list" class="view list-view scroll" aria-labelledby="brand">
-        <div class="list-search">
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
-          <input id="job-search" type="search" placeholder="Search jobs" aria-label="Search jobs" autocomplete="off" spellcheck="false" />
+        <!-- The view (Home | Scheduled) and the search of that view, on one line (job-list.ts). -->
+        <div class="list-bar">
+          <div id="job-views" class="seg" role="tablist" aria-label="Jobs view">
+            <button id="view-home" type="button" role="tab" data-view="home" aria-selected="true" aria-controls="job-groups">Home</button>
+            <button id="view-scheduled" type="button" role="tab" data-view="scheduled" aria-selected="false" aria-controls="job-groups" tabindex="-1">Scheduled</button>
+          </div>
+          <div class="list-search">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+            <input id="job-search" type="search" placeholder="Search jobs" aria-label="Search jobs" autocomplete="off" spellcheck="false" />
+          </div>
         </div>
         <!-- First sign-in with tasks saved in this browser (migrate-offer.ts). -->
         <div id="migrate" class="card list-note" hidden>
@@ -73,7 +80,7 @@
             <button id="memory-ask-add" type="button" class="primary small">Add</button>
           </div>
         </div>
-        <div id="job-groups" class="job-groups"></div>
+        <div id="job-groups" class="job-groups" role="tabpanel" aria-labelledby="view-home"></div>
       </section>
 
       <!-- A job's page (job-page.ts): its conversation, live (chat.ts), and its earlier runs above it. -->

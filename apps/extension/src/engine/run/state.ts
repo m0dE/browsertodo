@@ -8,9 +8,8 @@ export const KEEP_ALIVE_MS = 20_000;
 export interface RunnerState {
   lastRunAt?: string;
   lastError?: string;
-  /** Set when runs were paused automatically; shown in the side panel. */
-  pausedReason?: string;
-  consecutiveFailures: number;
+  /** Failed scheduled runs in a row, per job (its task series); a job at maxConsecutiveFailures is paused (failure-policy.ts). */
+  failures?: Record<string, number>;
   /** The "no brain" message already notified, so it is shown once. */
   noBrainNotified?: string;
 }
@@ -24,8 +23,9 @@ export class RunnerStateStore {
   async get(): Promise<RunnerState> {
     if (!this.cache) {
       const got = await this.storage().get(RUNNER_STATE_KEY);
-      const raw = (got[RUNNER_STATE_KEY] ?? {}) as Partial<RunnerState>;
-      this.cache = { ...raw, consecutiveFailures: raw.consecutiveFailures ?? 0 };
+      // consecutiveFailures and pausedReason: the one count and pause of every scheduled run, before jobs were paused one by one.
+      const { consecutiveFailures: _count, pausedReason: _reason, ...raw } = (got[RUNNER_STATE_KEY] ?? {}) as RunnerState & { consecutiveFailures?: number; pausedReason?: string };
+      this.cache = raw;
     }
     return { ...this.cache };
   }

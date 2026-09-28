@@ -125,7 +125,7 @@ export function scenario(kind) {
     brain: "auto", anthropicApiKey: "set", anthropicModel: "claude-sonnet-5", jevApiKey: "", cloudEnabled: false,
     apiBase: "", runnerKey: "", maxConsecutiveFailures: 3, retryAfterMinutes: 10, intervalMinutes: 15,
     delayMinSec: 60, delayMaxSec: 180, maxToolCalls: 60, maxTaskMinutes: 10, maxParallelTasks: 2, jevEnabled: true, jevThreshold: 0.8,
-    paused: false, pauseRetryMinutes: 15, accountApiBase: "https://app.browsertodo.com",
+    pauseRetryMinutes: 15, accountApiBase: "https://app.browsertodo.com",
     voiceEngine: "realtime", speechVoice: "", speechRate: 1, realtimeVoice: "marin", realtimeSpeed: 1, realtimeCostNoticed: true, voiceSounds: true, showControlOverlay: true,
     automationLevel: "ask_consequential", scheduledAutomation: "full_within_task",
     memoryPaused: false, memoryKindsOff: [], reasoning: "fast", reasoningAutoRaise: true,
@@ -134,7 +134,6 @@ export function scenario(kind) {
     settings,
     brain: { effective: "claude-api", helper, hasApiKey: true, jevActive: true },
     running,
-    paused: false,
     nextRunAt: iso(12),
     lastRunAt: iso(-3),
     openConversations: [],
@@ -200,9 +199,9 @@ export function scenario(kind) {
     state.running = null;
     settings.anthropicApiKey = "";
   }
-  if (kind === "paused") {
-    state.paused = true;
-    state.pausedReason = "3 tasks failed in a row (last: could not verify the post)";
+  if (kind === "pause-migration") {
+    // The old pause of every scheduled run could not be converted into paused jobs yet (the account's server is older).
+    state.pauseMigration = "HTTP 404: not found";
     state.running = null;
   }
   const task = (id, status, instructions, extra = {}) => ({
@@ -247,6 +246,16 @@ export function scenario(kind) {
   ];
   if (kind === "idle") tasks[0] = { ...tasks[0], status: "pending", notBefore: iso(40) };
   if (kind === "empty" || kind === "todo-locked-empty") tasks.splice(0, tasks.length);
+  if (kind === "views") {
+    // Every kind of scheduled job: more upcoming than Home shows, one the user paused, one paused after failures.
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    tasks.push(
+      task("t8", "pending", "Send the weekly report to the team", { notBefore: iso(60 * 26), repeat: { cron: "0 10 * * 1", tz } }),
+      task("t9", "pending", "Renew the domain before it expires", { notBefore: iso(60 * 24 * 6) }),
+      task("t10", "paused", "Post a tip about keyboard shortcuts on X", { account: "browsertodo", pauseReason: "Paused by you", repeat: { cron: "0 8 * * *", tz } }),
+      task("t11", "paused", "Check the store for new orders and reply to buyers", { pauseReason: "Paused after 3 failed runs in a row. Last: the orders page did not load", repeat: { cron: "0 */4 * * *", tz } }),
+    );
+  }
   const eventsBySession = {};
   if (kind === "parallel") {
     // Two due tasks run at once, each in its own tab.

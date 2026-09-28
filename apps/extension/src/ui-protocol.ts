@@ -139,9 +139,11 @@ export interface UiState {
   running: SessionInfo | null;
   /** Every running session, oldest first: several tasks can run at once, each in its own tab. */
   runningSessions: SessionInfo[];
-  /** Scheduled runs are paused (by the user or after repeated failures). */
-  paused: boolean;
-  pausedReason?: string;
+  /**
+   * The old pause of every scheduled run is not converted into paused jobs yet (engine/pause-migration.ts): the
+   * account's jobs do not run until it is; why, in words. Absent: nothing waits.
+   */
+  pauseMigration?: string;
   lastRunAt?: string;
   lastError?: string;
   nextRunAt?: string;
@@ -272,8 +274,8 @@ export type UiRequest =
   | { type: "agent.show"; sessionId?: string }
   /** Type into a running agent session (default: the one started last). */
   | { type: "run.say"; text: string; sessionId?: string }
-  | { type: "schedule.pause" }
-  | { type: "schedule.resume" }
+  /** Try again to pause the account's jobs for the old pause of every scheduled run (UiState.pauseMigration). */
+  | { type: "pause.migrate" }
   | { type: "tasks.list" }
   | {
       type: "tasks.add";
@@ -290,6 +292,10 @@ export type UiRequest =
   | { type: "tasks.retry"; id: string }
   /** Account tasks only: pending or paused tasks stop without running. */
   | { type: "tasks.cancel"; id: string }
+  /** Pause a waiting job: it does not run (nor its repeats) until resumed. */
+  | { type: "tasks.pause"; id: string }
+  /** A paused job waits for its time again (a repeating one whose time went by: its next time). */
+  | { type: "tasks.resume"; id: string }
   /** Google sign-in (opens Google's window), then the account's state. */
   | { type: "account.signIn" }
   | { type: "account.signOut" }
@@ -382,8 +388,7 @@ export interface UiResults {
   "tab.focus": { ok: boolean };
   "agent.show": { ok: boolean };
   "run.say": { ok: boolean };
-  "schedule.pause": UiState;
-  "schedule.resume": UiState;
+  "pause.migrate": UiState;
   /** source: the signed-in account's tasks, or this browser's (signed out). */
   /** locked: the account's plan does not include the TODO list; the tasks are read-only until the user subscribes. */
   "tasks.list": { tasks: (LocalTask & { media: LocalMediaInfo[] })[]; locked: boolean; source?: "local" | "account" };
@@ -393,6 +398,8 @@ export interface UiResults {
   "tasks.delete": { ok: boolean };
   "tasks.retry": { task: LocalTask };
   "tasks.cancel": { task: LocalTask };
+  "tasks.pause": { task: LocalTask };
+  "tasks.resume": { task: LocalTask };
   "account.signIn": UiState;
   "account.signOut": UiState;
   "account.refresh": UiState;

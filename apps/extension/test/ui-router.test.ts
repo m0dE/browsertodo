@@ -22,7 +22,7 @@ const INFO: HelperInfo = { version: "2", jevAvailable: false, claudePath: "C:\\c
 function setup() {
   const db = new MemoryKvDb();
   let settings: ExtensionSettings = { ...DEFAULT_SETTINGS, anthropicApiKey: "sk-secret", runnerKey: "bt_secret" };
-  const rstate: RunnerState = { consecutiveFailures: 0, lastRunAt: "2026-09-24T09:00:00.000Z" };
+  const rstate: RunnerState = { lastRunAt: "2026-09-24T09:00:00.000Z" };
   const running: SessionInfo | null = null;
   const runner = {
     running,
@@ -35,12 +35,6 @@ function setup() {
     newChat: vi.fn(async (_id?: string) => ({ ok: true })),
     stop: vi.fn(() => true),
     say: vi.fn(async () => true),
-    pauseSchedule: vi.fn(async () => {
-      settings = { ...settings, paused: true };
-    }),
-    resumeSchedule: vi.fn(async () => {
-      settings = { ...settings, paused: false };
-    }),
     runTask: vi.fn(async (_id: string) => ({ sessionId: "S-task" })),
   } satisfies RouterRunner;
   const helper = {
@@ -101,7 +95,7 @@ describe("UiRouter", () => {
     expect(s.settings.runnerKey).toBe("set");
     expect(s.settings.jevApiKey).toBe("");
     expect(s.brain).toMatchObject({ effective: "claude-api", hasApiKey: true, helper: null, helperError: "Specified native messaging host not found." });
-    expect(s).toMatchObject({ running: null, paused: false, lastRunAt: "2026-09-24T09:00:00.000Z", nextRunAt: "2026-09-24T10:15:00.000Z" });
+    expect(s).toMatchObject({ running: null, lastRunAt: "2026-09-24T09:00:00.000Z", nextRunAt: "2026-09-24T10:15:00.000Z" });
   });
 
   it("settings.save: partial update, secrets kept when omitted or 'set', cleared with ''", async () => {
@@ -173,10 +167,20 @@ describe("UiRouter", () => {
     expect(await t.router.handle({ type: "run.adhoc", instructions: "x" })).toEqual({ ok: false, error: "A task is already running" });
   });
 
-  it("schedule.pause / resume return state", async () => {
+  it("has no pause of every scheduled run: no paused in the state, schedule.pause is not a request", async () => {
     const t = setup();
-    expect((await t.req({ type: "schedule.pause" })).paused).toBe(true);
-    expect((await t.req({ type: "schedule.resume" })).paused).toBe(false);
+    const s = await t.req({ type: "state.get" });
+    expect("paused" in s).toBe(false);
+    expect("pauseMigration" in s).toBe(false);
+    expect(await t.router.handle({ type: "schedule.pause" } as never)).toMatchObject({ ok: false });
+  });
+
+  it("tasks.pause / tasks.resume hold a waiting task and put it back on its schedule", async () => {
+    const t = setup();
+    const { task } = await t.req({ type: "tasks.add", instructions: "post a tip", notBefore: "2099-01-01T09:00:00.000Z" });
+    expect((await t.req({ type: "tasks.pause", id: task.id })).task).toMatchObject({ status: "paused", pauseReason: "Paused by you" });
+    expect((await t.req({ type: "tasks.resume", id: task.id })).task).toMatchObject({ status: "pending", pauseReason: null, notBefore: "2099-01-01T09:00:00.000Z" });
+    expect(await t.router.handle({ type: "tasks.resume", id: task.id })).toMatchObject({ ok: false, error: expect.stringMatching(/only a paused task/) });
   });
 
   it("tasks.* manage the local list", async () => {

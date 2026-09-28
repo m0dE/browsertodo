@@ -49,8 +49,6 @@ export interface ResolvedBrain {
 
 export interface RunnerDeps {
   loadSettings(): Promise<ExtensionSettings>;
-  /** Raw partial settings update (used for paused). */
-  saveSettings(patch: Partial<ExtensionSettings>): Promise<ExtensionSettings>;
   getRunnerId(): Promise<string>;
   createApi(settings: ExtensionSettings): RunnerApi;
   /**
@@ -59,6 +57,15 @@ export interface RunnerDeps {
    * the runner-key cloud sync.
    */
   accountApi?(): Promise<RunnerApi | null>;
+  /**
+   * Why the due loop does not claim the account's tasks now, or null: the old pause of every scheduled run is not
+   * converted into paused jobs yet (pause-migration.ts). Local tasks still run.
+   */
+  accountQueueHold?(): Promise<string | null>;
+  /** The hosted AI has no usage credit left (the due loop starts nothing on it; the side panel says so with Top up). */
+  outOfCredit?(): boolean;
+  /** Pauses a job's waiting run after its runs kept failing (TodoSource.holdSeries of this browser's or the account's list). */
+  holdSeries?(source: "local" | "cloud", seriesId: string, reason: string): Promise<boolean>;
   localStore: LocalStore;
   sessions: SessionStore;
   /** A browser tab's id, address and title (no tabId: the tab the user is looking at); see TurnDeps.pageOf. */
@@ -161,10 +168,14 @@ export class Runner {
     });
     this.policy = new FailurePolicy({
       state: this.runnerState,
-      loadSettings: deps.loadSettings,
-      saveSettings: deps.saveSettings,
       notify: deps.notify,
       stopping: () => this.dueLoop.stopping,
+      holdSeries: async (source, seriesId, reason) => {
+        if (source === "local") return !!(await deps.localStore.holdSeries(seriesId, reason));
+        if (!deps.holdSeries) throw new Error("this queue's jobs cannot be paused from here");
+        return deps.holdSeries(source, seriesId, reason);
+      },
+      log,
     });
     this.dueLoop = new DueLoop({
       live: this.live,
@@ -176,6 +187,8 @@ export class Runner {
       getRunnerId: deps.getRunnerId,
       createApi: deps.createApi,
       ...(deps.accountApi ? { accountApi: deps.accountApi } : {}),
+      ...(deps.accountQueueHold ? { accountQueueHold: deps.accountQueueHold } : {}),
+      ...(deps.outOfCredit ? { outOfCredit: deps.outOfCredit } : {}),
       resolveBrain: deps.resolveBrain,
       notify: deps.notify,
       ...(deps.sleep ? { sleep: deps.sleep } : {}),
@@ -447,16 +460,6 @@ export class Runner {
     const waiting = a.approvals;
     a.approvals = new AbortController();
     waiting.abort("message");
-  }
-
-  async pauseSchedule(reason?: string): Promise<void> {
-    await this.policy.pause(reason);
-    this.changed();
-  }
-
-  async resumeSchedule(): Promise<void> {
-    await this.policy.resume();
-    this.changed();
   }
 
   /** Startup crash recovery for local tasks. */

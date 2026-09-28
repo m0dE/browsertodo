@@ -188,6 +188,13 @@ export const TaskOutcome = z.enum(["done", "failed", "paused", "retry"]);
 export type TaskOutcome = z.infer<typeof TaskOutcome>;
 
 /** Body of POST /v1/runner/tasks/:id/result. */
+/**
+ * Body of POST /v1/tasks/:id/pause: the reason the task shows while it waits (default "Paused by you"). A paused task
+ * runs only after POST /v1/tasks/:id/resume.
+ */
+export const PauseTaskInput = z.object({ reason: z.string().trim().min(1).max(MAX_RESULT_REASON).optional() });
+export type PauseTaskInput = z.infer<typeof PauseTaskInput>;
+
 export const ResultInput = z.object({
   runnerId: z.string().min(1),
   outcome: TaskOutcome,

@@ -27,7 +27,7 @@ export async function migrateStoredSettings(): Promise<boolean> {
   return true;
 }
 
-/** Raw partial update (the runner's paused flag): no secret rules. */
+/** Raw partial update (tests and set-up): no secret rules. */
 export async function saveSettings(patch: Partial<ExtensionSettings>): Promise<ExtensionSettings> {
   return storeSettings(parseSettings({ ...(await loadSettings()), ...patch }));
 }

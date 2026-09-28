@@ -6,7 +6,7 @@
  * The account's list is a paid feature: on a plan without it the list comes
  * back `locked` (the kept tasks are read-only; writes answer plan_required).
  */
-import { LegacyRepeatRule, legacyToRepeat, type CreateTaskInput, type LocalTask, type RepeatSchedule, type Task } from "@browsertodo/shared";
+import { isOnHold, LegacyRepeatRule, legacyToRepeat, type CreateTaskInput, type LocalTask, type RepeatSchedule, type Task } from "@browsertodo/shared";
 import type { LocalMediaInfo, TaskPatch } from "../ui-protocol.js";
 import { uploadToBlob, type LocalStore, type NewLocalTask } from "../engine/local-store.js";
 import type { AccountApi, AccountTaskList } from "./account-api.js";
@@ -58,6 +58,12 @@ export interface TodoSource {
   delete(id: string): Promise<boolean>;
   retry(id: string): Promise<LocalTask>;
   cancel(id: string): Promise<LocalTask>;
+  /** Keeps a waiting task from running until resume() (reason: what it shows; default "Paused by you"). */
+  pause(id: string, reason?: string): Promise<LocalTask>;
+  /** A paused task waits for its time again. */
+  resume(id: string): Promise<LocalTask>;
+  /** Pauses the waiting row of a series (see LocalStore.holdSeries); null: none waits. */
+  holdSeries(seriesId: string, reason: string): Promise<LocalTask | null>;
 }
 
 /** An account task in the TODO row shape. Files are known by id only (the list does not carry their names). */
@@ -126,6 +132,24 @@ export class AccountTodo implements TodoSource {
     this.onChange();
     return asLocal(task);
   }
+
+  async pause(id: string, reason?: string): Promise<LocalTask> {
+    const task = await this.api.pauseTask(id, reason);
+    this.onChange();
+    return asLocal(task);
+  }
+
+  async resume(id: string): Promise<LocalTask> {
+    const task = await this.api.resumeTask(id);
+    this.onChange();
+    return asLocal(task);
+  }
+
+  async holdSeries(seriesId: string, reason: string): Promise<LocalTask | null> {
+    // Newest first: the series' waiting row is its newest pending (or paused for a while) one.
+    const waiting = (await this.api.listSeries(seriesId)).find((t) => t.status === "pending" || (t.status === "paused" && !isOnHold(t)));
+    return waiting ? this.pause(waiting.id, reason) : null;
+  }
 }
 
 /**
@@ -163,5 +187,17 @@ export class LocalTodo implements TodoSource {
   async cancel(): Promise<LocalTask> {
     // Local tasks have no cancelled state of their own: deleting is the way to drop one.
     throw new Error("Local tasks cannot be cancelled; delete it instead");
+  }
+
+  pause(id: string, reason?: string): Promise<LocalTask> {
+    return this.store.pause(id, reason);
+  }
+
+  resume(id: string): Promise<LocalTask> {
+    return this.store.resume(id);
+  }
+
+  holdSeries(seriesId: string, reason: string): Promise<LocalTask | null> {
+    return this.store.holdSeries(seriesId, reason);
   }
 }
